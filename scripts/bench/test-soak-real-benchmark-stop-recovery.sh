@@ -33,6 +33,7 @@ trap 'printf "ERROR: The benchmark recovery fixture failed before its behavioral
 printf '%s\n' "$INSTANCE" >"$EVIDENCE/instance-id.txt"
 (cd "$SOURCE" && sha256sum scripts/run-merge-recovery-soak.sh scripts/bench/run-bench-segment.sh scripts/bench/write-soak-summary.sh scripts/bench/collect-soak-metrics.sh scripts/bench/soak-metrics.json) >"$EVIDENCE/source-sha256.txt"
 jq -n --arg image "$IMAGE" '{services:{writer:{image:$image,labels:{"fixture.owner":"benchmark-recovery"},network_mode:"none",mem_limit:33554432,cpus:0.5,pids_limit:32,cap_drop:["ALL"],security_opt:["no-new-privileges"],user:"65534:65534",command:["/bin/sh","-c","i=0; while [ \"$$i\" -lt 1200 ]; do printf \"%s\\n\" \"$$i\" >>/tmp/writes; i=$$((i+1)); sleep 0.1; done"]}}}' >"$EVIDENCE/node/docker/shard.yml"
+printf 'services: {}\n' >"$EVIDENCE/node/docker/ci-ports.shard.yml"
 cat >"$EVIDENCE/bin/docker" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

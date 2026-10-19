@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "controlled-verification-passed",
+  "claim_discharge": "pending",
+  "candidate_qualification": "pending",
+  "phase": "pre_pr216_merge",
+  "source_head_revision": "63b9ace2b2c300b9dc605903d12bbb767566ae4b",
+  "working_tree": true,
+  "claim_ids": [
+    "CLAIM-CASPER-AUTHORITY-ADAPTER-001",
+    "CLAIM-CASPER-AUTHORITY-LIVE-001",
+    "CLAIM-CASPER-SOAK-001",
+    "CLAIM-CASPER-SOAK-002"
+  ],
+  "source_digests": {
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    ".github/workflows/casper-authority-adapter.yml": "53194d04ac731664d1952f846e30f6373feff49b8d902e7e2b4a52892c456ba4",
+    ".github/workflows/casper-authority-finality.yml": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721",
+    "Cargo.lock": "740562169c25bcdaa0bbc822caa97053966dba8ac9319e7dcfc16d860c7a4ff2",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "docs/casper/design/authority-live-executor.md": "f0b63f4f26a0c07eff271e8fbd05761b1f4cd225e8be20acac767951075a4557",
+    "docs/casper/design/authority-provider-adaptation.md": "e3cfe8227ca5939eb48216b49ed628dd6afe81b32b9d9ae3ced050413ad5877c",
+    "docs/claims/casper-authority-adapter.md": "5d13e8d1bd319566fe682bd8e02a32d4b16992222203dfdb1184fc38d3f921b0",
+    "docs/claims/casper-authority-live-executor.md": "925c1cbb2b99215d17a0223ab7c8bdb3554fe6549309021e0f99b5526ca84d33",
+    "docs/claims/casper-soak-authority-finality.md": "11570876df0aa9c642f28e602d3c120d0954337f59c174eae98bce5e9a6cfb8a",
+    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg": "b667ec0af8708b150743719d18a6667b2faa5906fc4b1a6f21591e68812746b8",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg": "3bf95d421574c52be7e5f6c1088750f1b8005bf04678c149502ec88790decda3",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg": "e14750f03bde5483e91b03a1f0af7389b4d3d5a69a0370cb94741ea8b2c0a145",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg": "9e191e33d284747e20a309c5a62f73244e1dd54ee8d062de676886dcb392d594",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/README.md": "8fc95ea6c73b59c4f81a35f194fbdc8c66a769d598428333db1a747995672e0f",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc": "0caee1e328f2f1e2c29da9cff7e6185e2d1a36767247853dcd45eab4355ab345",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    "scripts/casper-soak/Cargo.toml": "7282d2a9c1ebb41148ef08d73f2ff35923d1d372923618fee1584585e82c48d3",
+    "scripts/casper-soak/check-authority-finality.sh": "cbb2ad33c1b063f96b3e25c2f83cfc02334b97934ee55140755b75ddd5625b8c",
+    "scripts/casper-soak/check-authority-live.sh": "c0b20b3cd92e0e5594e3c493752e79a45640ad9adfc9cdaed6fdf3383e94700d",
+    "scripts/casper-soak/src/authority_execution.rs": "a07a3d8694582ee876ea4c474e9aff21e87365d46434d4bfa5b432f1191e189f",
+    "scripts/casper-soak/src/authority_incarnation.rs": "96f8a93c8194cc7ea624e53ada7d51d983d359460df6d76d2de5d2e0c20f9d9f",
+    "scripts/casper-soak/src/authority_live.rs": "efd1ed4d2e868889bf56070e8c0d203d62bf84e2813981222c4244452f5609c2",
+    "scripts/casper-soak/src/authority_p2p.rs": "b63ec8af444fea70ca81be8e57551eb6b09996887c9ac69a2d7a67f6d3824353",
+    "scripts/casper-soak/src/authority_process.rs": "a50eae1c5ccf7c587759408b941faefe6d5b285fa8554bd9c255aa35be1179fc",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs": "73336f04e3e0ac965bfe20de6f9c667a90a53034cab7e9febf55afec8a8e8a81",
+    "scripts/casper-soak/src/bin/casper-authority-live.rs": "b50320266f6a1ceae4a5b54bf142122245df458a88f970ad2cc9a04587bdba09",
+    "scripts/casper-soak/src/bin/casper-authority-p2p.rs": "7532566087870b365420adba1857bb4b8e0622cecc4d4c7800c0250462dfd2b1",
+    "scripts/casper-soak/src/bin/casper-authority-process.rs": "caad12c3290b4875e1de0bc6a5fe9fc0170e0b76da4fe922b76068013e7696ba",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "7767073a8642e6443deea00203acd6a3ba25ee11684d7bec8b6c5696bef7e0c5",
+    "scripts/casper-soak/tests/authority_finality.rs": "2af74e1c2cd0d13923d7f99b9edb5ea4e8cb6e05ba4015e06026735e230d0cc1",
+    "scripts/casper-soak/tests/authority_live.rs": "9e1153f8b2c3249913794a2dcf443a67757376a7b1691f3daf7397a1240e5d92",
+    "scripts/casper-soak/tests/authority_p2p.rs": "864588967c8c7d8193863b9c07cd23c2ef4b385b9f1427a379892564bfe9dc36",
+    "scripts/casper-soak/tests/authority_process.rs": "a080d1925ef81c014b2c4d94e592a7ca5b56c465593a0863e11d4c3a267a95a2"
+  },
+  "claim_digests": {
+    "docs/claims/casper-authority-adapter.md": "5d13e8d1bd319566fe682bd8e02a32d4b16992222203dfdb1184fc38d3f921b0",
+    "docs/claims/casper-authority-live-executor.md": "925c1cbb2b99215d17a0223ab7c8bdb3554fe6549309021e0f99b5526ca84d33",
+    "docs/claims/casper-soak-authority-finality.md": "11570876df0aa9c642f28e602d3c120d0954337f59c174eae98bce5e9a6cfb8a",
+    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
+  },
+  "verification": {
+    "schema_version": 1,
+    "status": "passed",
+    "linux_tests": {
+      "authority_finality": 12,
+      "authority_live": 11,
+      "authority_p2p": 1,
+      "authority_process": 3,
+      "total": 27,
+      "ignored_fixture_helpers": 3
+    },
+    "linux_clippy": "passed",
+    "native_profile_tests": 12,
+    "native_clippy": "passed",
+    "workflow_invariants": "passed",
+    "ste_check": "passed",
+    "source_inventory_unchanged": true,
+    "claim_discharge": "pending",
+    "candidate_qualification": "pending",
+    "blockchain_nodes": 0,
+    "cloud_dispatches": 0,
+    "profile_gate": {
+      "status": "passed",
+      "rust_tests": 13,
+      "threshold_cases": 2000,
+      "model_controls": 4,
+      "source_inventory_unchanged": true
+    },
+    "owner_capture": "Verified through the persistent authorized observer client.",
+    "socket_cleanup": "Verified child socket identity before removal after predecessor exit.",
+    "strict_claim_audit_exit": 4,
+    "strict_artifact_audit_exit": 4,
+    "mandatory_artifacts_pending": 26
+  },
+  "retained_artifacts": [
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/gate-clippy.txt",
+      "sha256": "0d45955140ce7fde8f692e81283f53bc3ed68744ce3d61744e0c233983354bbe"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/gate-report.json",
+      "sha256": "6fa73f8fb9760c1732436e5ab15158e36d1961ecf74840a397e9830bf4b1b1e6"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/gate-source-after.sha256",
+      "sha256": "8154eea48d19b62e52fb45ad6b3fc8ea843a1ce8460e00c233a4dcd51afef07e"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/gate-source-before.sha256",
+      "sha256": "8154eea48d19b62e52fb45ad6b3fc8ea843a1ce8460e00c233a4dcd51afef07e"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/gate-tests.txt",
+      "sha256": "b66aef59a7886efd7187dab1018d2f501a07e5ebce669d34eb389680d911df29"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/validation.json",
+      "sha256": "1a9fe48ec61509f0373963d4393cc9a9ed49f87bb740ce6e7819e08cf20f5513"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/profile-summary.json",
+      "sha256": "db47002b1a861696cfc69f04ca19b3e30e7757e41f448bb9456b7b0386231355"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/profile-models.json",
+      "sha256": "dd68debe262d416c906322a84d45ba40f61f0b627bbcc27c2cfc412d6d19c7de"
+    },
+    {
+      "path": "target/task-017-12-provider-20260928/native-clippy-04.log",
+      "sha256": "3b7125ca7485b323bb67b545c1127dda018963e8ceecd318356a68178042f86a"
+    },
+    {
+      "path": "target/task-017-12-provider-20260928/workflow-final.log",
+      "sha256": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab"
+    },
+    {
+      "path": "target/task-017-12-provider-20260928/ste-final-02.log",
+      "sha256": "de35dfab665e543dde02d576486475d3be9c7999ac284608786f5d999fe6bc9b"
+    },
+    {
+      "path": "target/task-017-12-provider-20260928/profile-gate-02/source-before.sha256",
+      "sha256": "95a43a9109580e7099dad5a93d2f7881ec74f634cbfa1bea63fde727dc3d37fa"
+    },
+    {
+      "path": "target/task-017-12-provider-20260928/profile-gate-02/source-after.sha256",
+      "sha256": "95a43a9109580e7099dad5a93d2f7881ec74f634cbfa1bea63fde727dc3d37fa"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/claims.json",
+      "sha256": "98caad54aca471004bdaa6919252a919e044b9bb248c56acc51cb5b7fe0fcae2"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/artifact-audit.json",
+      "sha256": "d8b50ec1fc95c7dc8ecec2de503854c075f764d75fcade8d9f8143445cfe5ecc"
+    }
+  ],
+  "previous_records": [
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-src-authority-execution-rs.md",
+      "sha256": "38b602a22bf090aa766821d05b37df8a39185fe2a6fcd4845492e846604516c7"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-src-profiles-authority-finality-rs.md",
+      "sha256": "7194255cd7bbc1e3223121a9f1e700e0fe8c02e52314071f1225c0c786096337"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-src-bin-casper-authority-finality-rs.md",
+      "sha256": "4db483b7043ab6b72ebb1912bb04a285a25f85351d5cdc00d96be28f27c9c93c"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-tests-authority-finality-rs.md",
+      "sha256": "07617eaf898cf0a690862e85bb414df41ed03a51601157fbf84dae2a286fda9a"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-check-authority-finality-sh.md",
+      "sha256": "7fb041ccb60cd59b99f0f0d93085ea3247c1859cb30d6ad13d6f9fb4ef48b753"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/github-workflows-casper-authority-finality-yml.md",
+      "sha256": "40b115f6e4f1f1d68cb2ff41fe940cab5ac726220f0c10ac1a9e81d32cf04299"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-AuthorityFinality-tla.md",
+      "sha256": "c5d67d850995679fecffed20e8a1ec6e97da0238143cb98de976ab643df5d938"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-cfg.md",
+      "sha256": "d02249b468e87e34487aadf92ba0b07f3521edfc9e08d61c556dbf697849e3c5"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-pair-unsafe-cfg.md",
+      "sha256": "7e7b2a0a76b439c25150c2f7dc19022233cff5105dc0e451d2eddcc2f6497592"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-finality-unsafe-cfg.md",
+      "sha256": "65402d985abf4ca375ff30bf4f16e84dc1ed3f28b08a1873ff01010624a16124"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-head-unsafe-cfg.md",
+      "sha256": "22326315bd20b29f1f469b6456ad5b0de70a5ed3dcd9274c9688a1f8009af88a"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-verification-plan-jsonc.md",
+      "sha256": "b0a3675785dbfe6667317f45059452ee5984c3553c927c71fc55866529b1de31"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-README-md.md",
+      "sha256": "2fe976a9ae8314eecc9b70062bf329b3df67978898121947135f33a26e2b67a7"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-src-authority-live-rs.md",
+      "sha256": "b4e20ed820818ed9fb02790ac370cf48122382402ba96590044b8999d1fc8a80"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-src-bin-casper-authority-live-rs.md",
+      "sha256": "ef8be7aabec3d6a4c2f3c877bf58735be7ca17f9d950886331665ebd5ef00d5e"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-tests-authority-live-rs.md",
+      "sha256": "f050fb8800b9c8437a53d03ebe2921eaf2033e61c683a5e1bb50840fa08507a9"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-check-authority-live-sh.md",
+      "sha256": "c3d5830ca4aba50dd5e937a7cb12c1935a07345c58414e529f9abcd1eecf7949"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/github-workflows-casper-authority-adapter-yml.md",
+      "sha256": "3f8a67380451cbc695e06394ac5c7fbd2bda9996e8d0395999069370cba89758"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/docs-casper-design-authority-live-executor-md.md",
+      "sha256": "3805bf2b7dbd03a75c026b643871df536cbd5a9f83a505a1c5d12922facd605a"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-cargo-toml.md",
+      "sha256": "52a7366073d1cde9a6fd2ebb61e5e7d266ee7475e362075f1ee44514a0758a06"
+    }
+  ],
+  "implementation": {
+    "block_driver": "Exact pinned BlockMessage protobuf bytes through the production TLS transport.",
+    "process_owner": "Owned native child control, persistent observer captures, verified socket cleanup, and parent death cleanup.",
+    "successor_enrollment": "Explicit observed_restart mode binds the successor UUID to the verified capture and restart receipt.",
+    "receipt_validation": "The classifier and receipt validator reject foreign candidates, incomplete readiness, stale incarnations, and invalid enrollment order."
+  },
+  "limits": [
+    "Controlled verification does not qualify a blockchain candidate.",
+    "Transport acknowledgment does not establish block validation or DAG admission.",
+    "The block driver reports unknown application status until captured input exports can be integrated.",
+    "Candidate block histories and complete node observations remain required.",
+    "Docker process controls remain unimplemented.",
+    "The bounded model assumes the concrete identity checks. Controlled tests verify successor enrollment."
+  ],
+  "qualification_gate": {
+    "profile_verdict": "blocked",
+    "soak_verdict": "non_passing",
+    "blockchain_nodes": 0,
+    "cloud_dispatches": 0
+  },
+  "linux_image": "sha256:1696356fe6e6a15941983171fa4ca663b1f53686d3840f6787aca0b10ec5edc6",
+  "local_fixture_evidence": "target/task-017-12-provider-20260928/gate-07/fixtures",
+  "verification_attempts": [
+    {
+      "path": "target/task-017-12-provider-20260928/linux-tests-01.log",
+      "outcome": "The certificate fixture compile error was corrected."
+    },
+    {
+      "path": "target/task-017-12-provider-20260928/gate-03/report.json",
+      "outcome": "Tests and Clippy passed. The source inventory changed during the check."
+    },
+    {
+      "path": "target/task-017-12-provider-20260928/profile-gate/models/report.json",
+      "outcome": "The sandbox denied the TLC listener. The approved rerun passed."
+    }
+  ]
+}

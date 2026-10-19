@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-harness-controls-20260916-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-harness-controls-20260916-01.external.tar.gz",
+   "sha256": "4960f956e39d4e9392d044b871fe8039906819d74459a2a4194e35ffb57f0536",
+   "bytes": 4133,
+   "members": 13,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

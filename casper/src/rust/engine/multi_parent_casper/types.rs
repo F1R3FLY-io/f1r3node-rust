@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
@@ -56,6 +57,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 // reads `this.casper_shard_conf.deploy_heartbeat_wake_enabled`.
 
 pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
+    pub observer: std::sync::OnceLock<crate::rust::soak_observer::ObserverBinding>,
     pub block_retriever: BlockRetriever<T>,
     pub event_publisher: F1r3flyEvents,
     /// P4-4 (slashing audit) originally required

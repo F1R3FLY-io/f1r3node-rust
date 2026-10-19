@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "run_id": "casper-binding-gates-20260918-01",
+  "source_revision": "774ce338692400ff86f60092fad0c9c73923c80e",
+  "dirty_source_tree": true,
+  "status": "partial-verification",
+  "claim_discharge": "pending",
+  "construction": "not-applicable",
+  "node_execution": false,
+  "phase": "pre_pr216_merge",
+  "cycles": {
+    "inventory": {
+      "red_exit": 101,
+      "green_exit": 0,
+      "earlier_full_linux_exit": 0,
+      "earlier_invocations": 88
+    },
+    "terminal_entry": {
+      "red_exit": 101,
+      "green_exit": 0
+    },
+    "interruption_reporting": {
+      "red_exit": 101,
+      "green_exit": 0
+    }
+  },
+  "current_checks": {
+    "host_tests_exit": 0,
+    "focused_linux_exit": 0,
+    "focused_linux_tests": 3,
+    "tlc_exit": 0,
+    "tlc_positive": 1,
+    "tlc_negative": 10
+  },
+  "full_attempts": [
+    {
+      "path": "linux-final",
+      "classification": "incomplete",
+      "outer_tool_timeout_seconds": 760
+    },
+    {
+      "path": "linux-retry",
+      "classification": "invalid-report",
+      "outer_tool_timeout_seconds": 720,
+      "reported_status": "passed",
+      "accepted": false
+    }
+  ],
+  "current_inventory": {
+    "cases": 46,
+    "invocations": 89,
+    "complete_current_suite": "unverified"
+  },
+  "archives": {
+    "evidence.tar.gz": "cea7054adefe02b579e02f52ecc2164b1d7993652a70a3d3cdc12dc9e12aa560",
+    "source.tar.gz": "59672e7621e77cf760b0dc9fb63f97fee5d498da0367a79444869eb570a30476"
+  },
+  "limits": [
+    "Inventory acceptance is not semantic binding discharge.",
+    "The terminal guard does not prove atomic exclusion against every later stop.",
+    "Interrupted-container capture needs a dedicated fixture.",
+    "The seven profiles and the completion-helper gate remain pending."
+  ]
+}

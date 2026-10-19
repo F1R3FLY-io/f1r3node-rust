@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "status": "task-complete-with-strict-integrity",
+  "task": "TASK-020-1",
+  "recorded_at": "2026-09-30T01:12:55Z",
+  "reviewed_head": "350f24f5964f40bb6632a034fa647956ff8a8b13",
+  "implementation_commit": "affbebc6eaa5cac9678fcbded9182423fda0fb67",
+  "story": "US-009",
+  "flow": "FLOW-002",
+  "epic": "EPIC-020",
+  "user_authorization": "proceed with the repair",
+  "id_selection": "FLOW-001 and US-006 were referenced by other epics. Historical planning also references US-007 and US-008. US-009 and FLOW-002 had no existing tracked documentation references.",
+  "completion": {
+    "helper": "task-complete/scripts/task-complete.sh",
+    "helper_sha256": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e",
+    "invocation": "mark_task_complete TASK-020-1 empty-unit-tests true false false",
+    "temporary_wrapper": "The wrapper omits only the terminal main invocation and uses the original helper libraries. The CLI accepts TODO-* but this repository uses TASK-*.",
+    "strict": true,
+    "force": false,
+    "stamp_gaps": true,
+    "exit": 0,
+    "grade": "full",
+    "gaps": [],
+    "tracker_copy_matches_live": true,
+    "completed_date": "2026-09-30",
+    "legacy_parser_compatibility": "BF_TODO_PARSER_STRICT=0 permits legacy review status elsewhere. Integrity assertions remain strict."
+  },
+  "hosted_evidence": {
+    "path": "docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json",
+    "sha256": "5d1d18343a47f76d4cf280575f8d0ede2bf1ff64e30ff2f998a899fe8aa67e17",
+    "run_id": 36651370411,
+    "job_id": 109688126217,
+    "passed": 400,
+    "skipped": 0,
+    "resource_tests": 7,
+    "current_source_hashes_match": true,
+    "reexecuted": false
+  },
+  "negative_control": {
+    "mutation": "Remove the story User Flow back-reference in a disposable copy.",
+    "exit": 3,
+    "gap": "story_missing_backref",
+    "tracker_unchanged": true
+  },
+  "preserved": {
+    "implementation_owner": "claude-session-f3cbc961",
+    "verification_owner": "01a0ab62-71b3-7248-a800-37a6fde2e4fa",
+    "verification_status": "in_progress",
+    "verification_fields_unchanged": true,
+    "historical_refusal": true,
+    "hosted_report_unchanged": true,
+    "adjacent_tasks_unchanged": true,
+    "epic_status": "in_progress",
+    "story_status": "In Progress",
+    "flow_status": "In Progress"
+  },
+  "limits": [
+    "The full chain grade verifies documentation relationships, not full deployment correctness.",
+    "No deployment integration-test artifact was fabricated.",
+    "Only TASK-020-1 is complete. File retention, container caps, and guardian checks remain pending.",
+    "The accept path remains untagged under the maintainer decision.",
+    "The recovery fixture reaches handshake timeout, not authenticated peer communication.",
+    "The historical hosted evidence does not change its tested commit identity."
+  ],
+  "waiver": false,
+  "force": false,
+  "production_changes": false,
+  "commit": false,
+  "push": false,
+  "merge": false
+}

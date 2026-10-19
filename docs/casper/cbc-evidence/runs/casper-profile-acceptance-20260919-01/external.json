@@ -1,0 +1,29 @@
+{
+ "schema_version": 2,
+ "package": "casper-profile-acceptance-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-profile-acceptance-20260919-01.external.tar.gz",
+   "sha256": "ccb61d63cc01ac290f4329ff9be33c909a585d9709ac58fc367afc74fbc5a137",
+   "bytes": 1606128,
+   "members": 49,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-profile-acceptance-20260919-01.metadata.tar.gz",
+   "sha256": "64668c2ff9200398ccd816e86ad316fc3b9b79a64975c0363863d303dbf18dd0",
+   "bytes": 2779,
+   "members": 4,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

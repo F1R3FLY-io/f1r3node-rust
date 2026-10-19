@@ -86,7 +86,7 @@ impl ReportingCasper for RhoReporterCasper {
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
-        let mergeable_tags = std::sync::Arc::new(Genesis::default_mergeable_tags());
+        let mergeable_tags = Genesis::default_mergeable_tags_arc();
         let mut extra_system_processes = Vec::new();
         let mut reporting_runtime = ReportingRuntime::create_reporting_runtime(
             reporting_rspace,
@@ -161,6 +161,24 @@ impl RhoReporterCasper {
 
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
+
+        // Reporting replay of the genesis block re-executes blessed
+        // deploys that bind FS native URNs (fs_generator composes the
+        // FsGenesis bundle via `new fsRead(`rho:io:fs:native:1.0.0/
+        // read`), ...`).  Those URNs are gated behind the reducer's
+        // `filter_fs_native_urns` flag (slice 5.32) which defaults to
+        // TRUE in every freshly-created reducer — including this
+        // reporting runtime.  Mirrors the play-side (slice 5.33) and
+        // state-replay (slice 5.35) toggles.  Non-genesis reporting
+        // keeps the default so user deploys that would reject under
+        // regular replay also reject here.
+        let _fs_filter_guard = if !with_cost_accounting {
+            Some(crate::rust::rholang::runtime::FsNativeFilterGuard::disable(
+                &runtime.runtime.reducer,
+            ))
+        } else {
+            None
+        };
 
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
@@ -397,7 +415,8 @@ impl ReportingRuntime {
             extra_system_processes,
             external_services,
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
 
         rholang::rust::interpreter::rho_runtime::bootstrap_registry(&runtime).await;
 

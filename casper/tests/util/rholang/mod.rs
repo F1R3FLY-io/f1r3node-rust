@@ -1,7 +1,11 @@
 pub mod cost_accounting_perf_spec;
 pub mod deploy_id_test;
+pub mod bridge_vault_registration_test;
 pub mod deployer_id_test;
+pub mod deposit_without_find_or_create_test;
+pub mod vault_transfer_target_test;
 pub mod interpreter_util_test;
+pub mod non_negative_number_bound_test;
 pub mod resources;
 pub mod runtime_manager_test;
 pub mod runtime_spec;

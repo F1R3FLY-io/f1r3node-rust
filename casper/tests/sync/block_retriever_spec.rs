@@ -424,4 +424,51 @@ mod tests {
             );
         }
     }
+
+    mod recovery_requests {
+        use casper::rust::metrics_constants::BLOCK_REQUESTS_RECOVERY_METRIC;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        use super::*;
+
+        #[tokio::test]
+        async fn a_recovery_re_request_is_counted_apart_from_ordinary_retries() {
+            let fixture = TestFixture::new();
+            fixture
+                .block_retriever
+                .admit_hash(
+                    fixture.hash.clone(),
+                    None,
+                    AdmitHashReason::MissingDependencyRequested,
+                )
+                .await
+                .expect("admit dependency");
+
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            {
+                let _guard = metrics::set_default_local_recorder(&recorder);
+                fixture
+                    .block_retriever
+                    .recover_dependency(fixture.hash.clone())
+                    .await
+                    .expect("recover dependency");
+            }
+
+            let recovery_count: u64 = snapshotter
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .filter(|(key, _, _, _)| key.key().name() == BLOCK_REQUESTS_RECOVERY_METRIC)
+                .map(|(_, _, _, value)| match value {
+                    DebugValue::Counter(count) => count,
+                    _ => 0,
+                })
+                .sum();
+            assert_eq!(
+                recovery_count, 1,
+                "one recovery re-request increments the recovery counter once"
+            );
+        }
+    }
 }

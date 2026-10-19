@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "claim": "CLAIM-CASPER-SOAK-002",
+  "model": "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla",
+  "scope": "bounded-authority-finality-classification-only",
+  "construction": "not-applicable",
+  "bounds": { "scenarios": 2, "observations_per_scenario": 3 },
+  "assumptions": [
+    "Input equality abstracts the complete paired identity check.",
+    "Three collection slots abstract two snapshots and one optional fault receipt.",
+    "Availability and head agreement are abstract observed facts, not node execution.",
+    "Other required fields and applied-step receipts are valid in this abstraction.",
+    "The model does not prove threshold arithmetic, cryptography, or unbounded liveness."
+  ],
+  "positive_control": {
+    "configuration": "MC_AuthorityFinality.cfg",
+    "expected_exit": 0,
+    "properties": ["MismatchedInputDetected", "MissingFinalityDetected", "HeadMismatchReported"]
+  },
+  "negative_controls": [
+    {
+      "configuration": "MC_AuthorityFinality_pair_unsafe.cfg",
+      "expected_exit": 12,
+      "property": "MismatchedInputDetected",
+      "knob": "PairDifferentDags",
+      "fixture": "authority_pair_mismatch"
+    },
+    {
+      "configuration": "MC_AuthorityFinality_finality_unsafe.cfg",
+      "expected_exit": 12,
+      "property": "MissingFinalityDetected",
+      "knob": "AcceptMissingFinality",
+      "fixture": "authority_finality_missing"
+    },
+    {
+      "configuration": "MC_AuthorityFinality_head_unsafe.cfg",
+      "expected_exit": 12,
+      "property": "HeadMismatchReported",
+      "knob": "SuppressHeadMismatch",
+      "fixture": "authority_head_mismatch"
+    }
+  ]
+}

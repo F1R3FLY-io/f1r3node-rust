@@ -46,6 +46,42 @@ pub const HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Dropping the connection after this timeout bounds that hold time instead.
 const CHANNEL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
+const ACCEPT_BACKOFF_INITIAL: Duration = Duration::from_millis(10);
+const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+const ACCEPT_ERROR_SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
+const TIMER_ROUND_UP: Duration = Duration::from_nanos(999_999);
+
+#[derive(Default)]
+struct AcceptErrorLog {
+    last_error: Option<tokio::time::Instant>,
+    summary_start: Option<tokio::time::Instant>,
+    suppressed: u64,
+}
+
+impl AcceptErrorLog {
+    fn record(&mut self, error: &io::Error) {
+        let now = tokio::time::Instant::now();
+        let summary_start = *self.summary_start.get_or_insert(now);
+        if now.duration_since(summary_start) >= ACCEPT_ERROR_SUMMARY_INTERVAL {
+            tracing::warn!(
+                suppressed_errors = self.suppressed,
+                "TCP listener accept errors suppressed since the last summary"
+            );
+            self.suppressed = 0;
+            self.summary_start = Some(now);
+        }
+        if self
+            .last_error
+            .is_none_or(|last| now.duration_since(last) >= ACCEPT_BACKOFF_MAX)
+        {
+            tracing::error!(error = %error, "TCP listener accept failed");
+            self.last_error = Some(now);
+        } else {
+            self.suppressed += 1;
+        }
+    }
+}
+
 /// F1r3fly Server Builder for creating tonic servers with custom TLS
 ///
 /// This builder allows creating tonic gRPC servers that use F1r3fly's custom
@@ -163,6 +199,12 @@ impl F1r3flyServer {
 
         tracing::info!("F1r3fly server listening on {}", self.bind_addr);
 
+        Ok(self.incoming_from(TcpListenerStream::new(listener)))
+    }
+
+    fn incoming_from<S>(self, mut tcp_listener_stream: S) -> F1r3flyIncoming
+    where S: tokio_stream::Stream<Item = io::Result<tokio::net::TcpStream>> + Unpin + Send + 'static
+    {
         // Create channel for connection results
         let (tx, rx) = mpsc::channel(10); // Buffer up to 10 connections
 
@@ -173,13 +215,29 @@ impl F1r3flyServer {
 
         // Spawn background task to handle incoming connections
         let listener_task = tokio::spawn(async move {
-            let mut tcp_listener_stream = TcpListenerStream::new(listener);
+            use tokio_stream::StreamExt;
+
+            let mut handshakes = tokio::task::JoinSet::new();
+            let mut backoff = ACCEPT_BACKOFF_INITIAL;
+            let mut accept_errors = AcceptErrorLog::default();
 
             loop {
-                use tokio_stream::StreamExt;
+                let accepted = tokio::select! {
+                    biased;
+                    _ = tx.closed() => break,
+                    Some(joined) = handshakes.join_next(), if !handshakes.is_empty() => {
+                        if let Err(e) = joined {
+                            tracing::warn!("TLS handshake task ended abnormally: {e}");
+                        }
+                        continue;
+                    }
+                    accepted = tcp_listener_stream.next() => accepted,
+                };
 
-                match tcp_listener_stream.next().await {
+                match accepted {
                     Some(Ok(tcp_stream)) => {
+                        backoff = ACCEPT_BACKOFF_INITIAL;
+
                         // Configure TCP socket options
                         if let Err(e) = tcp_stream.set_nodelay(tcp_nodelay) {
                             tracing::warn!("Failed to set TCP nodelay: {}", e);
@@ -198,7 +256,7 @@ impl F1r3flyServer {
                         let acceptor_clone = acceptor.clone();
                         let tx_clone = tx.clone();
 
-                        tokio::spawn(async move {
+                        handshakes.spawn(async move {
                             let result = match tokio::time::timeout(
                                 handshake_timeout,
                                 acceptor_clone.accept(tcp_stream),
@@ -260,8 +318,16 @@ impl F1r3flyServer {
                         });
                     }
                     Some(Err(e)) => {
-                        tracing::error!(error = %e, "TCP listener accept failed");
-                        let _ = tx.send(Err(F1r3flyServerError::Io(e))).await;
+                        accept_errors.record(&e);
+                        if tx.send(Err(F1r3flyServerError::Io(e))).await.is_err() {
+                            break;
+                        }
+                        let delay = backoff;
+                        backoff = (backoff * 2).min(ACCEPT_BACKOFF_MAX);
+                        tokio::select! {
+                            _ = tx.closed() => break,
+                            _ = tokio::time::sleep(delay.saturating_sub(TIMER_ROUND_UP)) => {}
+                        }
                     }
                     None => {
                         tracing::info!("TCP listener closed");
@@ -269,12 +335,15 @@ impl F1r3flyServer {
                     }
                 }
             }
+
+            drop(tcp_listener_stream);
+            drop(handshakes);
         });
 
-        Ok(F1r3flyIncoming {
+        F1r3flyIncoming {
             receiver: ReceiverStream::new(rx),
             _listener_task: listener_task,
-        })
+        }
     }
 }
 
@@ -457,3 +526,7 @@ mod tests {
         assert!(result.is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "f1r3fly_server_resource_tests.rs"]
+mod resource_tests;

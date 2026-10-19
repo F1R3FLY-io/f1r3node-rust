@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "run_id": "casper-recovery-20260918-01",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-004"
+  ],
+  "status": "profile-checks-passed-shared-gate-blocked",
+  "phase": "pre_pr216_merge",
+  "implementation_base": "a94c5655ee2284e228667a02e357a6ef6cd10ebf",
+  "commit_is_base": true,
+  "worktree_dirty": true,
+  "verified_at": "2026-09-18T16:28:47Z",
+  "scope": "controlled-transcript-profile-and-bounded-refutation",
+  "node_execution": false,
+  "proof_execution": false,
+  "unbounded_proof": false,
+  "refutation_executed": true,
+  "source_digests": {
+    ".github/workflows/casper-recovery.yml": "2745a031e27a851a9503874be3a8932d55f74bc61acfab6b6fab2fe1a7e5dc5d",
+    "formal/tlaplus/casper_soak/profiles/recovery/README.md": "439580f28b3e6790752f526d7df80276cd393c08c4c90a9c46cf9ddee8d782a6",
+    "scripts/casper-soak/src/bin/casper-recovery.rs": "636bd7304910cda4dc400a1903f168ee324171574c7f7f9a7269332c75125d65",
+    "scripts/casper-soak/src/profiles/recovery.rs": "9bfa28120b773ac9e55b181d6f4d5c9f40e7b06ef5f86d5c5c41055d57b1e84e",
+    "scripts/casper-soak/tests/recovery.rs": "2e388804a7edbdbdb7ac3e68705810ce14b79e7b925afd6d46cb6520b1bad6bf",
+    "scripts/casper-soak/check-recovery.sh": "1784eb2d09dbf6a2cc0996aee84952107ead4c7f17e6ce571ebd65464ba032e2",
+    "scripts/casper-soak/src/lib.rs": "2dc948c0a4450b0ba3bd994af7b676e4874992f46dbe5653f7eeb0e27c99c6fe",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-recovery.md": "3b38680bbf99b7156609b3b05c2e21590fbecd5149a006def590e4e49895ce6d",
+    "formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla": "d030a4ede0f47c1ebd2e3b5a93433c14d22924ef98b5a0ea0a84e9fd306d659d",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg": "cb7b66f4f6adb05337dca4cdcd9dd0c3859e5b9c69e216ea63fd81f9d9f85f32",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg": "9d12e5541c2fa5c5c61801a85d450551878e405965bdc8ae73a36f5d6c652ecd",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg": "70f4d44af041ac34135d9c821531ff73dd89ab6939e48b7765295dadbaf6bf42",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg": "2da0ff4b0aff2b575d7f54ca0e66f540ea7075d1140aea696b7bbc3063c2357b",
+    "formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc": "260d29691f609bd3b968a316271843db60e5a163d412b8376ca4bef73e47596f",
+    "docs/work-logs/task-017-7-recovery.md": "933354b7148eb49fbd95e1ca611f00fb865ee5c6bdf3b8669883ea5053146f01"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-recovery.md": "3b38680bbf99b7156609b3b05c2e21590fbecd5149a006def590e4e49895ce6d"
+  },
+  "executables": {
+    "native_sha256": "1a962cae3a9d6069f9100bf7046e2a943eec5f7f00b13ecd69f8426b9ce3a7ce",
+    "linux_musl_sha256": "817540e645a175a29fd9d884875f8b4a23f586e671b38ad88f458e07007c1d42"
+  },
+  "archives": {
+    "source.tar.gz": "948f59a53b4a5eac911662024b748578aa2a0e3ed46ef68c4a2cb0baf7ba3b83",
+    "evidence.tar.gz": "81ce35ff6cde792ee41426b79a77d2da532f472890870114bc84ce2ca587e40d",
+    "support.tar.gz": "4ee762cd152cd02090527935c0606d45ed970095f361f1a2842427510db24d8c"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "pending-review",
+    "soak": "pending"
+  },
+  "checks": {
+    "rust_tests": 7,
+    "fixture_cases": 52,
+    "profile_invocations": 55,
+    "clean_distinct_states": 441,
+    "clean_generated_states": 841,
+    "negative_controls": 3,
+    "regressions": {
+      "passed": 24,
+      "failed": 1,
+      "command_exit": 101,
+      "failing_test": "pending_claims_are_visible_and_strict_discharge_refuses"
+    },
+    "linux_cross_build": "passed",
+    "linux_execution": "not-run-docker-unavailable",
+    "native_test_optimization": 0,
+    "linux_test_optimization": 1,
+    "java": "26.0.2.1",
+    "tlc": "2.19",
+    "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "rustfmt": "passed",
+    "bash_syntax": "passed",
+    "ste_check": "passed",
+    "strict_claim_001_exit": 2,
+    "strict_claim_004_exit": 2
+  },
+  "shared_gate_blocker": {
+    "artifact": "scripts/run-merge-recovery-soak.sh",
+    "accepted_sha256": "7f4ba9b1c9078c984251317a4cb5032772a092645bfb83d07f6950c0b43542b2",
+    "current_sha256": "5552bb673d0735ac04a10566753d80b5eaf6db7d238be6a943c15c384f5187a0"
+  },
+  "final_evidence": "evidence.tar.gz:final-source",
+  "failure_history": [
+    "initial-check: helper argument-count compilation failure",
+    "unknown-count-red: missing terminal values became zero, exit 101",
+    "capture-order-red: early snapshot passed, exit 101",
+    "independent-red: tool timeout after 120 seconds, final test status unknown",
+    "independent-red-retry: missing occurrences erased a telemetry failure, exit 101",
+    "schema-copy-red: wrong schema and conflicting-copy tests failed, exit 101",
+    "regressions and complete retry: shared source audit failed, exit 101",
+    "strict CLAIM-001 and CLAIM-004 audits: upstream source mismatch, exit 2",
+    "Docker socket unavailable"
+  ],
+  "red_source_snapshots": [
+    "unknown-count-red-source.tar.gz",
+    "capture-order-red-source.tar.gz",
+    "independent-red-source.tar.gz",
+    "schema-copy-red-source.tar.gz"
+  ],
+  "retention_transformations": [
+    "Exact workspace and home prefixes replaced in text with recorded before/after hashes.",
+    "Numeric archive owners, no xattrs, and no ACLs.",
+    "Evidence staging files have owner-write permission. Original filesystem modes are not claimed."
+  ],
+  "limits": [
+    "Human binding acceptance remains pending.",
+    "The shared discharged driver source changed outside this task and requires separate verification.",
+    "The new workflow mandatory tag remains unratified and unapplied.",
+    "Linux and hosted CI execution remain unverified.",
+    "All live, experimental-policy, and post-merge requests remain blocked.",
+    "D-07 occurrence and reason-join availability remains unresolved for dev.",
+    "Cross-clock duration normalization is unsupported.",
+    "The model assumes valid auxiliary fields and excludes independent failures.",
+    "The initial arity error has no complete source snapshot.",
+    "Publication receipt-conflict ordering requires separate review before CLAIM-003 acceptance.",
+    "External index changes were preserved."
+  ],
+  "waiver": null
+}

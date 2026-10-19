@@ -12,6 +12,9 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
 
+use super::cli_static_provisioning::{
+    parse_cli_static_dir, parse_cli_static_file, CliStaticDirArg, CliStaticFileArg,
+};
 use super::converters::{PrivateKeyConverter, PublicKeyConverter, VecNameConverter};
 
 pub const GRPC_INTERNAL_PORT: u16 = 40402;
@@ -30,6 +33,18 @@ fn parse_non_negative_i64(s: &str) -> Result<i64, String> {
         return Err(format!("value must be >= 0, got {}", v));
     }
     Ok(v)
+}
+
+fn parse_soak_observer(
+    raw: &str,
+) -> Result<crate::rust::configuration::model::SoakObserverConfig, String> {
+    if raw.len() > crate::rust::soak_observer::MAX_CONFIG_BYTES {
+        return Err("The observer configuration exceeds its size limit.".to_owned());
+    }
+    let config = serde_json::from_str(raw)
+        .map_err(|_| "The observer configuration is invalid.".to_owned())?;
+    crate::rust::soak_observer::validate_config(&config).map_err(|error| error.to_string())?;
+    Ok(config)
 }
 
 /// F1r3fly node command-line interface
@@ -131,6 +146,9 @@ pub enum OptionsSubCommand {
 /// Run subcommand - Start RNode server
 #[derive(Args, Debug, Clone)]
 pub struct RunOptions {
+    #[arg(long = "soak-observer", value_parser = parse_soak_observer, help = "Enable the local read-only observer with a bounded JSON configuration.")]
+    pub soak_observer: Option<crate::rust::configuration::model::SoakObserverConfig>,
+
     /// Path to the configuration file for RNode server
     #[arg(short = 'c', long = "config-file")]
     pub config_file: Option<PathBuf>,
@@ -598,6 +616,49 @@ pub struct RunOptions {
         hide_short_help = true
     )]
     pub heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Option<i64>,
+
+    /// Oracle-bucket static-provisioning file entry.  Repeatable.
+    /// Value syntax: `<logical-name>=<value>`, where `<value>` is
+    /// a JSON string (bare path, defaults to mode `"r"`) or a JSON
+    /// object `{"path":"...","mode":"r|r+|w|w+|a|a+"}`.
+    #[arg(
+        long = "oracle-static-file",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_file),
+    )]
+    pub oracle_static_files: Vec<CliStaticFileArg>,
+
+    /// Oracle-bucket static-provisioning dir entry.  Repeatable.
+    /// CLI default dir mode is `"r+"` (interactive opt-in to r/w);
+    /// use object form to select `"r"` for read-only.
+    #[arg(
+        long = "oracle-static-dir",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_dir),
+    )]
+    pub oracle_static_dirs: Vec<CliStaticDirArg>,
+
+    /// Consensus-bucket static-provisioning file entry.  Repeatable.
+    /// Same syntax as `--oracle-static-file`.
+    #[arg(
+        long = "consensus-static-file",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_file),
+    )]
+    pub consensus_static_files: Vec<CliStaticFileArg>,
+
+    /// Consensus-bucket static-provisioning dir entry.  Repeatable.
+    /// Same syntax as `--oracle-static-dir`.
+    #[arg(
+        long = "consensus-static-dir",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_dir),
+    )]
+    pub consensus_static_dirs: Vec<CliStaticDirArg>,
 }
 
 /// Keygen subcommand - Generates a public/private key pair
@@ -769,5 +830,93 @@ mod native_token_clap_tests {
     fn accepts_decimals_at_max() {
         let res = Options::try_parse_from(["f1r3fly", "run", "--native-token-decimals=18"]);
         assert!(res.is_ok(), "decimals=18 should parse cleanly");
+    }
+}
+
+#[cfg(test)]
+mod static_provisioning_clap_tests {
+    use std::path::PathBuf;
+
+    use clap::Parser;
+
+    use super::*;
+    use crate::rust::configuration::commandline::options::OptionsSubCommand;
+
+    fn run_opts(args: &[&str]) -> RunOptions {
+        let mut full = vec!["f1r3fly", "run"];
+        full.extend_from_slice(args);
+        let opts = Options::try_parse_from(full).expect("clap parse must succeed");
+        match opts.subcommand {
+            Some(OptionsSubCommand::Run(r)) => r,
+            _ => panic!("expected Run subcommand"),
+        }
+    }
+
+    #[test]
+    fn single_oracle_static_file_parses() {
+        let r = run_opts(&[r#"--oracle-static-file=cfg=/etc/cfg.json"#]);
+        assert_eq!(r.oracle_static_files.len(), 1);
+        assert_eq!(r.oracle_static_files[0].logical_name, "cfg");
+        assert_eq!(
+            r.oracle_static_files[0].entry.path,
+            PathBuf::from("/etc/cfg.json")
+        );
+        assert_eq!(r.oracle_static_files[0].entry.mode, "r");
+    }
+
+    #[test]
+    fn repeated_oracle_static_file_flags_accumulate() {
+        let r = run_opts(&[
+            "--oracle-static-file",
+            "a=/etc/a.json",
+            "--oracle-static-file",
+            "b=/etc/b.json",
+        ]);
+        assert_eq!(r.oracle_static_files.len(), 2);
+    }
+
+    /// CLI dir default mode is `"r+"` (interactive opt-in to r/w).
+    /// Diverges from config default `"r"` per spec §1252.
+    #[test]
+    fn oracle_static_dir_bare_defaults_to_rplus() {
+        let r = run_opts(&[r#"--oracle-static-dir=logs/=/var/log/rnode"#]);
+        assert_eq!(r.oracle_static_dirs.len(), 1);
+        assert_eq!(r.oracle_static_dirs[0].entry.mode, "r+");
+    }
+
+    #[test]
+    fn all_four_flags_populate_separate_buckets() {
+        let r = run_opts(&[
+            "--oracle-static-file",
+            "of=/x/of",
+            "--oracle-static-dir",
+            "od=/x/od",
+            "--consensus-static-file",
+            "cf=/x/cf",
+            "--consensus-static-dir",
+            "cd=/x/cd",
+        ]);
+        assert_eq!(r.oracle_static_files.len(), 1);
+        assert_eq!(r.oracle_static_dirs.len(), 1);
+        assert_eq!(r.consensus_static_files.len(), 1);
+        assert_eq!(r.consensus_static_dirs.len(), 1);
+    }
+
+    #[test]
+    fn clap_surfaces_parse_errors() {
+        let result = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--oracle-static-file",
+            "cfg=relative/path",
+        ]);
+        let msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("relative path must fail"),
+        };
+        assert!(
+            msg.contains("not absolute"),
+            "clap must surface the parser's error; got {msg}"
+        );
     }
 }

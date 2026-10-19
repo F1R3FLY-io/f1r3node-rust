@@ -88,6 +88,86 @@ fn exceptions_expire_on_the_review_date() {
 }
 
 #[test]
+fn reviews_due_within_the_warning_window_are_reported() {
+    let mut p = policy();
+    for (id, date) in [
+        ("RUSTSEC-2026-0258", "2026-09-13"),
+        ("RUSTSEC-2025-0134", "2026-09-07"),
+        ("RUSTSEC-2025-0141", "2026-09-14"),
+    ] {
+        p.exceptions.get_mut(id).unwrap().review_by = date.parse().unwrap();
+    }
+    let others: Vec<String> = p
+        .exceptions
+        .keys()
+        .filter(|id| {
+            ![
+                "RUSTSEC-2026-0258",
+                "RUSTSEC-2025-0134",
+                "RUSTSEC-2025-0141",
+            ]
+            .contains(&id.as_str())
+        })
+        .cloned()
+        .collect();
+    for id in others {
+        p.exceptions.get_mut(&id).unwrap().review_by = "2026-12-01".parse().unwrap();
+    }
+    let due = policy::reviews_due(&p, today(), scan::REVIEW_WARNING_DAYS).unwrap();
+    let ids: Vec<&str> = due.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["RUSTSEC-2025-0134", "RUSTSEC-2026-0258"]);
+}
+
+#[test]
+fn reviews_due_are_ordered_by_deadline_not_by_advisory_id() {
+    let mut p = policy();
+    for entry in p.exceptions.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    for (id, date) in [
+        ("RUSTSEC-2021-0141", "2026-09-12"),
+        ("RUSTSEC-2024-0436", "2026-09-10"),
+        ("RUSTSEC-2026-0258", "2026-09-08"),
+    ] {
+        p.exceptions.get_mut(id).unwrap().review_by = date.parse().unwrap();
+    }
+    let due = policy::reviews_due(&p, today(), scan::REVIEW_WARNING_DAYS).unwrap();
+    let ids: Vec<&str> = due.iter().map(|(id, _)| id.as_str()).collect();
+    let mut alphabetical = ids.clone();
+    alphabetical.sort();
+    assert_ne!(ids, alphabetical);
+    assert_eq!(ids, [
+        "RUSTSEC-2026-0258",
+        "RUSTSEC-2024-0436",
+        "RUSTSEC-2021-0141"
+    ]);
+    let warnings = scan::review_warnings(&p, today(), false).unwrap();
+    assert!(warnings[0].contains("RUSTSEC-2026-0258"));
+    assert!(warnings[2].contains("RUSTSEC-2021-0141"));
+}
+
+#[test]
+fn review_warnings_never_fail_and_annotate_under_github_actions() {
+    let mut p = policy();
+    for entry in p.exceptions.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    p.exceptions.get_mut("RUSTSEC-2026-0258").unwrap().review_by = "2026-09-10".parse().unwrap();
+    policy::validate(&p, &deny(), today()).unwrap();
+    let plain = scan::review_warnings(&p, today(), false).unwrap();
+    assert_eq!(plain.len(), 1);
+    assert!(plain[0].starts_with("Supply-chain warning: RUSTSEC-2026-0258:"));
+    assert!(plain[0].contains("2026-09-10 (4 days)"));
+    let annotated = scan::review_warnings(&p, today(), true).unwrap();
+    assert!(annotated[0].starts_with("::warning title=Supply-chain review due::RUSTSEC-2026-0258:"));
+    assert!(
+        policy::reviews_due(&policy(), today(), scan::REVIEW_WARNING_DAYS)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn exceptions_require_owners_packages_and_exact_versions() {
     for field in ["owner", "package", "versions", "range"] {
         let mut p = policy();
@@ -118,6 +198,125 @@ fn ignored_advisories_require_matching_review_records_and_reasons() {
     let mut d = deny();
     d["advisories"]["ignore"][0]["reason"] = toml::Value::String("".into());
     assert!(policy::validate(&p, &d, today()).is_err());
+}
+
+fn yanked_index(d: &toml::Value, spec: &str) -> usize {
+    d["advisories"]["ignore"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|e| e.get("crate").and_then(toml::Value::as_str) == Some(spec))
+        .unwrap()
+}
+
+#[test]
+fn yanked_crates_require_matching_review_records_reasons_and_exact_versions() {
+    let p = policy();
+    assert!(p.yanked.contains_key("zip@3.0.0"));
+    let mut d = deny();
+    let index = yanked_index(&d, "zip@3.0.0");
+    d["advisories"]["ignore"]
+        .as_array_mut()
+        .unwrap()
+        .remove(index);
+    assert!(policy::validate(&p, &d, today()).is_err());
+    let mut d = deny();
+    let index = yanked_index(&d, "zip@3.0.0");
+    d["advisories"]["ignore"][index]["reason"] = toml::Value::String(" ".into());
+    assert!(policy::validate(&p, &d, today()).is_err());
+    for spec in [
+        "zip",
+        "zip@3",
+        "zip@*",
+        "@3.0.0",
+        " zip@3.0.0",
+        "zip @3.0.0",
+        "zip@ 3.0.0",
+    ] {
+        let mut d = deny();
+        let index = yanked_index(&d, "zip@3.0.0");
+        d["advisories"]["ignore"][index]["crate"] = toml::Value::String(spec.into());
+        assert!(policy::validate(&p, &d, today()).is_err(), "{spec}");
+    }
+    let mut d = deny();
+    let index = yanked_index(&d, "zip@3.0.0");
+    d["advisories"]["ignore"][index]
+        .as_table_mut()
+        .unwrap()
+        .insert("id".into(), toml::Value::String("RUSTSEC-2026-0258".into()));
+    assert!(policy::validate(&p, &d, today()).is_err());
+    let mut p = policy();
+    p.yanked.get_mut("zip@3.0.0").unwrap().owner = " ".into();
+    assert!(policy::validate(&p, &deny(), today()).is_err());
+    let mut p = policy();
+    p.yanked.get_mut("zip@3.0.0").unwrap().review_by = "2026-09-06".parse().unwrap();
+    assert!(policy::validate(&p, &deny(), today()).is_err());
+}
+
+#[test]
+fn yanked_crate_reviews_are_reported_when_due() {
+    let mut p = policy();
+    for entry in p.exceptions.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    for entry in p.yanked.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    p.yanked.get_mut("zip@3.0.0").unwrap().review_by = "2026-09-10".parse().unwrap();
+    let due = policy::reviews_due(&p, today(), scan::REVIEW_WARNING_DAYS).unwrap();
+    let ids: Vec<&str> = due.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["zip@3.0.0"]);
+}
+
+fn package(name: &str, version: &str, source: Value) -> Value {
+    json!({"name":name,"version":version,"source":source})
+}
+
+fn crates_io() -> Value { json!("registry+https://github.com/rust-lang/crates.io-index") }
+
+#[test]
+fn yanked_crates_are_present_only_as_exact_registry_packages() {
+    let p = policy();
+    let metadata = json!({"packages":[
+        package("zip", "3.0.0", crates_io()),
+        package("zip", "0.6.7", crates_io()),
+        package("zip", "0.6.6", Value::Null),
+    ]});
+    let present: Vec<String> = scan::yanked_present(&metadata, &p).into_iter().collect();
+    assert_eq!(present, ["zip@3.0.0"]);
+    assert!(scan::yanked_present(&json!({"packages":[]}), &p).is_empty());
+}
+
+#[test]
+fn unused_yanked_exceptions_fail_only_when_no_manifest_uses_them() {
+    for (unused_everywhere, expected) in [(false, true), (true, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = policy();
+        p.exceptions.clear();
+        p.yanked.retain(|spec, _| spec == "zip@3.0.0");
+        fs::create_dir_all(dir.path().join("supply-chain")).unwrap();
+        fs::write(dir.path().join("deny.toml"), "").unwrap();
+        fs::write(dir.path().join("supply-chain/policy.toml"), "").unwrap();
+        let mut outputs = vec![];
+        for (index, manifest) in p.manifests.iter().enumerate() {
+            let lock = dir.path().join(manifest).with_file_name("Cargo.lock");
+            fs::create_dir_all(lock.parent().unwrap()).unwrap();
+            fs::write(lock, "version = 4\n").unwrap();
+            let packages = if index == 0 && !unused_everywhere {
+                vec![package("zip", "3.0.0", crates_io())]
+            } else {
+                vec![]
+            };
+            outputs.push(output(0, json!({"packages":packages}).to_string(), ""));
+            outputs.push(output(0, "", report(&[])));
+        }
+        let fake = FakeRunner::new(outputs);
+        assert_eq!(
+            scan::scan_all(dir.path(), &p, "cargo-deny", &fake).unwrap(),
+            expected,
+            "unused everywhere: {unused_everywhere}"
+        );
+    }
 }
 
 #[test]

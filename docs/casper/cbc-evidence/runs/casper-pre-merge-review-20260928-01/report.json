@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "status": "verification-recorded-closure-blocked",
+  "base_commit": "211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b",
+  "working_tree": false,
+  "recorded_at": "2026-09-28T21:03:03Z",
+  "authorization": "another agent is working on -12, finish TASK-017-13: verification and handoff in parallel",
+  "scope": "TASK-017-13 read-only evidence review at the published branch head",
+  "phase": "pre_pr216_merge",
+  "task_status": "in_progress",
+  "task_owner": "claude-session-f3cbc961",
+  "previous_task_owner": "pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca",
+  "handoff_accepted": false,
+  "comparison": {
+    "base": "670037c2511abd5f576063b3153681a873244a18",
+    "head": "211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b",
+    "dev_merge_base": "0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2",
+    "changed_paths": 1917,
+    "mandatory_changed_artifacts": 181
+  },
+  "claim_audit": {
+    "exit": 4,
+    "claim_discharge": "pending",
+    "proof_execution": false,
+    "claims": [
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-001",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-harness.md",
+        "specification_sha256": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+        "status": "pending"
+      },
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-002",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-authority-finality.md",
+        "specification_sha256": "1af422a0628c37ffab2150b98701c954a2875bf77df4eb9f3e69ff56d23feff2",
+        "status": "discharged"
+      },
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-003",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-publication.md",
+        "specification_sha256": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+        "status": "discharged"
+      },
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-004",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-recovery.md",
+        "specification_sha256": "057e4cfe06c19ac3ae7d61a15568fe6c72a8e0083f4737215fdf749cde4c5afe",
+        "status": "discharged"
+      },
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-005",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-merge-accounting.md",
+        "specification_sha256": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3",
+        "status": "discharged"
+      },
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-006",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-slashing.md",
+        "specification_sha256": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b",
+        "status": "discharged"
+      },
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-007",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-version-phlo.md",
+        "specification_sha256": "05e750fc023dd55ed869c1175b0e6639ecfd7e2be22ded37f32175003aa6757a",
+        "status": "discharged"
+      },
+      {
+        "claim_id": "CLAIM-CASPER-SOAK-008",
+        "soak": "pending",
+        "specification": "docs/claims/casper-soak-carrier-index.md",
+        "specification_sha256": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+        "status": "discharged"
+      }
+    ]
+  },
+  "default_gate": {
+    "exit": 4,
+    "total": 181,
+    "gaps": 50,
+    "by_owner": {
+      "campaign_and_reservation_task_017_12": {
+        "count": 25,
+        "paths": [
+          ".github/workflows/casper-campaign-control.yml",
+          ".github/workflows/merge-recovery-soak.yml",
+          "formal/tlaplus/casper_soak/campaign/CampaignControl.tla",
+          "formal/tlaplus/casper_soak/campaign/MC_CampaignControl.cfg",
+          "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_approval_unsafe.cfg",
+          "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_prerequisites_unsafe.cfg",
+          "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_reservation_unsafe.cfg",
+          "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_schedule_unsafe.cfg",
+          "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_termination_unsafe.cfg",
+          "formal/tlaplus/casper_soak/campaign/README.md",
+          "formal/tlaplus/casper_soak/campaign/verification-plan.jsonc",
+          "scripts/casper-soak/campaign-bootstrap.sh",
+          "scripts/casper-soak/campaign-control.sh",
+          "scripts/casper-soak/campaign-finish.sh",
+          "scripts/casper-soak/campaign-host-guard.sh",
+          "scripts/casper-soak/campaign-host.sh",
+          "scripts/casper-soak/campaign-job.sh",
+          "scripts/casper-soak/campaign.sh",
+          "scripts/casper-soak/check-campaign-control.sh",
+          "scripts/casper-soak/check-campaign-reservation.sh",
+          "scripts/casper-soak/supervisor/Dockerfile",
+          "scripts/casper-soak/supervisor/func.yaml",
+          "scripts/casper-soak/supervisor/start.sh",
+          "scripts/casper-soak/test-campaign-control.sh",
+          "scripts/casper-soak/test-campaign.sh"
+        ]
+      },
+      "campaign_control_crate_task_017_12": {
+        "count": 13,
+        "paths": [
+          "scripts/casper-soak/Cargo.toml",
+          "scripts/casper-soak/src/bin/casper-campaign-control.rs",
+          "scripts/casper-soak/src/bin/casper-campaign-models.rs",
+          "scripts/casper-soak/src/bin/casper-campaign-reservation.rs",
+          "scripts/casper-soak/src/bin/casper-campaign-supervisor.rs",
+          "scripts/casper-soak/src/campaign_control/mod.rs",
+          "scripts/casper-soak/src/campaign_control/models.rs",
+          "scripts/casper-soak/src/campaign_control/operations.rs",
+          "scripts/casper-soak/src/campaign_control/results.rs",
+          "scripts/casper-soak/src/campaign_control/transport.rs",
+          "scripts/casper-soak/tests/campaign_control.rs",
+          "scripts/casper-soak/tests/campaign_models.rs",
+          "scripts/casper-soak/tests/campaign_reservation.rs"
+        ]
+      },
+      "node_observation_epic_019": {
+        "count": 10,
+        "paths": [
+          "block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs",
+          "formal/rocq/node_observation/b11/README.md",
+          "formal/rocq/node_observation/b11/_CoqProject",
+          "formal/rocq/node_observation/b11/theories/MainTheorem.v",
+          "formal/rocq/node_observation/b11/theories/Schema.v",
+          "formal/rocq/node_observation/b11/theories/Wire.v",
+          "formal/rocq/node_observation/theories/CaptureIntegrity.v",
+          "formal/rocq/node_observation/theories/InterfaceSafety.v",
+          "scripts/ci/check-node-canonical-wire.sh",
+          "scripts/ci/test-check-node-observation-bindings.sh"
+        ]
+      },
+      "formal_gate_claim_soak_gate_001": {
+        "count": 2,
+        "paths": [
+          ".github/workflows/slashing-tests.yml",
+          "scripts/ci/check-tla-invariants.sh"
+        ]
+      }
+    }
+  },
+  "canonical_gate": {
+    "exit": 4,
+    "total": 181,
+    "gaps": 61,
+    "pending": 39,
+    "no_record": 22,
+    "note": "The Casper directory does not hold the records of other evidence domains. This diagnostic cannot replace the default lookup."
+  },
+  "gap_findings": [
+    {
+      "group": "node_observation_epic_019",
+      "claim": "CLAIM-CASPER-NODE-OBSERVATION-002",
+      "record_digests": "current",
+      "cause": "Cycle 03 package casper-node-claim-gate-38e576041-01 has no named maintainer acceptance.",
+      "required_action": "Named maintainer acceptance under TASK-019-4."
+    },
+    {
+      "group": "campaign_and_reservation_task_017_12",
+      "path": ".github/workflows/merge-recovery-soak.yml",
+      "claims": [
+        "CLAIM-CASPER-CAMPAIGN-003",
+        "CLAIM-CASPER-SOAK-001"
+      ],
+      "record_digest": "0e61d97222f962d973e9bb5322e6f70d3d302c7936be0ac59e05efafc86c9ece",
+      "current_digest": "931b0f44db5b3d7d4b3e12fb5071d5e98a381fd021b7a1cea79308d6905bdbaa",
+      "cause": "The system-integration pin changed after the record.",
+      "required_action": "Record refresh, then campaign claim acceptance."
+    }
+  ],
+  "independent_confirmation": "A second session ran the same checks at the same revision on 2026-09-28. Its counts are equal to the counts in this report.",
+  "pull_requests": {
+    "pr436": {
+      "baseRefName": "feature/casper-node-observation",
+      "baseRefOid": "670037c2511abd5f576063b3153681a873244a18",
+      "headRefName": "formal/soak-casper-consensus",
+      "headRefOid": "211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b",
+      "isDraft": false,
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 436,
+      "state": "OPEN"
+    },
+    "pr447": {
+      "baseRefName": "fix/node-log-and-accept-backoff",
+      "baseRefOid": "25faed296d9b31eeb115a0c99b09074cc28e3cc2",
+      "headRefName": "feature/casper-node-observation",
+      "headRefOid": "670037c2511abd5f576063b3153681a873244a18",
+      "isDraft": false,
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 447,
+      "state": "OPEN"
+    },
+    "pr216": {
+      "baseRefName": "dev",
+      "baseRefOid": "231067178af39f481ed62d678070b74b11b10c3a",
+      "headRefName": "feature/cost-accounted-rho",
+      "headRefOid": "3107eef0d866b458e143ea0cda60b6ad7e099def",
+      "isDraft": true,
+      "mergeCommit": null,
+      "mergedAt": null,
+      "number": 216,
+      "state": "OPEN"
+    }
+  },
+  "governance": {
+    "claim": "CLAIM-SOAK-GATE-001",
+    "status": "pending",
+    "gate_on_dev": false,
+    "dev_revision": "0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2",
+    "required_check_in_devProtect": false,
+    "rules_changed": false,
+    "gate_only_candidate_20260921": "not-available-on-this-machine"
+  },
+  "baseline_delivery": "not-supplied-to-this-review",
+  "campaign_60h": {
+    "decision": "not-a-closure-requirement-for-this-branch-or-pull-request",
+    "decided_by": "maintainer",
+    "decided_on": "2026-09-28",
+    "reason": "The phase cannot run before the branch is merged.",
+    "obligation": "Run and record the phase after the changes are in master. The obligation closes on that record.",
+    "tracker_task": "TASK-018-7",
+    "github_record": {
+      "issue": 473,
+      "url": "https://github.com/F1R3FLY-io/f1r3node-rust/issues/473",
+      "label": "post-merge-obligation",
+      "created_on": "2026-09-28",
+      "requested_by": "maintainer",
+      "obligation": "O1"
+    },
+    "automation_branch": "ci/soak-obligation-gate, planned on top of the stack from feature/randomized-exercise-soak",
+    "stage": "campaign-stability-60h",
+    "stage_confirmed_by": "maintainer",
+    "stage_confirmed_on": "2026-09-28"
+  },
+  "concurrent_work": "TASK-017-12 added untracked files under scripts/casper-soak after this audit. The final audit must use the delivery revision.",
+  "completion_requirements": [
+    "TASK-017-12 evidence: admission, preflight, and both full baselines",
+    "Current claim evidence for 38 campaign artifacts",
+    "Named maintainer acceptance of the node observation cycle 03 package",
+    "Formal gate on dev, the approved protection change, and enforcement results",
+    "Scan benchmark and concurrency baseline evidence",
+    "Accepted handoff",
+    "Final full-scope and strict completion checks at the delivery revision"
+  ],
+  "external_store": {
+    "uploaded": false,
+    "local_directory": "target/task-017-13-verification-20260928-01",
+    "members": "external-members.sha256",
+    "retention_owner": "TASK-017-14"
+  },
+  "node_execution": false,
+  "model_execution": false,
+  "fixture_execution": false,
+  "waiver_created": false,
+  "git_publication": false,
+  "task_closed": false,
+  "post_merge_obligations": {
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/issues/473",
+    "rule": "one-issue-for-all-obligations-of-the-stack",
+    "decided_on": "2026-09-28",
+    "obligations": {
+      "O1": "TASK-018-7",
+      "O2": "TASK-018-1",
+      "O3": "TASK-018-2",
+      "O4": [
+        "TASK-018-3",
+        "TASK-018-4"
+      ],
+      "O5": "TASK-018-5",
+      "O6": "TASK-018-6",
+      "O7": "CLAIM-SOAK-GATE-001",
+      "O8": "TASK-017-15"
+    }
+  }
+}

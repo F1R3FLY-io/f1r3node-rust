@@ -70,7 +70,8 @@ mod tests {
             &mut Vec::new(),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .unwrap();
         runtime.cost.set(Cost::unsafe_max());
         runtime
     }

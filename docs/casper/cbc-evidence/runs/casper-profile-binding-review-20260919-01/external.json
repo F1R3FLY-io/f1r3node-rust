@@ -1,0 +1,29 @@
+{
+ "schema_version": 2,
+ "package": "casper-profile-binding-review-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-profile-binding-review-20260919-01.external.tar.gz",
+   "sha256": "8f59ee9b977c79ee146279ae80fb5c40946f2e83645378343a4cf1f033e621bd",
+   "bytes": 3171925,
+   "members": 47,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-profile-binding-review-20260919-01.metadata.tar.gz",
+   "sha256": "81a0535b7c404eefc52c7db74f3bd0d68bf55c68a71fde31697e33c4d2ad41df",
+   "bytes": 2529,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

@@ -8,26 +8,26 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, ApprovedBlockRequest, BlockMessage, CasperMessage, NoApprovedBlockAvailable,
-    UnapprovedBlock,
+    ApprovedBlock, ApprovedBlockRequest, CasperMessage, NoApprovedBlockAvailable, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
-use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
+use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
@@ -41,9 +41,8 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     casper_shard_conf: CasperShardConf,
     validator_id: ValidatorIdentity,
     block_approver: BlockApproverProtocol<T>,
@@ -122,11 +121,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     /// to enable cloning from TestFixture and proper ownership transfer to Initializing.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+        blocks_in_processing: Arc<InFlightBlocks>,
         casper_shard_conf: CasperShardConf,
         validator_id: ValidatorIdentity,
         block_approver: BlockApproverProtocol<T>,

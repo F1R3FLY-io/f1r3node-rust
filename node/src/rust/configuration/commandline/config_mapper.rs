@@ -18,6 +18,7 @@ impl ConfigMapper<Options> for NodeConf {
     /// Override config values with CLI provided options
     fn override_config_values(&mut self, options: Options) {
         if let Some(OptionsSubCommand::Run(run)) = options.subcommand {
+            Self::try_override_option(&mut self.soak_observer, run.soak_observer);
             Self::try_override_bool(&mut self.standalone, run.standalone);
             Self::try_override_bool(&mut self.autopropose, run.autopropose);
             Self::try_override_bool(&mut self.dev_mode, run.dev_mode);
@@ -607,6 +608,7 @@ mod tests {
             log_format: None,
             log_sink: None,
             subcommand: Some(OptionsSubCommand::Run(RunOptions {
+                soak_observer: None,
                 config_file: None,
                 thread_pool_size: None,
                 standalone: true,
@@ -712,11 +714,16 @@ mod tests {
                 heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
                 synchrony_finalized_baseline_enabled: Some(false),
                 synchrony_finalized_baseline_max_distance: Some(666666),
+                oracle_static_files: Vec::new(),
+                oracle_static_dirs: Vec::new(),
+                consensus_static_files: Vec::new(),
+                consensus_static_dirs: Vec::new(),
             })),
         };
 
         // Create a default configuration (similar to loading from defaults.conf)
         let mut default_config = NodeConf {
+            soak_observer: None,
             standalone: false,
             autopropose: false,
             protocol_server: crate::rust::configuration::model::ProtocolServer {
@@ -772,6 +779,7 @@ mod tests {
             },
             storage: crate::rust::configuration::model::Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),
+                file_io_provisioning: Default::default(),
             },
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),

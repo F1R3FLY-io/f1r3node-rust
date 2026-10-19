@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-003",
+  "claim": "docs/claims/casper-node-authority-evaluation.md",
+  "created_at": "2026-09-23T18:59:22.351007+00:00",
+  "implementation_base": "d11acabcbd27b564eab7398778169cf3990762d1",
+  "head_at_packaging": "d11acabcbd27b564eab7398778169cf3990762d1",
+  "working_tree": true,
+  "implementation_files": 27,
+  "claim_inventory_files": 28,
+  "source_files": 83,
+  "source_manifest": "sources.sha256",
+  "sources_unchanged_during_final_checks": true,
+  "source_manifest_sha256": "58c880173ad70121791d93ce8253b2b20f86728d62ff7c6e0e2526034e969cd2",
+  "executables_manifest": "executables.sha256",
+  "logs_manifest": "logs.sha256",
+  "bulk_evidence": [
+    "/tmp/task-019-3-b2-final-20260923",
+    "/tmp/task-019-3-b2-node-final-20260923",
+    "/tmp/task-019-3-b2-verification-20260923"
+  ],
+  "implementation_complete": true,
+  "verification_complete": false,
+  "claim_acceptance": false,
+  "task_complete": false,
+  "checks": [
+    {
+      "name": "commit-checks",
+      "command": [
+        "bash",
+        ".githooks/pre-commit"
+      ],
+      "exit": 0,
+      "seconds": 78.277
+    },
+    {
+      "name": "casper-final",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "casper",
+        "--lib",
+        "--test",
+        "soak_observer",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit": 0,
+      "seconds": 168.437
+    },
+    {
+      "name": "block-storage-final",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "block-storage",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit": 0,
+      "seconds": 97.543
+    },
+    {
+      "name": "shared-final",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "shared",
+        "--lib",
+        "--test",
+        "soak_snapshot",
+        "--",
+        "--test-threads=2"
+      ],
+      "exit": 0,
+      "seconds": 12.158
+    },
+    {
+      "name": "node-final",
+      "command": [
+        "bash",
+        "scripts/ci/check-node-observation-bindings.sh",
+        "/tmp/task-019-3-b2-node-final-20260923"
+      ],
+      "exit": 0,
+      "seconds": 202.548
+    }
+  ],
+  "rust_test_results": {
+    "casper-final": {
+      "passed": 392,
+      "failed": 0,
+      "ignored": 0,
+      "summaries": 2
+    },
+    "block-storage-final": {
+      "passed": 186,
+      "failed": 0,
+      "ignored": 0,
+      "summaries": 9
+    },
+    "shared-final": {
+      "passed": 121,
+      "failed": 0,
+      "ignored": 0,
+      "summaries": 2
+    },
+    "node-74892b404a576af7.log": {
+      "passed": 257,
+      "failed": 0,
+      "ignored": 0,
+      "summaries": 1
+    },
+    "soak_observer-a001872af0cf7c5b.log": {
+      "passed": 20,
+      "failed": 0,
+      "ignored": 1,
+      "summaries": 1
+    }
+  },
+  "passing_test_executions": 976,
+  "reference_controls": {
+    "five_vertex_graphs": 1024,
+    "ordering_inputs_with_duplicates": 4096,
+    "retained_controls": [
+      "wrong exact threshold",
+      "main-parent versus DAG traversal",
+      "incorrect clique weight",
+      "corrupt floor cache",
+      "missing settled signature",
+      "missing body coverage",
+      "unidentified restore seeds"
+    ]
+  },
+  "tla": {
+    "exit": 0,
+    "positive_configurations": 15,
+    "expected_violations": 78,
+    "node_observation_positive": 2,
+    "node_observation_expected_violations": 17,
+    "tool": "/tmp/soak-g0-tools.e7smwz/tla2tools.jar",
+    "tool_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "scope": "Existing session and capture models only. This run does not establish B2 attachment, metering, or reference semantics.",
+    "first_attempt": "The newer cached TLC build requires Java 11. The host provides Java 8. The compatible cached build completed the gate.",
+    "runtime_download": "The optional Java 17 download returned HTTP 403. No downloaded runtime was executed."
+  },
+  "strict_cbc": {
+    "command": [
+      "bash",
+      "$SA_GITLAB_PROFILE/AItools/scripts/cbc.sh",
+      "discharge",
+      "--strict",
+      "--files",
+      "formal/tlaplus/node_observation/README.md node/src/rust/runtime/node_runtime.rs node/src/rust/runtime/setup.rs node/src/rust/soak_observer.rs node/tests/soak_observer.rs casper/src/rust/mod.rs casper/src/rust/soak_observer.rs casper/src/rust/soak_observer/evaluation.rs casper/src/rust/soak_observer/reference.rs casper/src/rust/casper.rs casper/src/rust/engine/engine_cell.rs casper/src/rust/engine/multi_parent_casper/types.rs casper/src/rust/engine/multi_parent_casper/dispatch.rs casper/src/rust/engine/multi_parent_casper/finalization_runner.rs casper/src/rust/finality/floor.rs casper/src/rust/safety/clique_oracle.rs casper/src/rust/util/clique.rs shared/src/rust/dag/mod.rs shared/src/rust/dag/observation_work.rs block-storage/src/rust/dag/block_dag_key_value_storage.rs block-storage/tests/soak_snapshot.rs casper/tests/soak_observer.rs casper/tests/helper/test_node.rs casper/tests/batch1/multi_parent_casper_bonding_spec.rs casper/tests/api/pending_deploys_test.rs casper/tests/api/deploy_finalization_status_test.rs casper/tests/api/last_finalized_api_test.rs casper/tests/api/bonded_status_api_test.rs",
+      "--json"
+    ],
+    "exit": 4,
+    "total": 13,
+    "gaps": 13,
+    "output": "cbc-audit.json"
+  },
+  "tiers": {
+    "refutation": "inherited-models-only",
+    "construction": "pending",
+    "binding": "recorded-partial",
+    "soak": "pending"
+  },
+  "applicability_review": "formal/tlaplus/node_observation/README.md#batch-b2-applicability-review",
+  "limits": [
+    "The full Casper suite exceeded 1800 seconds. Its incomplete pre-correction run is supplemental evidence only.",
+    "The final checks cover Casper unit tests and B2 integration tests, all block-storage tests, shared snapshot tests, and node binding tests.",
+    "Display projection remains unavailable because B1 excludes the equivocation tracker.",
+    "The reference refuses truncated history without restore-seed provenance.",
+    "Allocation counters cover accounted payloads and collection capacity, not total process memory.",
+    "Live coverage includes finalizer contexts created after attachment."
+  ],
+  "remaining": [
+    "Resolve the B2 applicability classifications and construction obligations in the area review.",
+    "Complete B2 refutation and semantic binding evidence under the recorded claim requirements.",
+    "Record named maintainer acceptance against this exact source manifest."
+  ],
+  "external_evidence_root": "target/cbc-external",
+  "path_policy": "Paths are repository-relative. External logs and derived executables live under target/cbc-external outside Git."
+}

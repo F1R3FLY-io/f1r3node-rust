@@ -14,6 +14,9 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::rust::util::doubly_linked_dag_operations::BlockDependencyDag;
 
+pub const CASPER_BUFFER_PARK_TIME_METRIC: &str = "casper.buffer.park.time";
+const CASPER_BUFFER_METRICS_SOURCE: &str = "f1r3fly.casper.casper-buffer";
+
 /**
  * @param parentsStore - persistent map {hash -> parents set}
  * @param blockDependencyDag - in-memory dependency DAG, recreated from parentsStore on node startup
@@ -24,6 +27,8 @@ pub struct CasperBufferKeyValueStorage {
     block_dependency_dag: Arc<Mutex<BlockDependencyDag>>,
     first_seen_ms: Arc<dashmap::DashMap<BlockHashSerde, u64>>,
     last_prune_ms: Arc<AtomicU64>,
+    released: Arc<Mutex<HashSet<BlockHashSerde>>>,
+    release_scans: Arc<AtomicU64>,
     state_lock: Arc<RwLock<()>>,
 }
 
@@ -56,6 +61,8 @@ impl CasperBufferKeyValueStorage {
             block_dependency_dag: Arc::new(Mutex::new(in_mem_store)),
             first_seen_ms: Arc::new(dashmap::DashMap::new()),
             last_prune_ms: Arc::new(AtomicU64::new(0)),
+            released: Arc::new(Mutex::new(HashSet::new())),
+            release_scans: Arc::new(AtomicU64::new(0)),
             state_lock: Arc::new(RwLock::new(())),
         })
     }
@@ -71,7 +78,7 @@ impl CasperBufferKeyValueStorage {
         self.state_lock.write().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn add_relation_unlocked(
+    pub(crate) fn add_relation_unlocked(
         &self,
         parent: BlockHashSerde,
         child: BlockHashSerde,
@@ -95,6 +102,14 @@ impl CasperBufferKeyValueStorage {
     /// half of the (dag.insert, buffer.remove) pair under a shared
     /// critical section.
     pub(crate) fn remove_unlocked(&self, hash: BlockHashSerde) -> Result<(), KvStoreError> {
+        self.remove_unlocked_recording(hash, true)
+    }
+
+    fn remove_unlocked_recording(
+        &self,
+        hash: BlockHashSerde,
+        record_release: bool,
+    ) -> Result<(), KvStoreError> {
         let (_hashes_affected, hashes_removed, orphaned_hashes, affected_parent_maps) = {
             let mut dag = self
                 .block_dependency_dag
@@ -116,6 +131,19 @@ impl CasperBufferKeyValueStorage {
             (affected, removed, orphaned, affected_maps)
         };
         self.first_seen_ms.remove(&hash);
+        self.released
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(hashes_removed.iter().cloned());
+        if record_release {
+            let now_ms = Self::now_millis();
+            for released in &hashes_removed {
+                if let Some(parked_at) = self.first_seen_ms.get(released) {
+                    metrics::histogram!(CASPER_BUFFER_PARK_TIME_METRIC, "source" => CASPER_BUFFER_METRICS_SOURCE)
+                        .record(now_ms.saturating_sub(*parked_at) as f64 / 1000.0);
+                }
+            }
+        }
 
         // Process each affected hash
         let changes = affected_parent_maps;
@@ -142,11 +170,23 @@ impl CasperBufferKeyValueStorage {
         self.add_relation_unlocked(parent, child)
     }
 
+    pub fn take_released(&self) -> Vec<BlockHashSerde> {
+        std::mem::take(&mut *self.released.lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .collect()
+    }
+
+    pub fn count_release_scan(&self) -> u64 { self.release_scans.fetch_add(1, Ordering::Relaxed) }
+
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
+        self.put_pendant_unlocked(block)
+    }
+
+    pub(crate) fn put_pendant_unlocked(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let temp_block = BlockHashSerde(prost::bytes::Bytes::from_static(b"tempblock"));
         self.add_relation_unlocked(temp_block.clone(), block)?;
-        self.remove_unlocked(temp_block)?;
+        self.remove_unlocked_recording(temp_block, false)?;
         Ok(())
     }
 
@@ -287,31 +327,31 @@ impl CasperBufferKeyValueStorage {
 
         let mut overflow_pruned = 0usize;
         let mut approx_nodes = self.approx_node_count();
-        let mut attempts = 0usize;
-        while overflow_pruned < max_prune_batch
-            && attempts < max_prune_batch
-            && approx_nodes > max_approx_nodes
-        {
+        let mut tried: HashSet<BlockHashSerde> = HashSet::new();
+        while approx_nodes > max_approx_nodes && tried.len() < max_prune_batch {
             let mut oldest_nodes: Vec<(u64, BlockHashSerde)> = self
                 .dependency_free_nodes_with_age_ms(now)
                 .into_iter()
+                .filter(|(_, hash)| !tried.contains(hash))
                 .collect();
-            oldest_nodes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-            let Some((_, hash)) = oldest_nodes.into_iter().next() else {
+            if oldest_nodes.is_empty() {
                 break;
-            };
+            }
+            oldest_nodes.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
-            let removed = self.remove(hash);
-            attempts += 1;
-
-            match removed {
-                Ok(_) => {
-                    overflow_pruned += 1;
-                    approx_nodes = self.approx_node_count();
+            for (_, hash) in oldest_nodes {
+                if approx_nodes <= max_approx_nodes || tried.len() >= max_prune_batch {
+                    break;
                 }
-                Err(KvStoreError::InvalidArgument(_)) => {}
-                Err(e) => return Err(e),
+                tried.insert(hash.clone());
+                match self.remove(hash) {
+                    Ok(_) => {
+                        overflow_pruned += 1;
+                        approx_nodes = self.approx_node_count();
+                    }
+                    Err(KvStoreError::InvalidArgument(_)) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
 
@@ -459,6 +499,64 @@ mod tests {
         assert!(casper_buffer.parents_store.get_one(&block)?.is_none());
         assert!(!casper_buffer.requested_as_dependency(&valid_parent));
         assert!(casper_buffer.first_seen_ms.get(&valid_parent).is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_overflow_prune_removes_the_oldest_dependency_free_entry_first(
+    ) -> Result<(), KvStoreError> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.store("parents-map".to_string()).await?;
+        let typed_store = KeyValueTypedStoreImpl::new(store);
+        let casper_buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store).await?;
+
+        let old_parent = create_block_hash(b"old-parent");
+        let old_child = create_block_hash(b"old-child");
+        let new_parent = create_block_hash(b"new-parent");
+        let new_child = create_block_hash(b"new-child");
+
+        casper_buffer.add_relation(old_parent.clone(), old_child.clone())?;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        casper_buffer.add_relation(new_parent.clone(), new_child.clone())?;
+
+        let (stale_pruned, overflow_pruned) = casper_buffer.enforce_limits(2, u64::MAX, 1, 0)?;
+
+        assert_eq!((stale_pruned, overflow_pruned), (0, 1));
+        assert!(
+            casper_buffer.get_children(&old_parent).is_none(),
+            "the oldest dependency-free entry must be removed first"
+        );
+        assert!(
+            casper_buffer.get_children(&new_parent).is_some(),
+            "the newer dependency-free entry must stay"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_overflow_prune_also_removes_an_entry_that_a_removal_freed(
+    ) -> Result<(), KvStoreError> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.store("parents-map".to_string()).await?;
+        let typed_store = KeyValueTypedStoreImpl::new(store);
+        let casper_buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store).await?;
+
+        let root = create_block_hash(b"root");
+        let middle = create_block_hash(b"middle");
+        let leaf = create_block_hash(b"leaf");
+
+        casper_buffer.add_relation(root.clone(), middle.clone())?;
+        casper_buffer.add_relation(middle.clone(), leaf.clone())?;
+
+        let (_, overflow_pruned) = casper_buffer.enforce_limits(1, u64::MAX, 2, 0)?;
+
+        assert_eq!(overflow_pruned, 2);
+        assert!(
+            casper_buffer.get_children(&middle).is_none(),
+            "the entry freed by the first removal must be pruned in the same call"
+        );
 
         Ok(())
     }

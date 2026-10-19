@@ -7,11 +7,15 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history_action::HistoryAction;
 use crate::rspace::history::instances::radix_history::RadixHistory;
 
+pub type StagedHistory = (Box<dyn History>, Vec<(Vec<u8>, Vec<u8>)>);
+
 // See rspace/src/main/scala/coop/rchain/rspace/history/History.scala
 pub trait History: Send + Sync {
     fn read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HistoryError>;
 
     fn process(&self, actions: Vec<HistoryAction>) -> Result<Box<dyn History>, HistoryError>;
+
+    fn stage(&self, actions: Vec<HistoryAction>) -> Result<StagedHistory, HistoryError>;
 
     fn root(&self) -> Blake2b256Hash;
 

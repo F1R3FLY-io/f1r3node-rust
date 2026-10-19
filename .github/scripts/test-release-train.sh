@@ -220,6 +220,11 @@ printf 'SYSTEM_INTEGRATION_REF=0123456789abcdef0123456789abcdef01234567\n' >"$SR
 git -C "$SRC" init -q
 git -C "$SRC" config user.name t
 git -C "$SRC" config user.email t@example.com
+# Fixture hermeticity: contributors with tag.gpgsign=true globally
+# would otherwise fail at `git tag v0.4.46` (lightweight tag, no -m)
+# with `fatal: no tag message?` because gpgsign upgrades it to a
+# signed-annotated tag.
+git -C "$SRC" config tag.gpgsign false
 git -C "$SRC" add .
 git -C "$SRC" commit -qm fixture
 git -C "$SRC" tag v0.4.46
@@ -272,16 +277,16 @@ jq -n --arg repo "$REPOSITORY" --arg merge "$M311" --arg head "$S311" --arg base
 	target_sha: $merge, top_pull_request: 311, head_sha: $head, base_sha: $base, merge_base_sha: $merge_base, run_id: 3, run_attempt: 1
 }' >"$TMP/ci-target.json"
 jq -n '{jobs: [
-	{name: "Integration Tests (amd64)", status: "completed", conclusion: "success"},
-	{name: "Integration Tests (arm64)", status: "completed", conclusion: "success"}
+	{name: "Integration Gate (amd64)", status: "completed", conclusion: "success"},
+	{name: "Integration Gate (arm64)", status: "completed", conclusion: "success"}
 ]}' >"$TMP/ci-jobs.json"
 "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs.json" "$M311" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
 jq '.jobs[1].conclusion = "skipped"' "$TMP/ci-jobs.json" >"$TMP/ci-jobs-skipped.json"
-expect_failure 'skipped Heavy Pipeline aggregator' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs-skipped.json" "$M311" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
+expect_failure 'skipped Integration Gate' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs-skipped.json" "$M311" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
 jq '.jobs = [.jobs[0]]' "$TMP/ci-jobs.json" >"$TMP/ci-jobs-missing.json"
-expect_failure 'missing Heavy Pipeline aggregator' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs-missing.json" "$M311" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
+expect_failure 'missing Integration Gate' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs-missing.json" "$M311" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
 jq '.jobs += [.jobs[0]]' "$TMP/ci-jobs.json" >"$TMP/ci-jobs-duplicate.json"
-expect_failure 'duplicate Heavy Pipeline aggregator' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs-duplicate.json" "$M311" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
+expect_failure 'duplicate Integration Gate' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs-duplicate.json" "$M311" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
 expect_failure 'CI target binds a stale merge' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs.json" "$OTHER" 311 "$S311" "$B311" "$MB311" 3 1 "$REPOSITORY"
 expect_failure 'CI target binds a stale synthetic base' "$TOOL" validate-ci-evidence "$TMP/ci-target.json" "$TMP/ci-jobs.json" "$M311" 311 "$S311" "$B311" "$OTHER" 3 1 "$REPOSITORY"
 

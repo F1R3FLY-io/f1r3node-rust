@@ -26,14 +26,17 @@ use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
+use crate::rust::interpreter::errors::InterpreterError;
+
 pub const NON_NEGATIVE_NUMBER_PK: &str =
     "e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d";
 pub const NON_NEGATIVE_NUMBER_TIMESTAMP: i64 = 1559156251792;
 
-// Dedicated key for deriving the bitmask-OR mergeable tag's unforgeable
-// name. Not used to sign any deploy; only seeds the RNG so the tag has
+// Seed for the bitmask-OR mergeable tag's unforgeable name. It has the form
+// of a secp256k1 private key because the tag derivation goes through a public
+// key, but it signs nothing. Its only use is to seed the RNG, so the tag has
 // an identity independent of any specific genesis contract.
-pub const BITMASK_OR_TAG_PK: &str =
+pub const BITMASK_OR_TAG_SEED: &str =
     "4d76b8e3f29a51c8d05e7b4f9a23c6e1d8b5f0a7c4e91b6d3a8f5c2e9b6d4a1c";
 pub const BITMASK_OR_TAG_TIMESTAMP: i64 = 1762000000000;
 
@@ -43,7 +46,7 @@ pub fn pub_key_from_hex(priv_key_hex: &str) -> PublicKey {
     Secp256k1.to_public(&private_key)
 }
 
-fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Random {
+pub fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Random {
     let seed = DeployDataProto {
         deployer: deployer.bytes.clone(),
         timestamp,
@@ -55,6 +58,10 @@ fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Rando
 fn tag_name(deployer_pk_hex: &str, timestamp: i64) -> Par {
     let pubkey = pub_key_from_hex(deployer_pk_hex);
     let mut rng = unforgeable_name_rng(&pubkey, timestamp);
+    // The tag must equal `MergeableTag` from NonNegativeNumber.rho, the second
+    // name its `new` draws from this seed (the first is `NonNegativeNumber`).
+    // The BitmaskOr tag uses the same derivation; changing it changes the tag
+    // bytes pinned in the tests below.
     rng.next();
     let unforgeable_byte = rng.next();
     Par::default().with_unforgeables(vec![GUnforgeable {
@@ -69,7 +76,7 @@ pub fn non_negative_mergeable_tag_name() -> Par {
 }
 
 pub fn bitmask_or_mergeable_tag_name() -> Par {
-    tag_name(BITMASK_OR_TAG_PK, BITMASK_OR_TAG_TIMESTAMP)
+    tag_name(BITMASK_OR_TAG_SEED, BITMASK_OR_TAG_TIMESTAMP)
 }
 
 /// Standard mergeable-tag registry installed at runtime startup. Maps each
@@ -81,4 +88,79 @@ pub fn default_mergeable_tags() -> HashMap<Par, MergeType> {
     tags.insert(non_negative_mergeable_tag_name(), MergeType::IntegerAdd);
     tags.insert(bitmask_or_mergeable_tag_name(), MergeType::BitmaskOr);
     tags
+}
+
+/// The tag bound to `rho:system:bitmaskMergeableTag`. Registry.rho reads that single
+/// URI, so a second BitmaskOr tag is refused rather than left to map iteration order.
+pub fn bitmask_or_tag(tags: &HashMap<Par, MergeType>) -> Result<Option<&Par>, InterpreterError> {
+    let mut found = tags
+        .iter()
+        .filter(|(_, merge_type)| **merge_type == MergeType::BitmaskOr)
+        .map(|(tag, _)| tag);
+    let tag = found.next();
+    if found.next().is_some() {
+        return Err(InterpreterError::SetupError(
+            "at most one BitmaskOr mergeable tag is supported: rho:system:bitmaskMergeableTag binds a single tag".into(),
+        ));
+    }
+    Ok(tag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn private_id_hex(tag: &Par) -> String {
+        match tag.unforgeables.as_slice() {
+            [GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id, .. })),
+                ..
+            }] => hex::encode(id),
+            other => panic!("a merge tag must be exactly one GPrivate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_tag_identities_are_pinned() {
+        assert_eq!(
+            private_id_hex(&non_negative_mergeable_tag_name()),
+            "78a2588671230884044c801f5f9675defb420460d6895b809ee8cd6f6cfff5d3"
+        );
+        assert_eq!(
+            private_id_hex(&bitmask_or_mergeable_tag_name()),
+            "9902f19c7886266265b763d2d9c648e62aa6c31fc25c685be3c8416c8b86e52a"
+        );
+    }
+
+    #[test]
+    fn default_registry_maps_each_tag_to_its_strategy() {
+        let tags = default_mergeable_tags();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(
+            tags.get(&non_negative_mergeable_tag_name()),
+            Some(&MergeType::IntegerAdd)
+        );
+        assert_eq!(
+            tags.get(&bitmask_or_mergeable_tag_name()),
+            Some(&MergeType::BitmaskOr)
+        );
+    }
+
+    #[test]
+    fn the_default_registry_binds_its_bitmask_tag() {
+        assert_eq!(
+            bitmask_or_tag(&default_mergeable_tags()),
+            Ok(Some(&bitmask_or_mergeable_tag_name()))
+        );
+    }
+
+    #[test]
+    fn a_second_bitmask_tag_is_refused() {
+        let mut tags = default_mergeable_tags();
+        tags.insert(Par::default(), MergeType::BitmaskOr);
+        assert!(matches!(
+            bitmask_or_tag(&tags),
+            Err(InterpreterError::SetupError(_))
+        ));
+    }
 }

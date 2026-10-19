@@ -59,14 +59,31 @@ fn errno_msg(fn_name: &str, rc: libc::c_int) -> String {
     format!("{fn_name}: {err} (errno {rc})")
 }
 
-/// Returns `Ok(Some(uid))` if the user exists, `Ok(None)` if the
-/// caller-supplied name is genuinely absent (ENOENT/ESRCH per POSIX),
-/// or `Err(_)` for any transient failure.  Grows the internal buffer
-/// on ERANGE up to [`NSS_BUF_MAX`].
+/// Core uid-resolution routine preserving the raw errno on
+/// failure, so callers that encode errno into a structured
+/// error (`wal_applier::resolve_uid` →
+/// [`ApplierError::NssResolutionFailed`]) don't have to parse
+/// a formatted string back into an integer.
+///
+/// # Return shape
+///
+///   - `Ok(Some(uid))` — name resolved.
+///   - `Ok(None)` — name is genuinely absent: ENOENT, ESRCH, OR
+///     `getpwnam_r` returned success with a null `result_ptr`.
+///   - `Err(errno)` — any other failure, including:
+///     - `libc::EINVAL` for NUL byte in input (surfaced here
+///       so callers can distinguish "invalid input" from
+///       "not found").
+///     - ERANGE at the [`NSS_BUF_MAX`] ceiling (pathological
+///       NSS backend or malicious plugin).
+///     - Any transient system failure (EIO, EAGAIN, etc.).
+///
+/// [`ApplierError::NssResolutionFailed`]:
+/// crate::rust::interpreter::io::wal_applier::ApplierError::NssResolutionFailed
 #[cfg(unix)]
-pub fn resolve_uid(name: &str) -> Result<Option<u32>, String> {
+pub(crate) fn resolve_uid_detailed(name: &str) -> Result<Option<u32>, i32> {
     use std::ffi::CString;
-    let cname = CString::new(name).map_err(|e| e.to_string())?;
+    let cname = CString::new(name).map_err(|_| libc::EINVAL)?;
     let mut size = NSS_BUF_INITIAL;
     loop {
         // SAFETY: `libc::passwd` is a plain-old-data C struct;
@@ -103,16 +120,31 @@ pub fn resolve_uid(name: &str) -> Result<Option<u32>, String> {
             size = (size * 2).min(NSS_BUF_MAX);
             continue;
         }
-        return Err(errno_msg("getpwnam_r", rc));
+        return Err(rc);
     }
 }
 
-/// Same shape as `resolve_uid`.  Grows on ERANGE up to
-/// [`NSS_BUF_MAX`].
+/// Returns `Ok(Some(uid))` if the user exists, `Ok(None)` if the
+/// caller-supplied name is genuinely absent (ENOENT/ESRCH per POSIX),
+/// or `Err(_)` for any transient failure.  Grows the internal buffer
+/// on ERANGE up to [`NSS_BUF_MAX`].
+///
+/// Thin adapter over [`resolve_uid_detailed`]: formats the raw
+/// errno into a human-readable `String` for log-only callers.
+/// Callers that need to encode the errno into a structured
+/// error should call [`resolve_uid_detailed`] directly.
 #[cfg(unix)]
-pub fn resolve_gid(name: &str) -> Result<Option<u32>, String> {
+pub fn resolve_uid(name: &str) -> Result<Option<u32>, String> {
+    resolve_uid_detailed(name).map_err(|rc| errno_msg("getpwnam_r", rc))
+}
+
+/// Companion to [`resolve_uid_detailed`] for group lookup.
+/// Same return shape and semantics; substitute `getgrnam_r` /
+/// `libc::group` for the uid-side names.
+#[cfg(unix)]
+pub(crate) fn resolve_gid_detailed(name: &str) -> Result<Option<u32>, i32> {
     use std::ffi::CString;
-    let cname = CString::new(name).map_err(|e| e.to_string())?;
+    let cname = CString::new(name).map_err(|_| libc::EINVAL)?;
     let mut size = NSS_BUF_INITIAL;
     loop {
         // SAFETY: `libc::group` is a plain-old-data C struct;
@@ -120,8 +152,9 @@ pub fn resolve_gid(name: &str) -> Result<Option<u32>, String> {
         let mut grp: libc::group = unsafe { std::mem::zeroed() };
         let mut buf = nss_buf(size);
         let mut result: *mut libc::group = std::ptr::null_mut();
-        // SAFETY: same as `resolve_uid`; substitute `getgrnam_r`
-        // for `getpwnam_r` and `libc::group` for `libc::passwd`.
+        // SAFETY: same as `resolve_uid_detailed`; substitute
+        // `getgrnam_r` for `getpwnam_r` and `libc::group` for
+        // `libc::passwd`.
         let rc = unsafe {
             libc::getgrnam_r(
                 cname.as_ptr(),
@@ -145,8 +178,15 @@ pub fn resolve_gid(name: &str) -> Result<Option<u32>, String> {
             size = (size * 2).min(NSS_BUF_MAX);
             continue;
         }
-        return Err(errno_msg("getgrnam_r", rc));
+        return Err(rc);
     }
+}
+
+/// Same shape as `resolve_uid`.  Grows on ERANGE up to
+/// [`NSS_BUF_MAX`].  Thin adapter over [`resolve_gid_detailed`].
+#[cfg(unix)]
+pub fn resolve_gid(name: &str) -> Result<Option<u32>, String> {
+    resolve_gid_detailed(name).map_err(|rc| errno_msg("getgrnam_r", rc))
 }
 
 /// Non-unix stub: this platform has no NSS backend, so we cannot
