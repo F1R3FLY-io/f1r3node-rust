@@ -1,10 +1,10 @@
 # Deploy Heartbeat Wake Design
 
-- **Status:** implemented. F1 and F2 are at `ed9b3c996`, and H1 is at `ab84edf83`. H1 waits for the comparison run of section 5.1 and for maintainer acceptance of the claim. Created on 2026-10-18.
+- **Status:** implemented. F1 and F2 are at `ed9b3c996`, and H1 is at `ab84edf83`, with the review fix `e7638bbd5`. The maintainer accepted the CbC claim on 2026-10-19 ([PR #768 comment 6265326408](https://github.com/F1R3FLY-io/f1r3node-rust/pull/768#issuecomment-6265326408)). H1 waits for the comparison run of section 5.1. Created on 2026-10-18.
 - **Branch:** `fix/issue-24-deploy-heartbeat-wake`
 - **Issue:** issue #24, high-phase and sustained-phase `test_load` failures after PR #695
 - **Tasks:** TASK-021-13 (the wait after inclusion), TASK-021-17 (metrics for each phase), TASK-021-26 (H1 implementation and verification)
-- **Evidence:** soak 39089710676 (interim), the [issue #24 interim note](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6254220778), and the phase summary of PR #767
+- **Evidence:** soak 39089710676 ([final result](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6266747397) and [interim note](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6254220778)), and the phase summary of PR #767
 - **Related design:** [adaptive-execution.md](adaptive-execution.md), decision A3 (fixed, measured thresholds first, with hysteresis)
 
 ---
