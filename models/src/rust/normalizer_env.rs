@@ -12,23 +12,6 @@ use crate::rhoapi::{GDeployId, GDeployerId, GUnforgeable, Par};
 
 const SYSTEM_DEPLOY_ID_URI: &str = "rho:system:deployId";
 const SYSTEM_DEPLOYER_ID_URI: &str = "rho:system:deployerId";
-const LEGACY_DEPLOY_ID_URI: &str = "rho:rchain:deployId";
-const LEGACY_DEPLOYER_ID_URI: &str = "rho:rchain:deployerId";
-
-fn insert_legacy_alias(
-    env: &mut HashMap<String, Par>,
-    legacy_uri: &'static str,
-    canonical_uri: &'static str,
-    value: Par,
-) {
-    tracing::debug!(
-        target: "f1r3fly.models.legacy_uri",
-        "Resolved legacy URI alias `{}` via canonical `{}`",
-        legacy_uri,
-        canonical_uri
-    );
-    env.insert(legacy_uri.to_string(), value);
-}
 
 pub fn with_deployer_id(deployer_pk: &PublicKey) -> HashMap<String, Par> {
     let mut env = HashMap::new();
@@ -38,14 +21,7 @@ pub fn with_deployer_id(deployer_pk: &PublicKey) -> HashMap<String, Par> {
         })),
     }]);
 
-    env.insert(SYSTEM_DEPLOYER_ID_URI.to_string(), deployer_id_par.clone());
-    // Backward-compatible alias used by external clients.
-    insert_legacy_alias(
-        &mut env,
-        LEGACY_DEPLOYER_ID_URI,
-        SYSTEM_DEPLOYER_ID_URI,
-        deployer_id_par,
-    );
+    env.insert(SYSTEM_DEPLOYER_ID_URI.to_string(), deployer_id_par);
     env
 }
 
@@ -67,23 +43,8 @@ pub fn normalizer_env_from_deploy(
         })),
     }]);
 
-    env.insert(SYSTEM_DEPLOY_ID_URI.to_string(), deploy_id_par.clone());
-    // Backward-compatible alias used by external clients.
-    insert_legacy_alias(
-        &mut env,
-        LEGACY_DEPLOY_ID_URI,
-        SYSTEM_DEPLOY_ID_URI,
-        deploy_id_par,
-    );
-
-    env.insert(SYSTEM_DEPLOYER_ID_URI.to_string(), deployer_id_par.clone());
-    // Backward-compatible alias used by external clients.
-    insert_legacy_alias(
-        &mut env,
-        LEGACY_DEPLOYER_ID_URI,
-        SYSTEM_DEPLOYER_ID_URI,
-        deployer_id_par,
-    );
+    env.insert(SYSTEM_DEPLOY_ID_URI.to_string(), deploy_id_par);
+    env.insert(SYSTEM_DEPLOYER_ID_URI.to_string(), deployer_id_par);
 
     for (parameter, value) in deploy.data.parameters.iter().zip(parameter_values) {
         env.insert(format!("rho:deploy:param:{}", parameter.name), value);
@@ -118,40 +79,24 @@ mod tests {
     }
 
     #[test]
-    fn with_deployer_id_should_include_legacy_alias() {
+    fn with_deployer_id_binds_only_the_system_uri() {
         let deployer_pk = PublicKey::from_bytes(&[10, 11, 12, 13]);
         let env = with_deployer_id(&deployer_pk);
 
-        let system = env
-            .get(SYSTEM_DEPLOYER_ID_URI)
-            .expect("Missing rho:system:deployerId");
-        let legacy = env
-            .get(LEGACY_DEPLOYER_ID_URI)
-            .expect("Missing rho:rchain:deployerId");
-
-        assert_eq!(system, legacy);
+        assert!(env.contains_key(SYSTEM_DEPLOYER_ID_URI));
+        assert!(!env.contains_key("rho:rchain:deployerId"));
+        assert_eq!(env.len(), 1);
     }
 
     #[test]
-    fn normalizer_env_from_deploy_should_include_legacy_aliases() {
+    fn normalizer_env_from_deploy_binds_only_the_system_uris() {
         let deploy = signed_deploy_fixture();
         let env = normalizer_env_from_deploy(&deploy).unwrap();
 
-        let system_deploy_id = env
-            .get(SYSTEM_DEPLOY_ID_URI)
-            .expect("Missing rho:system:deployId");
-        let legacy_deploy_id = env
-            .get(LEGACY_DEPLOY_ID_URI)
-            .expect("Missing rho:rchain:deployId");
-
-        let system_deployer_id = env
-            .get(SYSTEM_DEPLOYER_ID_URI)
-            .expect("Missing rho:system:deployerId");
-        let legacy_deployer_id = env
-            .get(LEGACY_DEPLOYER_ID_URI)
-            .expect("Missing rho:rchain:deployerId");
-
-        assert_eq!(system_deploy_id, legacy_deploy_id);
-        assert_eq!(system_deployer_id, legacy_deployer_id);
+        assert!(env.contains_key(SYSTEM_DEPLOY_ID_URI));
+        assert!(env.contains_key(SYSTEM_DEPLOYER_ID_URI));
+        assert!(!env.contains_key("rho:rchain:deployId"));
+        assert!(!env.contains_key("rho:rchain:deployerId"));
+        assert_eq!(env.len(), 2);
     }
 }

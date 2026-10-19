@@ -51,7 +51,7 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Signed<A> {
     ///
     /// Used for exploratory (read-only) deploys where only a public key is
     /// available. The signature is kept — not omitted — because Rholang exposes
-    /// it via `rho:system:deployId` / `rho:rchain:deployId`, and an empty value
+    /// it via `rho:system:deployId`, and an empty value
     /// would cause cost estimates to diverge from real deploys. Folding `pk`
     /// into the preimage ensures distinct deployers get distinct deployIds.
     ///
