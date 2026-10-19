@@ -851,18 +851,24 @@ disk_usage_snapshot() {
 # the total, and the roots and docker types say which part grew between two
 # labels. Docker reports decimal units, which become MiB here.
 disk_usage_record_rows() {
-	local label="$1" now root mb
+	local label="$1" now root mb out
 	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	df -Pm "$OUTPUT_DIR" 2>/dev/null | awk -v t="$now" -v l="$label" \
 		'NR == 2 { printf "%s\t%s\tdf_used\t%s\n%s\t%s\tdf_avail\t%s\n", t, l, $3, t, l, $4 }'
+	# A command that exits nonzero gives no size, even when it printed a
+	# partial one: du prints a partial total when it cannot read a subtree.
 	while IFS= read -r root; do
 		[ -d "$root" ] || continue
-		mb="$(bounded 20 du -sm "$root" 2>/dev/null | awk '{ print $1 }')"
-		[[ "$mb" =~ ^[0-9]+$ ]] || mb='?'
+		mb='?'
+		if out="$(bounded 20 du -sm "$root" 2>/dev/null)"; then
+			out="${out%%$'\t'*}"
+			[[ "$out" =~ ^[0-9]+$ ]] && mb="$out"
+		fi
 		printf '%s\t%s\t%s\t%s\n' "$now" "$label" "$root" "$mb"
 	done < <(disk_usage_roots)
-	if command -v docker >/dev/null 2>&1; then
-		bounded 20 docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null |
+	if command -v docker >/dev/null 2>&1 &&
+		out="$(bounded 20 docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null)"; then
+		printf '%s\n' "$out" |
 			awk -F '\t' -v t="$now" -v l="$label" '
 				NF == 2 && match($2, /^[0-9.]+/) {
 					value = substr($2, 1, RLENGTH); unit = substr($2, RLENGTH + 1)

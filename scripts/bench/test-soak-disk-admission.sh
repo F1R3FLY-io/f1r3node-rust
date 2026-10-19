@@ -60,7 +60,7 @@
 #   log-probe-transient-active one node log exec fails during the iteration -> warning, one iteration
 #   log-probe-exec-nonzero-active node log exec prints a partial du size and an error, exits 1 -> breach
 #   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
-#   disk-record-degraded  the disk record meets known Docker sizes, a stalled docker system df, and a failed du -> bounded rows, one iteration
+#   disk-record-degraded  the disk record meets known Docker sizes, a stalled docker system df, and a failed du with partial output -> bounded rows, one iteration
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -248,6 +248,10 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == disk-record-degraded && -n "${SOAK_D
     if mkdir /case/evidence/docker-df-sizes 2>/dev/null; then
         printf 'Images\t3.074GB\nContainers\t122.9kB\nLocal Volumes\t2.248GB\nBuild Cache\t7.006GB\n'
         exit 0
+    fi
+    if mkdir /case/evidence/docker-df-partial 2>/dev/null; then
+        printf 'Images\t1GB\n'
+        exit 1
     fi
     sleep 30
     exit 0
@@ -738,6 +742,7 @@ SH
         cat >bin/du <<'SH'
 #!/usr/bin/env bash
 if [[ -n "${SOAK_DISK_USAGE_RECORD:-}" && "${!#}" == /case/evidence/output ]]; then
+    printf '17\t%s\n' "${!#}"
     printf 'du: fixture failure\n' >&2
     exit 1
 fi
@@ -950,7 +955,7 @@ SH
         exit 0
     fi
     if [[ "$SCENARIO" == disk-record-degraded ]]; then
-        if [[ ! -d evidence/docker-df-sizes ]] || ! grep -Fxq 'valid=16384' evidence/probe-samples.txt; then
+        if [[ ! -d evidence/docker-df-sizes || ! -d evidence/docker-df-partial ]] || ! grep -Fxq 'valid=16384' evidence/probe-samples.txt; then
             printf 'ERROR: The fixture did not serve the Docker sizes or the sufficient disk sample.\n' >&2
             exit 2
         fi
@@ -964,10 +969,12 @@ SH
             $2 == "segment-1-start" && $3 == "docker:Build_Cache" && $4 == 6681 { cache = 1 }
             $3 == "/case/evidence/output" && $4 == "?" { unknown = 1 }
             $3 == "/case/evidence/output" && $4 == "0" { zero = 1 }
+            $3 == "/case/evidence/output" && $4 == "17" { partial = 1 }
+            $2 == "iteration-1-docker" && $3 ~ /^docker:/ { failed_docker = 1 }
             $2 == "iteration-1-docker" && $3 == "df_avail" { iteration = 1 }
             $2 == "soak-end" && $3 == "df_avail" { end = 1 }
-            END { exit !(images && cache && unknown && !zero && iteration && end) }' evidence/output/disk-usage.tsv; then
-            printf 'FAIL: The disk record lacks the converted sizes, the unknown marker, or the iteration and end rows.\n' >&2
+            END { exit !(images && cache && unknown && !zero && !partial && !failed_docker && iteration && end) }' evidence/output/disk-usage.tsv; then
+            printf 'FAIL: The disk record lacks the converted sizes, the unknown marker, or the iteration and end rows, or it kept partial output of a failed command.\n' >&2
             exit 1
         fi
         printf 'PASS: A degraded disk record stayed bounded, marked the failed root unknown, and kept the run result.\n'
