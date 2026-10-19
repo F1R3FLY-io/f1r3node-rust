@@ -1890,12 +1890,10 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
         let _dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let result_genesis =
-            Validate::block_sender_has_weight(&genesis, &genesis, &block_store);
+        let result_genesis = Validate::block_sender_has_weight(&genesis, &genesis, &block_store);
         assert!(result_genesis.unwrap());
 
-        let result_valid =
-            Validate::block_sender_has_weight(&valid_block, &genesis, &block_store);
+        let result_valid = Validate::block_sender_has_weight(&valid_block, &genesis, &block_store);
         assert!(result_valid.unwrap());
 
         let result_invalid =
