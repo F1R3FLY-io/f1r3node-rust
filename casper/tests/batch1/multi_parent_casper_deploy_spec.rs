@@ -93,6 +93,41 @@ async fn block_api_rejects_deploy_from_unbonded_validator() {
 }
 
 #[tokio::test]
+async fn block_api_rejects_deploy_from_keyless_read_only_node() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let nodes = TestNode::create_network(genesis.clone(), 1, None, None, None, Some(1))
+        .await
+        .unwrap();
+    let observer = &nodes[1];
+    assert!(observer.casper.get_validator().is_none());
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+
+    let result = BlockAPI::deploy(
+        &observer.engine_cell,
+        deploy.clone(),
+        &None,
+        true,
+        &genesis.genesis_block.shard_id,
+    )
+    .await;
+
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("node is running in read-only mode"));
+    assert!(!observer
+        .deploy_storage
+        .lock()
+        .contains_sig(&deploy.sig)
+        .unwrap());
+}
+
+#[tokio::test]
 async fn block_api_accepts_deploy_from_bonded_validator_without_autopropose() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
