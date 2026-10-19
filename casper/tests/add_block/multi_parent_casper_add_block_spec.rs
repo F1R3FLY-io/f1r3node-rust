@@ -5,11 +5,13 @@ use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
+use casper::rust::engine::peer_scoring::STRIKE_THRESHOLD;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
+use comm::rust::peer_node::{NodeIdentifier, PeerNode};
 use comm::rust::rp::protocol_helper;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -325,6 +327,49 @@ async fn multi_parent_casper_should_drop_unbonded_sender_at_admission() {
         .lock()
         .unwrap()
         .contains_key(&unknown_hash));
+}
+
+/// A peer that keeps pushing blocks from unbonded senders crosses the strike
+/// threshold, and the node then ignores its block traffic. Other peers are
+/// not affected.
+#[tokio::test]
+async fn multi_parent_casper_should_ignore_a_peer_that_pushes_unauthorized_blocks() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+    let attacker = PeerNode::new(
+        NodeIdentifier {
+            key: Bytes::from_static(b"attacker"),
+        },
+        "attacker.local".to_string(),
+        40400,
+        40404,
+    );
+
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let mut block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    block.seq_num = 0;
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let forger = ValidatorIdentity::new(&sk);
+
+    for i in 0..STRIKE_THRESHOLD {
+        assert!(!node.block_retriever.should_ignore_peer(&attacker));
+        block.header.timestamp += 1;
+        let forged = forger.sign_block(&block);
+        node.block_retriever
+            .note_block_source(&forged.block_hash, &attacker)
+            .unwrap();
+
+        let status = node.process_block(forged).await.unwrap();
+
+        assert_eq!(
+            status,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender)),
+            "forged block {i}"
+        );
+    }
+
+    assert!(node.block_retriever.should_ignore_peer(&attacker));
+    assert!(!node.block_retriever.should_ignore_peer(&node.local));
 }
 
 /// Full validation must reach the same verdict on its own, before the

@@ -243,6 +243,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
     }
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
+        if matches!(
+            msg,
+            CasperMessage::BlockHashMessage(_)
+                | CasperMessage::BlockMessage(_)
+                | CasperMessage::HasBlock(_)
+        ) && self.block_retriever.should_ignore_peer(&peer)
+        {
+            tracing::debug!("Ignoring block traffic from scored-out peer {}", peer);
+            return Ok(());
+        }
         match msg {
             CasperMessage::BlockHashMessage(h) => {
                 metrics::counter!(BLOCK_HASH_RECEIVED_METRIC, "source" => RUNNING_METRICS_SOURCE)
@@ -293,6 +303,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                             return Ok(());
                         }
                     };
+                    self.block_retriever.note_block_source(&block_hash, &peer)?;
                     self.block_processing_queue_tx
                         .send((self.casper.clone(), b, guard))
                         .await
