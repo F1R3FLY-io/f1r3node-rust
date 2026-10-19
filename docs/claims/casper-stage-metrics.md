@@ -63,7 +63,7 @@ The pool-lock timer reads the clock only, and it does not change when the lock i
 - `proposer.constraints.time`, `proposer.create.time`, `proposer.validate.time`, and `proposer.effect.time` each record one value in seconds for each proposal.
 - `deploy-lifecycle.observe.time` records one value in seconds for each observed block. `deploy-lifecycle.carrier-prune.time` records one value only when the adopted floor advanced, because only then does the observe call the carrier prune.
 - `deploy-pool.lock-wait.time` records one value in seconds for each proposal preparation: the time to acquire the deploy-pool lock. `deploy-pool.lock-hold.time` records one value in seconds for the same preparation: the time from the acquire to the release.
-- `deploy-store.read-all.decoded` adds, for each `read_all` call, the number of deploys that the call decodes. The label `store` names the store. A decode in the current format verifies one signature (`deploy_codec::decode`, `DeployData::from_proto`). A legacy-format decode does not, and its existing counter counts it. The difference is the number of signature checks of the pool reads.
+- `deploy-store.read-all.decoded` adds, for each `read_all` call, the number of deploys that the call decodes. The label `store` names the store. A decode in the current format verifies one signature (`deploy_codec::decode`, `DeployData::from_proto`). A legacy-format decode does not, and its existing counter counts it. The legacy counter also counts decode attempts in `any` scans. These counters do not measure all signature checks.
 - `proposer.queue.depth` records one value for each propose request that the proposer takes from its queue: the number of pending requests before the take.
 - `runtime.scheduler.delay.time` records one value in seconds for each wake of the probe: the time by which the wake is later than its 100 ms interval.
 
@@ -79,6 +79,15 @@ The pool-lock timer reads the clock only, and it does not change when the lock i
 - **Clock.** The deploy age uses the wall clock of the node and the deploy timestamp from the client. The value is exact only when the client and the node share a clock, as in the subprocess shard of the soak.
 
 ## Discharge plan
+
+Issue #711 moves the full pool read before the statistics calls and reuses that decoded set for selection.
+The existing preparation lock timer still records one wait sample and one hold sample per preparation.
+The snapshot capture uses a separate short lock and does not add preparation timer samples.
+The decoded counter continues to count the values returned by each full read, with the existing store label.
+The `any` scope scan does not contribute to that full-read counter.
+The refactor must preserve the metric names, labels, units, and cap-source results.
+
+The [issue #711 evidence](../casper/cbc-evidence/runs/issue-711-snapshot-20261019/README.md) records the metric regressions and the decoded-count measurement boundary.
 
 1. Tag `finalization_runner.rs` and `proposer.rs` `cbc=mandatory cbc-weight=high` (decision of the maintainer on 2026-10-07). **Done 2026-10-07.**
 2. S3: each metric has a test with a `DebuggingRecorder`. The test asserts the counter value or the histogram sample for a known event. **Done 2026-10-07** (commits e9e80f8bd and the empty-block build counter): 11 tests in finalization_runner.rs, block_creator.rs, and heartbeat_proposer.rs. Each test failed on the missing metric before its change and passed after it.

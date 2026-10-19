@@ -17,6 +17,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
+use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
 use prost::bytes::Bytes;
@@ -27,6 +28,27 @@ use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
 use crate::util::rholang::resources;
 
 const DEPLOY_LIFESPAN: i64 = 50;
+
+fn decoded_pool_deploys(snapshotter: &Snapshotter) -> u64 {
+    snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter_map(|(key, _, _, value)| {
+            if key.key().name() == "deploy-store.read-all.decoded"
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "store" && label.value() == "deploy_storage")
+            {
+                if let DebugValue::Counter(count) = value {
+                    return Some(count);
+                }
+            }
+            None
+        })
+        .sum()
+}
 
 /// Creates a signed deploy with the given parameters
 fn create_deploy(
@@ -217,6 +239,67 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         max_seq_nums,
         on_chain_state,
     }
+}
+
+#[tokio::test]
+async fn recovery_empty_and_disabled_ordinary_admission_skip_full_pool_reads() {
+    let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
+    let validator_identity = ValidatorIdentity::new(&validator_sk);
+    let snapshot = create_snapshot(100, validator_identity.public_key.bytes.clone());
+    let mut kvm = InMemoryStoreManager::new();
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
+    ));
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .unwrap(),
+    ));
+    let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+    let rspace_store = kvm.r_space_stores().await.unwrap();
+    let mergeable_store = resources::mergeable_store_from_dyn(&mut kvm).await.unwrap();
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
+        rspace_store,
+        mergeable_store,
+        casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
+        rholang::rust::interpreter::external_services::ExternalServices::noop(),
+    );
+    let deploy = create_deploy(60, None, &validator_sk);
+    deploy_storage.lock().add(vec![deploy.clone()]).unwrap();
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+
+    let _ = block_creator::create(
+        &snapshot,
+        &validator_identity,
+        None,
+        deploy_storage.clone(),
+        rejected_deploy_buffer.clone(),
+        &runtime_manager,
+        &mut block_store,
+        casper::rust::blocks::proposer::proposer::DeploySelection::RecoveryEmpty,
+    )
+    .await;
+    assert_eq!(decoded_pool_deploys(&snapshotter), 0);
+
+    let prepared = block_creator::prepare_user_deploys(
+        &snapshot,
+        101,
+        i64::MAX,
+        deploy_storage.clone(),
+        rejected_deploy_buffer,
+        &block_store,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(prepared.deploys.is_empty());
+    assert_eq!(decoded_pool_deploys(&snapshotter), 0);
+    assert!(deploy_storage.lock().contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1128,6 +1211,9 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Call BlockCreator.create
     // The cleanup happens in prepare_user_deploys before block creation
     // Block creation may fail due to empty parents, but that's after cleanup
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let recorder_guard = metrics::set_default_local_recorder(&recorder);
     let _ = block_creator::create(
         &snapshot,
         &validator_identity,
@@ -1139,6 +1225,13 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
     )
     .await;
+
+    assert_eq!(
+        decoded_pool_deploys(&snapshotter),
+        2,
+        "one read decodes both stored deploys"
+    );
+    drop(recorder_guard);
 
     // Verify: expired deploy removed, valid deploy kept
     {

@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-13
+last_updated: 2026-10-19
 mr_status:
   ready: false
   target_branch: master
@@ -3770,6 +3770,45 @@ tasks:
       - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
       - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
       - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
+
+  - id: TASK-012-31
+    title: "Plan deploy pool read reuse for issue #711"
+    status: complete
+    issues: [711]
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: null
+    claimed_at: null
+    completed_at: 2026-10-19
+    blocked_by: []
+    notes:
+      - "The user requested investigation and a plan before implementation."
+      - "The plan belongs in docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "The plan records snapshot behavior, S1 through S8, stage metrics, regression tests, and the independent PR #730."
+    acceptance:
+      - "The plan identifies the four reads, the shared snapshot boundary, and the relevant claim requirements."
+      - "The plan defines regression tests, measurement criteria, and the pull request target dev."
+      - "The investigation changes no Rust code and creates no commit or pull request."
+
+  - id: TASK-012-32
+    title: "Reuse the deploy pool snapshot during block creation"
+    status: in_progress
+    issues: [711]
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: codex-session-711
+    claimed_at: 2026-10-19T10:44:00Z
+    blocked_by: []
+    notes:
+      - "Implement docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "Preserve admission statements S1 through S8 and the existing stage metric definitions."
+    progress: "All 72 focused unit tests and 15 focused integration tests pass. Formatting and workspace clippy pass. The full release suite remains in progress."
+    acceptance:
+      - "Normal proposal preparation performs one full deploy pool read, and RecoveryEmpty performs none."
+      - "Both statistics functions and selection use the same captured deploy set."
+      - "Scope checks stop at the first matching deploy through any."
+      - "Snapshot, admission, quarantine, retry, and metric regression tests pass."
+      - "The pull request targets dev and records the test results and claim evidence."
 ---
 ```
 
