@@ -1314,6 +1314,8 @@ emit_iteration_metrics() {
       too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,
       ok: ($exit_code == 0)}' >"$iteration_dir/metrics.json" 2>/dev/null || true
+	"$SCRIPT_DIR/bench/summarize-issue24-phases.sh" records --provider "$provider" --session "$iteration" \
+		"$iteration_dir/pytest.log" >"$iteration_dir/issue24-phases.jsonl" 2>/dev/null || true
 }
 
 # True once the branch under test has advanced past the SHA this soak pinned
