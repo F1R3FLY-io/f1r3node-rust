@@ -20,6 +20,11 @@ ignore = [
   { id = "RUSTSEC-2024-0437", reason = "The optional rust-bert feature uses protobuf 2.28.0 through rust_tokenizers. Untrusted model parsing requires review." },
   { id = "RUSTSEC-2025-0119", reason = "The optional rust-bert feature uses unmaintained number_prefix through cached-path." },
   { id = "RUSTSEC-2026-0173", reason = "The optional chroma feature uses unmaintained proc-macro-error2 through validator_derive." },
+  { id = "RUSTSEC-2026-0367", reason = "zip extract keeps SUID and SGID bits (GHSA-vv5m-jxxh-4627). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
+  { id = "RUSTSEC-2026-0368", reason = "zip extract creates symbolic links that point outside the destination (GHSA-4v9h-p7m9-rh26). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
+  { id = "RUSTSEC-2026-0369", reason = "zip extract applies permissions through symbolic links (GHSA-4684-h2q9-2vcp). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
+  { crate = "zip@3.0.0", reason = "zip yanked 99 of 100 versions after GHSA-4v9h-p7m9-rh26, GHSA-vv5m-jxxh-4627 and GHSA-4684-h2q9-2vcp (extract). The utoipa-swagger-ui 9 build script reads its own vendored archive, and casper-soak reads one member without extract. Bump to zip 9." },
+  { crate = "zip@0.6.6", reason = "zip yanked 99 of 100 versions after the October 2026 extract advisories. The optional rust-bert feature uses zip 0.6.6 through tch, torch-sys and cached-path. Replace when rust-bert moves to zip 9." },
 ]
 
 [licenses]

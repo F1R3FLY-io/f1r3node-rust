@@ -164,10 +164,10 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
             Ok(CasperMessage::from_no_approved_block_available(proto))
         }
         CasperMessageProto::StoreItemsMessageRequest(proto) => {
-            Ok(CasperMessage::from_store_items_message_request(proto))
+            CasperMessage::from_store_items_message_request(proto)
         }
         CasperMessageProto::StoreItemsMessage(proto) => {
-            Ok(CasperMessage::from_store_items_message(proto))
+            CasperMessage::from_store_items_message(proto)
         }
         CasperMessageProto::MergeableEntryRequest(proto) => {
             Ok(CasperMessage::from_mergeable_entry_request(proto))

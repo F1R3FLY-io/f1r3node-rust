@@ -72,6 +72,7 @@ pub struct TestNode {
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
     pub requested_blocks: RequestedBlocks,
+    pub block_retriever: BlockRetriever<TransportLayerTestImpl>,
     pub connections_cell: ConnectionsCell,
     pub rp_conf: RPConf,
     // Casper instance (Arc<Mutex> for shared ownership with interior mutability)
@@ -1272,6 +1273,7 @@ impl TestNode {
             rejected_deploy_buffer,
             runtime_manager,
             requested_blocks,
+            block_retriever,
             connections_cell,
             rp_conf,
             casper,
