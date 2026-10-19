@@ -2,7 +2,7 @@
 
 **Status:** pending.
 
-This record identifies H1 at `ab84edf83`. Construction and binding review do not establish discharge or maintainer acceptance.
+This record identifies the heartbeat source at `da1c12ed1`. Construction and binding review do not establish discharge or maintainer acceptance.
 
 The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review and test record is `docs/casper/validation/heartbeat-h1-verification-2026-10-19.md`.
 
@@ -13,9 +13,9 @@ Both the original leader-only evidence and the pre-implementation pending regist
   "artifact": {
     "path": "node/src/rust/instances/heartbeat_proposer.rs",
     "id": "node-src-rust-instances-heartbeat-proposer-rs",
-    "commit": "ab84edf83",
+    "commit": "da1c12ed1",
     "working_tree": false,
-    "sha256": "77328af2cc336e93299f0dbf25100309359b49825e98f3e4dfdfea3bf8f18c5e"
+    "sha256": "3c62915518a13bf20d8c79d0b1da106a3db5e26de6141412ef1f4fe287500576"
   },
   "claim": "docs/claims/heartbeat-proposal-amplification-bound.md",
   "claim_digests": {
@@ -27,7 +27,7 @@ Both the original leader-only evidence and the pre-implementation pending regist
   "evidence": {
     "kind": "implementation-review-pending-verification",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
+    "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -44,11 +44,11 @@ Both the original leader-only evidence and the pre-implementation pending regist
     "commit": "3fd707102"
   },
   "previous_review_record": {
-    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-ab84edf83-20261019.md",
-    "sha256": "4efaac8a57aa9ce5cf616e4928b9bdad7f724e7041251262a09dca7f4cc80816",
+    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-review-3ac876857-20261019.md",
+    "sha256": "437f507f22ebd7058faa392a5bab3a7956b52f10d02723bca5c2d1d37eb2563d",
     "report": {
-      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-ab84edf83-20261019.md",
-      "sha256": "2ec8a9362307056af54418fccc09cd0f198362e61fa51912c0790209a7652848"
+      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-review-3ac876857-20261019.md",
+      "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
     }
   },
   "waiver": null,

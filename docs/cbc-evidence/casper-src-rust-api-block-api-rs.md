@@ -28,7 +28,7 @@ This record covers the H1 bridge only. Renewal of the display-projection claim r
   "evidence": {
     "kind": "source-review-pending-acceptance",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
+    "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -47,11 +47,11 @@ This record covers the H1 bridge only. Renewal of the display-projection claim r
     "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f"
   },
   "previous_review_record": {
-    "path": "docs/cbc-evidence/history/casper-src-rust-api-block-api-rs-h1-ab84edf83-20261019.md",
-    "sha256": "87081e331adad7cc74d1f0ce549eded1f05a172206383273be3e53692226abe0",
+    "path": "docs/cbc-evidence/history/casper-src-rust-api-block-api-rs-review-3ac876857-20261019.md",
+    "sha256": "477591ffd8d13316d7a1af29b50969d612e1b47862759e0f7cd2f0ac87bd0010",
     "report": {
-      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-ab84edf83-20261019.md",
-      "sha256": "2ec8a9362307056af54418fccc09cd0f198362e61fa51912c0790209a7652848"
+      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-review-3ac876857-20261019.md",
+      "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
     }
   },
   "waiver": null,

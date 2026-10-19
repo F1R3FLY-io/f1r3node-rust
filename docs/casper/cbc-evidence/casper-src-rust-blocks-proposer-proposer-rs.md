@@ -25,7 +25,7 @@ The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review
   "evidence": {
     "kind": "implementation-review-pending-verification",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
+    "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -33,11 +33,11 @@ The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review
     "binding": "review-recorded-not-accepted"
   },
   "previous_review_record": {
-    "path": "docs/casper/cbc-evidence/history/casper-src-rust-blocks-proposer-proposer-rs-ab84edf83-20261019.md",
-    "sha256": "ef9b9496729d2cfe1cff227f8742c5c30d0e9ce17982155123e70c894094be2b",
+    "path": "docs/casper/cbc-evidence/history/casper-src-rust-blocks-proposer-proposer-rs-review-3ac876857-20261019.md",
+    "sha256": "54f0b7ffad7f905e0fa023f05af6e05928f861ae7cd56e1321ac0e7f48d16f0c",
     "report": {
-      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-ab84edf83-20261019.md",
-      "sha256": "2ec8a9362307056af54418fccc09cd0f198362e61fa51912c0790209a7652848"
+      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-review-3ac876857-20261019.md",
+      "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
     }
   },
   "waiver": null,

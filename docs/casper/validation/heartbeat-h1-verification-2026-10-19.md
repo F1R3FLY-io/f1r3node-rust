@@ -8,7 +8,7 @@
 
 **Baseline:** `ed9b3c996`, the F1/F2 implementation.
 
-**Status:** Implementation and final-source targeted tests passed at `ab84edf83`. Claim discharge, maintainer acceptance, and performance qualification remain pending.
+**Status:** The heartbeat source binding is refreshed to `da1c12ed1`. The runner retested the hash-binding refinement. Claim discharge, maintainer acceptance, and performance qualification remain pending.
 
 ## Implementation
 
@@ -92,12 +92,17 @@ The cooperating runner executed cargo outside the sandbox and posted the final-s
 
 This agent independently matched the four source digests below against the checkout. It did not execute cargo successfully inside the sandbox.
 
-The runtime implementation is commit `ab84edf83`. The maintainer committed and pushed that source while evidence closeout continued.
+The initial implementation is `ab84edf83`. The hash-binding refinement is `e7638bbd5`, and the current heartbeat source matches `da1c12ed1`.
 
-## Source identities
+The runner reported 61 passed and 0 failed for `cargo test --release -p node heartbeat_proposer` after the refinement.
+The runner also reported no warnings from `cargo clippy -p node --all-targets`. Those results identify the heartbeat bytes below.
+
+The earlier adapter run and Casper test results remain bound to their recorded source. This digest refresh does not establish new verifier results.
+
+## Source identities at `da1c12ed1`
 
 ```text
-77328af2cc336e93299f0dbf25100309359b49825e98f3e4dfdfea3bf8f18c5e  node/src/rust/instances/heartbeat_proposer.rs
+3c62915518a13bf20d8c79d0b1da106a3db5e26de6141412ef1f4fe287500576  node/src/rust/instances/heartbeat_proposer.rs
 ccb01fdcf2027f7698066ed5ad166e260fab043846088fc9939c1a3f640c18ac  casper/src/rust/blocks/proposer/proposer.rs
 115c1dc774b5ca5f1da37fe1a8dc57730c748098540f467add20736451c8a716  node/src/rust/instances/heartbeat_responsive_tests.rs
 21179bcccef9de2b87dfe4c12c9f943295f7d0f6f6218bf9d955cd97aca2b6df  casper/tests/add_block/h1_proposer_spec.rs
@@ -113,7 +118,6 @@ Each open gate has one accountable owner. A runner executes an authorized operat
 
 | Open gate | Owner | Required result |
 | --- | --- | --- |
-| Current-source evidence digests | `pi-session-heartbeat-h1-cbc` | Refresh the heartbeat source binding for `da1c12ed1` and update the affected evidence digests. Preserve the earlier records. |
 | CbC discharge | Maintainer | Review the current-source verification evidence and record a valid discharge. The adapter's executable-check result alone does not close this gate. |
 | Construction and source-binding review | Maintainer | Review the construction argument, its assumptions, and the bindings against the final implementation. |
 | Additional test coverage | `pi-session-heartbeat-h1-cbc` | Complete any required negative-control, cancellation, or queue-interleaving tests before claim discharge. |
@@ -123,6 +127,7 @@ Each open gate has one accountable owner. A runner executes an authorized operat
 
 ### Completed prerequisites
 
+- **Current-source evidence digests:** `pi-session-heartbeat-h1-cbc` refreshed the heartbeat binding to `da1c12ed1` and updated the affected report digests. Earlier records remain unchanged in history.
 - **Proposer compatibility symlink:** Closed by `14c4c3546`. The maintainer authorized the creation, and `f1r3node-rust-71` created the symlink.
 - **Real adapter execution:** The runner completed both artifact commands on `ab84edf83`. Both commands exited 0. This closes the execution prerequisite only.
 - **Numeric thresholds:** The maintainer approved the thresholds in design section 5.1. Performance thresholds do not discharge the safety claim.
