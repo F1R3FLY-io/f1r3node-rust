@@ -144,10 +144,22 @@ H1 does not intentionally hold an empty block for batching. Its publication guar
 2. Compare H1 against the F1/F2 baseline `ed9b3c996` with the same profile and environment.
 3. Retain the step 0 baseline from TASK-021-16 as a separate comparison.
 4. Compare slow-phase share, empty-block rate, selection age, finalization p95, and block rate with `scripts/bench/summarize-issue24-phases.sh`.
-5. Obtain maintainer approval for numeric acceptance thresholds before either comparison run.
+5. Apply the acceptance thresholds in section 5.1.
 6. If H1 increases block rate and slows finalization, retain F1/F2 without H1.
 
-The proposed 30-percent block-rate allowance is not an approved threshold. Cloud dispatch and soak qualification require separate authorization.
+Cloud dispatch and soak qualification require separate authorization.
+
+### 5.1 Acceptance thresholds
+
+**Decision of 2026-10-19 (maintainer).** H1 is accepted only if all three conditions are true. "F1/F2" is the run of `ed9b3c996`, and "H1" is the run of `ab84edf83` or a later H1 commit.
+
+| Metric | Source in `scripts/bench/summarize-issue24-phases.sh` | Condition |
+|---|---|---|
+| Slow share | `compare --phase high`: the slow and failing phases divided by all phases. A phase is slow when its inclusion p95 is above 9 s (the default `--slow-inclusion-p95`). A phase is failing when it has unfinalized deploys. | H1 is lower than F1/F2. |
+| Finalization p95 | `records`: the mean of `finalization_p95` over the `high` phases | H1 is not higher than F1/F2. |
+| Block rate | `compare --phase high`: the mean of "Blocks created" over all validators and phases | H1 is at most 1.3 times F1/F2. |
+
+Both runs use the same profile, provider, and number of `high` phases. A run needs at least 20 `high` phases for each build.
 
 ---
 
