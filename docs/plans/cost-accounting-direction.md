@@ -14,7 +14,7 @@ A switch from completed evaluations to funded or multisigned execution fragments
 
 The existing model does not guarantee successful completion of every deploy. Execution errors and resource exhaustion remain possible.
 
-This conclusion is provisional, not a rejection or approval of the intended direction. The pinned current PR #216 head (`ccbee9287`) and relevant approved proposals remain to be examined.
+This conclusion is provisional, not a rejection or approval of the intended direction. The PR #216 head and relevant approved proposals remain to be examined. The plan pinned `ccbee9287` on 2026-10-16. On 2026-10-19 the head is `039c787fa`, 15 commits later, with DR-131 and DR-132 (see the note after the question table).
 
 The user reports that a Zoom discussion prompted this interpretation. On 2026-10-16 the user identified the [stall-loop design](https://github.com/F1R3FLY-io/publications/blob/0b3255fc83be09c6210e9902dbfc495366b72115/cost-accounting/stall-loop-design.pdf) as the outcome of that discussion. Revision 2 of 2026-10-17 is the current revision.
 
@@ -50,7 +50,14 @@ Its answers apply only to that v6 proposal. They are inputs to TASK-028-2 to TAS
 | 4. Signature authority | The deploy signature funds the work and marks its conflicts. The block signature keeps its consensus role. One runner records the execution, and other nodes replay and attest the record. | Proposed |
 | 5. Several roles for one party | The design does not address this question. | Open |
 | 6. Payer of a stored continuation | A race for a datum or a continuation draws on the signature that owns the contested process. Metering of settlement log-channel continuations is an activation condition. | Partly answered |
-| 7. Economic and physical bounds | Each charge becomes a function of its recorded event, within the protocol-6 host-work caps. Two known determinism gaps must close before activation. | Proposed |
+| 7. Economic and physical bounds | Each charge becomes a function of its recorded event, within the protocol-6 host-work caps. Two known determinism gaps must close before activation. | Proposed. The host-work premise is stale since DR-131. |
+
+**Note of 2026-10-19 (PR #216 head `039c787fa`).** Two decision records on the PR #216 branch postdate the design's review of `ccbee928`:
+
+- **DR-131** (2026-10-14) removes host-work metering. COMMs are the only metered operation, and bytes are metered for storage. The host-work caps of the answer to question 7 no longer exist on the branch. The answer to question 7 therefore needs a new basis.
+- **DR-132** (2026-10-14, plan approved 2026-10-16) returns the deterministic scheduler to the racing evaluation of `dev`. Native replay finds each recorded operation by its RSpace source.
+
+This plan does not yet examine the two records. The next comparison record must use the current head.
 
 Branch `feature/cost-accounted-ote` at `e7469fd47c7ec87bd1c957d202e1d28ac5218d0d` implements tranche 1 of the v6 proposal. Its plan is `docs/plans/v6-order-then-execute-tranche-1.md` on that branch. The branch is based on `dev`, not on PR #216. The table gives its state for each question.
 
@@ -85,7 +92,7 @@ Issues with the label `testnet-path` give current-shard evidence for questions 2
 |---|---|---|
 | Original proposal | D-12 records a historical comparison of PR #216 at `3980ed402`. That comparison is not necessarily the first proposal. | Locate the original paper and proposal revision. Record full immutable identities. |
 | Recorded requirements | D-12's Decision section preserves the signed cost fields and existing protections. | Identify any later accepted amendment and its exact scope. |
-| Current PR #216 | Revision 2 of the stall-loop design names the reviewed head of `feature/cost-accounted-rho` as `ccbee928`. That matches the head `ccbee9287` of 2026-10-16. | Pin the head, documentation, code, and tests in one comparison record. |
+| Current PR #216 | Revision 2 of the stall-loop design names the reviewed head of `feature/cost-accounted-rho` as `ccbee928`. That matches the head `ccbee9287` of 2026-10-16. On 2026-10-19 the head is `039c787fa`, with DR-131 and DR-132. | Pin the head `039c787fa` or later, documentation, code, and tests in one comparison record. |
 | Approved FIPs | The user supplied the approved-directory location. No individual proposal was reviewed for this plan. | Identify relevant proposals, approval records, revisions, and activation conditions. |
 | Zoom discussion | The user identified the stall-loop design as its outcome. The design names no approvers. | Record any maintainer approval of the three design decisions under the ledger process. |
 
