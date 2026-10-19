@@ -714,7 +714,8 @@ tasks:
     status: pending
     blocked_by: [TASK-027-2]
     acceptance:
-      - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
+      - "The probe reads the CPU share from the cgroup CPU limit, the cgroup memory limit, the disk write latency, and the host class at startup. On a host without a CPU limit, it reads the host cores and records that no limit exists."
+      - "The node reads its role (validator or non-validator) from the bonds at the last finalized block and reads it again when the bonds change. A role floor above the tier ceiling keeps the control at the ceiling and writes a probe warning that names the control (design section 6, issue #691)."
       - "tier = auto selects a profile from the probe. A named tier selects that profile, and the node records the choice. The probe runs in both cases."
       - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
       - "The probe compares the host with the published targets of design section 14.3: the named tier, or the Constrained targets when tier = auto."
@@ -723,6 +724,8 @@ tasks:
     title: "Add the adaptive controller and the degradation levels"
     status: pending
     blocked_by: [TASK-027-3]
+    notes:
+      - "2026-10-18: the PR #651 boundary at be3f23cc7 has no channel for control updates in AdapterContext. This task adds it (design section 5.1). Queue bounds are counts only, and packets have no deadline, so the memory and deadline signals need payload bytes and packet age."
     acceptance:
       - "A pending CbC claim states invariants I1 to I6 before the controller code."
       - "Unit tests drive the controller as a function of signal windows and a tier profile, with time as the only boundary."
@@ -739,6 +742,8 @@ tasks:
       - "The PR #695 backlog rule stays, and its bound comes from the profile."
       - "Block validation does not read any controlled value."
       - "A local high-phase run shows a lower deploy age at selection than the fixed cap of 8."
+      - "The block pipeline width replaces MAX_PARALLEL_BLOCKS: the role floor (active validators, minus 1 on a validator), limited by derive_max_concurrent of the cgroup CPU share, with a minimum of 3. The replay lock takes its permits from the same value (design section 10.1, issue #691)."
+      - "A read-only observer under cgroup CPU limits keeps its processing queue and buffer bounded at the validator block rate with 4 validators, and no level of design section 8 slows its block validation."
   - id: TASK-027-6
     title: "Fix the sustained-phase wait from inclusion to finality"
     status: pending
@@ -792,7 +797,7 @@ status: in_progress
 priority: p0
 user_story: null
 issues: [24]
-closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-23, adaptive-execution.md section 10.4)."
+closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-25, adaptive-execution.md section 10.4)."
 blocked_by: []
 created_at: 2026-10-03
 updated_at: 2026-10-06
@@ -1128,11 +1133,18 @@ tasks:
       - "The maintainer accepts the soak and CbC evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
   - id: TASK-021-13
     title: "Find why test_load deploys are not finalized within 45 s in the high and sustained phases (issue #24)"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-19T12:30:00Z
     blocked_by: []
     origin: "On 2026-10-07 two integration preflights on master e6564599c failed in the same test_load phase after PR #653 nearly stopped block parking. The user asked for a task that owns the deploy inclusion delay."
+    notes:
+      - "2026-10-19, final result of soak 39089710676 (issue #24 comment 6266747397): two high-phase failures (Docker 17:29Z with 13 unfinalized, subprocess 20:28Z with 14) and two sustained-phase failures on subprocess. In each, inclusion was near normal and finality slowed. Slow high phases build more empty heartbeat blocks while deploys wait."
+      - "2026-10-19: PR #768 (deploy heartbeat wake F1 and F2, and the deploy-responsive mode H1) is the candidate fix for the high-phase mechanism. Its CbC claim is discharged. The comparison soak of its design section 5.1 runs: F1 and F2 at ed9b3c996 (run 39194089405), then H1 at da1c12ed1. The plan and the status live in issue #764, stage 1."
+      - "2026-10-18, interim evidence of soak 39089710676: a Docker iteration failed in the high phase after PR #695, with normal inclusion (p95 11.6 s) and slow finality (7.9 blocks per minute). About half of the high phases on both providers run in this slow pattern. The wait after inclusion is therefore not only a sustained-phase effect, and this task covers the high phase too (adaptive-execution.md section 3)."
+      - "Plan step 3. Plan update of 2026-10-17 (issue #24 comment 6220936428): the scope depends on the TASK-021-16 soak. If that soak has sustained-phase failures, this task fixes the measured cause of the wait from inclusion to finality. If it meets the gate, this task records that no cause remains, and issue #24 can close under EPIC-021 (adaptive-execution.md Q8)."
+      - "Soak 38995239992 (2026-10-17, master ecb16dbca) had 0 failures in 91 sessions and unfinalized=0 in all 459 phases, so it gives no failing sample to attribute."
     problem: "test_load fails with deploys not finalized within 45 s in two phases. The two preflights of 2026-10-07 showed only the high phase. The 24-hour soak 37640235959 shows failures in the high and sustained phases, and the sustained phase fails more often. In failing iterations, the mean p95 inclusion latency rises most in the high phase, and the mean p95 finalization latency rises most in the sustained phase. These are aggregate values. They do not show if each unfinalized deploy was included, so the stage that holds a deploy is not known yet."
     evidence:
       - "Soak 37579803394, preflight: high phase inclusion p50 9.0 s and p95 21.9 s, finalization p95 33.2 s, 7 unfinalized. The other phases had inclusion p95 5.3 to 13.7 s. Sustained finalization p95 31.2 s, 0 unfinalized."
@@ -1203,13 +1215,19 @@ tasks:
       - "The issue #244 memory ceiling (TASK-012-25) is measured before and after the change."
   - id: TASK-021-16
     title: "Record the pre-cost-accounting baseline soak"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-18T19:15:00Z
     pr_base_branch: null
-    blocked_by: ["PR #741 on master", "PR #748 on master"]
+    blocked_by: []
     notes:
       - "Plan step 0 of 2026-10-16 (adaptive-execution.md section 10.4). The stall-loop design (https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) is a code reading without profiling, so the plan measures first."
-      - "PR #748 removes the 8-hour merge exit, so a daily soak runs its full window."
+      - "PR #748 removes the 8-hour merge exit, so a daily soak runs its full window. On 2026-10-17, master contains PR #741 and PR #748."
+      - "Plan update of 2026-10-17 (issue #24 comment 6220936428): weekend soak 38995239992 on master ecb16dbca had 0 test_load failures in 91 sessions (46 Docker, 45 subprocess). The disk floor stopped it at 16.7 h of 57.5 h, because each iteration kept an uncompressed node-metrics file. PR #759 compresses that file. From iteration 84, the strace sample of sample-node-io.sh traced the validator of the active benchmark shard."
+      - "2026-10-18: both blockers are done (PR #759 and PR #760 on master). Weekend soak 39089710676 runs on master 532e5c696, which dev 5ff390e15 contains through back-merge PR #763. Interim segment 1 (14:38Z, 9.5 h): 52 sessions (26 Docker, 26 subprocess), 1 failure on subprocess, 1.9 percent, no protection breach. The window ends 2026-10-19 14:30Z (adaptive-execution.md section 3)."
+      - "2026-10-18 18:35Z (job log): 73 sessions, 2 failures. Subprocess at 14:11Z in the sustained phase (2 deploys not finalized within 45 s). Docker at 17:35Z in the high phase (13 not finalized, LFB at 7.9 blocks per minute). In both, inclusion was normal and finality was slow."
+      - "2026-10-19, final result (issue #24 comment 6266747397): the host protection stopped soak 39089710676 at 18.2 h on the disk floor (7053 MiB free, 8192 MiB required). 100 sessions (50 Docker, 50 subprocess), 4 failures (1 Docker, 3 subprocess). The gate is not decided, and the subprocess rate (6 percent) is above the gate rate. The disk growth must be fixed before the baseline repeats."
+      - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): closure is separate from attribution. If this soak meets the gate, issue #24 can close (the answer to Q8 is unchanged), but TASK-021-13 stays open to attribute the wait after inclusion. Step 3 needs a fix only if the gate fails. The final report confirms or replaces this change."
     acceptance:
       - "A full-length soak on current dev with the node I/O sampler gives at least 100 test_load sessions on each provider."
       - "The issue #24 report records the failure rate, the phase of each failure, and the stage metrics as the baseline for TASK-021-23."
@@ -1223,12 +1241,15 @@ tasks:
     pr_base_branch: dev
     blocked_by: []
     notes:
+      - "2026-10-19: PR #767 (merged) adds the per-phase summary scripts/bench/summarize-issue24-phases.sh, and each soak iteration writes issue24-phases.jsonl. PR #770 corrects its provider label for repeated phases and cut-off tests. The final result of soak 39089710676 uses the corrected summary."
       - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
       - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
+      - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): the high phases of soak 39089710676 are bimodal on both providers. ISSUE24_METRICS already reports each phase and validator (corrected 2026-10-18), and every high-phase block came from a heartbeat. Add a summary tool for each phase (PR #767) and a count of deploy-triggered proposals. A test of the heartbeat timing needs a harness change. TASK-021-24 then compares the share of slow high phases with the TASK-021-16 baseline."
     hygiene_note: "2026-10-16 hygiene: PR #751 merged the Track A metrics. Open: one soak that ranks the Track A items, and the issue #24 report of the rank."
+    decision: "2026-10-18: stall-loop revision 2 (publications 0b3255fc8) has code for A1 to A9 on three stacked branches before the rank exists (adaptive-execution.md section 10.4.1). The TASK-021-16 soak gives the cost of each item before the fixes, and TASK-021-24 measures each item after them. The rank no longer sets the order of the work."
     acceptance:
       - "ISSUE24_METRICS records the deploy-pool lock hold time and the signature checks for each proposal (A4), the proposer queue depth and the empty-block rate (A2), the floor distance (A3), the tokio worker saturation (A6), and the finalizer run time against its 15 s deadline (A1)."
-      - "One soak ranks the Track A items by measured cost, and the issue #24 report records the rank."
+      - "The issue #24 report gives the cost of each Track A item in the TASK-021-16 soak, and the change of each cost in the TASK-021-24 soak."
   - id: TASK-021-18
     title: "Fix the buffer eviction order and the re-fetch cooldown (stall-loop A7)"
     status: in_progress
@@ -1239,28 +1260,36 @@ tasks:
     blocked_by: []
     notes:
       - "Plan step 2. Both defects are independent of load. casper_buffer_key_value_storage.rs computes age as now - first_seen, sorts ascending, and removes the first entry, which is the youngest pendant (verified on dev 555a5e442)."
+      - "PR #752 merged the fix into dev on 2026-10-17. Commit 46d49cb83 on fix/stall-track-a-rest fixes the same defects in a different way and conflicts with dev in casper_buffer_key_value_storage.rs. After a text merge, its ack_duplicate path is dead code under the PR #752 check. The reviewer feedback asks to drop that commit."
+    hygiene_note: "2026-10-18: PR #752 merged. The status stays in_progress until the TASK-021-24 soak confirms linear re-fetch traffic. TASK-021-25 holds the remaining buffer defects of issue #690."
     acceptance:
       - "Eviction removes the oldest dependency-free entry. A unit test fails on the old order."
       - "A duplicate reply to a re-fetch keeps the cooldown and the retry counter. A unit test fails on the old behavior."
   - id: TASK-021-19
-    title: "Keep finalizer progress at the run deadline (stall-loop A1)"
+    title: "Keep finalizer progress at the run deadline (stall-loop A1a, A1b, A1c)"
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/finality-stall-track-a (d1c3a970f) and fix/finalizer-forward-progress (8b1b10f2a) merged with dev and opened as pull requests"]
     notes:
-      - "Plan step 4. finalization_runner.rs drops a run that exceeds 15 s, so a later run starts again over a larger cone."
+      - "2026-10-18: the response to stall-loop section 5.10.1 shows that the revision 1 rule ('adopts the highest candidate proven so far') is neither safe nor live. Revision 2 replaces it with A1a (shared oracle cache, at most 3 reruns), A1b (the timeout covers the derivation only), and A1c (resumable cursor, validation under the write lock, atomic commit_lfb). Lucius Meredith implemented them on the two branches of blocked_by. A-LIN is an alarm on legacy shards (adaptive-execution.md section 10.4.1)."
+      - "Plan step 5 (moved from step 4 on 2026-10-17, issue #24 comment 6220936428). finalization_runner.rs drops a run that exceeds 15 s, so a later run starts again over a larger cone."
+      - "Soak 38995239992 (2026-10-17): sustained-phase finalizer runs averaged 20 ms on Docker and 25 ms on subprocess, with a highest phase mean of 70 ms. finalizer.run.timeouts and failures were 0 in 91 sessions over 16.7 h. The item has no measured cost yet, so it waits for its place in the TASK-021-17 rank."
     acceptance:
-      - "A run that reaches its deadline adopts the highest candidate proven so far. One oracle run cache is shared across a frontier derivation."
-      - "finalizer.run.timeouts stays 0 in a 60-hour soak, and the last finalized block never stalls."
+      - "A timed-out derivation never commits, and the deadline never cancels a commit."
+      - "The tests of the response section 5 pass: no conflicting finality on a split committee, no settled-state regression, an injected deadline at each cursor state never commits, atomic adoption with exactly-once event delivery, and the A-LIN and TOCTOU injection tests."
+      - "The last finalized block never stalls in a 60-hour soak, and the finalizer.cursor and finalizer.commit counters stay bounded. finalizer.run.timeouts need not be 0."
+      - "The CbC claims or recorded waivers for the cbc=mandatory files that the branches change exist before the merge."
   - id: TASK-021-20
     title: "Coalesce proposals and stop empty deploy-triggered blocks (stall-loop A2, issue #24 item 4)"
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/finality-stall-track-a (d1c3a970f) merged with dev and opened as a pull request"]
     notes:
       - "Plan step 4. A fixed rule first. adaptive-execution.md section 10.1 later puts it under the controller, with these values as tier bounds."
+      - "2026-10-18: commit c93cff5ff on fix/finality-stall-track-a coalesces deploy-triggered proposals. Heartbeat debounce is not in it. The TASK-021-24 soak measures the queue depth and the empty-block rate against TASK-021-16."
+      - "2026-10-18, soak 39089710676 (interim): deploys trigger proposals only with autopropose, and the soak shard runs without it. Every high-phase block there came from a heartbeat, and slow phases built more empty heartbeat blocks while deploys waited. The empty-block criterion below therefore needs a soak shard with autopropose, or a second measure of empty heartbeat blocks while deploys wait."
     acceptance:
       - "Deploy-triggered proposal requests coalesce into one pending proposal, and the proposer queue depth stays at most 1."
       - "A deploy-triggered proposal never builds an empty block, and the empty-block rate under load falls against TASK-021-16."
@@ -1269,9 +1298,11 @@ tasks:
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/finality-stall-track-a (d1c3a970f) merged with dev and opened as a pull request"]
     notes:
       - "Plan step 4. Fixed thresholds first, set from TASK-021-17 data. The controller later uses them as tier bounds."
+      - "2026-10-18: commit d1c3a970f sets the thresholds without a measurement: pacing above a floor distance of 128 (half of the 256 backstop), and a pool cap of 64 times max-user-deploys-per-block (8192 at the default) with HTTP 503 deploy_pool_full and Retry-After 5. The pool count is the raw LMDB entry count of the deploy store. The TASK-021-24 soak keeps or changes these values."
+      - "2026-10-18: issue #710 measured 36.6 admitted against 1.5 executed deploys per second. At that rate, the cap of 8192 is about 90 minutes of backlog, longer than the deploy lifespan. Measure the cap against the inclusion rate, and record a terminal Expired state when the pool removes an expired deploy (adaptive-execution.md invariant I4)."
     acceptance:
       - "Above a floor-distance threshold well below 256, proposals include no ordinary deploys and only advance finality."
       - "The deploy pool rejects new deploys above a size threshold with a typed, retryable busy error."
@@ -1281,12 +1312,16 @@ tasks:
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/stall-track-a-rest (16c57af9c) merged with dev without commit 46d49cb83 and opened as a pull request"]
     notes:
       - "Plan step 5. TASK-021-17 sets the order. A9 (merging_logic.rs) and the hot-channel representation touch files near the cost-accounting merge, so they come last and carry a note for the cost-accounting lane."
+      - "2026-10-18: fix/stall-track-a-rest has code for A4 to A9. A7 is TASK-021-18. Two items need review before the merge. A4 (600689764) keeps a process-wide cache of verified deploy encodings and skips the signature check on a cache hit. A9 (16c57af9c) changes the merge result from casper.rejection-search-cap-from-height, so it is a validity rule with an activation height, off by default (adaptive-execution.md section 10.1)."
+      - "2026-10-18: A4 covers issue #711 (four pool reads for each block) and issue #729 (a signature check on each read). PR #730 (verify on write) solves issue #729 in another way in deploy_codec.rs, so the reviewers choose one design. Issue #712 (two deploy-storage mutexes) is in the same files."
     acceptance:
       - "Each item meets the exit criterion of the stall-loop design, for example prepare time flat in pool size for A4."
       - "Each fix outside the 38 conflict files, or a recorded reason with a note to the cost-accounting lane."
+      - "A security review accepts the A4 encoding cache. The cache keys on the Blake2b-256 digest of the whole signed encoding, and a hit skips only the signature check of the same bytes."
+      - "A9 has a recorded activation decision with named approvers before any shard sets its activation height."
   - id: TASK-021-23
     title: "Repeat the baseline soak after cost accounting lands in dev"
     status: pending
@@ -1298,7 +1333,37 @@ tasks:
     acceptance:
       - "The same soak profile as TASK-021-16 runs on dev with cost accounting."
       - "The issue #24 report compares both runs and records new baselines if legacy cost changed."
----
+  - id: TASK-021-24
+    title: "Soak the Track A branches against the TASK-021-16 baseline"
+    status: pending
+    claimed_by: null
+    pr_base_branch: null
+    blocked_by: [TASK-021-16, "The Track A branches merged with dev, including the PR #751 metrics"]
+    notes:
+      - "Plan step 1a (adaptive-execution.md section 15). Added on 2026-10-18 for stall-loop revision 2 (section 10.4.1). The branches are 42 to 49 commits behind dev and do not contain the PR #751 metrics, so a soak of the branches as they are cannot measure the Track A items."
+      - "Use the TASK-021-16 soak profile, with the node I/O sampler on, so that both runs compare directly."
+    acceptance:
+      - "The soak gives at least 100 test_load sessions on each provider."
+      - "The issue #24 report compares the failure rate, the phase of each failure, and the Track A metrics with TASK-021-16."
+      - "The last finalized block never stalls, and the report gives the finalizer.cursor, finalizer.commit, and block-creator.floor-pacing-engaged counts."
+      - "The report gives the share of slow high phases for each provider (scripts/bench/summarize-issue24-phases.sh, PR #767) against the TASK-021-16 baseline."
+  - id: TASK-021-25
+    title: "Keep a buffer at its size limit live (issue #690)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: ["A rerun of issue #690 on dev with PR #752 and PR #692, with the buffer held at its limit"]
+    notes:
+      - "Follow-up to TASK-021-18. PR #752 fixed the eviction order (oldest first). Both stall runs of issue #690 predate PR #752, so the stall is not retested on the current code."
+      - "Three defects remain on dev (casper_buffer_key_value_storage.rs). (1) remove_unlocked_recording deletes first_seen_ms for released blocks, and dependency_free_nodes_with_age_ms reads a missing age as now, so a ready block stays a prune candidate. (2) A pruned missing root is not requested again, and its children look ready. Recovery then depends on the missing-dependency throttle (32 attempts, then a 120 s quarantine). (3) approx_node_count adds the child and parent maps, so the limit of 16,384 is about 8,000 blocks."
+      - "Rerun method from the issue #690 comment of 2026-10-13: lower the limit to about 512 on a testbed image, and log each removal with its reason, age, children, and parents."
+      - "Issue #691 removes the usual trigger, a sustained lag on a non-validator. This task removes the permanent failure mode, which also applies to a node that catches up after downtime. Stage 1 of issue #764."
+    acceptance:
+      - "docs/claims/casper-buffer-release.md registers the new clauses as pending before any code change (EPIC-021 cbc_policy): a buffer held at its limit still drains, a ready block is never pruned, and a pruned missing root leaves the buffer with its descendants."
+      - "The overflow prune never removes a ready block, and released blocks keep their age. A unit test fails on the current dev behavior."
+      - "When the prune removes a missing root, it removes the descendants that wait only for that root. A unit test with a held-at-limit buffer and no peer answers shows no stuck descendants."
+      - "The buffer limit is stated in blocks or bytes, not in adjacency-map entries."
+      - "The issue #690 rerun with the lowered limit shows no stall, and every removal in the log is either a stuck root with its descendants or an entry that peers deliver again."
 ```
 
 **Current state:** Created on 2026-10-03 after soak 37090117438 failed. Soak 37153082817 runs weekend-60h on master f93b72699 with the stage metrics. TASK-021-1 starts from the failed run, and TASK-021-4 waits for the new run.

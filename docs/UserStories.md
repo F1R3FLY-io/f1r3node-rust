@@ -65,6 +65,26 @@ This document captures user stories that drive feature development. User stories
 
 ## Planned Stories
 
+#### US-012: Shards that adapt to the hardware of each node
+
+> As a **node operator running a validator on hardware that is slower or faster than other validators in the shard**, I want **the node to measure its own capacity, adapt its work from continuous telemetry, and degrade gracefully under load** so that **my shard keeps a sustained deploy throughput and finalizes deploys within the deadline on every hardware tier, for any replication mechanism**.
+
+**Implemented in:** EPIC-027
+
+**Design:** [docs/designs/adaptive-execution.md](designs/adaptive-execution.md)
+
+**Status:** In Progress
+
+**Acceptance Criteria:**
+- [ ] A startup hardware probe selects a tier profile, and the operator can name the tier or narrow its bounds.
+- [ ] A closed-loop controller with hysteresis moves node-local controls from measured signals. No control changes block validity or replicated state.
+- [ ] Under overload, the node sheds optional work and limits intake with a typed retryable error. It does not run out of memory or stop on a watchdog.
+- [ ] The controller is consensus-neutral. Each replication mechanism declares its controls and signals. F1r3fly CbC Casper is the first binding, and the RGB peer clique, Casanova, and Cordial Miners have provisions.
+- [ ] Prometheus metrics and soak records carry the tier, the host class, and the protocol, and contain no personal or key data.
+- [ ] The `cbc-casper` soak profile passes on the Docker host class, the subprocess host class, and a constrained tier, and this closes issue #24.
+
+---
+
 #### US-009: Bounded node behavior under resource faults
 
 > As a **node operator**, I want **bounded retries and log storage** so that **resource faults do not fill deployment disks**.
