@@ -29,7 +29,7 @@ This record includes the H1 bridge and the API-scoped display-projection renewal
   "evidence": {
     "kind": "source-review-pending-acceptance",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "1dddefc95b540d4a5873d212d891e385f14137c17e2e2eba229d68427b423304"
+    "sha256": "3d8a73b53e8873d150e90856c20fa4b3fff7d6f2e953c5cd00e79507ce4f24e5"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -58,10 +58,10 @@ This record includes the H1 bridge and the API-scoped display-projection renewal
     "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f"
   },
   "previous_review_record": {
-    "path": "docs/cbc-evidence/history/casper-src-rust-api-block-api-rs-renewal-base-f41f2a8ab-20261019.md",
+    "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/cbc-evidence/history/casper-src-rust-api-block-api-rs-renewal-base-f41f2a8ab-20261019.md",
     "sha256": "796b616070da1ce041af839383313cb2612b053ae539fe78769f17af7cdc14aa",
     "report": {
-      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-renewal-base-f41f2a8ab-20261019.md",
+      "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/heartbeat-h1-verification-renewal-base-f41f2a8ab-20261019.md",
       "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
     }
   },

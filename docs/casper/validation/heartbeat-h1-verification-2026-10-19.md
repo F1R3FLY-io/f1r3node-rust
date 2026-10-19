@@ -108,7 +108,13 @@ ccb01fdcf2027f7698066ed5ad166e260fab043846088fc9939c1a3f640c18ac  casper/src/rus
 21179bcccef9de2b87dfe4c12c9f943295f7d0f6f6218bf9d955cd97aca2b6df  casper/tests/add_block/h1_proposer_spec.rs
 ```
 
-Current pending evidence records identify the heartbeat, proposer, and API bridge. Historical evidence remains unchanged in separate history files.
+Current pending evidence records identify the heartbeat, proposer, and API bridge. The two replaced `dev` records remain unchanged in the history directories.
+
+The 13 intermediate PR snapshots remain in checkpoint `b87d1dfe29ee6d06d1894aec3db872c63ff6829f`. Their removal changes no runtime or test source.
+
+Historical JSON entries use `git_object` and retain the original SHA-256. Retrieve a historical object with `git show <git_object>`.
+
+A Git object identifies checkpoint bytes, not a file in the current working tree.
 
 The API bridge's older Batch E source and claim digests differ from the current files. Its acceptance is not transferred onto the new bytes.
 
@@ -155,7 +161,7 @@ Each open gate has one accountable owner. A runner executes an authorized operat
 
 - **API-scoped evidence renewal:** `pi-session-heartbeat-h1-cbc` recorded the two-line API comparison, 53 display tests, 3 arithmetic tests, and 36 capture tests. TLC passed 18 positive configurations and detected 96 expected violations. Full-claim acceptance remains open, including the declared Linux and Rocq limits.
 - **Additional test coverage:** `pi-session-heartbeat-h1-cbc` added nine tests. The runner verified the 65-test, 1-test, and 7-test selections. Broader claim review remains open.
-- **Current-source evidence digests:** `pi-session-heartbeat-h1-cbc` refreshed the heartbeat binding to `da1c12ed1` and updated the affected report digests. Earlier records remain unchanged in history.
+- **Current-source evidence digests:** `pi-session-heartbeat-h1-cbc` refreshed the heartbeat binding to `da1c12ed1` and updated the affected report digests. Intermediate records remain available in immutable checkpoint `b87d1dfe29ee6d06d1894aec3db872c63ff6829f`.
 - **Proposer compatibility symlink:** Closed by `14c4c3546`. The maintainer authorized the creation, and `f1r3node-rust-71` created the symlink.
 - **Real adapter execution:** The runner completed both artifact commands on `ab84edf83`. Both commands exited 0. This closes the execution prerequisite only.
 - **Numeric thresholds:** The maintainer approved the thresholds in design section 5.1. Performance thresholds do not discharge the safety claim.

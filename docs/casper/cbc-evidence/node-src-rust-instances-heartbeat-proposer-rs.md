@@ -6,7 +6,7 @@ This record identifies the heartbeat source at `da1c12ed1`. Construction and bin
 
 The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review and test record is `docs/casper/validation/heartbeat-h1-verification-2026-10-19.md`.
 
-Both the original leader-only evidence and the pre-implementation pending registration remain unchanged in the history paths below.
+The original leader-only evidence remains unchanged in the retained history file. The pre-implementation registration remains unchanged in the checkpoint Git object below.
 
 ```json
 {
@@ -27,7 +27,7 @@ Both the original leader-only evidence and the pre-implementation pending regist
   "evidence": {
     "kind": "implementation-review-pending-verification",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "1dddefc95b540d4a5873d212d891e385f14137c17e2e2eba229d68427b423304"
+    "sha256": "3d8a73b53e8873d150e90856c20fa4b3fff7d6f2e953c5cd00e79507ce4f24e5"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -35,7 +35,7 @@ Both the original leader-only evidence and the pre-implementation pending regist
     "binding": "review-recorded-not-accepted"
   },
   "registration_history": {
-    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-registration-20261018.md",
+    "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-registration-20261018.md",
     "sha256": "4ec41bec62214de8dc500e91abd0fd0920f83e21fc4e2dbde15972058d5ae87a"
   },
   "previous_ledger": {
@@ -44,10 +44,10 @@ Both the original leader-only evidence and the pre-implementation pending regist
     "commit": "3fd707102"
   },
   "previous_review_record": {
-    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-renewal-base-f41f2a8ab-20261019.md",
+    "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-renewal-base-f41f2a8ab-20261019.md",
     "sha256": "c846487b25f6596cb1d2dffea3e1574ff5cf3220d0855cadab3a38cac4e84ca9",
     "report": {
-      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-renewal-base-f41f2a8ab-20261019.md",
+      "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/heartbeat-h1-verification-renewal-base-f41f2a8ab-20261019.md",
       "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
     }
   },
