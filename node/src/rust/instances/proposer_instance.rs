@@ -501,6 +501,44 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn bounded_queue_rejection_and_retry_preserve_h1_request_metadata() {
+        use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
+
+        let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        let block = models::rust::block_implicits::get_random_block_default();
+        let casper: Arc<dyn Casper + Send + Sync> = Arc::new(
+            TestCasperWithSnapshot::new_with_pending_deploys(snapshot, block, 0),
+        );
+        let request = ProposeRequest::heartbeat_deploy().after_empty_self(vec![0x71; 32].into());
+        let (tx, mut rx) = mpsc::channel::<ProposeQueueEntry>(1);
+        let (first_tx, first_rx) = oneshot::channel();
+        assert!(tx
+            .try_send((casper.clone(), request.clone(), first_tx, 0))
+            .is_ok());
+        let (retry_tx, retry_rx) = oneshot::channel();
+        let rejected = match tx.try_send((casper, request.clone(), retry_tx, 1)) {
+            Err(mpsc::error::TrySendError::Full(entry)) => entry,
+            _ => panic!("The bounded queue must retain the rejected entry"),
+        };
+        assert_eq!(rejected.1, request);
+        let (_, first, reply, count) = rx.recv().await.unwrap();
+        assert_eq!(first, request);
+        assert_eq!(count, 0);
+        assert!(reply.send(ProposerResult::Empty).is_ok());
+        assert!(matches!(first_rx.await.unwrap(), ProposerResult::Empty));
+        assert!(tx.send(rejected).await.is_ok());
+        let (_, retried, reply, count) = rx.recv().await.unwrap();
+        assert_eq!(retried, request);
+        assert_eq!(count, 1);
+        assert!(!should_retry_immediately_on_trigger(
+            &ProposeResult::failure(ProposeFailure::NoNewDeploys),
+            retried.is_async,
+        ));
+        assert!(reply.send(ProposerResult::Empty).is_ok());
+        assert!(matches!(retry_rx.await.unwrap(), ProposerResult::Empty));
+    }
+
     #[test]
     fn should_not_retry_not_enough_new_blocks_for_async_propose() {
         let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(

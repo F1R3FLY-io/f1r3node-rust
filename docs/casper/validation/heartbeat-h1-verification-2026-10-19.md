@@ -112,6 +112,33 @@ Current pending evidence records identify the heartbeat, proposer, and API bridg
 
 The API bridge's older Batch E source and claim digests differ from the current files. Its acceptance is not transferred onto the new bytes.
 
+## Additional verification on 2026-10-19
+
+The runner verified the additional tests against `f41f2a8ab` plus the test changes in the working tree.
+
+- Formatting and `cargo check -p node -p casper --tests` passed.
+- `cargo clippy -p node -p casper --all-targets -- -D warnings` passed with no warnings.
+- The heartbeat filter passed 65 tests, with no failures or ignored tests.
+- The bounded queue-entry test passed 1 test, with no failures.
+- The H1 proposer filter passed 7 tests, with no failures.
+
+Nine tests were added across these suites. They cover cancellation after issuance, delayed completion, queue rejection and re-enqueue, changed predecessors, depleted selection, and legacy requests.
+
+Two controls deliberately alter test state to expose rolling-bound violations. They do not mutate production source or establish a mutation-testing score.
+
+The queue-entry test uses the production entry type and a real bounded channel. It does not execute the production worker or activate disabled retries.
+
+The queued proposer tests execute the real proposer with controlled snapshots, block creation, validation, and effect counters. They are not network integration tests.
+
+```text
+edcc7468032f7edb6f605f2b6028c673f052d033224e0f61b7e2a6d24066835c  node/src/rust/instances/heartbeat_responsive_tests.rs
+fd73cd87c979683de84c3fdf57921e3a16ed6810d26688cc690eb6a43cf2c1e3  node/src/rust/instances/heartbeat_additional_tests.rs
+c76ea6698d479db9617bba7cad5f7868a74f217d7582b28ae7ec8c6309aa9431  node/src/rust/instances/proposer_instance.rs
+b9f54549857fa29b0f008210c7e9b685a4304fd88a9eea1a79ec0b00d702b1c9  casper/tests/add_block/h1_proposer_spec.rs
+```
+
+The heartbeat and proposer runtime digests remain unchanged. The [API renewal report](api-display-projection-renewal-2026-10-19.md) records the source comparison, fresh tests, and declared Linux and Rocq limits.
+
 ## Remaining gates
 
 Each open gate has one accountable owner. A runner executes an authorized operation but does not grant acceptance.
@@ -120,13 +147,14 @@ Each open gate has one accountable owner. A runner executes an authorized operat
 | --- | --- | --- |
 | CbC discharge | Maintainer | Review the current-source verification evidence and record a valid discharge. The adapter's executable-check result alone does not close this gate. |
 | Construction and source-binding review | Maintainer | Review the construction argument, its assumptions, and the bindings against the final implementation. |
-| Additional test coverage | `pi-session-heartbeat-h1-cbc` | Complete any required negative-control, cancellation, or queue-interleaving tests before claim discharge. |
 | Claim acceptance | Maintainer | Record acceptance for the reviewed source, claim, and evidence. Do not reuse the historical leader-only discharge. |
-| API display-projection renewal | `pi-session-heartbeat-h1-cbc` | Renew the separate evidence for the current API source and claim bytes. |
+| Linux admission and Rocq recheck | Maintainer | Authorize the missing local environments or tools. Runner `f1r3node-rust-71` can then execute the outstanding checks. No pass or waiver is recorded. |
 | Comparison execution and performance acceptance | Maintainer | Complete the authorized comparison and evaluate every threshold in design section 5.1. `f1r3node-rust-71` is the runner. |
 
 ### Completed prerequisites
 
+- **API-scoped evidence renewal:** `pi-session-heartbeat-h1-cbc` recorded the two-line API comparison, 53 display tests, 3 arithmetic tests, and 36 capture tests. TLC passed 18 positive configurations and detected 96 expected violations. Full-claim acceptance remains open, including the declared Linux and Rocq limits.
+- **Additional test coverage:** `pi-session-heartbeat-h1-cbc` added nine tests. The runner verified the 65-test, 1-test, and 7-test selections. Broader claim review remains open.
 - **Current-source evidence digests:** `pi-session-heartbeat-h1-cbc` refreshed the heartbeat binding to `da1c12ed1` and updated the affected report digests. Earlier records remain unchanged in history.
 - **Proposer compatibility symlink:** Closed by `14c4c3546`. The maintainer authorized the creation, and `f1r3node-rust-71` created the symlink.
 - **Real adapter execution:** The runner completed both artifact commands on `ab84edf83`. Both commands exited 0. This closes the execution prerequisite only.
@@ -141,4 +169,4 @@ The runner reported baseline run `39194089405` at `ed9b3c996` with profile `week
 
 Comparison results are not recorded here. H1 does not establish the cause or resolution of the complete 45-second finalization miss.
 
-This update changes documentation only. This agent did not create a commit, stage files, push, or switch branches.
+The additional implementation changes are test-only. This agent did not create a commit, stage files, push, or switch branches.

@@ -27,7 +27,7 @@ Both the original leader-only evidence and the pre-implementation pending regist
   "evidence": {
     "kind": "implementation-review-pending-verification",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
+    "sha256": "1dddefc95b540d4a5873d212d891e385f14137c17e2e2eba229d68427b423304"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -44,12 +44,18 @@ Both the original leader-only evidence and the pre-implementation pending regist
     "commit": "3fd707102"
   },
   "previous_review_record": {
-    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-review-3ac876857-20261019.md",
-    "sha256": "437f507f22ebd7058faa392a5bab3a7956b52f10d02723bca5c2d1d37eb2563d",
+    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-renewal-base-f41f2a8ab-20261019.md",
+    "sha256": "c846487b25f6596cb1d2dffea3e1574ff5cf3220d0855cadab3a38cac4e84ca9",
     "report": {
-      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-review-3ac876857-20261019.md",
-      "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
+      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-renewal-base-f41f2a8ab-20261019.md",
+      "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
     }
+  },
+  "verification_sources": {
+    "node/src/rust/instances/heartbeat_responsive_tests.rs": "edcc7468032f7edb6f605f2b6028c673f052d033224e0f61b7e2a6d24066835c",
+    "node/src/rust/instances/heartbeat_additional_tests.rs": "fd73cd87c979683de84c3fdf57921e3a16ed6810d26688cc690eb6a43cf2c1e3",
+    "node/src/rust/instances/proposer_instance.rs": "c76ea6698d479db9617bba7cad5f7868a74f217d7582b28ae7ec8c6309aa9431",
+    "casper/tests/add_block/h1_proposer_spec.rs": "b9f54549857fa29b0f008210c7e9b685a4304fd88a9eea1a79ec0b00d702b1c9"
   },
   "waiver": null,
   "verified_at": null

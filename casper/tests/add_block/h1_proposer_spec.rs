@@ -168,3 +168,122 @@ async fn h1_does_not_gain_empty_recovery_authority_past_the_height_limit() {
 async fn h1_revalidates_the_previous_empty_block_after_queueing() {
     verify_nonempty_request(2, false, true).await;
 }
+
+struct QueuedSnapshot(Arc<Mutex<CasperSnapshot>>);
+
+impl casper::rust::blocks::proposer::proposer::CasperSnapshotProvider for QueuedSnapshot {
+    async fn get_casper_snapshot(
+        &self,
+        _: Arc<dyn Casper + Send + Sync>,
+    ) -> Result<CasperSnapshot, CasperError> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
+async fn verify_queued_request(changed_self: bool, selected_user: bool) {
+    with_storage(|block_store, block_dag_storage| async move {
+        let runtime = mk_runtime_manager("h1-queued-request", None).await;
+        let validator = Arc::new(ValidatorIdentity::new(&DEFAULT_VALIDATOR_SKS[0]));
+        let expected: models::rust::block_hash::BlockHash = vec![0x71; 32].into();
+        let mut snapshot = crate::util::rholang::resources::mk_dummy_casper_snapshot();
+        snapshot
+            .dag
+            .latest_messages_map
+            .insert(validator.public_key.bytes.clone(), expected.clone());
+        let snapshot = Arc::new(Mutex::new(snapshot));
+        let mut block = models::rust::block_implicits::get_random_block_default();
+        block.body.deploys.clear();
+        block.body.rejected_deploys.clear();
+        if selected_user {
+            block.body.deploys.push(
+                casper::rust::util::construct_deploy::basic_processed_deploy(1, None).unwrap(),
+            );
+        }
+        let selection = Arc::new(Mutex::new(None));
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut proposer = Proposer::new(
+            validator.clone(),
+            None,
+            QueuedSnapshot(snapshot.clone()),
+            AlwaysActiveChecker,
+            OkProposeConstraintStakeChecker,
+            CheckedHeight(false),
+            FixedCreator {
+                block,
+                selection: selection.clone(),
+            },
+            TestBlockValidator,
+            CountEffects(effects.clone()),
+            true,
+        );
+        let casper = Arc::new(NoOpsCasperEffect::new(
+            Some(HashMap::new()),
+            None,
+            Arc::new(runtime),
+            block_store,
+            block_dag_storage.get_representation().unwrap(),
+        ));
+        let request = ProposeRequest::heartbeat_deploy().after_empty_self(expected);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let attempts = if selected_user && !changed_self { 1 } else { 3 };
+        for _ in 0..attempts {
+            tx.send(request.clone()).await.unwrap();
+            tokio::task::yield_now().await;
+            if changed_self {
+                snapshot
+                    .lock()
+                    .unwrap()
+                    .dag
+                    .latest_messages_map
+                    .insert(validator.public_key.bytes.clone(), vec![0x72; 32].into());
+            }
+            let received = rx.recv().await.unwrap();
+            assert_eq!(received, request);
+            let result = proposer.propose(casper.clone(), received).await.unwrap();
+            let succeeds = selected_user && !changed_self;
+            assert_eq!(result.block_message_opt.is_some(), succeeds);
+            if !succeeds {
+                assert!(result.propose_result.is_no_new_deploys());
+                assert_eq!(effects.load(Ordering::SeqCst), 0);
+            }
+        }
+        assert_eq!(
+            *selection.lock().unwrap(),
+            if changed_self {
+                None
+            } else {
+                Some(DeploySelection::Standard)
+            }
+        );
+        assert_eq!(
+            effects.load(Ordering::SeqCst),
+            if selected_user && !changed_self { 2 } else { 0 }
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn h1_queued_request_rejects_a_changed_own_block_before_creation() {
+    verify_queued_request(true, true).await;
+}
+
+#[tokio::test]
+async fn h1_queued_request_with_depleted_selection_never_publishes_empty() {
+    verify_queued_request(false, false).await;
+}
+
+#[tokio::test]
+async fn h1_queued_request_with_unchanged_predecessor_can_publish_user_work() {
+    verify_queued_request(false, true).await;
+}
+
+#[test]
+fn legacy_boolean_requests_do_not_gain_h1_authority() {
+    for is_async in [false, true] {
+        let request = ProposeRequest::from(is_async);
+        assert_eq!(request.is_async, is_async);
+        assert!(!request.require_user_deploys);
+        assert!(request.expected_empty_self.is_none());
+    }
+}

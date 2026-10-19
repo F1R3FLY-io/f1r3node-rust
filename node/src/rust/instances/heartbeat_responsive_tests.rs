@@ -373,3 +373,6 @@ async fn actual_heartbeat_requests_consume_credit_before_failure_or_busy() {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
+
+#[path = "heartbeat_additional_tests.rs"]
+mod additional_tests;
