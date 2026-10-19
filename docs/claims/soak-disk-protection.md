@@ -26,7 +26,9 @@ With a node log budget enabled, the guardian also samples the container json-fil
 
 Every command that the driver runs under a time budget returns within that budget plus the kill grace period, also under CPU saturation. When the bounded command ends first, the driver stops the watchdog of that command and does not wait for the watchdog to expire. If the watchdog has not yet started its own process group, the driver stops the watchdog process and then tries the group kill again. After an iteration completes, the driver therefore reaches its admission checks and its signal check within a bounded time.
 
-At segment start, after each completed iteration and benchmark segment, and at the end of the soak, the driver attempts a bounded disk usage record. Each row has the time, the boundary, the component, and the size in MiB. A failed measurement is recorded as unknown (`?`), never as zero. A record that fails or exceeds its budget cannot admit work, change the run result, or erase a protection breach. The benchmark admission refusal also attempts a bounded attribution snapshot. The directory roots and the Docker totals can overlap, so a reader must not add them as separate storage.
+At segment start, after each iteration and benchmark segment, and at the end of the main loop, the driver attempts a bounded disk usage record. A path that ends the driver with `exit` before the end of the loop writes no final row. Each row has the time, the boundary, the component, and the size in MiB. A failed measurement is recorded as unknown (`?`), never as zero. A record that fails or exceeds its budget cannot admit work, change the run result, or erase a protection breach. The benchmark admission refusal also attempts a bounded attribution snapshot.
+
+The rows can overlap, so a reader must not add them as separate storage. For example, the `.subprocess-data` root is inside the runner `_work` root. The Docker totals also count space that a directory root can include.
 
 ## Implementation surface
 
