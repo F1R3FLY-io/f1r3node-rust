@@ -21,7 +21,7 @@ use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crypto::rust::public_key::PublicKey;
 
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 struct TestContext {
@@ -381,6 +381,102 @@ async fn resolve_uses_known_block_fallback_when_the_register_misses() {
         Some(&block_a.block_hash),
     );
     assert_eq!(with_known_block.rejection_count, 0);
+}
+
+/// The reproduction from #474: a finality advance must settle the verdicts it
+/// decides, without waiting for another block to be admitted.
+///
+/// `finalization_rate = 0` suppresses the detached finalizer, so the LFB moves
+/// only at the explicit finalizer cycles below, and no block is admitted
+/// between the advance and the assertion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_finality_advance_settles_the_verdict_without_another_block() {
+    use casper::rust::util::construct_deploy;
+
+    // Single-validator genesis: silent bonded validators never contribute
+    // witnessing weight, so the LFB cannot advance at all without them.
+    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .expect("build single-validator genesis");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
+        max_parent_depth: Some(10),
+        finalization_rate: Some(0),
+        ..Default::default()
+    })
+    .await
+    .expect("create_network");
+    nodes[0].allow_empty_blocks = true;
+
+    let deploy = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::source_deploy_now_full(
+            r#"@"finality_advance_settles"!(1)"#.to_string(),
+            None,
+            None,
+            None,
+            Some(0),
+            Some(shard_id.clone()),
+        )
+        .expect("build deploy")
+    };
+    let sig = deploy.sig.clone();
+    let carrier = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .expect("propose the carrier");
+
+    // Build height above the carrier so an advance has somewhere to go. No
+    // finalizer runs during this, so the LFB stays at genesis throughout.
+    for round in 0..12i32 {
+        let marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(round, None, Some(shard_id.clone()))
+                .expect("marker")
+        };
+        nodes[0]
+            .add_block_from_deploys(std::slice::from_ref(&marker))
+            .await
+            .expect("proposal");
+    }
+
+    let dag = nodes[0].casper.block_dag().await.expect("dag");
+    assert_eq!(
+        deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
+            .expect("resolve")
+            .state,
+        DeployFinalizationState::Pending,
+        "with no finalizer the LFB never moved, so nothing can be settled yet"
+    );
+
+    // Advance the LFB, admitting NO further block. Each cycle adopts at most
+    // one new LFB.
+    for _ in 0..12 {
+        nodes[0].casper.finalize().await.expect("finalizer cycle");
+    }
+
+    // The control: without it the test would look identical if the LFB had
+    // never moved, which would make it red for a reason that is not the defect.
+    let dag = nodes[0].casper.block_dag().await.expect("dag");
+    let lfb = dag.last_finalized_block();
+    assert!(
+        lfb == carrier.block_hash
+            || dag
+                .is_dag_ancestor(&carrier.block_hash, &lfb)
+                .expect("ancestry"),
+        "the LFB must have advanced past the carrier for the verdict to be decidable"
+    );
+
+    assert_eq!(
+        deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
+            .expect("resolve")
+            .state,
+        DeployFinalizationState::Finalized,
+        "the LFB passed the carrier, so the verdict is decided; leaving it unwritten \
+         until some later block happens to be admitted is the defect"
+    );
 }
 
 /// End to end on a real node: the cycle that puts the deploy's effect on the
