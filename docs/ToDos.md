@@ -1298,6 +1298,26 @@ tasks:
     acceptance:
       - "The same soak profile as TASK-021-16 runs on dev with cost accounting."
       - "The issue #24 report compares both runs and records new baselines if legacy cost changed."
+  - id: TASK-021-26
+    title: "Attribute and remove the soak disk growth that stops weekend soaks after 16 to 18 hours"
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-19T17:45:00Z
+    branch: fix/soak-disk-attribution
+    pr_base_branch: dev
+    pull_request: 782
+    blocked_by: ["PR #774 in dev (accepted driver digest 4626f343)"]
+    finding: "Soak 38995239992 stopped at 16.7 h (output directory 10.4 GB, Docker build cache 7.0 GB with 6.6 GB reclaimable, .subprocess-data 4.6 GB between iterations). Soak 39089710676 stopped at 18.2 h after the gzip fix. Its output directory was about 1.5 GB, but the space outside it was about 10 GB larger. It stopped on the benchmark admission path, which wrote no du snapshot."
+    decision: "2026-10-19: the maintainer holds the H1 comparison soak of TASK-021-13 until this fix lands."
+    notes:
+      - "Blocks TASK-021-16 and the TASK-021-13 comparison: a long soak cannot reach 100 sessions on each provider before the disk floor stops it."
+      - "Coordination: Claude Code (f1r3node-rust-71) owns the code, the fixture, the workflow, docs/claims/soak-disk-protection.md, and the ledger records. The Pi agent (pi-session-heartbeat-h1-cbc) owns the CbC review package casper-soak-disk-attribution-20261019-01 and the draft refresh of the workflow evidence record. The exchange is in the gitignored channel docs/handoffs/channel-soak-disk-attribution-2026-10-19.md."
+      - "Step 1 (this PR): a per-component disk usage record (disk-usage.tsv), a du snapshot on the benchmark admission refusal, and a Docker build cache prune after the node image build. Step 2: a daily soak with the record names the growing component. Step 3: remove that growth."
+    acceptance:
+      - "disk-usage.tsv has rows for segment start, each iteration, each benchmark segment, and the soak end. scripts/bench/test-soak-disk-admission.sh covers them, including disk-record-degraded."
+      - "A maintainer accepts the review package for the driver, the fixture, and the workflow under CLAIM-CASPER-SOAK-001."
+      - "A soak with the record names the component that grows, with its growth rate."
+      - "After the growth fix, a weekend soak runs past 24 hours without a disk floor stop."
 ---
 ```
 
