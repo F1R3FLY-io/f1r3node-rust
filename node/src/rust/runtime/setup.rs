@@ -86,6 +86,22 @@ fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool
 ///
 /// Oracular entries bypass this path entirely (the resolver
 /// short-circuits on `BundleConsensusMode::Oracular`).
+///
+/// # Preconditions
+///
+///   * **One node per `data_dir`.**  The staging layer writes
+///     `<data_dir>/fs_bundle_staging/<logical>.partial` and renames
+///     to the final path.  Two nodes sharing the same `data_dir`
+///     would race on the same rename target — last writer wins,
+///     and a crash mid-write can leave a `.partial` from one node
+///     that the other overwrites next boot.  Each node must own
+///     its own `data_dir`; this matches the single-validator-per-
+///     host deployment model Casper CBC assumes anyway.
+///   * **Local POSIX filesystem for `data_dir`.**  The Wave-B
+///     fcntl bracket around read/write syscalls relies on POSIX
+///     advisory-lock semantics; NFS and some shared-storage setups
+///     have well-known fcntl gaps.  On those, a cooperating
+///     sidecar reader can observe torn writes.
 pub(crate) async fn register_consensus_bundle_roots(
     manager: &casper::rust::util::rholang::runtime_manager::RuntimeManager,
     provisioning: &crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
@@ -103,6 +119,25 @@ pub(crate) async fn register_consensus_bundle_roots(
         provisioning,
         data_dir,
     )?;
+    // Log registry state at boot.  Operators diagnosing an
+    // `FSERR_UNSUPPORTED: unregistered logical root` at deploy
+    // time can grep for `consensus bundle root` in the node log
+    // to see what IS registered.  Deterministic ordering via
+    // `BTreeSet` collection: lexical by logical name.
+    for root in &allowed_roots {
+        tracing::info!(
+            target: "f1r3fly.node.setup",
+            on_disk_root = %root.display(),
+            "consensus bundle root registered"
+        );
+    }
+    tracing::info!(
+        target: "f1r3fly.node.setup",
+        count = allowed_roots.len(),
+        file_entries = provisioning.consensus_static_files.len(),
+        dir_entries = provisioning.consensus_static_dirs.len(),
+        "register_consensus_bundle_roots: boot registration complete"
+    );
     for root in allowed_roots {
         manager.register_consensus_static_root(root).await;
     }

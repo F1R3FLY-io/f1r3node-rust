@@ -8,6 +8,13 @@
 // discipline.  A hostile reader bypasses the lock and can see
 // torn bytes; the sidecar is the coordinated path.
 //
+// Mirror lives at
+// `rholang/src/rust/interpreter/io/handlers/helpers/fcntl_lock.rs` —
+// the node's F_WRLCK side of this discipline.  Any semantic change
+// (lock-type encoding, drop semantics, zero-length policy) MUST
+// land in both files together; cross-process coordination relies
+// on both sides using identical fcntl discipline.
+//
 // # Why duplicate (not import from the node crate)
 //
 // Importing the rholang-side module would pull the entire node /

@@ -3,6 +3,12 @@
 // an out-of-process sidecar reader (Phase B) that reads the same
 // bundle files via their own file descriptors.
 //
+// Mirror lives at `scripts/file-read-service/src/fcntl.rs` — the
+// sidecar's ~40 LOC near-copy of this primitive.  Any semantic
+// change (lock-type encoding, drop semantics, zero-length policy)
+// MUST land in both files together; cross-process coordination
+// relies on both sides using identical fcntl discipline.
+//
 // # Scope
 //
 // Advisory locks are:

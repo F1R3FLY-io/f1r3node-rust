@@ -216,6 +216,13 @@ fn build_ok_response(bytes: Vec<u8>) -> Response {
 /// absolute / non-UTF-8 component.  Prevents a client-supplied
 /// `?sub_rel=../etc/passwd` from escaping the operator's declared
 /// Dir root.
+///
+/// `CurDir` (`.`) is silently skipped rather than rejected: a `.`
+/// component is a no-op in path resolution (`a/./b` and `a/b`
+/// resolve to the same path), so `?sub_rel=./file.txt` is a
+/// cosmetic variant of `?sub_rel=file.txt` and poses no escape
+/// risk.  Rejecting it would surprise operators who normalize
+/// their request URLs with leading `./`.
 fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, String> {
     use std::path::Component;
     let rel_path = Path::new(rel);
