@@ -6,7 +6,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::signed::Signed;
-use models::casper::{BondInfo, JustificationInfo};
+use models::casper::{BlockMessageProto, BondInfo, JustificationInfo};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::block_hash::BlockHash;
@@ -467,20 +467,33 @@ pub fn unsigned_block_proto(
 pub fn hash_block(block: &BlockMessage) -> BlockHash {
     use prost::Message;
 
-    let bytes: Vec<u8> = block
-        .header
-        .to_proto()
-        .encode_to_vec()
-        .into_iter()
-        .chain(block.body.to_proto().encode_to_vec().into_iter())
-        .chain(block.sender.clone().into_iter())
-        .chain(block.sig_algorithm.as_bytes().to_vec().into_iter())
-        .chain(block.seq_num.to_le_bytes().into_iter())
-        .chain(block.shard_id.as_bytes().to_vec().into_iter())
-        .chain(block.extra_bytes.clone().into_iter())
-        .collect();
+    let BlockMessage {
+        block_hash: _,
+        header,
+        body,
+        justifications,
+        sender,
+        seq_num,
+        sig: _,
+        sig_algorithm,
+        shard_id,
+        extra_bytes,
+    } = block;
 
-    Blake2b256::hash(bytes).into()
+    let committed = BlockMessageProto {
+        block_hash: prost::bytes::Bytes::new(),
+        header: Some(header.to_proto()),
+        body: Some(body.to_proto()),
+        justifications: justifications.iter().map(Justification::to_proto).collect(),
+        sender: sender.clone(),
+        seq_num: *seq_num,
+        sig: prost::bytes::Bytes::new(),
+        sig_algorithm: sig_algorithm.clone(),
+        shard_id: shard_id.clone(),
+        extra_bytes: extra_bytes.clone(),
+    };
+
+    Blake2b256::hash(committed.encode_to_vec()).into()
 }
 
 pub fn hash_string(b: &BlockMessage) -> BlockHash {
@@ -958,6 +971,40 @@ mod fork_choice_b1_repro_tests {
                 }
             }
             prop_assert_eq!(&map_a, &expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod hash_block_tests {
+    use models::rust::block_implicits::get_random_block_default;
+
+    use super::*;
+
+    fn justification(validator: u8, block: u8) -> Justification {
+        Justification {
+            validator: vec![validator; 65].into(),
+            latest_block_hash: vec![block; 32].into(),
+        }
+    }
+
+    #[test]
+    fn hash_block_commits_to_justifications() {
+        let mut block = get_random_block_default();
+        block.justifications = vec![justification(1, 1), justification(2, 2)];
+        let original = hash_block(&block);
+
+        let mut changed = block.clone();
+        changed.justifications[1].latest_block_hash = vec![3; 32].into();
+        let mut removed = block.clone();
+        removed.justifications.pop();
+        let mut added = block.clone();
+        added.justifications.push(justification(3, 3));
+        let mut moved_to_extra_bytes = removed.clone();
+        moved_to_extra_bytes.extra_bytes = [vec![2; 65], vec![2; 32]].concat().into();
+
+        for mutated in [changed, removed, added, moved_to_extra_bytes] {
+            assert_ne!(hash_block(&mutated), original);
         }
     }
 }

@@ -411,6 +411,11 @@ pub async fn process_block_bypassing_of_interest_filter(
     CasperError,
 > {
     use casper::rust::block_status::BlockStatus;
+    if let Err(invalid) = casper::rust::validate::Validate::block_hash_and_signature(&block) {
+        return Ok(rspace_plus_plus::rspace::history::Either::Left(
+            casper::rust::block_status::BlockError::Invalid(invalid),
+        ));
+    }
     let is_well_formed = node
         .block_processor
         .check_if_well_formed_and_store(&block)

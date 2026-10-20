@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::block_status::BlockStatus;
+use casper::rust::block_status::{BlockError, BlockStatus};
 use casper::rust::blocks::block_processor::{
     BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
 };
@@ -24,6 +24,7 @@ use casper::rust::genesis::genesis::Genesis;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::validate::Validate;
 use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
 use comm::rust::errors::CommError;
@@ -183,6 +184,10 @@ impl TestNode {
 
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
+        }
+
+        if let Err(invalid) = Validate::block_hash_and_signature(&block) {
+            return Ok(Either::Left(BlockError::Invalid(invalid)));
         }
 
         // Check if well-formed and store

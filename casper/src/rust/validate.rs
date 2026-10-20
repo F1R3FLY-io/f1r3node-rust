@@ -234,6 +234,16 @@ impl Validate {
         verified
     }
 
+    pub fn block_hash_and_signature(b: &BlockMessage) -> Result<(), InvalidBlock> {
+        if matches!(Self::block_hash(b), Either::Left(_)) {
+            return Err(InvalidBlock::InvalidBlockHash);
+        }
+        if !Self::block_signature(b) {
+            return Err(InvalidBlock::InvalidSignature);
+        }
+        Ok(())
+    }
+
     pub fn block_sender_has_weight(
         b: &BlockMessage,
         genesis: &BlockMessage,
@@ -277,6 +287,19 @@ impl Validate {
             false
         } else if b.body.state.post_state_hash.is_empty() {
             tracing::warn!("{}", Self::ignore(b, "block post state hash is empty."));
+            false
+        } else if !b
+            .justifications
+            .windows(2)
+            .all(|pair| pair[0].validator < pair[1].validator)
+        {
+            tracing::warn!(
+                "{}",
+                Self::ignore(
+                    b,
+                    "block justifications are not in strictly ascending validator order."
+                )
+            );
             false
         } else {
             true
@@ -2091,5 +2114,33 @@ mod merge_recovery_validation_tests {
             Validate::neglected_invalid_block(&block, &mut snapshot),
             Either::Right(ValidBlock::Valid)
         ));
+    }
+}
+
+#[cfg(test)]
+mod justification_order_tests {
+    use models::rust::block_implicits::get_random_block_default;
+    use models::rust::casper::protocol::casper_message::Justification;
+
+    use super::*;
+
+    #[test]
+    fn format_of_fields_requires_strictly_ascending_justifications() {
+        let justification = |validator: u8| Justification {
+            validator: vec![validator; 65].into(),
+            latest_block_hash: vec![0; 32].into(),
+        };
+        let mut block = get_random_block_default();
+        block.sig = vec![1].into();
+        block.sig_algorithm = "secp256k1".to_string();
+
+        block.justifications = vec![justification(1), justification(2)];
+        assert!(Validate::format_of_fields(&block));
+
+        block.justifications = vec![justification(2), justification(1)];
+        assert!(!Validate::format_of_fields(&block));
+
+        block.justifications = vec![justification(1), justification(1)];
+        assert!(!Validate::format_of_fields(&block));
     }
 }

@@ -428,9 +428,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         &self,
         block: &BlockMessage,
     ) -> Result<bool, CasperError> {
-        let valid_format = Validate::format_of_fields(block);
-        let valid_sig = Validate::block_signature(block);
-        let is_valid = valid_format && valid_sig;
+        let is_valid = Validate::format_of_fields(block);
 
         if is_valid {
             // Time storage operation

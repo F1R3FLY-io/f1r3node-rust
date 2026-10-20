@@ -158,10 +158,10 @@ Finally: `create_checkpoint()` produces the post-state hash.
 
 - Header: version, timestamp, sender, block number (max parent + 1), sequence number
 - Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys
-- Justifications: One per bonded validator
+- Justifications: One per bonded validator, in strictly ascending validator order
 - Bonds cache: Current validator set with stakes
-- Hash the block via Blake2b256
-- Sign with validator's Secp256k1 key
+- Hash the block via Blake2b256 over the protobuf encoding of the full `BlockMessage`, with `blockHash` and `sig` empty. The hash covers every other field, including the justifications.
+- Sign the block hash with validator's Secp256k1 key
 
 **Timestamp hardening**: If current time < max parent timestamp (clock skew), the timestamp is clamped to the parent's timestamp. This prevents `InvalidTimestamp` validation errors.
 
@@ -187,16 +187,18 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 ## 4. Block Validation
 
-`BlockProcessor` runs an 8-step pipeline on received blocks:
+`BlockProcessor` runs an 8-step pipeline on received blocks.
+
+Before a block enters the pipeline, the node recomputes the block hash and verifies the signature. This check runs when the block message arrives, before the node marks the block hash as in flight. If the hash or the signature does not match, the node drops the copy. The node does not change the in-flight markers, the buffer, or the request state for that block hash, so the original block can still arrive.
 
 ### Step 1: Interest Check
 - Already in DAG or casper buffer? Skip.
 - Shard ID and version match the approved block? Required.
 - Block number >= approved block number? Required (no ancient blocks).
 
-### Step 2: Format & Signature
-- Verify cryptographic signature (Secp256k1, Schnorr, or FROST)
+### Step 2: Format
 - Check field validity: hash length, timestamp within ±15s of local time, required fields present
+- Require justifications in strictly ascending validator order. This also refuses a duplicate validator.
 
 ### Step 3: Dependency Resolution
 - All parent blocks must be in the DAG
@@ -208,6 +210,7 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - This ensures validation uses the same state the proposer had
 
 ### Step 5: Block Summary
+- Recompute the block hash again
 - Structural consistency: block number progression, sender weight, justification format
 
 ### Step 6: Checkpoint Validation (Deploy Replay)

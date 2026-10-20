@@ -34,6 +34,7 @@ use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
 use crate::rust::safety::clique_oracle::FtThreshold;
+use crate::rust::validate::Validate;
 
 /// Largest `skip` and `take` a `StoreItemsMessageRequest` may carry. Honest
 /// requesters page with `skip = 0` and at most this many items, so anything
@@ -263,6 +264,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(&b, true),
+                        peer.endpoint.host
+                    );
+                } else if Validate::block_hash_and_signature(&b).is_err() {
+                    tracing::debug!(
+                        "Dropping BlockMessage {} from {}: it does not match its hash or signature",
+                        PrettyPrinter::build_string_bytes(&b.block_hash),
                         peer.endpoint.host
                     );
                 } else {
