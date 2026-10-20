@@ -17,11 +17,17 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
+use crate::rust::deploy_admission::compare_deploys;
 use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    CASPER_METRICS_SOURCE, DEPLOY_ADMISSION_ACCEPTED_METRIC, DEPLOY_ADMISSION_CAPACITY_METRIC,
+    DEPLOY_ADMISSION_PENDING_AHEAD_METRIC, DEPLOY_ADMISSION_REFUSED_METRIC,
+};
 use crate::rust::util::rholang::interpreter_util;
 
 pub(crate) fn admit_contains<T: TransportLayer + Send + Sync>(
@@ -140,28 +146,160 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
 fn reserve_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy: Signed<DeployData>,
-) -> Result<bool, CasperError> {
+) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
     if this
         .block_dag_storage
         .deploy_canonical_appearance(&deploy_id)?
         .is_some()
     {
-        return Ok(false);
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
 
     let mut deploy_storage = this.deploy_storage.lock();
     let rejected_deploys = this.rejected_deploy_buffer.lock()?;
-    if rejected_deploys.contains_sig(&deploy_id)? {
-        return Ok(false);
+    if deploy_storage.contains_sig(&deploy_id)? || rejected_deploys.contains_sig(&deploy_id)? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
-    deploy_storage.add_if_absent(deploy).map_err(Into::into)
+    let dag = this.block_dag_storage.get_representation()?;
+    if dag.deploy_terminal(&deploy_id)?.is_some()
+        || dag.deploy_canonical_appearance(&deploy_id)?.is_some()
+    {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
+    let shard_cap = this.casper_shard_conf.max_user_deploys_per_block as usize;
+    let mut capacity = this.deploy_admission.capacity(shard_cap, 1);
+    let (earliest, now) = queue_bounds(&dag, this.casper_shard_conf.deploy_lifespan)?;
+    let buffered: HashSet<Bytes> = rejected_deploys
+        .read_all()?
+        .into_iter()
+        .map(|deploy| deploy.sig)
+        .collect();
+    let mut pending_ahead = 0;
+    let mut has_fresh = false;
+    deploy_storage.any(|stored| {
+        if !deploy_is_fresh(&dag, &buffered, stored, earliest, now)? {
+            return Ok(false);
+        }
+        has_fresh = true;
+        if capacity == 0 {
+            return Ok(true);
+        }
+        if compare_deploys(stored, &deploy).is_lt() {
+            pending_ahead += 1;
+        }
+        Ok(pending_ahead >= capacity)
+    })?;
+    if capacity == 0 && !has_fresh && shard_cap > 0 {
+        capacity = 1;
+    }
+    metrics::gauge!(DEPLOY_ADMISSION_PENDING_AHEAD_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(pending_ahead as f64);
+    metrics::gauge!(DEPLOY_ADMISSION_CAPACITY_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(capacity as f64);
+    if pending_ahead >= capacity {
+        metrics::counter!(DEPLOY_ADMISSION_REFUSED_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+        return Ok(Either::Left(DeployError::PoolBusy {
+            pending_ahead,
+            capacity,
+        }));
+    }
+    if !deploy_storage.add_if_absent(deploy)? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
+    metrics::counter!(DEPLOY_ADMISSION_ACCEPTED_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .increment(1);
+    Ok(Either::Right(deploy_id))
+}
+
+fn queue_bounds(
+    dag: &KeyValueDagRepresentation,
+    deploy_lifespan: i64,
+) -> Result<(i64, i64), CasperError> {
+    let next_block = dag.latest_block_number().checked_add(1).ok_or_else(|| {
+        CasperError::RuntimeError("Next block height exceeds the supported range".to_string())
+    })?;
+    let earliest =
+        crate::rust::util::deploy_window::earliest_valid_after(next_block, deploy_lifespan)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| {
+            CasperError::RuntimeError("System time exceeds the supported range".to_string())
+        })?;
+    Ok((earliest, now))
+}
+
+fn deploy_is_fresh(
+    dag: &KeyValueDagRepresentation,
+    buffered: &HashSet<Bytes>,
+    deploy: &Signed<DeployData>,
+    earliest: i64,
+    now: i64,
+) -> Result<bool, KvStoreError> {
+    Ok(deploy.data.valid_after_block_number > earliest
+        && !deploy.data.is_expired_at(now)
+        && !buffered.contains(&deploy.sig)
+        && dag.deploy_terminal(&deploy.sig)?.is_none()
+        && dag.deploy_canonical_appearance(&deploy.sig)?.is_none())
+}
+
+fn local_service_sample<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    block: &BlockMessage,
+) -> Result<Option<(usize, bool)>, CasperError> {
+    if !this
+        .validator_id
+        .as_ref()
+        .is_some_and(|id| id.public_key.bytes == block.sender)
+    {
+        return Ok(None);
+    }
+    let storage = this.deploy_storage.lock();
+    let rejected = this.rejected_deploy_buffer.lock()?;
+    let dag = this.block_dag_storage.get_representation()?;
+    if dag.contains(&block.block_hash) {
+        return Ok(None);
+    }
+    let (earliest, now) = queue_bounds(&dag, this.casper_shard_conf.deploy_lifespan)?;
+    let buffered: HashSet<Bytes> = rejected
+        .read_all()?
+        .into_iter()
+        .map(|deploy| deploy.sig)
+        .collect();
+    let mut included = HashSet::new();
+    for processed in &block.body.deploys {
+        let deploy = &processed.deploy;
+        if storage.contains_sig(&deploy.sig)?
+            && deploy_is_fresh(&dag, &buffered, deploy, earliest, now)?
+        {
+            included.insert(deploy.sig.clone());
+        }
+    }
+    let had_demand = !included.is_empty()
+        || storage.any(|deploy| {
+            Ok(
+                deploy.data.valid_after_block_number < block.body.state.block_number
+                    && deploy_is_fresh(&dag, &buffered, deploy, earliest, now)?,
+            )
+        })?;
+    Ok(Some((included.len(), had_demand)))
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
+    let service_sample = match local_service_sample(this, block) {
+        Ok(sample) => sample,
+        Err(error) => {
+            tracing::warn!(%error, "Failed to measure local deploy inclusion capacity");
+            None
+        }
+    };
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
     // via the helper. See
     // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
@@ -182,6 +320,10 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             block_hash_serde,
         ),
     )?;
+    if let Some((included, had_demand)) = service_sample {
+        this.deploy_admission
+            .observe(block.seq_num, included, had_demand);
+    }
     let insert_ms = insert_start.elapsed().as_millis();
     if insert_ms >= 1_000 {
         tracing::warn!(
@@ -255,8 +397,8 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if !reserve_deploy(this, deploy.clone())? {
-        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    if let Either::Left(error) = reserve_deploy(this, deploy.clone())? {
+        return Ok(Either::Left(error));
     }
 
     // Log the received deploy
