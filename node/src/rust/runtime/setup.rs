@@ -122,9 +122,14 @@ pub(crate) async fn register_consensus_bundle_roots(
     // Log registry state at boot.  Operators diagnosing an
     // `FSERR_UNSUPPORTED: unregistered logical root` at deploy
     // time can grep for `consensus bundle root` in the node log
-    // to see what IS registered.  Deterministic ordering via
-    // `BTreeSet` collection: lexical by logical name.
-    for root in &allowed_roots {
+    // to see what IS registered.  Sort before iterating so the
+    // log order is stable across nodes with identical config —
+    // defense against the HashMap-iteration non-determinism in
+    // the parent helper (file-staging dedupe uses a BTreeMap for
+    // its own correctness, but Dir entries push in HashMap order).
+    let mut sorted_roots = allowed_roots.clone();
+    sorted_roots.sort();
+    for root in &sorted_roots {
         tracing::info!(
             target: "f1r3fly.node.setup",
             on_disk_root = %root.display(),
