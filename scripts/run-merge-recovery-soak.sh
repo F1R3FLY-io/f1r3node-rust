@@ -886,7 +886,7 @@ record_disk_usage() {
 		declare -p OUTPUT_DIR HARNESS_TELEMETRY_DIRS SOAK_TMP_ROOT SOAK_RUNNER_ROOT
 		declare -f bounded disk_usage_roots disk_usage_record_rows
 	)"
-	SOAK_DISK_USAGE_RECORD=1 session_bounded "$DISK_USAGE_RECORD_SECONDS" bash -c "$definitions"$'\n''disk_usage_record_rows "$1"' bash "$1" \
+	SOAK_DISK_USAGE_RECORD=1 timeout --signal=TERM --kill-after=1 "$DISK_USAGE_RECORD_SECONDS" bash -c "$definitions"$'\n''disk_usage_record_rows "$1"' bash "$1" \
 		>>"$file" 2>/dev/null || true
 }
 
