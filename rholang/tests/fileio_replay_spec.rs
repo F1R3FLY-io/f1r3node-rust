@@ -44,16 +44,16 @@
 //!   * `.await.expect(...)` triage patch for `create_rho_runtime`
 //!     and `create_replay_rho_runtime` Result returns.
 //!   * `root_registry.set_test_permissive(true)` is now called on
-//!     both leader + follower in `create_leader_and_follower`.  The
-//!     M-04 gated resolver landed on triage via slice
+//!     both leader + follower in `create_leader_and_follower`.
+//!     The M-04 gated resolver landed on triage via slice
 //!     `feature/consensus-mode-handler-gating`; path-mutation
 //!     handlers (fs_chmod / fs_rename / fs_remove_file / fs_chown)
-//!     + removedir now route through
+//!     plus removedir now route through
 //!     `resolve_or_identity_gated_for_consensus`, which refuses
-//!     Consensus-mode calls on unregistered logical roots.  Raw
-//!     tempdir roots in these tests need the bypass.  Flipping the
-//!     flag unblocks the migration-shape; the remaining ignores
-//!     are the replay-harness UnusedCommEvent gap.
+//!     Consensus-mode calls on unregistered logical roots.
+//!     Raw tempdir roots in these tests need the bypass.  Flipping
+//!     the flag unblocks the migration-shape; the remaining
+//!     ignores are the replay-harness UnusedCommEvent gap.
 //!   * `oracular_recursive_remove_dir_replays_without_journaling`
 //!     once had an additional reason to be ignored (the slice-5.44
 //!     FSERR_UNSUPPORTED stub for `removeDir`).  That cause was
