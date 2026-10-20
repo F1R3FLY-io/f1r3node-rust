@@ -59,6 +59,7 @@ The job runs 21 script tests:
 - Commit trailer check
 - Pre-push hook
 - Stack CI gate
+- Image publish tags
 - Soak schedule routing
 - System-integration node capability contract
 - System-integration repin helper
@@ -166,7 +167,7 @@ Do not open a back-merge with head `master`. A pull request with a protected hea
 
 ## Protected head guard
 
-`.github/scripts/check-promotion-source.sh` rejects every pull request from this repository with head `master` or `dev`, whatever its base. A pull request from the `master` or `dev` branch of a fork is accepted. Two workflows run the script:
+`.github/scripts/check-promotion-source.sh` rejects every pull request from this repository with head `master`, `dev`, `ca-canary`, or `ca-release`, whatever its base. A pull request from a branch of a fork with one of these names is accepted. Two workflows run the script:
 
 | Workflow | Event | Token | Action |
 |---|---|---|---|
@@ -176,3 +177,104 @@ Do not open a back-merge with head `master`. A pull request with a protected hea
 The guard runs the workflow file and the script from the base branch, not from the pull request. Code that a pull request changes therefore never runs with the write token. The guard also runs when the pull request has a merge conflict, and `pull_request` workflows do not. A closed pull request has no **Update branch** button and cannot merge, so the guard also covers `dev`, where `Promotion Source` is not required.
 
 The guard uses the workflow of the base branch. It protects pull requests to `dev` after this workflow is on `dev`, and pull requests to `master` after the next promotion. The close happens a few seconds after the pull request opens. Only a ruleset blocks a direct push to `master` or `dev` at all times. The change of the human bypass actors from `always` to `pull_request` is still open (TASK-023-13).
+
+## Release train branches
+
+The cost-accounting release train of issue #764 adds two long-lived branches. `ca-canary` has the role of `dev`, and `ca-release` has the role of `master`. Issue #791 tracks the CI work for them.
+
+| Flow | Command | Temporary branch |
+|---|---|---|
+| Promotion from `ca-canary` to `ca-release` | `just ca-promote` | `promote/ca-release-<UTC timestamp>` |
+| Back-merge from `ca-release` to `ca-canary` | `just ca-backmerge` | `backmerge/ca-release-<12-character SHA>` |
+| Occasional sync from `dev` to `ca-canary` | `just ca-sync` | `ca/sync-dev-<12-character SHA>` |
+
+The commands run the same scripts as `just promote` and `just backmerge`. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
+
+CI treats the two branches like `dev` and `master`:
+
+- A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Its head must not be a protected branch.
+- An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
+
+Image publication:
+
+| Reference | Version tag | Channel pointer |
+|---|---|---|
+| Push to `ca-release` | `ca-release-<git describe>` | `:ca-release` |
+| Tag `ca-v<version>` | `:ca-v<version>` | `:ca-latest` |
+
+`ca-canary` does not publish images. A `ca-*` reference never moves `:latest` or `:dev`. `test-image-publish-tags.sh` checks these tags.
+
+The heavy pipeline and the soaks use the `oci-credentials` environment. It must allow `branch:ca-canary`, `branch:ca-release`, and `tag:ca-v*`.
+
+Only `dev` and `master` publish without reviewer approval, through `protected-branch-image-publish`. A push to `ca-release` and a `ca-v*` tag publish through `ephemeral-launch`, so each publication waits for one of its required reviewers. `check-workflow-invariants.sh` enforces this rule.
+
+### Dev sync
+
+`dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, so it needs the 22-hour soak and an approval like any item. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
+
+### Daily back-merge
+
+`ca-daily-sync.yml` (Release Train Daily Back-merge) runs from `master` at 01:30Z. It opens the back-merge from `ca-release` to `ca-canary`, which brings the promotion merge commits and any hotfix back to `ca-canary`. It does nothing when `ca-canary` already contains `ca-release` or a back-merge pull request is open.
+
+The workflow uses the promotion app token from `release-credentials`, as the Promote and Back-merge workflow does. The pull request body says that Mergify merges it. Until `ca-canary` and `ca-release` exist, the workflow does nothing.
+
+### Mergify
+
+`.mergify.yml` merges pull requests into `ca-canary` only. A maintainer merges the promotion into `ca-release`. The GitHub merge queue stays on `dev` and `master`. Every merge is a merge commit.
+
+| Queue | Pull requests | Merge conditions |
+|---|---|---|
+| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync. Mergify queues it by itself. | To enter the queue: the `ci-heavy` label, the `ca-soaked` label, and an approving review. To merge: the `ci.yml` checks of `devProtect` and the Integration Gates. The `ci-heavy` label is necessary for the Integration Gates. |
+| `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review. The trusted validator accepts the release source and clean base merges only. A maintainer merges a back-merge that a person opened. |
+
+To merge a `ca/<item>` pull request:
+
+1. Add the `ci-heavy` label after the last planned push.
+2. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
+3. Get an approving review.
+
+Mergify then queues the pull request by itself.
+
+The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`. The `ca-soak` dispatcher and the `Soak Gate (22h)` and `Soak Gate (60h)` statuses come from a separate CbC change of the soak workflow.
+
+The `ca-soaked` label stays on the pull request when Mergify merges a new `ca-canary` base into it. A back-merge or a merged sync therefore does not need a new soak. A push by the author removes the label, so a code change needs a new soak. A commit status cannot do this, because a new head commit has no status and Mergify then removes the pull request from the queue.
+
+A person with triage access can add the label by hand. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
+
+### Daily provenance
+
+`ca-daily-provenance.yml` runs on `pull_request_target` and checks out only the captured base commit.
+It fetches pull request commit objects without checking out or executing pull request code.
+The validator requires a same-repository head and the promotion app as the pull request author.
+
+The named source must belong to `ca-release`.
+The head can be that source or up to 128 clean base merges after it.
+Each merge must have the previous head as its first parent and a captured base ancestor as its second parent.
+The validator compares each actual tree with the clean tree from `git merge-tree --write-tree`.
+An extra commit, altered tree, conflict, or missing object fails the check.
+
+The workflow posts `CA Daily Provenance` directly on the event head SHA, not the workflow base SHA.
+A failed or incomplete validation posts failure when the result step can run.
+A missing or pending status also blocks the daily queue.
+The workflow and validator must reach `ca-canary` before the queue can pass this gate.
+The [design](plans/ca-daily-provenance.md) gives the verification scope.
+
+### Release tag
+
+Run `just ca-tag <version>`, for example `just ca-tag 0.5.0-rc.1`. The command runs `.github/scripts/tag-ca-release.sh`. It creates the annotated tag `ca-v<version>` at the `ca-release` head. It refuses the tag when the head has no successful `Soak Gate (60h)` status, and it never moves an existing tag. The `rust-client` `master` branch pins this tag and the `:ca-v<version>` image.
+
+### Proposed rulesets
+
+These rulesets are a plan. They are not applied.
+
+| Rule | `ca-canary` | `ca-release` |
+|---|---|---|
+| Deletion and non-fast-forward | Blocked | Blocked |
+| Required checks | The `devProtect` checks. The `ca-soaked` label in Mergify gates the soak. | The `masterProtect` checks. `just ca-tag` requires `Soak Gate (60h)` on the `ca-release` head. |
+| Pull request review | One code-owner approval for `ca/*` heads | One code-owner approval for `promote/ca-release-*` heads |
+| Merge method | Merge commit only | Merge commit only |
+| GitHub merge queue | None (Mergify) | None. A maintainer merges the promotion. |
+| Bypass actors | The Mergify app, for the `ca-daily` pull requests | None |
+
+A ruleset cannot require a review for some heads only. The review rule therefore needs a decision: a separate ruleset for each head pattern, or a review in Mergify only.

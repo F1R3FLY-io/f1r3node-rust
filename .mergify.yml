@@ -1,0 +1,97 @@
+# Mergify for the cost-accounting release train (issue #764, issue #791).
+#
+# Mergify merges only into ca-canary. A maintainer merges the promotion from
+# ca-canary into ca-release (`just ca-promote`). The GitHub merge queue stays on
+# dev and master, and no rule here matches those bases.
+#
+#   ca-item   a ca/<item> pull request into ca-canary. Mergify queues it by
+#             itself when it has the ci-heavy label, an approving review, and
+#             the ca-soaked label. The ca-soak label starts its 22-hour soak.
+#             A passed soak adds ca-soaked and posts Soak Gate (22h) on the
+#             soaked commit. The label stays when Mergify merges the base into
+#             the pull request, and a push by the author removes it. A commit
+#             status cannot do this: Mergify dequeues a pull request whose
+#             queue conditions stop matching, and a new head has no status.
+#             The occasional dev sync (`just ca-sync`, head ca/sync-dev-<sha>)
+#             is a ca/ item too, so it needs the same soak.
+#   ca-daily  the daily back-merge (backmerge/ca-release-<sha> into
+#             ca-canary) from ca-daily-sync.yml. It needs the light ci.yml
+#             checks only and no review, so it accepts only pull requests
+#             that the promotion app opened. CA Daily Provenance verifies the
+#             release source and each clean base merge with trusted code. A
+#             back-merge opened by hand with just ca-backmerge is merged by a
+#             maintainer. A push to ca-canary runs the heavy pipeline after
+#             the merge.
+#
+# Every merge is a merge commit, so ca-canary keeps the dev and ca-release
+# history, and ca-release keeps the ca-canary history. Each queue merges one
+# pull request at a time and checks the pull request itself, so the ci.yml
+# checks of the pull request are the merge evidence.
+
+queue_rules:
+  - name: ca-item
+    batch_size: 1
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=ca-canary
+      - head~=^ca/
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+      - label=ca-soaked
+    merge_conditions:
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
+
+  - name: ca-daily
+    batch_size: 1
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=ca-canary
+      - head~=^backmerge/ca-release-[0-9a-f]{12}$
+      - author=f1r3node-promotion[bot]
+    merge_conditions:
+      - check-success=CA Daily Provenance
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+
+pull_request_rules:
+  - name: Queue a release train item
+    conditions:
+      - base=ca-canary
+      - head~=^ca/
+    actions:
+      queue:
+        name: ca-item
+
+  - name: Queue the daily back-merge
+    conditions:
+      - base=ca-canary
+      - head~=^backmerge/ca-release-[0-9a-f]{12}$
+      - author=f1r3node-promotion[bot]
+    actions:
+      queue:
+        name: ca-daily
