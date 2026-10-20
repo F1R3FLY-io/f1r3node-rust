@@ -1,5 +1,7 @@
 # Numeric merge authority preservation
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Status and scope
 
 The September 10, 2026 investigation demonstrates accounting metadata loss in numeric merge reconstruction.

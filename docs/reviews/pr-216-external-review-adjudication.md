@@ -1,5 +1,7 @@
 # PR 216 external review adjudication
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Purpose
 
 This record evaluates the external review in `pr-216-review.zip` against the current branch and its governing design sources.

@@ -1,5 +1,7 @@
 # Multi-wallet funding path audit
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Status and scope
 
 This source audit covers selected funding paths at commit `9e58cf211885b2cdb319e030efa2af0491d71471` on September 9, 2026.

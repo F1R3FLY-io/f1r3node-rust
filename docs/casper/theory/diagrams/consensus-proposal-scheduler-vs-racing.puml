@@ -28,6 +28,7 @@ skinparam ActivityBorderColor #333333
 skinparam ActivityDiamondBackgroundColor $ca_control
 skinparam ActivityDiamondBorderColor #333333
 title Inside one deploy: the single-order scheduler (this branch) against racing evaluation (dev)
+footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
 
 start
 :a deploy body with parallel branches,\nfor example <latex>P \mid Q \mid R</latex>; <<$ca_supply>>

@@ -1,5 +1,7 @@
 # Raw byte observations
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 The interpreter preserves raw byte quantities for accepted accounting events.
 These quantities support typed funding evidence without reconstructing measurements from weighted charges.
 The observations do not change the legacy byte schedule, create spendable balances, or authorize wallet settlement.

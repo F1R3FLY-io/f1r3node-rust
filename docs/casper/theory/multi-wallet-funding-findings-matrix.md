@@ -1,5 +1,7 @@
 # Multi-wallet funding findings and repair evidence
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Status and evidence boundary
 
 This matrix maps funding findings to implementation requirements and verification evidence.

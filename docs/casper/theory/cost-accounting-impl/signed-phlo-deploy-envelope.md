@@ -1,5 +1,7 @@
 # Signed phlo deploy envelope
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Purpose and execution boundary
 
 `FundedDeploy` binds a deploy body to its complete canonical funding intent.

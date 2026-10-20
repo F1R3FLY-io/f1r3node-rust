@@ -6,6 +6,8 @@ Its test inventory is the set of Rust files in [`tests/`](tests), and the gate's
 
 The native history tests in [`rspace++/tests/native_history_loom.rs`](../../../rspace++/tests/native_history_loom.rs) exercise the borrowed reader with shared reservation credit. The native cache and source tests in the same directory check that payload preparation and source construction reserve work before completion. These tests use a Loom reservation meter; they do not instrument every allocator or backend lock.
 
+**Removed by DR-131 (`75de2dc39`).** The three rspace++ Loom tests named above and the host-work admission model (`loom_host_work_budget.rs`) are deleted with host-work metering. Restore: `git revert 75de2dc39`.
+
 Several tests import production transitions directly:
 
 | Test | Production boundary |
@@ -17,5 +19,7 @@ Several tests import production transitions directly:
 | [`loom_production_sparse_transaction.rs`](tests/loom_production_sparse_transaction.rs) | Shared sparse-store transaction staging and guard lifetime |
 
 The remaining tests model smaller concurrency contracts, including settlement ownership, funding cursors, host-work admission, deterministic reduction, and replay scheduling. Their assertions establish the modeled interleavings only. Native and interpreter tests check the corresponding integration boundaries.
+
+**Note (DR-131).** The host-work admission model of this list is deleted (`75de2dc39`).
 
 Casper-specific production-import tests and the finalization, recovery, and buffer test implementations are retained on `feature/casper-cost-accounting-completion`. They are not part of this branch's cost-accounting Loom gate.

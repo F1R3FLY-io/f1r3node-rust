@@ -1,5 +1,7 @@
 # Prepaid receipt storage
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Purpose and trust boundary
 
 A prepaid receipt retains resource provenance in the same RSpace state as its associated resource stacks.

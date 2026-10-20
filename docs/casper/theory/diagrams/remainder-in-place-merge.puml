@@ -27,6 +27,7 @@ skinparam ActivityDiamondBorderColor #333333
 skinparam NoteBackgroundColor $ca_note_red
 skinparam NoteBorderColor #666666
 title One remainder binding merges in place, all or nothing (DR-103 part 2)
+footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
 
 start
 :handle_remainder(targets, level, merger)\nthe targets come from charged copies with their cleanup; <<$ca_supply>>

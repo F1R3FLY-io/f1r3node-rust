@@ -1,5 +1,7 @@
 # Cost Accounting and Casper: Remaining Gaps and an Order-Then-Execute Proposal for Cost-Accounted (v6) Shards
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 | Field | Value |
 |---|---|
 | Status | Proposal for discussion with the Casper team. Not ratified. |

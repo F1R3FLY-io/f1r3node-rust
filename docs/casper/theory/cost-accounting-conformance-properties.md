@@ -1,5 +1,7 @@
 # Cost-Accounting Conformance Property Catalog
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 > **Status notice.** The `COVERED` labels in this catalog predate the
 > distinction between abstract formal coverage and production consensus
 > conformance. Consult

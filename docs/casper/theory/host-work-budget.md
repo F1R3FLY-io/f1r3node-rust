@@ -1,5 +1,7 @@
 # Deterministic host-work budget
 
+**Removed by DR-131 (`75de2dc39`).** This branch no longer meters host work. This document describes the removed metering. Restore: `git revert 75de2dc39`.
+
 ## Purpose
 
 The host-work budget limits deterministic node work before one deployment can exhaust a validator.

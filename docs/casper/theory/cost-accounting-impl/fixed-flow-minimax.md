@@ -1,5 +1,7 @@
 # Fixed-flow funding policy
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Purpose and boundary
 
 The rank selector finds a feasible contribution vector with the smallest descending lexicographic rank.

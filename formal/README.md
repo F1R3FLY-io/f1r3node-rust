@@ -52,6 +52,11 @@ Isabelle.
 
 ## Host-work budget artifacts
 
+**Removed by DR-131 (`75de2dc39`).** Host-work metering, its TLA+ and Rocq
+packages and `scripts/check-host-work-budget-formal.sh` are removed. The
+links in this section name files that the removal deleted. Restore:
+`git revert 75de2dc39`.
+
 The [host-work TLA+ package](tlaplus/host_work_budget/README.md) models deterministic resource limits for consensus host work.
 It separates host-work units from Rholang costs and economic balances.
 

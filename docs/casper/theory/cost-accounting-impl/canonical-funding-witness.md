@@ -1,5 +1,7 @@
 # Canonical funding assignment witnesses
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Purpose and boundary
 
 An assignment witness records which physical source pays each obligation.
