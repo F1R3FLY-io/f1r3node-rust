@@ -24,14 +24,7 @@ struct LegacyDeployData {
 pub(super) fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreError> {
     validate_parameters(&deploy.data.parameters)
         .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-    Signed::from_signed_data(
-        deploy.data.clone(),
-        deploy.pk.clone(),
-        deploy.sig.clone(),
-        deploy.sig_algorithm.clone(),
-    )
-    .map_err(KvStoreError::SerializationError)?
-    .ok_or_else(|| KvStoreError::SerializationError("Invalid deploy signature".to_string()))?;
+    verify_signature(deploy.clone())?;
     let mut bytes = PREFIX.to_vec();
     DeployData::to_proto_ref(deploy)
         .encode(&mut bytes)
@@ -39,14 +32,14 @@ pub(super) fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreEr
     Ok(bytes)
 }
 
-// Records in the new format are decoded without a signature check, because
-// `encode` verifies the signature before it writes a record. Records written
-// before that check existed did not pass it on write. They came through
-// admission, which verifies the signature (gRPC through
-// `DeployData::from_proto`, HTTP through `Signed::from_signed_data`) or from
-// blocks, which are verified on decode, and every read verified them again
-// until this change. Like the other node stores, the deploy store trusts
-// its local database.
+pub(super) fn verify_signature(
+    deploy: Signed<DeployData>,
+) -> Result<Signed<DeployData>, KvStoreError> {
+    Signed::from_signed_data(deploy.data, deploy.pk, deploy.sig, deploy.sig_algorithm)
+        .map_err(KvStoreError::SerializationError)?
+        .ok_or_else(|| KvStoreError::SerializationError("Invalid deploy signature".to_string()))
+}
+
 pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreError> {
     if let Some(payload) = bytes.strip_prefix(PREFIX) {
         let proto = DeployDataProto::decode(payload)
