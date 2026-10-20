@@ -17,7 +17,7 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, DeployData, Justification, ProcessedDeploy,
+    BlockMessage, Bond, DeployData, Justification, ProcessedDeploy,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -325,6 +325,57 @@ async fn multi_parent_casper_should_drop_unbonded_sender_at_admission() {
         .lock()
         .unwrap()
         .contains_key(&unknown_hash));
+}
+
+/// A parentless block that is not the genesis has no bonds to be judged
+/// against except the ones its own sender writes. Listing itself as bonded
+/// must not authorize the sender.
+#[tokio::test]
+async fn multi_parent_casper_should_reject_a_parentless_non_genesis_block_that_bonds_its_sender() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let mut block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let forger = ValidatorIdentity::new(&sk);
+    block.header.parents_hash_list.clear();
+    block.justifications.clear();
+    block.seq_num = 0;
+    block.body.state.bonds.push(Bond {
+        validator: forger.public_key.bytes.clone(),
+        stake: 1_000,
+    });
+    let forged = forger.sign_block(&block);
+    assert!(proto_util::weight_map(&forged)[&forged.sender] > 0);
+
+    let status = node.process_block(forged.clone()).await.unwrap();
+
+    assert_eq!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
+    );
+    assert!(!node.casper.dag_contains(&forged.block_hash));
+}
+
+/// A main parent that this node does not hold leaves the sender's weight
+/// unknown. Full validation defers such a block instead of judging it.
+#[tokio::test]
+async fn multi_parent_casper_validate_should_defer_a_block_whose_main_parent_is_not_held() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let mut block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    let missing = Bytes::from(vec![7u8; 32]);
+    block.header.parents_hash_list = vec![missing.clone()];
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let forged = ValidatorIdentity::new(&sk).sign_block(&block);
+
+    let mut snapshot = node.casper.get_snapshot().await.unwrap();
+    let status = node.casper.validate(&forged, &mut snapshot).await.unwrap();
+
+    assert_eq!(status, Either::Left(BlockError::Undecidable(missing)));
 }
 
 /// Full validation must reach the same verdict on its own, before the
