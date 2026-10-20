@@ -228,24 +228,21 @@ pub fn weight_from_validator(
     b: &BlockMessage,
     validator: &prost::bytes::Bytes,
 ) -> Result<i64, KvStoreError> {
-    // A block's own bonds are written by its sender, so they decide weight
-    // only for a parentless (genesis) block. A main parent this node does not
-    // hold leaves the weight unknown, never self-asserted.
-    let weights = match b.header.parents_hash_list.first() {
-        Some(parent_hash) => {
-            let parent =
-                block_store
-                    .get(parent_hash)?
-                    .ok_or_else(|| KvStoreError::MissingBlock {
-                        hash: parent_hash.clone(),
-                        context: MissingBlockContext::new("weight_from_validator: main parent"),
-                    })?;
-            weight_map(&parent)
-        }
-        None => weight_map(b),
+    // A block's own bonds are written by its sender, so they never decide its
+    // weight: a parentless block carries none here (`Validate::
+    // block_sender_has_weight` judges it against the genesis). A main parent this
+    // node does not hold leaves the weight unknown, never self-asserted.
+    let Some(parent_hash) = b.header.parents_hash_list.first() else {
+        return Ok(0);
     };
+    let parent = block_store
+        .get(parent_hash)?
+        .ok_or_else(|| KvStoreError::MissingBlock {
+            hash: parent_hash.clone(),
+            context: MissingBlockContext::new("weight_from_validator: main parent"),
+        })?;
 
-    Ok(weights.get(validator).cloned().unwrap_or(0))
+    Ok(weight_map(&parent).get(validator).cloned().unwrap_or(0))
 }
 
 /// Get weight from sender
