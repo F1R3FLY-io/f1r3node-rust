@@ -1,0 +1,91 @@
+name: Release Train Daily Sync
+
+# Opens the two daily pull requests of the cost-accounting release train
+# (issue #764, issue #791):
+#
+#   feed        dev -> ca-release, from a temporary feed/dev-<sha> branch
+#   back-merge  ca-release -> ca-canary, from a temporary
+#               backmerge/ca-release-<sha> branch
+#
+# Mergify merges each pull request when its CI passes, with a merge commit.
+# The first slot (00:30Z) opens the feed. The second slot (01:30Z) opens the
+# back-merge of that feed, so ca-canary carries the current dev before the
+# 02:30Z soaks. Each slot runs both steps, and each step does nothing when its
+# target already contains its source or a pull request of its kind is open.
+#
+# The workflow runs from master, the default branch, so the release-credentials
+# environment (master only) gives it the promotion app token. A pull request
+# opened with GITHUB_TOKEN starts no CI. Until ca-canary and ca-release exist,
+# the job does nothing.
+
+on:
+  schedule:
+    - cron: "30 0 * * *"
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ca-daily-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Open Feed and Back-merge Pull Requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-credentials
+    steps:
+      - name: Require master
+        env:
+          REF: ${{ github.ref }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$REF" != refs/heads/master ]; then
+            echo "::error::Run Release Train Daily Sync from master, not $REF."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the release train branches
+        id: branches
+        shell: bash -euo pipefail {0}
+        run: |
+          if git ls-remote --exit-code --heads origin ca-canary >/dev/null &&
+            git ls-remote --exit-code --heads origin ca-release >/dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::ca-canary or ca-release does not exist yet. Nothing to sync."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create promotion token
+        if: steps.branches.outputs.present == 'true'
+        id: promotion-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.PROMOTION_APP_ID }}
+          private-key: ${{ secrets.PROMOTION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open the feed and back-merge pull requests
+        if: steps.branches.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash -euo pipefail {0}
+        run: |
+          BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_SCHEDULED=1 \
+            BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-release \
+            bash .github/scripts/open-backmerge-pr.sh
+          BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_SCHEDULED=1 \
+            BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary \
+            bash .github/scripts/open-backmerge-pr.sh

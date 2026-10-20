@@ -552,6 +552,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-image-publish-tags.sh
 
+      - name: Verify release train tag
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-tag-ca-release.sh
+
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-soak-schedule-routing.sh

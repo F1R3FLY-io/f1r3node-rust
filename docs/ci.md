@@ -186,8 +186,9 @@ The cost-accounting release train of issue #764 adds two long-lived branches. `c
 |---|---|---|
 | Promotion from `ca-canary` to `ca-release` | `just ca-promote` | `promote/ca-release-<UTC timestamp>` |
 | Back-merge from `ca-release` to `ca-canary` | `just ca-backmerge` | `backmerge/ca-release-<12-character SHA>` |
+| Daily feed from `dev` to `ca-release` | `just ca-feed` | `feed/dev-<12-character SHA>` |
 
-The commands run the same scripts as `just promote` and `just backmerge`. The scripts accept only these two pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
+The commands run the same scripts as `just promote` and `just backmerge`. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
 
 CI treats the two branches like `dev` and `master`:
 
@@ -207,3 +208,46 @@ Image publication:
 The heavy pipeline and the soaks use the `oci-credentials` environment. It must allow `branch:ca-canary`, `branch:ca-release`, and `tag:ca-v*`.
 
 Only `dev` and `master` publish without reviewer approval, through `protected-branch-image-publish`. A push to `ca-release` and a `ca-v*` tag publish through `ephemeral-launch`, so each publication waits for one of its required reviewers. `check-workflow-invariants.sh` enforces this rule.
+
+### Daily sync
+
+`ca-daily-sync.yml` (Release Train Daily Sync) runs from `master` at 00:30Z and 01:30Z. Each run opens the feed from `dev` to `ca-release` and the back-merge from `ca-release` to `ca-canary`. A step does nothing when its target already contains its source or a pull request of its kind is open. The 00:30Z run opens the feed. The 01:30Z run opens the back-merge of that feed, so `ca-canary` carries the current `dev` before the 02:30Z soaks.
+
+The workflow uses the promotion app token from `release-credentials`, as the Promote and Back-merge workflow does. The pull request body says that Mergify merges it. Until `ca-canary` and `ca-release` exist, the workflow does nothing.
+
+### Mergify
+
+`.mergify.yml` merges pull requests into `ca-canary` and `ca-release` only. The GitHub merge queue stays on `dev` and `master`. Every merge is a merge commit.
+
+| Queue | Pull requests | Merge conditions |
+|---|---|---|
+| `ca-item` | Head `ca/*` into `ca-canary`, with the `queue` label | The `ci.yml` checks of `devProtect`, the Integration Gates, `Soak Gate (22h)`, and an approving review. The `ci-heavy` label is necessary for the Integration Gates. |
+| `ca-daily` | Head `feed/dev-<SHA>` into `ca-release`, and head `backmerge/ca-release-<SHA>` into `ca-canary` | The light `ci.yml` checks. No review. |
+
+To merge a `ca/<item>` pull request:
+
+1. Add the `ci-heavy` label after the last planned push.
+2. Add the `ca-soak` label to start its 22-hour soak.
+3. Get an approving review.
+4. Add the `queue` label.
+
+The Mergify app must be installed in the organization. The `ca-soak` dispatcher and the `Soak Gate (22h)` and `Soak Gate (60h)` statuses come from a separate CbC change of the soak workflow.
+
+### Release tag
+
+Run `just ca-tag <version>`, for example `just ca-tag 0.5.0-rc.1`. The command runs `.github/scripts/tag-ca-release.sh`. It creates the annotated tag `ca-v<version>` at the `ca-release` head. It refuses the tag when the head has no successful `Soak Gate (60h)` status, and it never moves an existing tag. The `rust-client` `master` branch pins this tag and the `:ca-v<version>` image.
+
+### Proposed rulesets
+
+These rulesets are a plan. They are not applied.
+
+| Rule | `ca-canary` | `ca-release` |
+|---|---|---|
+| Deletion and non-fast-forward | Blocked | Blocked |
+| Required checks | The `devProtect` checks and `Soak Gate (22h)` | The `masterProtect` checks and `Soak Gate (60h)` |
+| Pull request review | One code-owner approval for `ca/*` heads | One code-owner approval for `promote/ca-release-*` heads |
+| Merge method | Merge commit only | Merge commit only |
+| GitHub merge queue | None (Mergify) | None (Mergify) |
+| Bypass actors | The Mergify app, for the `ca-daily` pull requests | The Mergify app, for the `ca-daily` pull requests |
+
+A ruleset cannot require a review for some heads only. The review rule therefore needs a decision: a separate ruleset for each head pattern, or a review in Mergify only.

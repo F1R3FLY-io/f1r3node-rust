@@ -186,4 +186,69 @@ for pair in dev:master master:ca-canary ca-release:dev ca-canary:ca-release; do
 	[[ ! -s "$TMP/gh.log" ]] || fail "the back-merge pair $pair still called gh: $(cat "$TMP/gh.log")"
 done
 
-printf 'PASS: just backmerge opens the dev pull request from backmerge/master-<sha> at the master commit, just ca-backmerge opens the ca-canary pull request from backmerge/ca-release-<sha> at the ca-release commit, other branch pairs are refused, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation for the same master commit, names the user who started the workflow, and deletes the branch when the pull request fails.\n'
+run_feed_tool() {
+	(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+		BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-release BACKMERGE_TIMESTAMP="$1" bash "$TOOL")
+}
+
+git_quiet -C "$TMP/seed" fetch --quiet origin
+git_quiet -C "$TMP/seed" push --quiet origin origin/ca-release:refs/heads/dev --force
+
+: >"$TMP/gh.log"
+out="$(run_feed_tool 20261020-1400)"
+[[ "$out" == *"Nothing to feed: origin/ca-release already contains origin/dev"* ]] ||
+	fail "dev contained in ca-release did not report nothing to feed: $out"
+[[ ! -s "$TMP/gh.log" ]] || fail "dev contained in ca-release still called gh: $(cat "$TMP/gh.log")"
+
+git_quiet -C "$TMP/seed" checkout --quiet -B dev-work origin/dev
+git_quiet -C "$TMP/seed" commit --allow-empty -m dev-change
+git_quiet -C "$TMP/seed" push --quiet origin HEAD:refs/heads/dev
+feed_sha="$(git -C "$TMP/seed" rev-parse HEAD)"
+feed_branch="feed/dev-${feed_sha:0:12}"
+
+: >"$TMP/gh.log"
+out="$(run_feed_tool 20261020-1401)"
+[[ "$out" == *"Created $feed_branch at ${feed_sha:0:9} (origin/dev, 1 commits not on ca-release)"* ]] ||
+	fail "the feed branch was not reported: $out"
+grep -q '^pr list --repo example/repo --base ca-release --state open ' "$TMP/gh.log" ||
+	fail "the open feed pull requests to ca-release were not listed: $(cat "$TMP/gh.log")"
+grep -q 'startswith("feed/")' "$TMP/gh.log" ||
+	fail "the open pull request check does not filter on feed/: $(cat "$TMP/gh.log")"
+grep -q "^pr create --repo example/repo --base ca-release --head $feed_branch --title Feed dev into ca-release (20261020-1401) " "$TMP/gh.log" ||
+	fail "the feed pull request was not opened from the feed branch to ca-release: $(cat "$TMP/gh.log")"
+grep -Fq 'created by `just ca-feed`.' "$TMP/gh.log" ||
+	fail "the feed body does not name just ca-feed: $(cat "$TMP/gh.log")"
+
+: >"$TMP/gh.log"
+out="$(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_OPEN_BACKMERGE='#793' BACKMERGE_REPOSITORY=example/repo \
+	BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-release BACKMERGE_TIMESTAMP=20261020-1402 bash "$TOOL")"
+[[ "$out" == *"A feed pull request is already open: #793. Merge or close it, then run just ca-feed again."* ]] ||
+	fail "an open feed pull request was not reported: $out"
+
+: >"$TMP/gh.log"
+(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+	BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-release BACKMERGE_TIMESTAMP=20261020-1403 BACKMERGE_TRIGGERED_BY=octo-cat \
+	bash "$TOOL") >/dev/null
+grep -Fxq '@octo-cat started this feed. A different member of @F1R3FLY-io/ci-maintainers approves it.' "$TMP/gh.log" ||
+	fail "the workflow feed body does not name the user who started it: $(cat "$TMP/gh.log")"
+
+: >"$TMP/gh.log"
+(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+	BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-release BACKMERGE_TIMESTAMP=20261020-1404 BACKMERGE_SCHEDULED=1 \
+	bash "$TOOL") >/dev/null
+grep -Fq 'created by the scheduled Release Train Daily Sync workflow.' "$TMP/gh.log" ||
+	fail "the scheduled feed body does not name the daily sync workflow: $(cat "$TMP/gh.log")"
+grep -Fxq 'Mergify merges this feed when its CI passes. It needs no review.' "$TMP/gh.log" ||
+	fail "the scheduled feed body does not say that Mergify merges it: $(cat "$TMP/gh.log")"
+
+: >"$TMP/gh.log"
+if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+	BACKMERGE_REMOTE=no-such-remote BACKMERGE_TIMESTAMP=20261020-1405 BACKMERGE_SCHEDULED=1 \
+	bash "$TOOL") >/dev/null 2>"$TMP/err"; then
+	fail "a scheduled master to dev back-merge did not fail the command"
+fi
+grep -q 'BACKMERGE_SCHEDULED applies only to the release train pairs' "$TMP/err" ||
+	fail "a scheduled master to dev back-merge was not refused before git fetch: $(cat "$TMP/err")"
+[[ ! -s "$TMP/gh.log" ]] || fail "a scheduled master to dev back-merge still called gh: $(cat "$TMP/gh.log")"
+
+printf 'PASS: just backmerge opens the dev pull request from backmerge/master-<sha> at the master commit, just ca-backmerge opens the ca-canary pull request from backmerge/ca-release-<sha> at the ca-release commit, just ca-feed opens the ca-release pull request from feed/dev-<sha> at the dev commit, marks a scheduled release train pull request for Mergify and refuses a scheduled master to dev back-merge, other branch pairs are refused, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation for the same master commit, names the user who started the workflow, and deletes the branch when the pull request fails.\n'

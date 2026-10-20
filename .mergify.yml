@@ -1,0 +1,95 @@
+# Mergify for the cost-accounting release train (issue #764, issue #791).
+#
+# Mergify merges only into ca-canary and ca-release. The GitHub merge queue
+# stays on dev and master, and no rule here matches those bases.
+#
+#   ca-item   a ca/<item> pull request into ca-canary. It needs the ci.yml
+#             gates with the ci-heavy label, its 22-hour soak (Soak Gate (22h),
+#             started by the ca-soak label), and an approving review. A
+#             maintainer adds the queue label to enter the queue.
+#   ca-daily  the daily feed (feed/dev-<sha> into ca-release) and back-merge
+#             (backmerge/ca-release-<sha> into ca-canary) from
+#             ca-daily-sync.yml. They need the light ci.yml checks only and no
+#             review. A push to either branch runs the heavy pipeline after
+#             the merge.
+#
+# Every merge is a merge commit, so ca-canary keeps the ca-release history and
+# ca-release keeps the dev history. Each queue merges one pull request at a
+# time and checks the pull request itself, so the ci.yml checks of the pull
+# request are the merge evidence.
+
+queue_rules:
+  - name: ca-item
+    batch_size: 1
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=ca-canary
+      - head~=^ca/
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+    merge_conditions:
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
+      - status-success=Soak Gate (22h)
+
+  - name: ca-daily
+    batch_size: 1
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - or:
+          - and:
+              - base=ca-release
+              - head~=^feed/dev-[0-9a-f]{12}$
+          - and:
+              - base=ca-canary
+              - head~=^backmerge/ca-release-[0-9a-f]{12}$
+    merge_conditions:
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+
+pull_request_rules:
+  - name: Queue a release train item
+    conditions:
+      - base=ca-canary
+      - head~=^ca/
+      - label=queue
+    actions:
+      queue:
+        name: ca-item
+
+  - name: Queue the daily feed and back-merge
+    conditions:
+      - or:
+          - and:
+              - base=ca-release
+              - head~=^feed/dev-[0-9a-f]{12}$
+          - and:
+              - base=ca-canary
+              - head~=^backmerge/ca-release-[0-9a-f]{12}$
+    actions:
+      queue:
+        name: ca-daily

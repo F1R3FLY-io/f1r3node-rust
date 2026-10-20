@@ -4,9 +4,12 @@
 #
 #   master -> dev            `just backmerge`, branch backmerge/master-<sha>
 #   ca-release -> ca-canary  `just ca-backmerge`, branch backmerge/ca-release-<sha>
+#   dev -> ca-release        `just ca-feed`, branch feed/dev-<sha>, the daily feed
 #
 # BACKMERGE_SOURCE and BACKMERGE_TARGET select the back-merge. They default to
-# master and dev, and any other pair is refused.
+# master and dev, and any other pair is refused. The release train pairs
+# (ca-release -> ca-canary and dev -> ca-release) run each day from
+# ca-daily-sync.yml, and Mergify merges them.
 #
 # Do not open the back-merge from the source branch itself. A pull request
 # with head master shows "Update branch", which merges dev into master through
@@ -29,10 +32,11 @@ set -euo pipefail
 source_branch="${BACKMERGE_SOURCE:-master}"
 target_branch="${BACKMERGE_TARGET:-dev}"
 case "$source_branch:$target_branch" in
-	master:dev) recipe="just backmerge" ;;
-	ca-release:ca-canary) recipe="just ca-backmerge" ;;
+	master:dev) recipe="just backmerge" prefix="backmerge/" kind="back-merge" title="Back-merge" ;;
+	ca-release:ca-canary) recipe="just ca-backmerge" prefix="backmerge/" kind="back-merge" title="Back-merge" ;;
+	dev:ca-release) recipe="just ca-feed" prefix="feed/" kind="feed" title="Feed" ;;
 	*)
-		echo "ERROR: no back-merge from '$source_branch' to '$target_branch'. Use master to dev or ca-release to ca-canary." >&2
+		echo "ERROR: no back-merge from '$source_branch' to '$target_branch'. Use master to dev, ca-release to ca-canary, or dev to ca-release." >&2
 		exit 2
 		;;
 esac
@@ -47,7 +51,16 @@ if [ -n "${BACKMERGE_TRIGGERED_BY:-}" ]; then
 	creator="created by the Promote and Back-merge workflow for @$BACKMERGE_TRIGGERED_BY"
 	review="
 
-@$BACKMERGE_TRIGGERED_BY started this back-merge. A different member of @F1R3FLY-io/ci-maintainers approves it."
+@$BACKMERGE_TRIGGERED_BY started this $kind. A different member of @F1R3FLY-io/ci-maintainers approves it."
+elif [ "${BACKMERGE_SCHEDULED:-}" = 1 ]; then
+	case "$source_branch:$target_branch" in
+		ca-release:ca-canary | dev:ca-release) ;;
+		*) echo "ERROR: BACKMERGE_SCHEDULED applies only to the release train pairs." >&2; exit 2 ;;
+	esac
+	creator="created by the scheduled Release Train Daily Sync workflow"
+	review="
+
+Mergify merges this $kind when its CI passes. It needs no review."
 fi
 
 remote="${BACKMERGE_REMOTE:-origin}"
@@ -59,19 +72,20 @@ sha="$(git rev-parse "$remote/$source_branch")"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: $remote/$source_branch does not resolve to a commit." >&2; exit 2; }
 
 if git merge-base --is-ancestor "$sha" "$remote/$target_branch"; then
-	echo "Nothing to back-merge: $remote/$target_branch already contains $remote/$source_branch (${sha:0:9})."
+	echo "Nothing to $kind: $remote/$target_branch already contains $remote/$source_branch (${sha:0:9})."
 	exit 0
 fi
 
-# One back-merge at a time. A second pull request would merge the same source
-# commits twice and split the review.
+# One open pull request of each kind at a time. A second pull request would
+# merge the same source commits twice and split the review.
+open_filter="[.[] | select(.headRefName | startswith(\"$prefix\")) | \"#\\(.number)\"] | join(\" \")"
 if ! open_prs="$(gh pr list --repo "$repo" --base "$target_branch" --state open --json number,headRefName \
-	--jq '[.[] | select(.headRefName | startswith("backmerge/")) | "#\(.number)"] | join(" ")')"; then
+	--jq "$open_filter")"; then
 	echo "ERROR: the open pull requests to $target_branch could not be listed." >&2
 	exit 1
 fi
 if [ -n "$open_prs" ]; then
-	echo "A back-merge pull request is already open: $open_prs. Merge or close it, then run $recipe again."
+	echo "A $kind pull request is already open: $open_prs. Merge or close it, then run $recipe again."
 	exit 0
 fi
 
@@ -79,15 +93,15 @@ count="$(git rev-list --count "$remote/$target_branch..$sha")"
 # The branch is named after the source commit. A second run for the same
 # commit, also a concurrent one, then fails at branch creation instead of
 # opening a second pull request.
-branch="backmerge/$source_branch-${sha:0:12}"
+branch="$prefix$source_branch-${sha:0:12}"
 if ! gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null; then
-	echo "ERROR: $branch was not created. If the branch exists, a back-merge of this $source_branch commit is already in progress." >&2
+	echo "ERROR: $branch was not created. If the branch exists, a $kind of this $source_branch commit is already in progress." >&2
 	exit 1
 fi
 echo "Created $branch at ${sha:0:9} ($remote/$source_branch, $count commits not on $target_branch)."
 
 if ! gh pr create --repo "$repo" --base "$target_branch" --head "$branch" \
-	--title "Back-merge $source_branch into $target_branch ($stamp)" \
+	--title "$title $source_branch into $target_branch ($stamp)" \
 	--body "Merges \`$source_branch\` at \`${sha:0:9}\` into \`$target_branch\` ($count commits).
 
 This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. Merge it with a merge commit, not a squash or a rebase, so that \`$target_branch\` keeps the \`$source_branch\` history.$review"; then
