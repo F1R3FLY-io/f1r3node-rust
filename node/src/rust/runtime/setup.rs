@@ -824,21 +824,21 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             {
                 // Project the merged FileIoProvisioning into the
                 // bundle format `fs_generator` consumes.  Combines
-                // config-file entries with (future ops-9) CLI
-                // `--*-static-*` flags and runs boot-time invariants
-                // (canonicity, mode whitelist, PB-M-16 bucket
-                // disjointness, forbidden chars, cross-source name
-                // conflicts).  On validation failure we panic: an
-                // invalid provisioning would yield a genesis block
-                // no validator could accept, so failing loud at boot
-                // is the correct outcome.  CLI vecs are empty until
-                // ops-9 lands the clap wire-up.
+                // config-file entries with CLI `--*-static-*` flags
+                // (threaded through `conf.storage.cli_*` by
+                // `ConfigMapper::override_config_values`) and runs
+                // boot-time invariants (canonicity, mode whitelist,
+                // PB-M-16 bucket disjointness, forbidden chars,
+                // cross-source name conflicts).  On validation
+                // failure we panic: an invalid provisioning would
+                // yield a genesis block no validator could accept,
+                // so failing loud at boot is the correct outcome.
                 let merged = crate::rust::configuration::provisioning_merge::merge_and_validate(
                     conf.storage.file_io_provisioning.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
+                    conf.storage.cli_oracle_static_files.clone(),
+                    conf.storage.cli_oracle_static_dirs.clone(),
+                    conf.storage.cli_consensus_static_files.clone(),
+                    conf.storage.cli_consensus_static_dirs.clone(),
                 )
                 .unwrap_or_else(|errs| {
                     let msg = errs
