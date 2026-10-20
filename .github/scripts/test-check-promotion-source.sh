@@ -15,6 +15,13 @@ mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_LOG"
+case "$*" in
+  "api repos/"*"/compare/"*)
+    [ "${GH_FAIL_COMPARE:-0}" = 1 ] && exit 1
+    printf '%s\n' "${FAKE_COMPARE:-identical}"
+    exit 0
+    ;;
+esac
 if [ "${GH_FAIL_CLOSE:-0}" = 1 ]; then exit 1; fi
 SH
 chmod +x "$TMP/bin/gh"
@@ -24,7 +31,7 @@ run() {
 	: >"$TMP/gh.log"
 	set +e
 	out="$(PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" EVENT_NAME="$1" BASE_REF="$2" HEAD_REF="$3" \
-		HEAD_REPO="$4" REPOSITORY=example/repo PR_NUMBER="${5:-}" bash "$TOOL" 2>&1)"
+		HEAD_REPO="$4" REPOSITORY=example/repo PR_NUMBER="${5:-}" HEAD_SHA="${HEAD_SHA:-}" bash "$TOOL" 2>&1)"
 	status=$?
 	set -e
 }
@@ -38,7 +45,7 @@ expect_reject() {
 expect_accept() {
 	run "$@"
 	[ "$status" -eq 0 ] || fail "rejected event=$1 base=$2 head=$3 repo=$4: $out"
-	[[ ! -s "$TMP/gh.log" ]] || fail "an accepted pull request called gh: $(cat "$TMP/gh.log")"
+	if grep -q '^pr close' "$TMP/gh.log"; then fail "an accepted pull request was closed: $(cat "$TMP/gh.log")"; fi
 }
 
 expect_reject pull_request master dev example/repo
@@ -94,7 +101,12 @@ expect_reject pull_request_target ca-release ca-canary example/repo
 
 expect_accept pull_request ca-canary ca/a1a-coalescing example/repo 12
 expect_accept pull_request ca-release promote/ca-release-20261020-1200 example/repo 12
-expect_accept pull_request ca-canary backmerge/ca-release-0123456789ab example/repo 12
+BACKMERGE_SHA=0123456789ab0123456789ab0123456789ab0123
+HEAD_SHA="$BACKMERGE_SHA" expect_accept pull_request ca-canary backmerge/ca-release-0123456789ab example/repo 12
+grep -Fxq "api repos/example/repo/compare/$BACKMERGE_SHA...ca-release --jq .status" "$TMP/gh.log" ||
+	fail "a ca-canary back-merge was not compared with ca-release: $(cat "$TMP/gh.log")"
+HEAD_SHA="$BACKMERGE_SHA" FAKE_COMPARE=ahead expect_accept pull_request ca-canary backmerge/ca-release-0123456789ab example/repo 12
+HEAD_SHA="$BACKMERGE_SHA" expect_accept pull_request dev backmerge/ca-release-0123456789ab example/repo 12
 expect_accept pull_request ca-release ca-canary other/fork 12
 expect_accept pull_request_target ca-canary ca-release other/fork 12
 
@@ -102,4 +114,18 @@ expect_reject pull_request_target ca-canary ca-release example/repo 791
 grep -q '^pr close 791 --repo example/repo --comment Closed by the protected head guard\. Do not open a back-merge with head ca-release\..* Reason: ' "$TMP/gh.log" ||
 	fail "a rejected ca-release pull request was not closed with the remedy and the reason: $(cat "$TMP/gh.log")"
 
-printf 'PASS: the protected-head check rejects a pull request with head master, dev, ca-canary, or ca-release from this repository under pull_request and pull_request_target, closes it with a reason when PR_NUMBER is set, and accepts fork, temporary, and non-pull-request heads.\n'
+# A backmerge/ca-release-* head into ca-canary skips review in the ca-daily
+# queue, so it must be the ca-release commit that its name gives.
+HEAD_SHA="$BACKMERGE_SHA" FAKE_COMPARE=diverged expect_reject pull_request ca-canary backmerge/ca-release-0123456789ab example/repo
+[[ "$out" == *"is not a ca-release commit (compare status diverged)"* ]] || fail "a back-merge head off ca-release was not reported: $out"
+HEAD_SHA="$BACKMERGE_SHA" FAKE_COMPARE=behind expect_reject pull_request ca-canary backmerge/ca-release-0123456789ab other/fork
+HEAD_SHA=fedcba9876540123456789ab0123456789ab0123 expect_reject pull_request ca-canary backmerge/ca-release-0123456789ab example/repo
+[[ "$out" == *"not at the commit its name gives"* ]] || fail "a back-merge head moved off its named commit was not reported: $out"
+if grep -q compare "$TMP/gh.log"; then fail "a moved back-merge head was still compared: $(cat "$TMP/gh.log")"; fi
+expect_reject pull_request ca-canary backmerge/ca-release-0123456789ab example/repo
+expect_reject pull_request ca-canary backmerge/ca-release-feature example/repo
+[[ "$out" == *"does not name a 12-character ca-release commit"* ]] || fail "a back-merge head without a commit name was not reported: $out"
+HEAD_SHA="$BACKMERGE_SHA" GH_FAIL_COMPARE=1 expect_reject pull_request ca-canary backmerge/ca-release-0123456789ab example/repo
+[[ "$out" == *"could not be compared with ca-release"* ]] || fail "a failed compare passed the check: $out"
+
+printf 'PASS: the protected-head check rejects a pull request with head master, dev, ca-canary, or ca-release from this repository under pull_request and pull_request_target, closes it with a reason when PR_NUMBER is set, and accepts fork, temporary, and non-pull-request heads. A backmerge/ca-release-<sha> head into ca-canary, also from a fork, passes only at its named commit and only when ca-release contains that commit.\n'

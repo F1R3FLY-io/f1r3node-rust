@@ -226,7 +226,7 @@ The workflow uses the promotion app token from `release-credentials`, as the Pro
 | Queue | Pull requests | Merge conditions |
 |---|---|---|
 | `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync. Mergify queues it by itself. | To enter the queue: the `ci-heavy` label, the `ca-soaked` label, and an approving review. To merge: the `ci.yml` checks of `devProtect` and the Integration Gates. The `ci-heavy` label is necessary for the Integration Gates. |
-| `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary` | The light `ci.yml` checks. No review. |
+| `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks. No review. The Promotion Source check requires that the head is the named commit and that `ca-release` contains it. A maintainer merges a back-merge that a person opened. |
 
 To merge a `ca/<item>` pull request:
 

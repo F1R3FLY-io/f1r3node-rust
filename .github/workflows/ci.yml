@@ -398,8 +398,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
+          # Read-only. The compare API checks a backmerge/ca-release-* head.
+          GH_TOKEN: ${{ github.token }}
         run: .github/scripts/check-promotion-source.sh
 
   # Commit identity policy for pull requests. This job reads the pull request
