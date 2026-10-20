@@ -77,14 +77,17 @@ impl FcntlLockGuard {
     /// Blocks until the lock is granted (`F_SETLKW`).  Zero-length
     /// ranges short-circuit to a no-op guard.
     pub fn acquire_wrlck(fd: RawFd, offset: u64, len: u64) -> Result<Self, std::io::Error> {
-        acquire(fd, libc::F_WRLCK, offset, len)
+        // Cast F_WRLCK to c_short: on macOS it's already c_short,
+        // on Linux it's c_int.  flock.l_type is c_short on both.
+        acquire(fd, libc::F_WRLCK as libc::c_short, offset, len)
     }
 
     /// Acquire an advisory **read** lock on `[offset, offset + len)`.
     /// Blocks until the lock is granted (`F_SETLKW`).  Zero-length
     /// ranges short-circuit to a no-op guard.
     pub fn acquire_rdlck(fd: RawFd, offset: u64, len: u64) -> Result<Self, std::io::Error> {
-        acquire(fd, libc::F_RDLCK, offset, len)
+        // Same platform cast as acquire_wrlck.
+        acquire(fd, libc::F_RDLCK as libc::c_short, offset, len)
     }
 }
 
