@@ -74,6 +74,8 @@ jobs:
       BASE_SHA: ${{ steps.target.outputs.base_sha }}
       MERGE_BASE_SHA: ${{ steps.target.outputs.merge_base_sha }}
       RUN_HEAVY: ${{ steps.target.outputs.run_heavy }}
+      OCI_TESTS: ${{ steps.target.outputs.oci_tests }}
+      REUSED_MERGE_GROUP_RUN: ${{ steps.target.outputs.reused_merge_group_run }}
     steps:
       - name: Resolve source target
         id: target
@@ -133,15 +135,27 @@ jobs:
               exit 1
             }
           fi
+          # Both Integration aggregator jobs of one run concluded success, not
+          # skipped, and each job appears exactly once.
+          integration_gates_passed() {
+            local jobs passed
+            jobs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/$1/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[]
+                | select(.name == "Integration Gate (amd64)" or .name == "Integration Gate (arm64)")
+                | [.name, (.conclusion // "pending")] | @tsv')" || return 1
+            passed="$(printf '%s\n' "$jobs" |
+              awk -F '\t' 'NF == 2 { seen[$1]++; if ($2 == "success") ok[$1]++ } END { n = 0; for (k in seen) if (seen[k] == 1 && ok[k] == 1) n++; print n }')"
+            [ "$passed" = 2 ]
+          }
+
           # A merge group may reuse the heavy result of its top pull request.
           # The group must name one pull request, the pull request head must
           # contain the group base, and the two trees must be equal. The newest
           # ci.yml pull_request run for that head must also have both
           # Integration aggregator jobs concluded success, not skipped. Any
-          # other result, including an API error, runs the heavy pipeline. The
-          # push to dev after the merge still runs it.
+          # other result, including an API error, runs the heavy pipeline.
           heavy_result_reusable() {
-            local number pull_head relationship group_tree head_tree run_id jobs passed
+            local number pull_head relationship group_tree head_tree run_id
             [[ "$MERGE_GROUP_HEAD_REF" =~ ^refs/heads/gh-readonly-queue/[^/]+/pr-([1-9][0-9]*)-[0-9a-f]{40}$ ]] || return 1
             number="${BASH_REMATCH[1]}"
             [[ "$MERGE_GROUP_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
@@ -157,14 +171,24 @@ jobs:
             run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${pull_head}&event=pull_request&per_page=100" \
               --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")] | max_by(.id) | .id // empty')" || return 1
             [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 1
-            jobs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
-              --jq '.jobs[]
-                | select(.name == "Integration Gate (amd64)" or .name == "Integration Gate (arm64)")
-                | [.name, (.conclusion // "pending")] | @tsv')" || return 1
-            passed="$(printf '%s\n' "$jobs" |
-              awk -F '\t' 'NF == 2 { seen[$1]++; if ($2 == "success") ok[$1]++ } END { n = 0; for (k in seen) if (seen[k] == 1 && ok[k] == 1) n++; print n }')"
-            [ "$passed" = 2 ] || return 1
+            integration_gates_passed "$run_id" || return 1
             printf '%s %s %s\n' "$number" "$pull_head" "$run_id"
+          }
+
+          # A push to dev carries the commit that its merge group tested. When
+          # the newest ci.yml merge_group run for that commit passed both
+          # Integration aggregator jobs, the push run reuses that result. It
+          # still builds, smoke-tests, and publishes the images, but it launches
+          # no OCI test runners. Any other result, including an API error, runs
+          # the OCI tests.
+          merge_group_result_reusable() {
+            local run_id
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=merge_group&per_page=100" \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")] | max_by(.id) | .id // empty')" || return 1
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            integration_gates_passed "$run_id" || return 1
+            printf '%s\n' "$run_id"
           }
 
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
@@ -172,6 +196,8 @@ jobs:
           # GitHub-hosted checks only and reaches the heavy pipeline through the
           # queue, so a green Integration context on a PR means "not run here".
           run_heavy=false
+          oci_tests=true
+          reused_merge_group_run=""
           if [ "$EVENT_NAME" = merge_group ]; then
             run_heavy=true
             if reused="$(heavy_result_reusable)"; then
@@ -188,6 +214,13 @@ jobs:
             [[ "$EVENT_REF" == refs/tags/v* ]];
           }; then
             run_heavy=true
+            if [ "$EVENT_REF" = refs/heads/dev ] && reused_merge_group_run="$(merge_group_result_reusable)"; then
+              oci_tests=false
+              echo "::notice::Merge group run ${reused_merge_group_run} passed both Integration gates on ${GITHUB_SHA}. The OCI integration tests are skipped. The images are built, smoke-tested, and published."
+              echo "OCI integration tests reused from merge group run ${reused_merge_group_run}." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            else
+              reused_merge_group_run=""
+            fi
           elif [ "$EVENT_NAME" = pull_request ] \
             && [ "$PR_HAS_HEAVY_LABEL" = true ] \
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
@@ -202,6 +235,8 @@ jobs:
             echo "base_sha=$base"
             echo "merge_base_sha=$merge_base"
             echo "run_heavy=$run_heavy"
+            echo "oci_tests=$oci_tests"
+            echo "reused_merge_group_run=$reused_merge_group_run"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout
@@ -1097,6 +1132,7 @@ jobs:
     with:
       gated: false
       checkout_ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+      oci_tests: ${{ needs.build_base.outputs.OCI_TESTS != 'false' }}
     secrets: inherit
 
   # Per-arch aggregators. The branch ruleset requires the checks named
@@ -1108,7 +1144,7 @@ jobs:
   # architecture does not change this gate's result.
   integration_tests_amd64:
     name: Integration Gate (amd64)
-    needs: pipeline
+    needs: [build_base, pipeline]
     if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1118,8 +1154,23 @@ jobs:
       - name: Check amd64 matrix slots
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OCI_TESTS: ${{ needs.build_base.outputs.OCI_TESTS }}
+          REUSED_MERGE_GROUP_RUN: ${{ needs.build_base.outputs.REUSED_MERGE_GROUP_RUN }}
+          PIPELINE_RESULT: ${{ needs.pipeline.result }}
         shell: bash -e {0}
         run: |
+          if [ "$OCI_TESTS" = false ]; then
+            if ! [[ "$REUSED_MERGE_GROUP_RUN" =~ ^[1-9][0-9]*$ ]]; then
+              echo "The OCI integration tests were skipped, but no reused merge group run is named."
+              exit 1
+            fi
+            if [ "$PIPELINE_RESULT" != success ]; then
+              echo "The OCI integration tests were reused, but the image build or a smoke test of this run ended $PIPELINE_RESULT."
+              exit 1
+            fi
+            echo "The amd64 OCI integration tests were skipped. Merge group run ${REUSED_MERGE_GROUP_RUN} passed them on this commit."
+            exit 0
+          fi
           slots=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
@@ -1140,7 +1191,7 @@ jobs:
 
   integration_tests_arm64:
     name: Integration Gate (arm64)
-    needs: pipeline
+    needs: [build_base, pipeline]
     if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1150,8 +1201,23 @@ jobs:
       - name: Check arm64 matrix slots
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OCI_TESTS: ${{ needs.build_base.outputs.OCI_TESTS }}
+          REUSED_MERGE_GROUP_RUN: ${{ needs.build_base.outputs.REUSED_MERGE_GROUP_RUN }}
+          PIPELINE_RESULT: ${{ needs.pipeline.result }}
         shell: bash -e {0}
         run: |
+          if [ "$OCI_TESTS" = false ]; then
+            if ! [[ "$REUSED_MERGE_GROUP_RUN" =~ ^[1-9][0-9]*$ ]]; then
+              echo "The OCI integration tests were skipped, but no reused merge group run is named."
+              exit 1
+            fi
+            if [ "$PIPELINE_RESULT" != success ]; then
+              echo "The OCI integration tests were reused, but the image build or a smoke test of this run ended $PIPELINE_RESULT."
+              exit 1
+            fi
+            echo "The arm64 OCI integration tests were skipped. Merge group run ${REUSED_MERGE_GROUP_RUN} passed them on this commit."
+            exit 0
+          fi
           slots=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
