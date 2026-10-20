@@ -34,6 +34,7 @@ use tokio::sync::mpsc;
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
+use crate::rust::engine::multi_parent_casper::buffer_resolver::dependencies_are_ready;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
@@ -961,37 +962,60 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     }
 
     fn enforce_casper_buffer_limit(&self, max_blocks: usize) -> Result<(), CasperError> {
-        let (stale_hashes, overflow_hashes) = self
-            .block_dag_storage
-            .access_equivocations_tracker(|tracker| {
-                let dag = self.block_dag_storage.get_representation_internal()?;
-                let invalid: HashSet<BlockHash> = dag.invalid_blocks_map()?.into_keys().collect();
-                let equivocations: HashSet<BlockHash> = tracker
-                    .data()?
-                    .iter()
-                    .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                    .cloned()
-                    .collect();
-                let is_ready = |hash: &BlockHashSerde| match self.block_store.get(&hash.0) {
-                    Ok(Some(block)) => proto_util::dependencies_hashes_of(&block)
+        let mut failed_reads = 0usize;
+        let mut first_error = None;
+        for hash in self.casper_buffer.uncached_block_hashes() {
+            match self.block_store.get(&hash.0) {
+                Ok(Some(block)) => self
+                    .casper_buffer
+                    .cache_block_dependencies(hash, proto_util::dependencies_hashes_of(&block)),
+                Ok(None) => {}
+                Err(error) => {
+                    failed_reads += 1;
+                    first_error.get_or_insert((hash, error));
+                }
+            }
+        }
+        if let Some((hash, error)) = first_error {
+            tracing::warn!(
+                failed_reads,
+                hash = ?hash,
+                %error,
+                "Could not load dependencies for buffered blocks"
+            );
+        }
+        let (stale_hashes, overflow_hashes) =
+            self.block_dag_storage
+                .access_equivocations_tracker(|tracker| {
+                    let dag = self.block_dag_storage.get_representation_internal()?;
+                    let invalid: HashSet<BlockHash> =
+                        dag.invalid_blocks_map()?.into_keys().collect();
+                    let equivocations: HashSet<BlockHash> = tracker
+                        .data()?
                         .iter()
-                        .all(|dep| {
-                            dag.contains(dep) || equivocations.contains(dep) || invalid.contains(dep)
-                        }),
-                    Ok(None) => false,
-                    Err(error) => {
-                        tracing::warn!(hash = ?hash, %error, "Preserved CasperBuffer hash after block read failure");
-                        true
-                    }
-                };
-                self.casper_buffer.enforce_limits_with_readiness(
-                    max_blocks,
-                    CASPER_BUFFER_STALE_TTL_MS,
-                    CASPER_BUFFER_MAX_PRUNE_BATCH,
-                    CASPER_BUFFER_PRUNE_INTERVAL_MS,
-                    is_ready,
-                )
-            })?;
+                        .flat_map(|record| record.equivocation_detected_block_hashes.iter())
+                        .cloned()
+                        .collect();
+                    let is_ready = |hash: &BlockHashSerde| match self
+                        .casper_buffer
+                        .cached_block_dependencies(hash)
+                    {
+                        Some(dependencies) => dependencies_are_ready(
+                            &dependencies,
+                            |dependency| dag.contains(dependency),
+                            &equivocations,
+                            &invalid,
+                        ),
+                        None => self.block_store.contains_key(&hash.0).unwrap_or(true),
+                    };
+                    self.casper_buffer.enforce_limits_with_readiness(
+                        max_blocks,
+                        CASPER_BUFFER_STALE_TTL_MS,
+                        CASPER_BUFFER_MAX_PRUNE_BATCH,
+                        CASPER_BUFFER_PRUNE_INTERVAL_MS,
+                        is_ready,
+                    )
+                })?;
         let (stale_pruned, overflow_pruned) = (stale_hashes.len(), overflow_hashes.len());
         for hash in stale_hashes.iter().chain(overflow_hashes.iter()) {
             self.block_retriever
@@ -1184,6 +1208,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 )?;
             }
         }
+
+        self.casper_buffer.cache_block_dependencies(
+            BlockHashSerde(block.block_hash.clone()),
+            proto_util::dependencies_hashes_of(block),
+        );
 
         Ok(())
     }

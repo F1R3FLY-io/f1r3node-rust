@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use models::rust::block_hash::BlockHashSerde;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -26,6 +26,7 @@ pub struct CasperBufferKeyValueStorage {
     parents_store: KeyValueTypedStoreImpl<BlockHashSerde, HashSet<BlockHashSerde>>,
     block_dependency_dag: Arc<Mutex<BlockDependencyDag>>,
     first_seen_ms: Arc<dashmap::DashMap<BlockHashSerde, u64>>,
+    block_dependencies: Arc<dashmap::DashMap<BlockHashSerde, Arc<Vec<BlockHash>>>>,
     last_prune_ms: Arc<AtomicU64>,
     released: Arc<Mutex<HashSet<BlockHashSerde>>>,
     release_scans: Arc<AtomicU64>,
@@ -75,6 +76,7 @@ impl CasperBufferKeyValueStorage {
             parents_store: kv_store,
             block_dependency_dag: Arc::new(Mutex::new(in_mem_store)),
             first_seen_ms: Arc::new(first_seen_ms),
+            block_dependencies: Arc::new(dashmap::DashMap::new()),
             last_prune_ms: Arc::new(AtomicU64::new(0)),
             released: Arc::new(Mutex::new(HashSet::new())),
             release_scans: Arc::new(AtomicU64::new(0)),
@@ -146,6 +148,7 @@ impl CasperBufferKeyValueStorage {
             (affected, removed, orphaned, affected_maps)
         };
         self.first_seen_ms.remove(&hash);
+        self.block_dependencies.remove(&hash);
         self.released
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -169,6 +172,7 @@ impl CasperBufferKeyValueStorage {
         hashes_to_delete_with_node.push(hash);
         for h in &orphaned_hashes {
             self.first_seen_ms.remove(h);
+            self.block_dependencies.remove(h);
         }
         hashes_to_delete_with_node.extend(orphaned_hashes);
         self.parents_store.delete(hashes_to_delete_with_node)?;
@@ -192,6 +196,41 @@ impl CasperBufferKeyValueStorage {
     }
 
     pub fn count_release_scan(&self) -> u64 { self.release_scans.fetch_add(1, Ordering::Relaxed) }
+
+    pub fn cached_block_dependencies(&self, hash: &BlockHashSerde) -> Option<Arc<Vec<BlockHash>>> {
+        self.block_dependencies
+            .get(hash)
+            .map(|entry| Arc::clone(entry.value()))
+    }
+
+    pub fn cache_block_dependencies(&self, hash: BlockHashSerde, dependencies: Vec<BlockHash>) {
+        let _guard = self.write_guard();
+        let is_buffered = {
+            let dag = self
+                .block_dependency_dag
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            dag.child_to_parent_adjacency_list.contains_key(&hash)
+                || dag.dependency_free.contains(&hash)
+        };
+        if is_buffered {
+            self.block_dependencies.insert(hash, Arc::new(dependencies));
+        }
+    }
+
+    pub fn uncached_block_hashes(&self) -> Vec<BlockHashSerde> {
+        let _guard = self.read_guard();
+        let dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        dag.child_to_parent_adjacency_list
+            .keys()
+            .chain(dag.dependency_free.iter())
+            .filter(|hash| !self.block_dependencies.contains_key(*hash))
+            .cloned()
+            .collect()
+    }
 
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
@@ -310,7 +349,8 @@ impl CasperBufferKeyValueStorage {
         nodes
     }
 
-    pub fn enforce_limits(
+    #[cfg(test)]
+    fn enforce_limits(
         &self,
         max_blocks: usize,
         stale_ttl_ms: u64,
@@ -400,6 +440,7 @@ impl CasperBufferKeyValueStorage {
             }
         }
         self.first_seen_ms.remove(hash);
+        self.block_dependencies.remove(hash);
         self.released
             .lock()
             .unwrap_or_else(|e| e.into_inner())

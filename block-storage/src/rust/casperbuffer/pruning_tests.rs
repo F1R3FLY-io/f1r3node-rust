@@ -38,3 +38,42 @@ async fn pruning_release_preserves_the_original_age() -> Result<(), KvStoreError
     assert_eq!(buffer.take_released(), vec![hash(1)]);
     Ok(())
 }
+
+#[tokio::test]
+async fn pruning_dependency_cache_follows_the_buffer_lifecycle() -> Result<(), KvStoreError> {
+    let buffer = buffer().await?;
+    buffer.cache_block_dependencies(hash(9), vec![]);
+    assert!(buffer.cached_block_dependencies(&hash(9)).is_none());
+
+    buffer.add_relation(hash(0), hash(1))?;
+    buffer.cache_block_dependencies(hash(0), vec![]);
+    buffer.cache_block_dependencies(hash(1), vec![hash(0).0]);
+    assert!(buffer.uncached_block_hashes().is_empty());
+
+    buffer.remove(hash(0))?;
+    assert!(buffer.cached_block_dependencies(&hash(0)).is_none());
+    assert_eq!(
+        buffer.cached_block_dependencies(&hash(1)).as_deref(),
+        Some(&vec![hash(0).0])
+    );
+
+    buffer.enforce_limits_with_readiness(0, u64::MAX, 1, 0, |_| false)?;
+    assert!(buffer.cached_block_dependencies(&hash(1)).is_none());
+    buffer.cache_block_dependencies(hash(1), vec![]);
+    assert!(buffer.block_dependencies.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn pruning_restored_hashes_require_dependency_hydration() -> Result<(), KvStoreError> {
+    let buffer = buffer().await?;
+    buffer.add_relation(hash(0), hash(1))?;
+    buffer.cache_block_dependencies(hash(1), vec![hash(0).0]);
+    let restored =
+        CasperBufferKeyValueStorage::new_from_kv_store(buffer.parents_store.clone()).await?;
+    let uncached: std::collections::HashSet<_> =
+        restored.uncached_block_hashes().into_iter().collect();
+    assert_eq!(uncached, [hash(0), hash(1)].into_iter().collect());
+    assert!(restored.cached_block_dependencies(&hash(1)).is_none());
+    Ok(())
+}

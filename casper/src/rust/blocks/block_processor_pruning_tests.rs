@@ -4,12 +4,69 @@ use comm::rust::rp::connect::Connections;
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use models::rust::block_implicits::get_random_block;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
 use super::*;
 use crate::rust::engine::block_retriever::{
     AdmitHashResult, AdmitHashStatus, MAX_RETRIES_PER_HASH,
 };
 use crate::rust::protocol::{extract_packet_from_protocol, verify_block_request};
+
+#[derive(Clone)]
+struct ReadProbeStore {
+    inner: Arc<dyn KeyValueStore>,
+    tracked: Arc<HashSet<Vec<u8>>>,
+    reads: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl KeyValueStore for ReadProbeStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
+        self.reads.fetch_add(
+            keys.iter()
+                .filter(|key| self.tracked.contains(*key))
+                .count(),
+            Ordering::Relaxed,
+        );
+        self.inner.get(keys)
+    }
+
+    fn put(&self, values: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
+        self.inner.put(values)
+    }
+
+    fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
+        self.inner.put_one_if_absent(key, value)
+    }
+
+    fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> { self.inner.delete(keys) }
+
+    fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> { self.inner.iterate(f) }
+
+    fn iterate_while(
+        &self,
+        f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
+    ) -> Result<(), KvStoreError> {
+        self.inner.iterate_while(f)
+    }
+
+    fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+
+    fn to_map(&self) -> Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> {
+        self.inner.to_map()
+    }
+
+    fn print_store(&self) -> Result<(), KvStoreError> { self.inner.print_store() }
+
+    fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
+
+    fn contains(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<bool>, KvStoreError> {
+        self.inner.contains(keys)
+    }
+
+    fn size_bytes(&self) -> usize { self.inner.size_bytes() }
+}
 
 struct Fixture {
     dependencies: BlockProcessorDependencies<TransportLayerStub>,
@@ -346,4 +403,78 @@ async fn overflow_prune_keeps_a_child_released_before_the_prune_lock() {
     assert_eq!(fixture.dependencies.casper_buffer.take_released(), vec![
         BlockHashSerde(fixture.child)
     ]);
+}
+
+#[tokio::test]
+async fn overflow_prune_does_not_decode_ready_blocks_on_later_passes() {
+    let mut fixture = Fixture::new().await;
+    let genesis_hash = fixture
+        .dependencies
+        .block_dag_storage
+        .get_representation()
+        .unwrap()
+        .last_finalized_block();
+    let mut block = get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis_hash]),
+        Some(vec![]),
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    let mut hashes = HashSet::new();
+    for index in 0..64_u64 {
+        let mut bytes = vec![5; 32];
+        bytes[..8].copy_from_slice(&index.to_be_bytes());
+        block.block_hash = bytes.clone().into();
+        fixture
+            .dependencies
+            .block_store
+            .put_block_message(&block)
+            .unwrap();
+        fixture
+            .dependencies
+            .casper_buffer
+            .put_pendant(BlockHashSerde(block.block_hash.clone()))
+            .unwrap();
+        hashes.insert(bytes);
+    }
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let original = fixture
+        .dependencies
+        .block_store
+        .soak_capture_store()
+        .clone();
+    fixture.dependencies.block_store = KeyValueBlockStore::new(
+        Arc::new(ReadProbeStore {
+            inner: original.clone(),
+            tracked: Arc::new(hashes.clone()),
+            reads: reads.clone(),
+        }),
+        original,
+    );
+
+    fixture.prune();
+    assert_eq!(reads.load(Ordering::Relaxed), hashes.len());
+    tokio::time::sleep(Duration::from_millis(CASPER_BUFFER_PRUNE_INTERVAL_MS + 10)).await;
+    fixture.prune();
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        hashes.len(),
+        "Repeated pruning must use cached dependencies instead of reading block bodies"
+    );
+    for bytes in hashes {
+        assert!(fixture
+            .dependencies
+            .casper_buffer
+            .is_pendant(&BlockHashSerde(bytes.into())));
+    }
 }
