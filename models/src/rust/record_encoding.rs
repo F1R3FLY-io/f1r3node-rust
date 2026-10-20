@@ -17,11 +17,11 @@ pub fn set_record_encoding(encoding: RecordEncoding) {
         RecordEncoding::Legacy => 0,
         RecordEncoding::Cost => 1,
     };
-    ENCODING.store(value, Ordering::SeqCst);
+    ENCODING.store(value, Ordering::Relaxed);
 }
 
 pub fn record_encoding() -> RecordEncoding {
-    match ENCODING.load(Ordering::SeqCst) {
+    match ENCODING.load(Ordering::Relaxed) {
         0 => RecordEncoding::Legacy,
         _ => RecordEncoding::Cost,
     }

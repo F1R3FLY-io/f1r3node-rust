@@ -902,20 +902,22 @@ impl ReducerCore {
         measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
-        let source = Produce::create(&chan, &data, persistent);
-        // Changed by D-F2 (DR-118): the registration also carries the
-        // measurement of the datum, which the observers reuse.
-        // self.metering.budget().register_introduction_authority(
-        //     super::accounting::byte_accounting::produce_introduction_identity(&source),
-        //     super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
-        //     &introduction_authority,
-        // )?;
-        self.metering.budget().register_introduction(
-            super::accounting::byte_accounting::produce_introduction_identity(&source),
-            super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
-            &introduction_authority,
-            measurement,
-        )?;
+        if self.metering.budget().records_introductions() {
+            let source = Produce::create(&chan, &data, persistent);
+            // Changed by D-F2 (DR-118): the registration also carries the
+            // measurement of the datum, which the observers reuse.
+            // self.metering.budget().register_introduction_authority(
+            //     super::accounting::byte_accounting::produce_introduction_identity(&source),
+            //     super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+            //     &introduction_authority,
+            // )?;
+            self.metering.budget().register_introduction(
+                super::accounting::byte_accounting::produce_introduction_identity(&source),
+                super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+                &introduction_authority,
+                measurement,
+            )?;
+        }
         let produce_result = self
             .space
             .produce(chan.clone(), data.clone(), persistent)
@@ -1044,20 +1046,22 @@ impl ReducerCore {
             guard: guard.clone(),
             cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
         };
-        let source = Consume::create(&sources, &patterns, &continuation, persistent);
-        // Changed by D-F2 (DR-118): the registration also carries the
-        // measurement of the body and the guard, which the observers reuse.
-        // self.metering.budget().register_introduction_authority(
-        //     super::accounting::byte_accounting::consume_introduction_identity(&source),
-        //     super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
-        //     &introduction_authority,
-        // )?;
-        self.metering.budget().register_introduction(
-            super::accounting::byte_accounting::consume_introduction_identity(&source),
-            super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
-            &introduction_authority,
-            measurement,
-        )?;
+        if self.metering.budget().records_introductions() {
+            let source = Consume::create(&sources, &patterns, &continuation, persistent);
+            // Changed by D-F2 (DR-118): the registration also carries the
+            // measurement of the body and the guard, which the observers reuse.
+            // self.metering.budget().register_introduction_authority(
+            //     super::accounting::byte_accounting::consume_introduction_identity(&source),
+            //     super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+            //     &introduction_authority,
+            // )?;
+            self.metering.budget().register_introduction(
+                super::accounting::byte_accounting::consume_introduction_identity(&source),
+                super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+                &introduction_authority,
+                measurement,
+            )?;
+        }
         let consume_result = self
             .space
             .consume(

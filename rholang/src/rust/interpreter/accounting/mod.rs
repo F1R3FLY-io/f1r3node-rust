@@ -761,7 +761,7 @@ impl RuntimeBudget {
         cost_authority: &CostAuthority,
         measurement: Option<byte_accounting::IntroductionMeasurement>,
     ) -> Result<(), InterpreterError> {
-        if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
+        if !self.records_introductions() {
             return Ok(());
         }
         let canonical = canonical_native_authority(cost_authority)?;
@@ -2148,6 +2148,10 @@ impl RuntimeBudget {
         CommAccountingScope {
             budget: self.clone(),
         }
+    }
+
+    pub fn records_introductions(&self) -> bool {
+        self.has_comm_accounting_scope() && self.unmetered.load(Ordering::Acquire) == 0
     }
 
     pub fn has_comm_accounting_scope(&self) -> bool {
