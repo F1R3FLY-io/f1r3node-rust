@@ -114,6 +114,18 @@ run_case merge-group merge_group refs/heads/gh-readonly-queue/dev/pr-1-abc '' ''
 run_case dev-push push refs/heads/dev '' '' '' '[]' '' '' true
 run_case version-tag push refs/tags/v0.4.46 '' '' '' '[]' '' '' true
 run_case staging-push push refs/heads/staging '' '' '' '[]' '' '' false
+run_case ca-canary-push push refs/heads/ca-canary '' '' '' '[]' '' '' true
+run_case ca-release-push push refs/heads/ca-release '' '' '' '[]' '' '' true
+run_case ca-version-tag push refs/tags/ca-v0.5.0-rc.1 '' '' '' '[]' '' '' true
+run_case ca-item-pr pull_request refs/pull/4/merge ca-canary ca/a1a example/repository '[]' '' '' false
+PR_HAS_HEAVY_LABEL=true \
+  run_case labelled-ca-item-pr pull_request refs/pull/4/merge ca-canary ca/a1a example/repository '[]' '' '' true
+PR_HAS_HEAVY_LABEL=true \
+  run_case labelled-ca-promotion pull_request refs/pull/5/merge ca-release promote/ca-release-20261020-1200 example/repository '[]' '' '' true
+PR_HAS_HEAVY_LABEL=true \
+  run_case labelled-ca-canary-head pull_request refs/pull/6/merge ca-release ca-canary example/repository '[]' '' '' false
+PR_HAS_HEAVY_LABEL=true \
+  run_case labelled-ca-fork pull_request refs/pull/7/merge ca-canary ca/a1a fork/repository '[]' '' '' false
 run_case exact-merge workflow_dispatch refs/heads/master '' '' '' '[]' "$MERGE" 311 true
 
 jq --arg other "$SHA" '.merge_commit_sha = $other' "$TMP/pull.json" >"$TMP/stale-pull.json"

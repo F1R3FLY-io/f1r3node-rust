@@ -59,6 +59,7 @@ The job runs 21 script tests:
 - Commit trailer check
 - Pre-push hook
 - Stack CI gate
+- Image publish tags
 - Soak schedule routing
 - System-integration node capability contract
 - System-integration repin helper
@@ -166,7 +167,7 @@ Do not open a back-merge with head `master`. A pull request with a protected hea
 
 ## Protected head guard
 
-`.github/scripts/check-promotion-source.sh` rejects every pull request from this repository with head `master` or `dev`, whatever its base. A pull request from the `master` or `dev` branch of a fork is accepted. Two workflows run the script:
+`.github/scripts/check-promotion-source.sh` rejects every pull request from this repository with head `master`, `dev`, `ca-canary`, or `ca-release`, whatever its base. A pull request from a branch of a fork with one of these names is accepted. Two workflows run the script:
 
 | Workflow | Event | Token | Action |
 |---|---|---|---|
@@ -176,3 +177,33 @@ Do not open a back-merge with head `master`. A pull request with a protected hea
 The guard runs the workflow file and the script from the base branch, not from the pull request. Code that a pull request changes therefore never runs with the write token. The guard also runs when the pull request has a merge conflict, and `pull_request` workflows do not. A closed pull request has no **Update branch** button and cannot merge, so the guard also covers `dev`, where `Promotion Source` is not required.
 
 The guard uses the workflow of the base branch. It protects pull requests to `dev` after this workflow is on `dev`, and pull requests to `master` after the next promotion. The close happens a few seconds after the pull request opens. Only a ruleset blocks a direct push to `master` or `dev` at all times. The change of the human bypass actors from `always` to `pull_request` is still open (TASK-023-13).
+
+## Release train branches
+
+The cost-accounting release train of issue #764 adds two long-lived branches. `ca-canary` has the role of `dev`, and `ca-release` has the role of `master`. Issue #791 tracks the CI work for them.
+
+| Flow | Command | Temporary branch |
+|---|---|---|
+| Promotion from `ca-canary` to `ca-release` | `just ca-promote` | `promote/ca-release-<UTC timestamp>` |
+| Back-merge from `ca-release` to `ca-canary` | `just ca-backmerge` | `backmerge/ca-release-<12-character SHA>` |
+
+The commands run the same scripts as `just promote` and `just backmerge`. The scripts accept only these two pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
+
+CI treats the two branches like `dev` and `master`:
+
+- A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Its head must not be a protected branch.
+- An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
+
+Image publication:
+
+| Reference | Version tag | Channel pointer |
+|---|---|---|
+| Push to `ca-release` | `ca-release-<git describe>` | `:ca-release` |
+| Tag `ca-v<version>` | `:ca-v<version>` | `:ca-latest` |
+
+`ca-canary` does not publish images. A `ca-*` reference never moves `:latest` or `:dev`. `test-image-publish-tags.sh` checks these tags.
+
+The heavy pipeline and the soaks use the `oci-credentials` environment. It must allow `branch:ca-canary`, `branch:ca-release`, and `tag:ca-v*`.
+
+Only `dev` and `master` publish without reviewer approval, through `protected-branch-image-publish`. A push to `ca-release` and a `ca-v*` tag publish through `ephemeral-launch`, so each publication waits for one of its required reviewers. `check-workflow-invariants.sh` enforces this rule.

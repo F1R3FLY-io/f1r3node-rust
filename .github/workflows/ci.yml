@@ -22,6 +22,8 @@ on:
       - master
       - staging
       - trying
+      - ca-canary
+      - ca-release
     tags:
       - "**"
   # `labeled` carries the ci-heavy opt-in. `edited` stays: a stacked pull
@@ -211,7 +213,10 @@ jobs:
           elif [ "$EVENT_NAME" = push ] && {
             [ "$EVENT_REF" = refs/heads/dev ] ||
             [ "$EVENT_REF" = refs/heads/master ] ||
-            [[ "$EVENT_REF" == refs/tags/v* ]];
+            [ "$EVENT_REF" = refs/heads/ca-canary ] ||
+            [ "$EVENT_REF" = refs/heads/ca-release ] ||
+            [[ "$EVENT_REF" == refs/tags/v* ]] ||
+            [[ "$EVENT_REF" == refs/tags/ca-v* ]];
           }; then
             run_heavy=true
             if [ "$EVENT_REF" = refs/heads/dev ] && reused_merge_group_run="$(merge_group_result_reusable)"; then
@@ -224,8 +229,10 @@ jobs:
           elif [ "$EVENT_NAME" = pull_request ] \
             && [ "$PR_HAS_HEAVY_LABEL" = true ] \
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
-            && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ]; } \
-            && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ]; then
+            && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ] \
+              || [ "$PR_BASE_REF" = ca-canary ] || [ "$PR_BASE_REF" = ca-release ]; } \
+            && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ] \
+            && [ "$PR_HEAD_REF" != ca-canary ] && [ "$PR_HEAD_REF" != ca-release ]; then
             run_heavy=true
           fi
           {
@@ -257,7 +264,10 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
           # Derive BRANCH for image tag suffix logic downstream
-          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/ca-v* ]]; then
+            # Release train tag: never the master release path, so never :latest
+            BRANCH="ca-release"
+          elif [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
             # Tag push: treat as master release path
             BRANCH="master"
           else
@@ -537,6 +547,10 @@ jobs:
       - name: Verify stack CI gate
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ci-stack-gate.sh
+
+      - name: Verify image publish tags
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-image-publish-tags.sh
 
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
@@ -1290,7 +1304,8 @@ jobs:
           done
 
   # Publish Docker image to Docker Hub + OCIR.
-  # Runs on release tag pushes and on push to dev/master (with suffix).
+  # Runs on release tag pushes (v* and ca-v*) and on push to dev, master, and
+  # ca-release (with suffix). ca-canary does not publish.
   release_docker_image:
     name: Release Docker Image
     timeout-minutes: 15
@@ -1310,8 +1325,10 @@ jobs:
     if: >-
       github.event_name == 'push' && (
         startsWith(github.ref, 'refs/tags/v') ||
+        startsWith(github.ref, 'refs/tags/ca-v') ||
         github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/dev'
+        github.ref == 'refs/heads/dev' ||
+        github.ref == 'refs/heads/ca-release'
       )
     runs-on: ubuntu-latest
     environment: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') && 'protected-branch-image-publish' || 'ephemeral-launch' }}
@@ -1433,6 +1450,8 @@ jobs:
           #   dev     → version tag prefixed `dev-${VERSION}`, channel pointer :dev
           #   staging → version tag prefixed `staging-${VERSION}`, channel pointer :staging
           #   master  → plain :${VERSION}, channel pointer :latest only on tag push
+          #   ca-release → version tag prefixed `ca-release-${VERSION}`, channel pointer :ca-release
+          #   ca-v* tag  → plain :${VERSION}, channel pointer :ca-latest, never :latest
           if [[ "$BRANCH" == "trying" ]]; then
             SUFFIX="-trying"
             CI_RUN="-ci-${GITHUB_RUN_NUMBER}"
@@ -1440,6 +1459,8 @@ jobs:
             TAG_PREFIX="dev-"
           elif [[ "$BRANCH" == "staging" ]]; then
             TAG_PREFIX="staging-"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="ca-release-"
           fi
 
           IMAGE_NAME="${DOCKER_IMAGE_NAME}${SUFFIX}"
@@ -1451,6 +1472,10 @@ jobs:
             IMG_LATEST="${IMAGE_NAME}:dev"
           elif [[ "$BRANCH" == "staging" ]]; then
             IMG_LATEST="${IMAGE_NAME}:staging"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:ca-release"
+          elif [[ "$BRANCH" == "ca-release" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:ca-latest"
           else
             IMG_LATEST="${IMAGE_NAME}:latest"
           fi
@@ -1510,6 +1535,8 @@ jobs:
             TAG_PREFIX="dev-"
           elif [[ "$BRANCH" == "staging" ]]; then
             TAG_PREFIX="staging-"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="ca-release-"
           fi
 
           OCIR_IMAGE="${OCIR_BASE}${SUFFIX}"
@@ -1520,6 +1547,10 @@ jobs:
             IMG_LATEST="${OCIR_IMAGE}:dev"
           elif [[ "$BRANCH" == "staging" ]]; then
             IMG_LATEST="${OCIR_IMAGE}:staging"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:ca-release"
+          elif [[ "$BRANCH" == "ca-release" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:ca-latest"
           else
             IMG_LATEST="${OCIR_IMAGE}:latest"
           fi
