@@ -12,6 +12,7 @@ pub mod lfs_state_requester_state_spec;
 pub mod running_handle_has_block_request_spec;
 pub mod running_handle_has_block_spec;
 pub mod running_spec;
+pub mod runtime_state_requester_spec;
 pub mod setup;
 pub mod snapshot_sync_spec;
 pub mod wal_payload_sync_spec;

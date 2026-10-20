@@ -10,11 +10,15 @@
 //! eventually succeed: it asks a peer for the root's trie, imports the
 //! content-addressed chunks, and records the root once verification passes.
 //!
-//! Trust model, unchanged from the restore-time horizon sync this reuses the
-//! wire protocol of: chunks are radix nodes validated against their own
-//! hashes by the importer, so a peer cannot substitute state for a root — it
-//! can only fail to serve, which leaves the waiting blocks deferred under
-//! their existing retry bounds. Roots enter the queue from exactly two
+//! Trust model: chunks are asked only of the bootstrap, and Running drops
+//! chunks from any other declared sender. That sender is not authenticated on
+//! the streamed path, so every chunk is also validated before anything is
+//! written: its items must hash to their keys and must be exactly the nodes a
+//! walk of the trie from its start path yields. A chunk that fails is not
+//! imported and its path is asked again. A peer therefore cannot substitute
+//! state for a root or overwrite state the node holds — it can only fail to
+//! serve, which leaves the waiting blocks deferred under their existing retry
+//! bounds. Roots enter the queue from exactly two
 //! places, both authenticated: the declared state of an admitted block
 //! (bonded-citer-gated, budgeted) and a replay of a signature-checked block.
 //!
@@ -29,7 +33,7 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::casper::protocol::casper_message::{StoreItemsMessage, StoreItemsMessageRequest};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
+use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
 use tokio::sync::mpsc;
 
 use crate::rust::engine::lfs_horizon_requester::{HasRootFn, HorizonRequesterOps};
@@ -47,6 +51,27 @@ const ROOT_FETCH_BUDGET: u64 = 1_024;
 const RESEND_INTERVAL: Duration = Duration::from_secs(10);
 const ROOT_DEADLINE: Duration = Duration::from_secs(120);
 
+type StoreItems = Vec<(Blake2b256Hash, Vec<u8>)>;
+
+/// Checks a chunk before it is imported: its history items, data items and
+/// start path.
+type ChunkValidator =
+    Arc<dyn Fn(&StoreItems, &StoreItems, &StatePartPath) -> Result<(), String> + Send + Sync>;
+
+fn store_validator(importer: Arc<dyn RSpaceImporter>) -> ChunkValidator {
+    Arc::new(move |history_items, data_items, start_path| {
+        RSpaceImporterInstance::validate_state_items(
+            history_items,
+            data_items,
+            start_path.clone(),
+            PAGE_SIZE,
+            0,
+            importer.clone(),
+        )
+        .map_err(|e| e.to_string())
+    })
+}
+
 struct PendingRoot {
     started: Instant,
     /// Chunk paths currently outstanding for this root's pagination walk.
@@ -63,16 +88,22 @@ struct Core {
     fetched_total: u64,
     importer: Arc<dyn RSpaceImporter>,
     has_root: HasRootFn,
+    validate: ChunkValidator,
 }
 
 impl Core {
-    fn new(importer: Arc<dyn RSpaceImporter>, has_root: HasRootFn) -> Self {
+    fn new(
+        importer: Arc<dyn RSpaceImporter>,
+        has_root: HasRootFn,
+        validate: ChunkValidator,
+    ) -> Self {
         Self {
             pending: HashMap::new(),
             path_to_root: HashMap::new(),
             fetched_total: 0,
             importer,
             has_root,
+            validate,
         }
     }
 
@@ -146,18 +177,27 @@ impl Core {
             return None;
         }
 
-        self.importer.set_history_items(
-            history_items
-                .into_iter()
-                .map(|(hash, bytes)| (hash, bytes.to_vec()))
-                .collect(),
-        );
-        self.importer.set_data_items(
-            data_items
-                .into_iter()
-                .map(|(hash, bytes)| (hash, bytes.to_vec()))
-                .collect(),
-        );
+        let history_items: StoreItems = history_items
+            .into_iter()
+            .map(|(hash, bytes)| (hash, bytes.to_vec()))
+            .collect();
+        let data_items: StoreItems = data_items
+            .into_iter()
+            .map(|(hash, bytes)| (hash, bytes.to_vec()))
+            .collect();
+        if let Err(error) = (self.validate)(&history_items, &data_items, &start_path) {
+            tracing::warn!(
+                %root,
+                %error,
+                "state requester: rejected an invalid chunk; it is asked again on the next resend tick"
+            );
+            pending.outstanding.insert(start_path.clone());
+            self.path_to_root.insert(start_path, root);
+            return None;
+        }
+
+        self.importer.set_history_items(history_items);
+        self.importer.set_data_items(data_items);
         pending.chunks_imported += 1;
 
         if is_terminal {
@@ -264,7 +304,8 @@ pub fn spawn<T: TransportLayer + Send + Sync + 'static>(
     let sender = BootstrapChunkSender { transport, rp_conf };
 
     tokio::spawn(async move {
-        let mut core = Core::new(importer, has_root);
+        let validate = store_validator(importer.clone());
+        let mut core = Core::new(importer, has_root, validate);
         let mut resend = tokio::time::interval(RESEND_INTERVAL);
         resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -322,7 +363,8 @@ mod tests {
             let recorded = recorded.clone();
             Arc::new(move |root| Ok(recorded.lock().unwrap().contains(root)))
         };
-        (Core::new(importer, has_root), recorded)
+        let accept_all: ChunkValidator = Arc::new(|_, _, _| Ok(()));
+        (Core::new(importer, has_root, accept_all), recorded)
     }
 
     fn root(tag: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![tag; 32]) }
@@ -381,6 +423,33 @@ mod tests {
         let done = core.on_items(chunk(cursor.clone(), cursor, 1));
         assert!(done.is_none());
         assert!(recorded.lock().unwrap().contains(&r));
+    }
+
+    /// A chunk that fails validation changes nothing: the root is not recorded,
+    /// and the chunk's path stays outstanding so the next tick asks for it again.
+    #[test]
+    fn an_invalid_chunk_is_not_imported_and_is_asked_again() {
+        let (core, recorded) = core_with_store();
+        let reject_all: ChunkValidator = Arc::new(|_, _, _| Err("invalid".to_string()));
+        let mut core = Core {
+            validate: reject_all,
+            ..core
+        };
+        let r = root(0x5A);
+
+        let path = core.on_fetch(r.clone()).expect("fetch starts");
+        assert!(core
+            .on_items(chunk(path.clone(), path.clone(), 1))
+            .is_none());
+        assert!(
+            !recorded.lock().unwrap().contains(&r),
+            "a root was recorded from a chunk that failed validation"
+        );
+        assert_eq!(core.on_tick(), vec![path.clone()]);
+        assert!(
+            core.on_fetch(r).is_none(),
+            "the fetch is still in flight, not dropped"
+        );
     }
 
     /// A peer that answers "terminal, empty" on the first chunk does not have
