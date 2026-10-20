@@ -17,8 +17,8 @@
 #   ca-daily  the daily back-merge (backmerge/ca-release-<sha> into
 #             ca-canary) from ca-daily-sync.yml. It needs the light ci.yml
 #             checks only and no review, so it accepts only pull requests
-#             that the promotion app opened. The Promotion Source check also
-#             requires that the head is the named ca-release commit. A
+#             that the promotion app opened. CA Daily Provenance verifies the
+#             release source and each clean base merge with trusted code. A
 #             back-merge opened by hand with just ca-backmerge is merged by a
 #             maintainer. A push to ca-canary runs the heavy pipeline after
 #             the merge.
@@ -70,6 +70,7 @@ queue_rules:
       - head~=^backmerge/ca-release-[0-9a-f]{12}$
       - author=f1r3node-promotion[bot]
     merge_conditions:
+      - check-success=CA Daily Provenance
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests

@@ -226,7 +226,7 @@ The workflow uses the promotion app token from `release-credentials`, as the Pro
 | Queue | Pull requests | Merge conditions |
 |---|---|---|
 | `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync. Mergify queues it by itself. | To enter the queue: the `ci-heavy` label, the `ca-soaked` label, and an approving review. To merge: the `ci.yml` checks of `devProtect` and the Integration Gates. The `ci-heavy` label is necessary for the Integration Gates. |
-| `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks. No review. The Promotion Source check requires that the head is the named commit and that `ca-release` contains it. A maintainer merges a back-merge that a person opened. |
+| `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review. The trusted validator accepts the release source and clean base merges only. A maintainer merges a back-merge that a person opened. |
 
 To merge a `ca/<item>` pull request:
 
@@ -241,6 +241,24 @@ The Mergify app must be installed in the organization. Mergify reads `.mergify.y
 The `ca-soaked` label stays on the pull request when Mergify merges a new `ca-canary` base into it. A back-merge or a merged sync therefore does not need a new soak. A push by the author removes the label, so a code change needs a new soak. A commit status cannot do this, because a new head commit has no status and Mergify then removes the pull request from the queue.
 
 A person with triage access can add the label by hand. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
+
+### Daily provenance
+
+`ca-daily-provenance.yml` runs on `pull_request_target` and checks out only the captured base commit.
+It fetches pull request commit objects without checking out or executing pull request code.
+The validator requires a same-repository head and the promotion app as the pull request author.
+
+The named source must belong to `ca-release`.
+The head can be that source or up to 128 clean base merges after it.
+Each merge must have the previous head as its first parent and a captured base ancestor as its second parent.
+The validator compares each actual tree with the clean tree from `git merge-tree --write-tree`.
+An extra commit, altered tree, conflict, or missing object fails the check.
+
+The workflow posts `CA Daily Provenance` directly on the event head SHA, not the workflow base SHA.
+A failed or incomplete validation posts failure when the result step can run.
+A missing or pending status also blocks the daily queue.
+The workflow and validator must reach `ca-canary` before the queue can pass this gate.
+The [design](plans/ca-daily-provenance.md) gives the verification scope.
 
 ### Release tag
 

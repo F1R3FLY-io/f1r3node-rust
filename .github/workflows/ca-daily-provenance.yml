@@ -1,0 +1,86 @@
+name: CA Daily Provenance
+
+on:
+  pull_request_target:
+    branches: [ca-canary]
+    types: [opened, reopened, synchronize, edited]
+
+permissions: {}
+
+concurrency:
+  group: ca-daily-provenance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  provenance:
+    if: startsWith(github.event.pull_request.head.ref, 'backmerge/ca-release-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Mark the head pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash -euo pipefail {0}
+        run: |
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/$REPOSITORY/statuses/$HEAD_SHA" -f state=pending \
+            -f context="CA Daily Provenance" \
+            -f description="The trusted provenance check has started."
+
+      - name: Checkout trusted base code
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Fetch commit objects without checking out the head
+        id: refs
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        shell: bash -euo pipefail {0}
+        run: |
+          [ "$HEAD_REPO" = "$REPOSITORY" ]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          release_ref=refs/remotes/origin/ca-release
+          git fetch --no-tags origin "$HEAD_SHA" \
+            "+refs/heads/ca-release:$release_ref"
+          release_sha="$(git rev-parse --verify "$release_ref^{commit}")"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the release source and base merge trees
+        id: validate
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RELEASE_SHA: ${{ steps.refs.outputs.release_sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/check-ca-daily-provenance.sh
+
+      - name: Publish the head-bound result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATION: ${{ steps.validate.outcome }}
+          JOB_STATUS: ${{ job.status }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          state=failure
+          if [ "$VALIDATION" = success ] && [ "$JOB_STATUS" = success ]; then
+            state=success
+          fi
+          gh api "repos/$REPOSITORY/statuses/$HEAD_SHA" -f state="$state" \
+            -f context="CA Daily Provenance" \
+            -f description="The trusted provenance check concluded $state." \
+            -f target_url="$SERVER_URL/$REPOSITORY/actions/runs/$RUN_ID"
