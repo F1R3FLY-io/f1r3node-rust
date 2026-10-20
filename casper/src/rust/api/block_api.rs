@@ -660,7 +660,18 @@ impl BlockAPI {
                     ),
                 }));
             }
-            let dag = casper.block_dag().await?;
+            let snapshot = casper.get_snapshot().await?;
+            let validator = casper.get_validator().ok_or_else(|| {
+                eyre::Report::new(DeployValidationError {
+                    message: "Deploy was rejected because node has no validator key.".to_string(),
+                })
+            })?;
+            if !snapshot.is_validator_bonded(&validator.public_key.bytes)? {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: "Deploy was rejected because node's validator is not bonded."
+                        .to_string(),
+                }));
+            }
             // A deploy admitted now can only ever land in a block that doesn't
             // exist yet — the next one, at `latest_block_number + 1` — never
             // in the current tip, which is already built. block_creator.rs's
@@ -671,7 +682,7 @@ impl BlockAPI {
             // off by one: a deploy admitted "just inside" the window at the
             // current tip is then found expired by the very next block's
             // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
+            let next_block_number = snapshot.dag.latest_block_number() + 1;
             let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
             if deploy_is_block_expired(
                 d.data.valid_after_block_number,

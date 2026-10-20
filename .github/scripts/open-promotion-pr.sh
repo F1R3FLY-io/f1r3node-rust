@@ -12,7 +12,7 @@
 # (and no pre-push hook) is needed. The pull request is opened with the
 # caller's gh login, so CI runs on it.
 #
-# The Promote dev to master workflow runs this script with a GitHub App token
+# The Promote and Back-merge workflow runs this script with a GitHub App token
 # and sets PROMOTE_TRIGGERED_BY. The app is then the pull request author, so the
 # user who started the workflow could approve the promotion alone. The body
 # names that user and asks a different ci-maintainer to approve.
@@ -22,9 +22,10 @@ set -euo pipefail
 creator="created by \`just promote\`"
 review=""
 if [ -n "${PROMOTE_TRIGGERED_BY:-}" ]; then
-	[[ "$PROMOTE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
+	login="${PROMOTE_TRIGGERED_BY%"[bot]"}"
+	[[ ${#login} -le 39 && "$PROMOTE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
 		{ echo "ERROR: PROMOTE_TRIGGERED_BY is not a GitHub login." >&2; exit 2; }
-	creator="created by the Promote dev to master workflow for @$PROMOTE_TRIGGERED_BY"
+	creator="created by the Promote and Back-merge workflow for @$PROMOTE_TRIGGERED_BY"
 	review="
 
 @$PROMOTE_TRIGGERED_BY started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it."

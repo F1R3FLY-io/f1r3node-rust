@@ -1,9 +1,22 @@
-name: Promote dev to master
+name: Promote and Back-merge
+run-name: ${{ inputs.operation == 'backmerge' && 'Back-merge master into dev' || 'Promote dev to master' }}
 
-# The Run workflow button on the Actions tab opens the dev -> master promotion
-# pull request, as `just promote` does. Both run
-# .github/scripts/open-promotion-pr.sh, which creates a temporary promote/*
-# branch at the origin/dev commit. A promotion never uses dev as its head.
+# The Run workflow button on the Actions tab opens one of two pull requests.
+# The operation input selects it:
+#
+#   promote    dev -> master, as `just promote` does. It runs
+#              .github/scripts/open-promotion-pr.sh, which creates a temporary
+#              promote/* branch at the origin/dev commit. A promotion never
+#              uses dev as its head.
+#   backmerge  master -> dev, as `just backmerge` does. It runs
+#              .github/scripts/open-backmerge-pr.sh, which creates a temporary
+#              backmerge/* branch at the origin/master commit. A back-merge
+#              never uses master as its head.
+#
+# The workflow always runs from master. The operation input selects the
+# direction, not the "Use workflow from" branch: the release-credentials
+# environment allows master only, so code merged to dev never runs with the app
+# token.
 #
 # A pull request opened with GITHUB_TOKEN starts no pull_request workflows, so
 # its required checks never report. The job opens the pull request with a
@@ -15,15 +28,22 @@ name: Promote dev to master
 # PROMOTION_APP_ID and PROMOTION_APP_PRIVATE_KEY.
 #
 # The app is the pull request author, so the user who started the workflow
-# could approve the promotion alone. The pull request body names that user and
-# asks a different member of ci-maintainers to approve. CODEOWNERS requests the
-# review.
+# could approve the pull request alone. The pull request body names that user
+# and asks a different member of ci-maintainers to approve. CODEOWNERS requests
+# the review.
 #
 # GitHub shows the button only for a workflow on the default branch (master).
-# The release-credentials environment allows master only.
 
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: "promote opens dev -> master. backmerge opens master -> dev."
+        type: choice
+        options:
+          - promote
+          - backmerge
+        default: promote
 
 permissions:
   contents: read
@@ -33,8 +53,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  promote:
-    name: Open Promotion Pull Request
+  open:
+    name: Open Promotion or Back-merge Pull Request
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release-credentials
@@ -47,7 +67,7 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           if [ "$REF" != refs/heads/master ]; then
-            echo "::error::Run Promote dev to master from master, not $REF."
+            echo "::error::Run Promote and Back-merge from master, not $REF. Select the direction with the operation input."
             exit 1
           fi
 
@@ -66,10 +86,27 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Open the promotion pull request
+      - name: Open the pull request
         env:
           GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
-          PROMOTE_REPOSITORY: ${{ github.repository }}
-          PROMOTE_TRIGGERED_BY: ${{ github.triggering_actor }}
+          OPERATION: ${{ inputs.operation }}
+          REPOSITORY: ${{ github.repository }}
+          TRIGGERED_BY: ${{ github.triggering_actor }}
         shell: bash -euo pipefail {0}
-        run: bash .github/scripts/open-promotion-pr.sh
+        run: |
+          case "$OPERATION" in
+            promote)
+              PROMOTE_REPOSITORY="$REPOSITORY" PROMOTE_TRIGGERED_BY="$TRIGGERED_BY" \
+                bash .github/scripts/open-promotion-pr.sh
+              ;;
+            backmerge)
+              BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_TRIGGERED_BY="$TRIGGERED_BY" \
+                bash .github/scripts/open-backmerge-pr.sh
+              ;;
+            # The form allows only the two choices, but an API dispatch can
+            # send any value. Keep this guard.
+            *)
+              echo "::error::Unknown operation '$OPERATION'. Use promote or backmerge."
+              exit 1
+              ;;
+          esac

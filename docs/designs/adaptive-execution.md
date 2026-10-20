@@ -1,6 +1,7 @@
 # Adaptive Execution Design
 
 - **Status:** initial draft for maintainer review (TASK-027-1, EPIC-027). Created on 2026-10-13.
+- **Current version:** this copy is the draft of 2026-10-13, which PR #719 brought to `dev`. The current draft is on draft PR #714 (branch `perf/issue-24-adaptive-execution`). It adds the stall-loop revision 2 mapping (section 10.4.1), the node role floor and the issue #691 evidence, the `testnet-path` evidence, and open question Q10. Read PR #714 for the decisions that wait for ratification. The test net path decision is in issue #764.
 - **Story:** [US-012](../UserStories.md) Shards that adapt to the hardware of each node
 - **Branch:** `perf/issue-24-adaptive-execution`
 - **Closes:** issue #24, "perf: block replay pipeline bottleneck limits sustained deploy throughput"
