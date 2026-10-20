@@ -93,11 +93,20 @@ async fn evaluate_with_mock_service(
 ///   3. Rig: reset replay runtime to the original pre-state, load event log
 ///   4. Replay: evaluate same term on replay runtime
 ///   5. Verify: check_replay_data ensures all events were consumed
-#[allow(clippy::type_complexity)]
 async fn evaluate_and_replay(
     term: &str,
     initial_phlo: Cost,
     external_services: ExternalServices,
+) -> (EvaluateResult, EvaluateResult) {
+    evaluate_and_replay_in(term, initial_phlo, external_services, false).await
+}
+
+#[allow(clippy::type_complexity)]
+async fn evaluate_and_replay_in(
+    term: &str,
+    initial_phlo: Cost,
+    external_services: ExternalServices,
+    legacy: bool,
 ) -> (EvaluateResult, EvaluateResult) {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
@@ -115,6 +124,12 @@ async fn evaluate_and_replay(
     ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
     install_test_payer(&runtime);
     install_test_payer(&replay_runtime);
+    let _legacy_scopes = legacy.then(|| {
+        (
+            runtime.cost.enter_legacy_scope(),
+            replay_runtime.cost.enter_legacy_scope(),
+        )
+    });
 
     let rand = Blake2b512Random::create_from_bytes(&[]);
     let pre_state_root = runtime.get_root().await;
@@ -195,8 +210,11 @@ fn assert_replay_consistency(
 
     assert_eq!(
         play_result.cost.value, replay_result.cost.value,
-        "{test_name}: replay cost ({}) should match play cost ({})",
-        replay_result.cost.value, play_result.cost.value
+        "{test_name}: replay cost ({}) should match play cost ({}); play errors {:?}, replay errors {:?}",
+        replay_result.cost.value,
+        play_result.cost.value,
+        play_result.errors,
+        replay_result.errors
     );
 }
 
@@ -459,6 +477,24 @@ async fn gpt4_out_of_phlogistons_rejects_output_and_marks_the_invocation_failed(
     assert_eq!(comms[0].produces.len(), 1);
     assert_eq!(comms[0].produces[0].hash, failed_inputs[0].hash);
     assert!(comms[0].produces[0].failed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replay_gpt4_out_of_phlogistons_consistent_cost() {
+    let external_services = create_test_external_services(
+        OpenAIMockConfig::single_completion(&"a".repeat(1_000_000)),
+        None,
+    );
+
+    let (play, replay) = evaluate_and_replay_in(
+        r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
+        Cost::create(1000, "test".to_string()),
+        external_services,
+        true,
+    )
+    .await;
+
+    assert_replay_consistency(&play, &replay, "GPT4 OutOfPhlogistons replay", true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

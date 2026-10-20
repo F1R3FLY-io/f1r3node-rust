@@ -811,6 +811,70 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compute_state_should_charge_only_parsing_for_a_syntax_error() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let bad_rholang =
+                r#"for(@x <- @"x"; @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!("hi") "#;
+            let deploy = construct_deploy::source_deploy_now_full(
+                bad_rholang.to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let result = compute_state(
+                &mut runtime_manager,
+                &genesis_context,
+                deploy,
+                &genesis_block.body.state.post_state_hash,
+            )
+            .await;
+
+            assert!(result.1.is_failed);
+            assert_eq!(result.1.cost.cost, bad_rholang.len() as u64);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compute_state_should_not_reduce_when_phlo_does_not_cover_parsing() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let send_rho = "@{0}!(0)";
+            let phlo_limit = send_rho.len() as i64 - 1;
+            let deploy = construct_deploy::source_deploy_now_full(
+                send_rho.to_string(),
+                Some(phlo_limit),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let result = compute_state(
+                &mut runtime_manager,
+                &genesis_context,
+                deploy,
+                &genesis_block.body.state.post_state_hash,
+            )
+            .await;
+
+            assert!(result.1.is_failed);
+            assert_eq!(result.1.cost.cost, phlo_limit as u64);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {

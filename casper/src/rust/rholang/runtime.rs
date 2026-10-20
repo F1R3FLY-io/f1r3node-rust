@@ -1206,23 +1206,15 @@ impl RuntimeOps {
         match result {
             Ok(mut eval_result) => {
                 if deploy.data.phlo_limit >= 0 {
-                    eval_result.cost.value = match eval_result.errors.as_slice() {
-                        []
-                        | [InterpreterError::UserAbortError]
-                        | [InterpreterError::IfConditionTypeError { .. }] => eval_result
-                            .cost
-                            .value
-                            .checked_add(parsing_cost.value)
-                            .ok_or_else(|| {
-                                CasperError::RuntimeError(
-                                    "legacy parsing charge overflowed".to_string(),
-                                )
-                            })?,
-                        [InterpreterError::ParserError(_)]
-                        | [InterpreterError::OperatorNotDefined { .. }]
-                        | [InterpreterError::OperatorExpectedError { .. }] => parsing_cost.value,
-                        _ => deploy.data.phlo_limit,
-                    };
+                    eval_result.cost.value = eval_result
+                        .cost
+                        .value
+                        .checked_add(parsing_cost.value)
+                        .ok_or_else(|| {
+                            CasperError::RuntimeError(
+                                "legacy parsing charge overflowed".to_string(),
+                            )
+                        })?;
                 }
                 Ok(eval_result)
             }

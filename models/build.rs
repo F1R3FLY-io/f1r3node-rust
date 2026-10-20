@@ -115,5 +115,63 @@ fn main() {
         )
     });
 
+    let modified_content = with_empty_vec_clone_fast_path(&modified_content);
+
     fs::write(file_path, modified_content).expect("Unable to write file");
+}
+
+fn with_empty_vec_clone_fast_path(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut output: Vec<String> = Vec::with_capacity(lines.len());
+    let mut impls: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let derive = line.trim() == "#[derive(Clone,  ::prost::Message)]";
+        let name = lines.get(index + 1).and_then(|next| {
+            next.strip_prefix("pub struct ")
+                .and_then(|rest| rest.strip_suffix(" {"))
+                .filter(|name| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        });
+        match (derive, name) {
+            (true, Some(name)) => {
+                let mut fields = Vec::new();
+                let mut end = index + 2;
+                while end < lines.len() && lines[end] != "}" {
+                    if let Some(field) = lines[end].trim().strip_prefix("pub ") {
+                        if let Some((field_name, field_type)) = field.split_once(": ") {
+                            fields.push((
+                                field_name.to_string(),
+                                field_type
+                                    .trim_end_matches(',')
+                                    .starts_with("::prost::alloc::vec::Vec<"),
+                            ));
+                        }
+                    }
+                    end += 1;
+                }
+                output.push(line.replace("Clone,  ", ""));
+                let body = fields
+                    .iter()
+                    .map(|(field, is_vec)| {
+                        if *is_vec {
+                            format!(
+                                "            {field}: if self.{field}.is_empty() {{ ::prost::alloc::vec::Vec::new() }} else {{ self.{field}.clone() }},"
+                            )
+                        } else {
+                            format!("            {field}: ::core::clone::Clone::clone(&self.{field}),")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                impls.push(format!(
+                    "impl ::core::clone::Clone for {name} {{\n    #[inline]\n    fn clone(&self) -> Self {{\n        {name} {{\n{body}\n        }}\n    }}\n}}"
+                ));
+            }
+            _ => output.push(line.to_string()),
+        }
+        index += 1;
+    }
+    output.extend(impls);
+    output.join("\n")
 }

@@ -1,3 +1,4 @@
+mod abort_spec;
 mod accounting;
 mod fileio_bounds_large_spec;
 mod fileio_bounds_spec;

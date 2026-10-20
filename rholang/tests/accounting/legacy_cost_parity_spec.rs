@@ -97,3 +97,17 @@ async fn legacy_contracts_cost_what_they_cost_on_dev() {
     }
     assert!(mismatches.is_empty(), "\n{}", mismatches.join("\n"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn legacy_cost_log_sums_to_the_reduction_cost() {
+    for (contract, expected) in contracts() {
+        let (cost, log, ok) = cost_and_log(&contract).await;
+        assert!(ok, "contract errored: {contract}");
+        assert_eq!(cost, expected, "cost of {contract}");
+        assert_eq!(
+            log.iter().map(|entry| entry.value).sum::<i64>() + contract.len() as i64,
+            expected,
+            "cost log of {contract}"
+        );
+    }
+}

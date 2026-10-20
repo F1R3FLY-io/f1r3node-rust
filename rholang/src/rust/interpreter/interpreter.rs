@@ -217,8 +217,26 @@ impl InterpreterImpl {
                 }
             }
         };
-        evaluation_result
+        if self.c.is_legacy() {
+            evaluation_result.map(|result| legacy_failure_cost(result, initial_phlo))
+        } else {
+            evaluation_result
+        }
     }
+}
+
+fn legacy_failure_cost(mut result: EvaluateResult, initial_phlo: Cost) -> EvaluateResult {
+    result.cost = match result.errors.as_slice() {
+        []
+        | [InterpreterError::UserAbortError]
+        | [InterpreterError::IfConditionTypeError { .. }] => result.cost,
+        [InterpreterError::OperatorNotDefined { .. }]
+        | [InterpreterError::OperatorExpectedError { .. }] => {
+            Cost::create(0, "legacy parse failure")
+        }
+        _ => initial_phlo,
+    };
+    result
 }
 
 impl InterpreterImpl {
