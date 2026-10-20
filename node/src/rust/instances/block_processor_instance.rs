@@ -26,54 +26,26 @@ const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
 const RELEASED_BLOCKS_BEFORE_GOSSIP_TURN: usize = 4;
 const MIN_PARALLEL_BLOCKS: usize = 3;
 
-fn derive_pipeline_width(
-    active_validators: usize,
-    is_active_validator: bool,
-    cpu_cores: usize,
-) -> usize {
-    let needed = active_validators.saturating_sub(usize::from(is_active_validator));
-    let cpu_bound = ExploratoryDeployConfig::derive_max_concurrent(cpu_cores);
-    needed
-        .max(MIN_PARALLEL_BLOCKS)
-        .min(cpu_bound.max(MIN_PARALLEL_BLOCKS))
-        .min(tokio::sync::Semaphore::MAX_PERMITS - 2)
+fn derive_pipeline_width(cpu_cores: usize) -> usize {
+    ExploratoryDeployConfig::derive_max_concurrent(cpu_cores)
+        .clamp(MIN_PARALLEL_BLOCKS, tokio::sync::Semaphore::MAX_PERMITS - 2)
 }
 
-async fn resolve_pipeline_width(casper: &dyn MultiParentCasper) -> Result<usize, CasperError> {
-    let dag = casper.block_dag().await?;
-    let lfb = casper
-        .block_store()
-        .get(&dag.last_finalized_block())?
-        .ok_or_else(|| {
-            CasperError::Other("Last finalized block is missing from the block store".to_string())
-        })?;
-    let runtime_manager = casper.runtime_manager();
-    let active_validators = runtime_manager
-        .get_active_validators(&lfb.body.state.post_state_hash)
-        .await?;
-    let is_active_validator = casper
-        .get_validator()
-        .is_some_and(|identity| active_validators.contains(&identity.public_key.bytes));
+pub(crate) fn resolve_pipeline_width() -> usize {
     let cpu_cores = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "Could not determine CPU capacity; using the pipeline floor");
             1
         });
-    let width = derive_pipeline_width(active_validators.len(), is_active_validator, cpu_cores);
-    let replay_permits = runtime_manager
-        .replay_lock()
-        .configure_permits_once(width + 2)?;
-    let width = replay_permits - 2;
+    let width = derive_pipeline_width(cpu_cores);
     tracing::info!(
         pipeline_width = width,
-        replay_permits,
-        active_validators = active_validators.len(),
-        is_active_validator,
+        replay_permits = width + 2,
         cpu_cores,
         "Block processing concurrency resolved"
     );
-    Ok(width)
+    width
 }
 
 struct ActiveBlockProcessingGuard;
@@ -108,6 +80,7 @@ pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
     pub block_processor: Arc<BlockProcessor<T>>,
 
     pub blocks_in_processing: Arc<InFlightBlocks>,
+    max_parallel_blocks: usize,
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
@@ -118,12 +91,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         ),
         block_processor: Arc<BlockProcessor<T>>,
         blocks_in_processing: Arc<InFlightBlocks>,
+        max_parallel_blocks: usize,
     ) -> Self {
+        assert!((1..=tokio::sync::Semaphore::MAX_PERMITS - 2).contains(&max_parallel_blocks));
         Self {
             blocks_queue_rx,
             block_queue_tx,
             block_processor,
             blocks_in_processing,
+            max_parallel_blocks,
         }
     }
 
@@ -137,7 +113,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     ///
     /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for
     ///   re-enqueuing buffer pendants)
-    pub async fn create(
+    pub fn create(
         self,
     ) -> Result<mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>, CasperError> {
         let (result_tx, result_rx) = mpsc::channel(BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY);
@@ -147,12 +123,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
             block_queue_tx,
             block_processor,
             blocks_in_processing,
+            max_parallel_blocks: width,
         } = self;
         drop(block_queue_tx);
-        let Some(first_item) = blocks_queue_rx.recv().await else {
-            return Ok(result_rx);
-        };
-        let width = resolve_pipeline_width(first_item.0.as_ref()).await?;
 
         tokio::spawn(async move {
             tracing::info!(
@@ -168,7 +141,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
             let queue = Arc::new(ReleaseQueue::new(RELEASED_BLOCKS_BEFORE_GOSSIP_TURN, width));
             let gossip_queue = queue.clone();
             tokio::spawn(async move {
-                gossip_queue.push_gossip_wait(first_item).await;
                 while let Some(item) = blocks_queue_rx.recv().await {
                     gossip_queue.push_gossip_wait(item).await;
                 }
@@ -547,7 +519,9 @@ mod tests {
     use casper::rust::engine::block_retriever::BlockRetriever;
     use casper::rust::errors::CasperError;
     use casper::rust::genesis::genesis::Genesis;
-    use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+    use casper::rust::util::rholang::runtime_manager::{
+        ExploratoryDeployConfig, ReplayLock, RuntimeManager,
+    };
     use casper::rust::validator_identity::ValidatorIdentity;
     use comm::rust::peer_node::{NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::ConnectionsCell;
@@ -566,14 +540,13 @@ mod tests {
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
     use tokio::sync::mpsc;
 
-    use super::{derive_pipeline_width, resolve_pipeline_width, BlockProcessorInstance};
+    use super::{derive_pipeline_width, BlockProcessorInstance};
 
     struct StartupCasper {
         snapshot: CasperSnapshot,
         approved: BlockMessage,
         block_store: KeyValueBlockStore,
         runtime_manager: Arc<RuntimeManager>,
-        fail_dag_read: bool,
         dag_reads: AtomicUsize,
         processed: Mutex<Vec<BlockHash>>,
     }
@@ -671,11 +644,9 @@ mod tests {
 
         async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError> {
             self.dag_reads.fetch_add(1, Ordering::SeqCst);
-            if self.fail_dag_read {
-                Err(CasperError::Other("Startup DAG read failed".to_string()))
-            } else {
-                Ok(self.snapshot.dag.clone())
-            }
+            Err(CasperError::Other(
+                "Block processing setup must not read the DAG".to_string(),
+            ))
         }
 
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
@@ -705,33 +676,17 @@ mod tests {
             let block_store = KeyValueBlockStore::create_from_kvm(&mut stores)
                 .await
                 .unwrap();
-            let runtime_manager = Arc::new(RuntimeManager::create_with_store(
+            let (runtime_manager, _) = RuntimeManager::create_with_history_config(
                 stores.r_space_stores().await.unwrap(),
                 RuntimeManager::mergeable_store(&mut stores).await.unwrap(),
                 Genesis::default_mergeable_tags_arc(),
                 ExternalServices::noop(),
-            ));
-            let mut lfb = get_random_block_default();
-            lfb.block_hash = vec![11; 32].into();
-            lfb.body.state.post_state_hash = vec![31; 32].into();
-            let mut approved = lfb.clone();
-            approved.block_hash = vec![12; 32].into();
-            approved.body.state.post_state_hash = vec![32; 32].into();
-            block_store.put(lfb.block_hash.clone(), &lfb).unwrap();
-            block_store
-                .put(approved.block_hash.clone(), &approved)
-                .unwrap();
-            runtime_manager.active_validators_cache.insert(
-                lfb.body.state.post_state_hash.clone(),
-                (1..=3).map(|n| Bytes::from(vec![n; 32])).collect(),
+                ExploratoryDeployConfig::for_tests(),
+                Arc::new(ReplayLock::with_permits(5)),
             );
-            runtime_manager.active_validators_cache.insert(
-                approved.body.state.post_state_hash.clone(),
-                (1..=12).map(|n| Bytes::from(vec![n; 32])).collect(),
-            );
-            let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
-            snapshot.last_finalized_block = lfb.block_hash.clone();
-            snapshot.dag.last_finalized_block_hash = lfb.block_hash;
+            let runtime_manager = Arc::new(runtime_manager);
+            let approved = get_random_block_default();
+            let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
 
             let transport = Arc::new(TransportLayerStub::new());
             let connections = ConnectionsCell::new();
@@ -772,7 +727,6 @@ mod tests {
                     approved,
                     block_store,
                     runtime_manager,
-                    fail_dag_read: false,
                     dag_reads: AtomicUsize::new(0),
                     processed: Mutex::new(Vec::new()),
                 }),
@@ -792,6 +746,7 @@ mod tests {
                 (rx, tx.clone()),
                 self.processor.clone(),
                 self.in_flight.clone(),
+                3,
             );
             (tx, instance)
         }
@@ -806,50 +761,24 @@ mod tests {
             };
             (self.casper.clone(), block, guard)
         }
-
-        async fn startup_error(&self) -> CasperError {
-            let (tx, instance) = self.instance();
-            assert!(tx.send(self.item(21)).await.is_ok());
-            assert!(tx.send(self.item(22)).await.is_ok());
-            let error = tokio::time::timeout(Duration::from_secs(10), instance.create())
-                .await
-                .expect("Startup must return its error")
-                .expect_err("Startup must fail");
-            assert!(tx.is_closed());
-            assert!(self.in_flight.is_empty());
-            assert!(self.casper.processed.lock().unwrap().is_empty());
-            error
-        }
     }
 
     #[tokio::test]
-    async fn startup_reads_active_validators_from_the_stored_lfb() {
+    async fn startup_does_not_wait_for_a_block() {
         let fixture = StartupFixture::new().await;
-        let width = resolve_pipeline_width(fixture.casper.as_ref())
-            .await
-            .unwrap();
-        assert_eq!(width, 3);
-        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            fixture
-                .casper
-                .runtime_manager
-                .active_validators_cache_order
-                .lock()
-                .unwrap()
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            vec![Bytes::from(vec![31; 32])],
-        );
-        assert_eq!(
-            fixture
-                .casper
-                .runtime_manager
-                .replay_lock()
-                .configure_permits_once(4)
-                .unwrap(),
-            width + 2,
+        let (tx, instance) = fixture.instance();
+        let mut results = instance.create().unwrap();
+        assert!(matches!(
+            results.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
+        drop(tx);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), results.recv())
+                .await
+                .expect("The closed queue must finish processing")
+                .is_none()
         );
     }
 
@@ -857,20 +786,11 @@ mod tests {
     async fn startup_processes_the_first_and_following_blocks_once() {
         let fixture = StartupFixture::new().await;
         let (tx, instance) = fixture.instance();
-        let startup = tokio::spawn(instance.create());
-        tokio::task::yield_now().await;
-        assert!(!startup.is_finished());
-        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
-
+        let mut results = instance.create().unwrap();
         for byte in 21..=23 {
             assert!(tx.send(fixture.item(byte)).await.is_ok());
         }
         drop(tx);
-        let mut results = tokio::time::timeout(Duration::from_secs(10), startup)
-            .await
-            .expect("Startup must accept the first queued block")
-            .unwrap()
-            .unwrap();
         assert!(
             tokio::time::timeout(Duration::from_secs(10), results.recv())
                 .await
@@ -882,7 +802,14 @@ mod tests {
         let expected: Vec<BlockHash> = (21..=23).map(|byte| vec![byte; 32].into()).collect();
         assert_eq!(processed, expected);
         assert!(fixture.in_flight.is_empty());
-        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
+        assert!(fixture
+            .casper
+            .runtime_manager
+            .active_validators_cache_order
+            .lock()
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -890,88 +817,34 @@ mod tests {
         let fixture = StartupFixture::new().await;
         let (tx, instance) = fixture.instance();
         drop(tx);
-        let mut results = tokio::time::timeout(Duration::from_secs(10), instance.create())
-            .await
-            .expect("An empty closed queue must not block startup")
-            .unwrap();
-        assert!(results.recv().await.is_none());
+        let mut results = instance.create().unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), results.recv())
+                .await
+                .expect("An empty closed queue must finish processing")
+                .is_none()
+        );
         assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
         assert!(fixture.in_flight.is_empty());
     }
 
-    #[tokio::test]
-    async fn startup_returns_a_dag_read_error_and_releases_queued_markers() {
-        let mut fixture = StartupFixture::new().await;
-        Arc::get_mut(&mut fixture.casper).unwrap().fail_dag_read = true;
-        assert!(matches!(
-            fixture.startup_error().await,
-            CasperError::Other(message) if message == "Startup DAG read failed"
-        ));
-    }
-
-    #[tokio::test]
-    async fn startup_returns_a_missing_lfb_error_and_releases_queued_markers() {
-        let mut fixture = StartupFixture::new().await;
-        Arc::get_mut(&mut fixture.casper)
-            .unwrap()
-            .snapshot
-            .dag
-            .last_finalized_block_hash = vec![99; 32].into();
-        assert!(matches!(
-            fixture.startup_error().await,
-            CasperError::Other(message)
-                if message == "Last finalized block is missing from the block store"
-        ));
-    }
-
-    #[tokio::test]
-    async fn startup_returns_a_missing_state_error_and_releases_queued_markers() {
-        let fixture = StartupFixture::new().await;
-        fixture
-            .casper
-            .runtime_manager
-            .active_validators_cache
-            .remove(&Bytes::from(vec![31; 32]));
-        let error = fixture.startup_error().await;
-        assert!(error.is_availability(), "Unexpected startup error: {error}");
-    }
-
     #[test]
-    fn observers_have_one_slot_per_validator_within_the_cpu_bound() {
-        assert_eq!(derive_pipeline_width(3, false, 8), 3);
-        assert_eq!(derive_pipeline_width(4, false, 8), 4);
-        assert_eq!(derive_pipeline_width(6, false, 8), 6);
-        assert_eq!(derive_pipeline_width(12, false, 8), 6);
-    }
-
-    #[test]
-    fn active_validators_reserve_no_slot_for_their_own_block() {
-        assert_eq!(derive_pipeline_width(4, true, 8), 3);
-        assert_eq!(derive_pipeline_width(5, true, 8), 4);
-        assert_eq!(derive_pipeline_width(7, true, 8), 6);
-        assert_eq!(derive_pipeline_width(12, true, 8), 6);
-    }
-
-    #[test]
-    fn small_cpu_limits_keep_the_measured_floor() {
-        for cores in 0..=5 {
-            assert_eq!(derive_pipeline_width(12, false, cores), 3);
-            assert_eq!(derive_pipeline_width(12, true, cores), 3);
+    fn pipeline_width_uses_the_cpu_capacity() {
+        for (cores, width) in [(6, 4), (8, 6), (16, 14), (32, 30)] {
+            assert_eq!(derive_pipeline_width(cores), width);
         }
-        assert_eq!(derive_pipeline_width(12, false, 6), 4);
     }
 
     #[test]
-    fn small_validator_sets_keep_the_measured_floor() {
-        for validators in 0..=3 {
-            assert_eq!(derive_pipeline_width(validators, false, 16), 3);
-            assert_eq!(derive_pipeline_width(validators, true, 16), 3);
+    fn small_cpu_limits_keep_the_pipeline_floor() {
+        for cores in 0..=5 {
+            assert_eq!(derive_pipeline_width(cores), 3);
         }
     }
 
     #[test]
     fn the_replay_reserve_fits_the_semaphore_at_extreme_inputs() {
-        let width = derive_pipeline_width(usize::MAX, false, usize::MAX);
+        let width = derive_pipeline_width(usize::MAX);
         assert_eq!(width, tokio::sync::Semaphore::MAX_PERMITS - 2);
         assert!(width.checked_add(2).is_some());
     }
