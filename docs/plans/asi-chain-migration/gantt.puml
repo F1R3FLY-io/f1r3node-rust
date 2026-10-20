@@ -1,0 +1,356 @@
+@startgantt
+title ASI:Chain migration to the cost-accounted F1r3node, variant A with one shared heavy-run lane. 1 day cell = 1 hour of Claude agent wall-clock time
+legend
+Read every "day" in this chart as one hour: "Day 12" means hour 12, and "12 days" means 12 hours.
+1 day cell = 1 hour of Claude agent wall-clock time on this host. Hour 0 = start of the ASI work (now).
+Bars are rounded to whole hours. Short tasks that share an hour cell on one lane are done together in that hour.
+Heavy-run lane: one build, test suite or network session at a time. Campaign slots on the lane are inferences.
+Bars marked not to scale stand for dates nobody knows. Each later block is measured from its milestone.
+<back:LightSkyBlue> rust-client </back> <back:LightBlue> asi-chain-client </back> <back:PowderBlue> faucet </back> <back:PaleTurquoise> wallet-cli </back> <back:Khaki> wallet-sdk </back> <back:Moccasin> wallet </back> <back:PeachPuff> explorer </back>
+<back:PaleGreen> indexer </back> <back:Plum> asi-chain </back> <back:Thistle> asi-chain-node </back> <back:Gainsboro> schedule step </back> <back:Lavender> P2 phase work </back> <back:White> conditional </back>
+<back:Salmon> heavy lane, ASI runs </back> <back:Silver> heavy lane, campaign runs (inference) </back> <back:LightGray> external, not to scale </back>
+endlegend
+
+-- Block 0 external dependency --
+[External, rest of this campaign S9-S11, formal, docs, final gates, about one working day (inference)] as [EXTRC] requires 12 days
+[EXTRC] is colored in LightGray/Gray
+[M-RC campaign-final node] happens at [EXTRC]'s end
+
+-- Heavy-run lane, variant A --
+[Lane, campaign S9 casper-mod remainder (inference)] as [HC1] requires 1 day
+[HC1] is colored in Silver/Black
+[Lane, X-2 image, R-1 and C-1 first builds, X-3 genesis, npm installs, S-1 piece tests] as [HL1] requires 2 days
+[HL1] starts at [HC1]'s end
+[HL1] is colored in Salmon/FireBrick
+[Lane, campaign S11 cycle, short ASI runs R-2, R-5, I-1 between stages (inference)] as [HC2] requires 2 days
+[HC2] starts at [HL1]'s end
+[HC2] is colored in Silver/Black
+[Lane, C-3 and C-4 CLI session, I-2 check, S-5 tests] as [HL2] requires 1 day
+[HL2] starts at [HC2]'s end
+[HL2] is colored in Salmon/FireBrick
+[Lane, campaign S11 fix and formal reruns, short S-1 vector runs between jobs (inference)] as [HC3] requires 2 days
+[HC3] starts at [HL2]'s end
+[HC3] is colored in Silver/Black
+[Lane, R-2 integration suite, E-2 build and image, S-4 tests] as [HL3] requires 1 day
+[HL3] starts at [HC3]'s end
+[HL3] is colored in Salmon/FireBrick
+[Lane, campaign final gates, short S-1 fix rerun between stages (inference)] as [HC4] requires 3 days
+[HC4] starts at [HL3]'s end
+[HC4] is colored in Silver/Black
+[Lane, A-3 and A-4 boot test, FA-1 build and image, S-2 tests] as [HL4] requires 1 day
+[HL4] starts at [HC4]'s end
+[HL4] is colored in Salmon/FireBrick
+[Lane, W-1 build and image, WC-1 build, S-3 check] as [HL5] requires 1 day
+[HL5] starts at [HL4]'s end
+[HL5] is colored in Salmon/FireBrick
+[Lane, X-6 images with the campaign-final node, P2 client rebuilds, P2 vector check] as [HL6] requires 1 day
+[HL6] starts at [HL5]'s end
+[HL6] is colored in Salmon/FireBrick
+[Lane, X-6 network session, flows 1-9, negative tests, P2 measurements] as [HL7] requires 2 days
+[HL7] starts at [HL6]'s end
+[HL7] is colored in Salmon/FireBrick
+
+-- Agent 1, rust-client, then wallet-sdk profile items, faucet and wallet-cli --
+[R-1 crate bump to the target and casper (rust-client)] as [R1] requires 2 days
+[R1] is colored in LightSkyBlue/RoyalBlue
+[R-2 owner_direct_offer in build_deploy_msg (rust-client)] as [R2] requires 2 days
+[R2] starts at [R1]'s end
+[R2] is colored in LightSkyBlue/RoyalBlue
+[R-5 golden vectors (rust-client)] as [R5] requires 2 days
+[R5] starts at [R2]'s end
+[R5] is colored in LightSkyBlue/RoyalBlue
+[Vectors final] happens at [R5]'s end
+[R-3 delete the legacy signing helper (rust-client)] as [R3] requires 1 day
+[R3] starts at [R5]'s end
+[R3] is colored in LightSkyBlue/RoyalBlue
+[S-4 remove the SCALA profile (wallet-sdk)] as [S4] requires 2 days
+[S4] starts at [R3]'s end
+[S4] is colored in Khaki/DarkGoldenRod
+[WC-2 balance check includes the hold (wallet-cli)] as [WC2] requires 1 day
+[WC2] starts at [S4]'s end
+[WC2] is colored in PaleTurquoise/DarkCyan
+[FA-1 submodule bump and build flags (faucet)] as [FA1] requires 3 days
+[FA1] starts at [WC2]'s end
+[FA1] is colored in PowderBlue/CadetBlue
+[WC-1 submodule bump and build flags (wallet-cli)] as [WC1] requires 1 day
+[WC1] starts at [FA1]'s end
+[WC1] is colored in PaleTurquoise/DarkCyan
+[P2-R repin the Rust clients to the pushed campaign revision] as [P2R] requires 2 days
+[P2R] starts at [WC1]'s end
+[P2R] is colored in Lavender/SlateBlue
+
+-- Agent 2, wallet-sdk encoder chain --
+[S-1a port the offer encoder from the Rust source (wallet-sdk)] as [S1A] requires 5 days
+[S1A] is colored in Khaki/DarkGoldenRod
+[S-5 isFinalized (wallet-sdk)] as [S5] requires 1 day
+[S5] starts at [S1A]'s end
+[S5] is colored in Khaki/DarkGoldenRod
+[S-1b check against the R-5 vectors, review, fix (wallet-sdk)] as [S1B] requires 5 days
+[S1B] starts at [R5]'s end
+[S1B] is colored in Khaki/DarkGoldenRod
+[S-1 accepted] happens at [S1B]'s end
+[S-2 signDeploy builds the offer (wallet-sdk)] as [S2] requires 2 days
+[S2] starts at [S1B]'s end
+[S2] is colored in Khaki/DarkGoldenRod
+[S-3 submit to the offered deploy route (wallet-sdk)] as [S3] requires 1 day
+[S3] starts at [S2]'s end
+[S3] is colored in Khaki/DarkGoldenRod
+[P2-V envelope vectors unchanged] as [P2V] requires 1 day
+[P2V] starts at [S3]'s end
+[P2V] is colored in Lavender/SlateBlue
+
+-- Agent 3, asi-chain-client, then wallet and explorer --
+[C-1 crate bump to the target, casper and build flags (asi-chain-client)] as [C1] requires 3 days
+[C1] is colored in LightBlue/SteelBlue
+[C-2 RevAddress to VaultAddress (asi-chain-client)] as [C2] requires 1 day
+[C2] starts at [HL1]'s start
+[C2] is colored in LightBlue/SteelBlue
+[C-3 owner_direct_offer (asi-chain-client)] as [C3] requires 3 days
+[C3] starts at [C1]'s end
+[C3] is colored in LightBlue/SteelBlue
+[C-4 system URIs in rho_examples (asi-chain-client)] as [C4] requires 1 day
+[C4] starts at [HL2]'s start
+[C4] is colored in LightBlue/SteelBlue
+[Client line accepted] happens at [C3]'s end
+[W-2 vault system URI (wallet)] as [W2] requires 1 day
+[W2] starts at [C3]'s end
+[W2] is colored in Moccasin/Peru
+[W-3 JSON explore body (wallet)] as [W3] requires 1 day
+[W3] starts at [W2]'s start
+[W3] is colored in Moccasin/Peru
+[E-1 vault system URI (explorer)] as [E1] requires 1 day
+[E1] starts at [W2]'s end
+[E1] is colored in PeachPuff/Chocolate
+[E-2 JSON explore body (explorer)] as [E2] requires 2 days
+[E2] starts at [W2]'s end
+[E2] is colored in PeachPuff/Chocolate
+[W-1 offer through the S-1 encoder (wallet)] as [W1] requires 3 days
+[W1] starts at [S1B]'s end
+[W1] is colored in Moccasin/Peru
+[P2-N owner-funding notes] as [P2N] requires 1 day
+[P2N] starts at [W1]'s end
+[P2N] is colored in Lavender/SlateBlue
+
+-- Agent 4, test network, indexer, infrastructure, end-to-end harness --
+[X-1 node snapshot for client builds] as [X1] requires 1 day
+[X1] is colored in Gainsboro/DimGray
+[X-2 node image from the snapshot] as [X2] requires 1 day
+[X2] starts at [X1]'s end
+[X2] is colored in Gainsboro/DimGray
+[X-3 test network, 3 validators and a read-only node] as [X3] requires 1 day
+[X3] starts at [X2]'s end
+[X3] is colored in Gainsboro/DimGray
+[X-4 rust-client test topology policy, gap G3] as [X4] requires 1 day
+[X4] starts at [X2]'s end
+[X4] is colored in Gainsboro/DimGray
+[I-1 target protos (indexer)] as [I1] requires 1 day
+[I1] starts at [X3]'s end
+[I1] is colored in PaleGreen/ForestGreen
+[I-2 offered pending deploys (indexer)] as [I2] requires 2 days
+[I2] starts at [I1]'s end
+[I2] is colored in PaleGreen/ForestGreen
+[A-1 node image in the compose files (asi-chain)] as [AS1] requires 2 days
+[AS1] starts at [I2]'s end
+[AS1] is colored in Plum/Purple
+[A-2 node submodule and docs (asi-chain)] as [AS2] requires 1 day
+[AS2] starts at [AS1]'s end
+[AS2] is colored in Plum/Purple
+[A-3 node configs (asi-chain)] as [AS3] requires 3 days
+[AS3] starts at [AS2]'s end
+[AS3] is colored in Plum/Purple
+[A-4 genesis files (asi-chain)] as [AS4] requires 1 day
+[AS4] starts at [AS3]'s end
+[AS4] is colored in Plum/Purple
+[X-6a end-to-end harness, local-build compose override, bot Dockerfile cmake] as [X6A] requires 1 day
+[X6A] starts at [AS4]'s end
+[X6A] is colored in Gainsboro/DimGray
+
+-- Integration, P1 exit, P2 folded into the end-to-end run --
+[X-6b images for the end-to-end stack] as [X6B] requires 1 day
+[X6B] starts at [S3]'s end
+[X6B] is colored in Gainsboro/DimGray
+[X-6c network session, flows 1-9 and negative tests, all four agents] as [X6C] requires 2 days
+[X6C] starts at [X6B]'s end
+[X6C] is colored in Gainsboro/DimGray
+[P2-M transfer phlo re-measure, during X-6c] as [P2M] requires 2 days
+[P2M] starts at [X6B]'s end
+[P2M] is colored in Lavender/SlateBlue
+[P2-O owner-funding test, during X-6c] as [P2O] requires 2 days
+[P2O] starts at [X6B]'s end
+[P2O] is colored in Lavender/SlateBlue
+[X-6d coordinator review of the end-to-end results] as [X6D] requires 1 day
+[X6D] starts at [X6C]'s end
+[X6D] is colored in Gainsboro/DimGray
+[X-5 legacy-path scan] as [X5] requires 1 day
+[X5] starts at [X6C]'s end
+[X5] is colored in Gainsboro/DimGray
+[X-6e fix round, rebuilds, reruns] as [X6E] requires 2 days
+[X6E] starts at [X6C]'s end
+[X6E] is colored in Gainsboro/DimGray
+[Lane, X-6 review window, then fix rebuilds and reruns] as [HL8] requires 2 days
+[HL8] starts at [HL7]'s end
+[HL8] is colored in Salmon/FireBrick
+[P1 exit and P2 exit] happens at [X6E]'s end
+
+-- Conditional items, scheduled only if the answer requires them --
+[R-4 resource_policy setting, only if U2 picks an ASI policy, goes before R-5 (rust-client)] as [R4] requires 1 day
+[R4] starts at [R2]'s end
+[R4] is colored in White/RoyalBlue
+[asi-main line, C-1 and C-3 again, only if U1 keeps asi-main (asi-chain-client)] as [CAM] requires 3 days
+[CAM] starts at [C3]'s end
+[CAM] is colored in White/SteelBlue
+[P0 export dry run, only when legacy data is provided (asi-chain-node)] as [EXP] requires 2 days
+[EXP] starts at [X6E]'s end
+[EXP] is colored in White/Purple
+
+-- Block 3 external dependency, measured from M-TB --
+[External, Track B B4-B6 settle and node N1-N3 exist, date unknown, not to scale] as [EXTTB] requires 2 days
+[EXTTB] starts at [X6E]'s end
+[EXTTB] is colored in LightGray/Gray
+[M-TB Track B settled] happens at [EXTTB]'s end
+
+-- Block 3, agent 1, rust-client, then indexer retention --
+[R-T1 wait for the executed outcome (rust-client)] as [RT1] requires 3 days
+[RT1] starts at [EXTTB]'s end
+[RT1] is colored in LightSkyBlue/RoyalBlue
+[R-T3 resubmit after a gate rejection (rust-client)] as [RT3] requires 2 days
+[RT3] starts at [RT1]'s end
+[RT3] is colored in LightSkyBlue/RoyalBlue
+[R-T4 retry on 503 deploy_pool_full (rust-client)] as [RT4] requires 1 day
+[RT4] starts at [RT3]'s end
+[RT4] is colored in LightSkyBlue/RoyalBlue
+[R-T2 reads at the executed root (rust-client)] as [RT2] requires 2 days
+[RT2] starts at [RT4]'s end
+[RT2] is colored in LightSkyBlue/RoyalBlue
+[R-T5 limits at or below the demand cap (rust-client)] as [RT5] requires 1 day
+[RT5] starts at [RT2]'s end
+[RT5] is colored in LightSkyBlue/RoyalBlue
+[R-T6 event dedupe by commit_epoch, conditional (rust-client)] as [RT6] requires 1 day
+[RT6] starts at [RT5]'s end
+[RT6] is colored in LightSkyBlue/RoyalBlue
+[I-T4 ingest outcomes before record retention (indexer)] as [IT4] requires 2 days
+[IT4] starts at [RT6]'s end
+[IT4] is colored in PaleGreen/ForestGreen
+
+-- Block 3, agent 2, asi-chain-client, consumers, infrastructure --
+[C-T1 status waits for the outcome (asi-chain-client)] as [CT1] requires 2 days
+[CT1] starts at [EXTTB]'s end
+[CT1] is colored in LightBlue/SteelBlue
+[C-T2 resubmit after a gate rejection (asi-chain-client)] as [CT2] requires 2 days
+[CT2] starts at [CT1]'s end
+[CT2] is colored in LightBlue/SteelBlue
+[C-T3 retry on 503 (asi-chain-client)] as [CT3] requires 1 day
+[CT3] starts at [CT2]'s end
+[CT3] is colored in LightBlue/SteelBlue
+[C-T4 bigger_phlo against the demand cap (asi-chain-client)] as [CT4] requires 1 day
+[CT4] starts at [CT3]'s end
+[CT4] is colored in LightBlue/SteelBlue
+[FA-T wait settings and pin bump (faucet)] as [FAT] requires 1 day
+[FAT] starts at [CT4]'s end
+[FAT] is colored in PowderBlue/CadetBlue
+[WC-T max_wait and status mapping (wallet-cli)] as [WCT] requires 1 day
+[WCT] starts at [FAT]'s end
+[WCT] is colored in PaleTurquoise/DarkCyan
+[A-T1 v6 activation setting (asi-chain)] as [AT1] requires 1 day
+[AT1] starts at [WCT]'s end
+[AT1] is colored in Plum/Purple
+[A-T2 thresholds per Q-8 (asi-chain)] as [AT2] requires 1 day
+[AT2] starts at [AT1]'s end
+[AT2] is colored in Plum/Purple
+[A-T3 validator check limits for the epoch lag (asi-chain)] as [AT3] requires 1 day
+[AT3] starts at [AT2]'s start
+[AT3] is colored in Plum/Purple
+[W-T3 retry on 503 (wallet)] as [WT3] requires 1 day
+[WT3] starts at [AT2]'s end
+[WT3] is colored in Moccasin/Peru
+[W-T4 IDE limit against the demand cap (wallet)] as [WT4] requires 1 day
+[WT4] starts at [WT3]'s end
+[WT4] is colored in Moccasin/Peru
+
+-- Block 3, agent 3, indexer, then explorer --
+[I-T1 deployment outcome states (indexer)] as [IT1] requires 6 days
+[IT1] starts at [EXTTB]'s end
+[IT1] is colored in PaleGreen/ForestGreen
+[I-T2 attestation and epoch-set meaning of block fields (indexer)] as [IT2] requires 2 days
+[IT2] starts at [IT1]'s end
+[IT2] is colored in PaleGreen/ForestGreen
+[E-T1 show the outcome state (explorer)] as [ET1] requires 2 days
+[ET1] starts at [IT2]'s end
+[ET1] is colored in PeachPuff/Chocolate
+[E-T2 relabel state fields and bonds (explorer)] as [ET2] requires 1 day
+[ET2] starts at [ET1]'s end
+[ET2] is colored in PeachPuff/Chocolate
+[I-T3 regenerate protos if B5 adds records (indexer)] as [IT3] requires 1 day
+[IT3] starts at [ET2]'s end
+[IT3] is colored in PaleGreen/ForestGreen
+
+-- Block 3, agent 4, wallet-sdk, then wallet --
+[S-T1 status from the executed outcome (wallet-sdk)] as [ST1] requires 2 days
+[ST1] starts at [EXTTB]'s end
+[ST1] is colored in Khaki/DarkGoldenRod
+[S-T2 resubmit after a gate rejection (wallet-sdk)] as [ST2] requires 2 days
+[ST2] starts at [ST1]'s end
+[ST2] is colored in Khaki/DarkGoldenRod
+[S-T3 retry on 503 (wallet-sdk)] as [ST3] requires 1 day
+[ST3] starts at [ST2]'s end
+[ST3] is colored in Khaki/DarkGoldenRod
+[S-T4 limits against the demand cap (wallet-sdk)] as [ST4] requires 1 day
+[ST4] starts at [ST3]'s end
+[ST4] is colored in Khaki/DarkGoldenRod
+[W-T1 completed only for an executed outcome (wallet)] as [WT1] requires 2 days
+[WT1] starts at [IT1]'s end
+[WT1] is colored in Moccasin/Peru
+[W-T2 resubmit after a gate rejection (wallet)] as [WT2] requires 2 days
+[WT2] starts at [WT1]'s end
+[WT2] is colored in Moccasin/Peru
+[X-T prep, v6 network harness] as [XTP] requires 2 days
+[XTP] starts at [WT2]'s end
+[XTP] is colored in Gainsboro/DimGray
+
+-- Block 3 integration --
+[X-T images for the v6 network] as [XTB] requires 1 day
+[XTB] starts at [IT4]'s end
+[XTB] is colored in Gainsboro/DimGray
+[X-T v6 session and P3 exit tests] as [XTC] requires 2 days
+[XTC] starts at [XTB]'s end
+[XTC] is colored in Gainsboro/DimGray
+[X-T review] as [XTD] requires 1 day
+[XTD] starts at [XTC]'s end
+[XTD] is colored in Gainsboro/DimGray
+[X-T fix round and reruns] as [XTE] requires 2 days
+[XTE] starts at [XTC]'s end
+[XTE] is colored in Gainsboro/DimGray
+[P3 exit] happens at [XTE]'s end
+
+-- Block 4 external dependency, measured from M-B7 --
+[External, B7 soak and activation criteria, date unknown, not to scale] as [EXTB7] requires 2 days
+[EXTB7] starts at [XTE]'s end
+[EXTB7] is colored in LightGray/Gray
+[M-B7 v6 activated] happens at [EXTB7]'s end
+[P4-A export at the rehearsal block (asi-chain-node)] as [P4A] requires 2 days
+[P4A] starts at [EXTB7]'s end
+[P4A] is colored in Thistle/Purple
+[P4-B genesis from the export (asi-chain)] as [P4B] requires 1 day
+[P4B] starts at [P4A]'s end
+[P4B] is colored in Plum/Purple
+[P4-C v6 testnet rehearsal and checks] as [P4C] requires 3 days
+[P4C] starts at [P4B]'s end
+[P4C] is colored in Gainsboro/DimGray
+[P4-D review and fix round] as [P4D] requires 1 day
+[P4D] starts at [P4C]'s end
+[P4D] is colored in Gainsboro/DimGray
+[P4 exit] happens at [P4D]'s end
+
+-- Block 5 external dependency, measured from M-B8 --
+[External, B8 refinements R1 and R2, date unknown, not to scale] as [EXTB8] requires 2 days
+[EXTB8] starts at [P4D]'s end
+[EXTB8] is colored in LightGray/Gray
+[M-B8 refinements done] happens at [EXTB8]'s end
+[P5-A clients show canonical outcomes only] as [P5A] requires 3 days
+[P5A] starts at [EXTB8]'s end
+[P5A] is colored in Gainsboro/DimGray
+[P5-B cut-over support, operator-led] as [P5B] requires 5 days
+[P5B] starts at [EXTB8]'s end
+[P5B] is colored in Plum/Purple
+[P5 production cut-over] happens at [P5B]'s end
+@endgantt

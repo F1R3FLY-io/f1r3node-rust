@@ -1,0 +1,78 @@
+@startuml
+title ASI:Chain migration: projects, client libraries and nodes
+skinparam componentStyle rectangle
+left to right direction
+skinparam nodesep 40
+skinparam ranksep 70
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #455A64
+skinparam package {
+  BorderColor #546E7A
+  FontColor #263238
+}
+
+package "Nodes" #F1F8E9 {
+  component "asi-chain-node (Scala) @c54bdc9b\nLEGACY, retired" as legacy #FFCDD2
+  component "f1r3node-rust, cost-accounted\ncampaign + Track A + Track B..B8\nTARGET" as target #A5D6A7
+  component "f1r3node-rust crates\nmodels, crypto, rholang, casper\n(owner_direct_offer)" as crates #C8E6C9
+}
+package "Client libraries" #E3F2FD {
+  component "rust-client (F1R3FLY-io)\nreference + golden vectors" as rc #90CAF9
+  component "asi-chain-client asi-main-scala @cb3caab\n(same commit as singnet/rust-client main)" as acc #90CAF9
+  component "asi-chain-client asi-main\n(no ASI consumer)" as accm #BBDEFB
+  component "asi-chain-wallet-sdk\nTS offer encoder (new)" as sdk #90CAF9
+}
+package "Services and apps" #FFF3E0 {
+  component "asi-chain-faucet server" as fs #FFCC80
+  component "asi-chain-faucet web" as fw #FFCC80
+  component "asi-chain-wallet-cli" as wcli #FFCC80
+  component "asi-chain-wallet" as w #FFCC80
+  component "asi-chain-indexer" as idx #FFCC80
+  component "Postgres + Hasura" as hasura #FFE0B2
+  component "asi-chain-explorer" as ex #FFCC80
+}
+package "asi-chain (infra)" #F3E5F5 {
+  component "compose, configs, genesis" as infra #CE93D8
+  component "deployer-bot" as bot #CE93D8
+  component "validator connector" as conn #CE93D8
+  component "wallet-generator" as wg #CE93D8
+}
+
+rc --> crates : git dep (bump to target)
+acc --> crates : bump from crates.io 0.1.x
+accm ..> crates : only if kept (Q-U1)
+rc ..> sdk : golden vectors for the TS port
+fs --> acc : path dep (submodule)
+wcli --> acc : path dep (submodule)
+bot --> acc : git clone -b asi-main-scala
+conn --> acc : git clone -b asi-main-scala
+conn --> fs : HTTP /transfer, /balance
+fw --> fs : HTTP
+w ..> sdk : imports or vendors\nthe encoder (Q-U3)
+acc --> target : gRPC doDeploy (offer),\nexploratory, isFinalized;\nHTTP /api/deploy/{id}
+rc --> target : gRPC + HTTP + WS
+sdk --> target : HTTP /api/deploy/offered,\n/api/explore-deploy,\n/api/deploy/{id}
+w --> target : HTTP
+ex --> target : HTTP /api/explore-deploy (balance)
+idx --> target : gRPC + HTTP
+idx --> hasura
+w --> hasura
+sdk --> hasura
+wcli --> hasura
+ex --> hasura
+infra --> target : image, config, v6 genesis
+infra ..> legacy : today: submodule node,\nScala images
+legacy ..> infra : balance export\nat cut-over (asivaultexport)
+
+
+legend bottom
+  |= Color |= Meaning |
+  |<#A5D6A7>| target node |
+  |<#FFCDD2>| legacy node (retired) |
+  |<#90CAF9>| client library |
+  |<#FFCC80>| service or app |
+  |<#CE93D8>| ASI infrastructure |
+  solid arrow: dependency now; dashed arrow: conditional or one-time
+endlegend
+@enduml
