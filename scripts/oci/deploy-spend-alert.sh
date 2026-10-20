@@ -56,7 +56,7 @@ function_config="$(jq -cn \
 	'{TENANCY_OCID:$tenancy,ONS_TOPIC_OCID:$topic,THRESHOLD_USD:$threshold}')"
 function_id="$(fn_upsert_function "$application_id" "$FUNCTION_NAME" "$IMAGE" "$function_config")"
 schedule_id="$(fn_upsert_schedule "$SCHEDULE_NAME" \
-	"Email the ONS topic when the previous UTC day's tenancy spend exceeds the threshold" \
+	"Email the daily OCI cost report (previous UTC day, month to date, and budgets) to the ONS topic" \
 	"$SCHEDULE_CRON" "$function_id" '{"check":"daily-spend"}')"
 
 function_group="f1r3node_spend_alert_function"
@@ -66,9 +66,10 @@ fn_upsert_dynamic_group "$schedule_group" "ALL {resource.type='resourceschedule'
 
 statements="$(jq -cn \
 	--arg usage "Allow dynamic-group $function_group to read usage-report in tenancy" \
+	--arg budgets "Allow dynamic-group $function_group to read usage-budgets in tenancy" \
 	--arg ons "Allow dynamic-group $function_group to use ons-topics in compartment id $OCI_COMPARTMENT_OCID" \
 	--argjson schedule "$(fn_schedule_invoke_statements "$schedule_group" "$function_id")" \
-	'[$usage,$ons] + $schedule')"
+	'[$usage,$budgets,$ons] + $schedule')"
 policy_id="$(fn_upsert_policy f1r3node-spend-alert "$statements")"
 
 jq -n \
