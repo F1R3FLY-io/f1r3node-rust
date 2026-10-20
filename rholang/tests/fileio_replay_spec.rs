@@ -43,8 +43,17 @@
 //! Related port-time deltas from fileio:
 //!   * `.await.expect(...)` triage patch for `create_rho_runtime`
 //!     and `create_replay_rho_runtime` Result returns.
-//!   * fileio's `root_registry.set_test_permissive(true)` dropped
-//!     — triage has no M-04 gating today, so no bypass is needed.
+//!   * `root_registry.set_test_permissive(true)` is now called on
+//!     both leader + follower in `create_leader_and_follower`.  The
+//!     M-04 gated resolver landed on triage via slice
+//!     `feature/consensus-mode-handler-gating`; path-mutation
+//!     handlers (fs_chmod / fs_rename / fs_remove_file / fs_chown)
+//!     + removedir now route through
+//!     `resolve_or_identity_gated_for_consensus`, which refuses
+//!     Consensus-mode calls on unregistered logical roots.  Raw
+//!     tempdir roots in these tests need the bypass.  Flipping the
+//!     flag unblocks the migration-shape; the remaining ignores
+//!     are the replay-harness UnusedCommEvent gap.
 //!   * `oracular_recursive_remove_dir_replays_without_journaling`
 //!     once had an additional reason to be ignored (the slice-5.44
 //!     FSERR_UNSUPPORTED stub for `removeDir`).  That cause was
@@ -99,12 +108,15 @@ mod tests {
         follower.cost.set(Cost::unsafe_max());
         leader.disable_fs_native_urn_filter();
         follower.disable_fs_native_urn_filter();
-        // X-6c M-04 (2026-09-12) note: fileio calls
-        // `set_test_permissive(true)` here because the gated resolver
-        // rejects Consensus-mode calls against unregistered tempdir
-        // roots.  Triage has not yet landed the gated resolver nor
-        // the test-permissive flag; the handler path falls through
-        // permissively on triage today, so no bypass is needed.
+        // M-04: path-mutation handlers (fs_chmod / fs_rename /
+        // fs_remove_file / fs_chown) and the removedir handler are
+        // gated via `resolve_or_identity_gated_for_consensus`.  Tests
+        // here use raw tempdir roots (not `/@bundle/<X>`), so flip
+        // test_permissive on both runtimes to let the gated resolver
+        // fall through to identity for the mutation paths exercised
+        // in the mixed-workload replay tests.
+        leader.fs_handles.root_registry.set_test_permissive(true);
+        follower.fs_handles.root_registry.set_test_permissive(true);
         (leader, follower)
     }
 
