@@ -1,0 +1,73 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-19T14:43:55Z",
+  "edited_at": "2026-10-19T14:45:56Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/774#issuecomment-6269969739",
+  "revision": "b44edbcfbfc5741d1a1773fd9f6e27b8faa12cd6",
+  "note": "The first version of the comment was a pasted HTML table without the accepted digest of the fixture and without the package reference. The edited version is the acceptance. Every accepted value in it matches the review package: the revision, the package sha256, and both accepted artifact digests. The acceptance also covers the 13 commits since 82fe22a0a that the review package lists."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "906a0755b470f1f5da538fd87a8a096f3119b05d891a14514a05fb7e5cac1c81"
+ },
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "hosted_runs": {
+  "tested_sha": "649b64c00bc31016650c2388872b8ec519538d3d",
+  "full_suite": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 39263491669,
+   "conclusion": "success"
+  },
+  "claims_and_bindings": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 39262131408,
+   "conclusion": "success"
+  }
+ },
+ "soak_observation": {
+  "run_id": 39270872359,
+  "kind": "30-minute non-publishing OCI protection canary (canary=true, series daily)",
+  "target_sha": "649b64c00bc31016650c2388872b8ec519538d3d",
+  "workload_started_at": "2026-10-19T14:47:42Z",
+  "completed_at": "2026-10-19T15:17:45Z",
+  "conclusion": "success",
+  "summary": "iterations=4, failures=0, bench_failures=0, early_exit_reason=none",
+  "log_guardian": "Both log budgets at their defaults (container log 400 MB, node log directory 2560 MB, a probe every 3 samples). No log guardian breach and no log probe unavailable record.",
+  "status": "Bounded canary only. It does not discharge the 60-hour soak (O1)."
+ },
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "previous_acceptance": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261005-01/report.json",
+   "sha256": "32d0af7350dda78fa0927025fa310c2a18b0cde8c2b5e780ef188d656ca5b199"
+  },
+  "scripts/bench/test-soak-disk-admission.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261005-01/report.json",
+   "sha256": "32d0af7350dda78fa0927025fa310c2a18b0cde8c2b5e780ef188d656ca5b199"
+  }
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-20261019-01/report.json",
+  "sha256": "caf79f76845ffcd449bb2dbe08dd161c5194389dee47ba0171844a5c5591f666"
+ },
+ "schema_version": 1,
+ "scope": "bounded-harness-node-log-budgets",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-soak-disk-admission.sh": "09f0877dab9161b1419e5574b3d97bdb7a8ce5fbe22988f3cf3c50cbe2edf4ac",
+  "scripts/run-merge-recovery-soak.sh": "4626f343d7915214bca057255b6352b3fb4db95cec3c9677873e34afe976d663"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-19",
+ "waiver": null
+}
