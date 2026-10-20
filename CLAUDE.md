@@ -207,7 +207,7 @@ Both settings take effect at the next session start.
 - A push to a pull request runs only the GitHub-hosted checks: static checks, script tests, and unit tests.
 - The heavy Integration Pipeline runs on OCI runners for these events:
   - every merge group
-  - a push to `dev`, `master`, or a tag
+  - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI integration tests when its merge group already passed them on the same commit. It still builds and publishes the images.
   - a pull request with the `ci-heavy` label
 - Add the `ci-heavy` label to a pull request to `dev` when the change can break the integration tests. Examples:
   - Rust code in a workspace crate

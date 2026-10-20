@@ -12,7 +12,25 @@
 # (and no pre-push hook) is needed. The pull request is opened with the
 # caller's gh login, so CI runs on it. The dev merge queue merges with a merge
 # commit, so dev keeps the master history.
+#
+# The Promote and Back-merge workflow runs this script with a GitHub App token
+# and sets BACKMERGE_TRIGGERED_BY. The app is then the pull request author, so
+# the user who started the workflow could approve the back-merge alone. The
+# body names that user and asks a different ci-maintainer to approve.
 set -euo pipefail
+
+# Check the login first, before any git or gh call.
+creator="created by \`just backmerge\`"
+review=""
+if [ -n "${BACKMERGE_TRIGGERED_BY:-}" ]; then
+	login="${BACKMERGE_TRIGGERED_BY%"[bot]"}"
+	[[ ${#login} -le 39 && "$BACKMERGE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
+		{ echo "ERROR: BACKMERGE_TRIGGERED_BY is not a GitHub login." >&2; exit 2; }
+	creator="created by the Promote and Back-merge workflow for @$BACKMERGE_TRIGGERED_BY"
+	review="
+
+@$BACKMERGE_TRIGGERED_BY started this back-merge. A different member of @F1R3FLY-io/ci-maintainers approves it."
+fi
 
 remote="${BACKMERGE_REMOTE:-origin}"
 repo="${BACKMERGE_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
@@ -54,7 +72,7 @@ if ! gh pr create --repo "$repo" --base dev --head "$branch" \
 	--title "Back-merge master into dev ($stamp)" \
 	--body "Merges \`master\` at \`${sha:0:9}\` into \`dev\` ($count commits).
 
-This pull request comes from the temporary branch \`$branch\`, created by \`just backmerge\`. GitHub deletes \`$branch\` after the merge. Merge it with a merge commit, not a squash or a rebase, so that \`dev\` keeps the \`master\` history."; then
+This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. Merge it with a merge commit, not a squash or a rebase, so that \`dev\` keeps the \`master\` history.$review"; then
 	echo "ERROR: the pull request was not opened. Deleting $branch." >&2
 	gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null ||
 		echo "WARNING: delete $branch by hand." >&2
