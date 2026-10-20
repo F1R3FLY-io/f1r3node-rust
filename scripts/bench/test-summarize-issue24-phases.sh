@@ -109,4 +109,45 @@ if "$tool" records "$tmp/missing.log" >/dev/null 2>&1; then
 	fail "a missing log must be rejected"
 fi
 
+{
+	echo "============================= test session starts =============================="
+	echo "Subprocess genesis written to /data/genesis"
+	for rep in 1 2 3; do
+		echo "--- Repetition $rep/3: high ---"
+		phase high 6.0 0
+		echo "  Node internals (validator1):"
+		metrics 6.0 2.0 1.0
+	done
+	echo "PASSED                                                                   [100%]"
+} | sed 's/^/2026-10-18T17:29:48.9670367Z /' >"$tmp/harness.log"
+[ "$(jq -r '"\(.session):\(.provider)"' <("$tool" records "$tmp/harness.log") | paste -sd, -)" = \
+	"1:subprocess,2:subprocess,3:subprocess" ] ||
+	fail "repeated phases on one subprocess shard must keep the subprocess provider"
+
+{
+	echo "============================= test session starts =============================="
+	echo "Subprocess genesis written to /data/genesis"
+	phase high 6.0 0
+	echo "  Node internals (validator1):"
+	metrics 6.0 2.0 1.0
+	echo "============================= test session starts =============================="
+	phase high 7.0 0
+	echo "  Node internals (validator1):"
+	metrics 6.0 2.0 1.0
+} | sed 's/^/2026-10-18T17:29:48.9670367Z /' >"$tmp/cut.log"
+[ "$(jq -r '"\(.session):\(.provider)"' <("$tool" records "$tmp/cut.log") | paste -sd, -)" = \
+	"1:subprocess,2:docker" ] ||
+	fail "a new pytest session after a test without a result line must start as docker"
+
+{
+	echo "============================= test session starts =============================="
+	echo "Subprocess genesis written to /data/genesis"
+	echo "============================= test session starts =============================="
+	phase high 6.0 0
+	echo "  Node internals (validator1):"
+	metrics 6.0 2.0 1.0
+} | sed 's/^/2026-10-18T17:29:48.9670367Z /' >"$tmp/genesis-cut.log"
+[ "$(jq -r .provider <("$tool" records "$tmp/genesis-cut.log"))" = docker ] ||
+	fail "a genesis line before a new pytest session must not mark the next test as subprocess"
+
 echo "summarize-issue24-phases: all checks passed"
