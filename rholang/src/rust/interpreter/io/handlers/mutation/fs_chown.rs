@@ -226,16 +226,23 @@ impl FsHandler for FsChownHandler {
                     Err(e) => return HandlerReply::err(FSERR_IO, e),
                 },
             };
-            // BACKLOG: migrate to resolve_or_identity_gated_for_consensus
-            // once path/identity ports the Shape-A gating.  Same
-            // deferral as fs_chmod / fs_rename.  Noting that the
-            // Consensus ban at parse_content makes the gated vs.
-            // ungated choice moot for this handler, but structural
-            // parity with the other path-mutation handlers wants
-            // the same migration when it lands.
+            // Shape-A gating: structural parity with fs_chmod /
+            // fs_rename / fs_remove_file.  parse_content already
+            // bans Consensus for fs_chown, so the gated resolver's
+            // Consensus arm never fires here in practice; the
+            // Oracular path returns identity.  The call still goes
+            // through the gated API for consistency and so a future
+            // lift of the Consensus ban automatically picks up the
+            // right gating behavior.
             let logical = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let rel = args.rel;
             #[allow(clippy::result_large_err)]
             let r = spawn_blocking(move || -> Result<Par, Par> {
