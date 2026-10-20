@@ -706,6 +706,7 @@ mod tests {
 
     mod classification {
         use axum::http::StatusCode;
+        use axum::response::IntoResponse;
         use casper::rust::api::block_api::{
             BlockNotFoundError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
@@ -715,7 +716,7 @@ mod tests {
         use casper::rust::errors::CasperError;
         use rholang::rust::interpreter::errors::InterpreterError;
 
-        use super::super::classify_error;
+        use super::super::{classify_error, AppError};
 
         fn classify(err: impl std::error::Error + Send + Sync + 'static) -> (StatusCode, String) {
             let (status, kind, _message) = classify_error(&eyre::Report::new(err));
