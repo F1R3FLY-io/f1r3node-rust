@@ -4,12 +4,13 @@
 #
 #   master -> dev            `just backmerge`, branch backmerge/master-<sha>
 #   ca-release -> ca-canary  `just ca-backmerge`, branch backmerge/ca-release-<sha>
-#   dev -> ca-release        `just ca-feed`, branch feed/dev-<sha>, the daily feed
+#   dev -> ca-canary         `just ca-sync`, branch ca/sync-dev-<sha>, the dev sync
 #
 # BACKMERGE_SOURCE and BACKMERGE_TARGET select the back-merge. They default to
-# master and dev, and any other pair is refused. The release train pairs
-# (ca-release -> ca-canary and dev -> ca-release) run each day from
-# ca-daily-sync.yml, and Mergify merges them.
+# master and dev, and any other pair is refused. The ca-release -> ca-canary
+# back-merge runs each day from ca-daily-sync.yml, and Mergify merges it. A
+# maintainer runs the dev sync now and then. Its ca/ head puts it in the
+# ca-item queue of Mergify, so it needs the 22-hour soak like any ca/ item.
 #
 # Do not open the back-merge from the source branch itself. A pull request
 # with head master shows "Update branch", which merges dev into master through
@@ -34,9 +35,9 @@ target_branch="${BACKMERGE_TARGET:-dev}"
 case "$source_branch:$target_branch" in
 	master:dev) recipe="just backmerge" prefix="backmerge/" kind="back-merge" title="Back-merge" ;;
 	ca-release:ca-canary) recipe="just ca-backmerge" prefix="backmerge/" kind="back-merge" title="Back-merge" ;;
-	dev:ca-release) recipe="just ca-feed" prefix="feed/" kind="feed" title="Feed" ;;
+	dev:ca-canary) recipe="just ca-sync" prefix="ca/sync-" kind="sync" title="Sync" ;;
 	*)
-		echo "ERROR: no back-merge from '$source_branch' to '$target_branch'. Use master to dev, ca-release to ca-canary, or dev to ca-release." >&2
+		echo "ERROR: no back-merge from '$source_branch' to '$target_branch'. Use master to dev, ca-release to ca-canary, or dev to ca-canary." >&2
 		exit 2
 		;;
 esac
@@ -54,13 +55,23 @@ if [ -n "${BACKMERGE_TRIGGERED_BY:-}" ]; then
 @$BACKMERGE_TRIGGERED_BY started this $kind. A different member of @F1R3FLY-io/ci-maintainers approves it."
 elif [ "${BACKMERGE_SCHEDULED:-}" = 1 ]; then
 	case "$source_branch:$target_branch" in
-		ca-release:ca-canary | dev:ca-release) ;;
-		*) echo "ERROR: BACKMERGE_SCHEDULED applies only to the release train pairs." >&2; exit 2 ;;
+		ca-release:ca-canary) ;;
+		*) echo "ERROR: BACKMERGE_SCHEDULED applies only to the ca-release to ca-canary back-merge." >&2; exit 2 ;;
 	esac
-	creator="created by the scheduled Release Train Daily Sync workflow"
+	creator="created by the scheduled Release Train Daily Back-merge workflow"
 	review="
 
 Mergify merges this $kind when its CI passes. It needs no review."
+fi
+
+# The sync has no later push, so it gets ci-heavy now. The ca-soak label starts
+# a 22-hour soak VM, so a maintainer adds it.
+labels=()
+if [ "$kind" = sync ]; then
+	labels=(--label ci-heavy)
+	review="$review
+
+Add the \`ca-soak\` label to start the 22-hour soak. Mergify queues this sync after the soak passes and a different member of @F1R3FLY-io/ci-maintainers approves it."
 fi
 
 remote="${BACKMERGE_REMOTE:-origin}"
@@ -100,7 +111,7 @@ if ! gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/d
 fi
 echo "Created $branch at ${sha:0:9} ($remote/$source_branch, $count commits not on $target_branch)."
 
-if ! gh pr create --repo "$repo" --base "$target_branch" --head "$branch" \
+if ! gh pr create --repo "$repo" --base "$target_branch" --head "$branch" ${labels[@]+"${labels[@]}"} \
 	--title "$title $source_branch into $target_branch ($stamp)" \
 	--body "Merges \`$source_branch\` at \`${sha:0:9}\` into \`$target_branch\` ($count commits).
 

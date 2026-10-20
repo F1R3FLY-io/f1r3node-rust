@@ -1,17 +1,15 @@
-name: Release Train Daily Sync
+name: Release Train Daily Back-merge
 
-# Opens the two daily pull requests of the cost-accounting release train
-# (issue #764, issue #791):
+# Opens the daily back-merge of the cost-accounting release train (issue #764,
+# issue #791): ca-release -> ca-canary, from a temporary
+# backmerge/ca-release-<sha> branch. ca-release gets only promotions from
+# ca-canary and hotfixes, so the back-merge brings their merge commits back to
+# ca-canary. Mergify merges it when its CI passes, with a merge commit. The
+# step does nothing when ca-canary already contains ca-release or a back-merge
+# pull request is open.
 #
-#   feed        dev -> ca-release, from a temporary feed/dev-<sha> branch
-#   back-merge  ca-release -> ca-canary, from a temporary
-#               backmerge/ca-release-<sha> branch
-#
-# Mergify merges each pull request when its CI passes, with a merge commit.
-# The first slot (00:30Z) opens the feed. The second slot (01:30Z) opens the
-# back-merge of that feed, so ca-canary carries the current dev before the
-# 02:30Z soaks. Each slot runs both steps, and each step does nothing when its
-# target already contains its source or a pull request of its kind is open.
+# dev reaches ca-canary only through the occasional `just ca-sync` pull
+# request. Its ca/ head puts it in the ca-item queue with its 22-hour soak.
 #
 # The workflow runs from master, the default branch, so the release-credentials
 # environment (master only) gives it the promotion app token. A pull request
@@ -20,7 +18,6 @@ name: Release Train Daily Sync
 
 on:
   schedule:
-    - cron: "30 0 * * *"
     - cron: "30 1 * * *"
   workflow_dispatch:
 
@@ -28,12 +25,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ca-daily-sync
+  group: ca-daily-backmerge
   cancel-in-progress: false
 
 jobs:
   sync:
-    name: Open Feed and Back-merge Pull Requests
+    name: Open the Back-merge Pull Request
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release-credentials
@@ -44,7 +41,7 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           if [ "$REF" != refs/heads/master ]; then
-            echo "::error::Run Release Train Daily Sync from master, not $REF."
+            echo "::error::Run Release Train Daily Back-merge from master, not $REF."
             exit 1
           fi
 
@@ -62,7 +59,7 @@ jobs:
             git ls-remote --exit-code --heads origin ca-release >/dev/null; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::ca-canary or ca-release does not exist yet. Nothing to sync."
+            echo "::notice::ca-canary or ca-release does not exist yet. Nothing to back-merge."
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -76,16 +73,13 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Open the feed and back-merge pull requests
+      - name: Open the back-merge pull request
         if: steps.branches.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
         shell: bash -euo pipefail {0}
         run: |
-          BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_SCHEDULED=1 \
-            BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-release \
-            bash .github/scripts/open-backmerge-pr.sh
           BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_SCHEDULED=1 \
             BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary \
             bash .github/scripts/open-backmerge-pr.sh

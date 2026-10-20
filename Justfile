@@ -132,9 +132,9 @@ ca-promote:
 ca-backmerge:
     BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary bash .github/scripts/open-backmerge-pr.sh
 
-# Open the daily dev to ca-release feed PR from a temporary feed/* branch
-ca-feed:
-    BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-release bash .github/scripts/open-backmerge-pr.sh
+# Open an occasional dev to ca-canary sync PR from a temporary ca/sync-* branch
+ca-sync:
+    BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-canary bash .github/scripts/open-backmerge-pr.sh
 
 # Tag the soaked ca-release head as ca-v<version>, for example: just ca-tag 0.5.0-rc.1
 ca-tag version:
