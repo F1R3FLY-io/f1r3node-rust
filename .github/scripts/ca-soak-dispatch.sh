@@ -60,8 +60,11 @@ case "${EVENT:-}" in
 		remove_label ca-soaked
 		remove_label ca-soak
 		title="Merge Recovery Soak [ca-item:#$PR_NUMBER]"
-		runs="$(gh api "repos/$GH_REPO/actions/workflows/merge-recovery-soak.yml/runs?event=workflow_dispatch&per_page=100" \
-			--jq ".workflow_runs[] | select(.display_title == \"$title\" and .status != \"completed\") | .id")"
+		# Every status that is not completed, on every page.
+		runs="$(for run_status in queued in_progress waiting requested pending; do
+			gh api --paginate "repos/$GH_REPO/actions/workflows/merge-recovery-soak.yml/runs?event=workflow_dispatch&status=$run_status&per_page=100" \
+				--jq ".workflow_runs[] | select(.display_title == \"$title\" and .status != \"completed\") | .id" || exit 1
+		done | sort -u)"
 		for run in $runs; do
 			gh api --method POST "repos/$GH_REPO/actions/runs/$run/cancel" >/dev/null
 			echo "Cancelled soak run $run of pull request #$PR_NUMBER."

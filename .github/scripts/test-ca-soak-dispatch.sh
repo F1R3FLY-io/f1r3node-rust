@@ -21,7 +21,13 @@ printf '%s\n' "$*" >>"$GH_LOG"
 case "$*" in
   "workflow run "*) ;;
   *"--method DELETE "*"/labels/"*) [ "${FAKE_LABEL_MISSING:-0}" = 1 ] && exit 1 ;;
-  *"/runs?event=workflow_dispatch"*) printf '%s\n' "${FAKE_RUNS:-}" ;;
+  *"/runs?event=workflow_dispatch"*)
+    [ "${FAKE_RUNS_FAIL:-0}" = 1 ] && exit 1
+    case "$*" in *"status=queued&"*) printf '%s\n' "${FAKE_QUEUED:-}" ;; esac
+    case "$*" in *"status=in_progress&"*) printf '%s\n' "${FAKE_RUNS:-}" ;; esac
+    # gh joins the pages only with --paginate.
+    case "$*" in *"--paginate "*"status=in_progress&"*) printf '%s\n' "${FAKE_RUNS_PAGE2:-}" ;; esac
+    ;;
   *"/cancel") ;;
   *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
 esac
@@ -80,6 +86,20 @@ logged "api --method POST repos/example/repo/actions/runs/601/cancel" && logged 
 	fail "an author push did not cancel the running soaks: $(cat "$TMP/gh.log")"
 ! dispatched || fail "an author push started a soak"
 
+run EVENT=synchronize FAKE_RUNS=601 FAKE_RUNS_PAGE2=603 FAKE_QUEUED="$(printf '%s\n' 601 604)"
+[ "$status" -eq 0 ] || fail "an author push with runs on later pages failed: $out"
+for id in 601 603 604; do
+	[ "$(grep -cFx "api --method POST repos/example/repo/actions/runs/$id/cancel" "$TMP/gh.log")" -eq 1 ] ||
+		fail "an author push did not cancel run $id exactly once: $(cat "$TMP/gh.log")"
+done
+for run_status in queued in_progress waiting requested pending; do
+	logged "--paginate repos/example/repo/actions/workflows/merge-recovery-soak.yml/runs?event=workflow_dispatch&status=$run_status&" ||
+		fail "an author push did not read every page of the $run_status runs: $(cat "$TMP/gh.log")"
+done
+
+run EVENT=synchronize FAKE_RUNS_FAIL=1
+[ "$status" -ne 0 ] || fail "an author push ignored a failed run listing: $out"
+
 run EVENT=push PUSH_REF=refs/heads/ca-release
 [ "$status" -eq 0 ] || fail "a ca-release push failed: $out"
 grep -Fxq "workflow run merge-recovery-soak.yml --repo example/repo --ref master -f target_ref=$SHA -f duration=weekend-60h -f gate=ca-release" "$TMP/gh.log" ||
@@ -108,4 +128,4 @@ ruby -ryaml -e '
     pr.include?("head.repo.full_name == github.repository") && pr.include?("startsWith(github.head_ref, '"'"'ca/'"'"')")
 ' "$WORKFLOW" || fail "ca-soak-dispatch.yml wiring"
 
-printf 'PASS: the ca-soak label on a ca/ pull request of this repository into ca-canary removes ca-soaked and starts the 22-hour item soak of the head from master. Other labels, bases, heads, and forks start nothing. A Mergify base merge changes nothing. An author push removes ca-soak and ca-soaked and cancels the running soaks of the pull request without starting one. A ca-release push starts the 60-hour release soak. The workflow checks out no pull request ref and passes event values only through the environment.\n'
+printf 'PASS: the ca-soak label on a ca/ pull request of this repository into ca-canary removes ca-soaked and starts the 22-hour item soak of the head from master. Other labels, bases, heads, and forks start nothing. A Mergify base merge changes nothing. An author push removes ca-soak and ca-soaked and cancels the queued and running soaks of the pull request on every page without starting one. A failed run listing fails the push handler. A ca-release push starts the 60-hour release soak. The workflow checks out no pull request ref and passes event values only through the environment.\n'

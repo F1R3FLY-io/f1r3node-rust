@@ -35,7 +35,10 @@ This claim covers the soaks that gate the cost-accounting release train of issue
 
 A cancelled soak posts error, and every other result posts failure. A run never replaces the status of a newer run of the same commit.
 
-**Label.** The `ca-soaked` label is added only after a successful `ca-item` result. The pull request must be open into `ca-canary`, and its head must still be the soaked commit. The `ca-soak` label removes `ca-soaked` before it starts a soak. A push to the pull request by an actor other than Mergify removes `ca-soak` and `ca-soaked` and cancels the running soak of that pull request. A Mergify push only merges the base, and it keeps both labels.
+**Label.** The `ca-soaked` label is added only after a successful `ca-item` result. The pull request must be open into `ca-canary`, and its head must still be the soaked commit. The script then reads the head again, and it removes the label if the head moved. A final `ca-item` result that is not a success removes `ca-soaked` when the head is still the soaked commit.
+
+**Label events.** The `ca-soak` label removes `ca-soaked` before it starts a soak. A push to the pull request by an actor other than Mergify removes `ca-soak` and `ca-soaked`. It also cancels every queued or running soak of that pull request. A Mergify push only merges the base, and it keeps both labels.
+
 
 **Soak identity.** A gate run soaks an exact commit SHA. It is a full soak of its span: 22 hours for `ca-item` and 60 hours for `ca-release`. It cannot be a canary, a preflight-only run, a run without the preflight, a window restart, a candidate soak, or a scheduled run. Its one restart after an infrastructure failure soaks a full new span.
 
@@ -45,7 +48,7 @@ A cancelled soak posts error, and every other result posts failure. A run never 
 
 | Behavior | Location |
 | --- | --- |
-| Gate result and label | `.github/scripts/report-soak-gate.sh` (`pending` and `final` modes, the newer-run check, the pull request head check) |
+| Gate result and label | `.github/scripts/report-soak-gate.sh` (`pending` and `final` modes, the newer-run check, the pull request head checks before and after the label add, the label removal after a failed result) |
 | Label and cancellation events | `.github/scripts/ca-soak-dispatch.sh` (`labeled`, `synchronize`, `push`) |
 | Event routing | `.github/workflows/ca-soak-dispatch.yml` |
 | Gate input validation | `merge-recovery-soak.yml`, job `schedule_gate`, step `resolve` |
@@ -58,8 +61,8 @@ A cancelled soak posts error, and every other result posts failure. A run never 
 
 | Check | Command | Status |
 | --- | --- | --- |
-| Gate validation, isolation wiring, gate result, label, and newer-run rule | `bash .github/scripts/test-soak-gate.sh` | Green locally |
-| Label and cancellation events, fork and base refusal, trigger and permission wiring | `bash .github/scripts/test-ca-soak-dispatch.sh` | Green locally |
+| Gate validation, isolation wiring, gate result, label add and removal, head change during the label add, and newer-run rule | `bash .github/scripts/test-soak-gate.sh` | Green locally |
+| Label and cancellation events, cancellation on every page and status, fork and base refusal, trigger and permission wiring | `bash .github/scripts/test-ca-soak-dispatch.sh` | Green locally |
 | Daily and weekend routing unchanged | `bash .github/scripts/test-soak-schedule-routing.sh` | Green locally |
 | Workflow security invariants | `bash .github/scripts/check-workflow-invariants.sh` | Green locally |
 

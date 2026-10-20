@@ -17,7 +17,7 @@ The artifact is new for issue #791. Local tests pass. The review package, the ho
     "CLAIM-SOAK-GATE-001"
   ],
   "claim_digests": {
-    "docs/claims/soak-release-gates.md": "78b2a444a81f236732e7ddde43c14d07d1caf337631ccbbf57cc4edeb83b9ba6"
+    "docs/claims/soak-release-gates.md": "c91f163c83ba31518449f589c346f2bd46e7c2d8c761e6ecaafd539582f5dbb3"
   },
   "adapter": null,
   "status": "pending",

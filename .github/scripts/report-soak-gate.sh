@@ -15,7 +15,14 @@
 # A ca-item success also adds the ca-soaked label, which the ca-item queue of
 # .mergify.yml requires. The label is added only when the pull request is open
 # and its head is still the soaked commit. A label stays when the head changes,
-# so a label for an older head would pass code that no soak ran.
+# so a label for an older head would pass code that no soak ran. The head is
+# read again after the label is added, and a moved head removes the label. A
+# push removes the labels only after the push, so this read sees every push
+# that a removal can miss.
+#
+# A final ca-item report that is not a success removes ca-soaked from the
+# soaked head. A failed soak of a commit then replaces an earlier pass, also
+# for a manual dispatch that the ca-soak label did not start.
 #
 # Runs of the same commit can overlap, for example after a second ca-soak
 # label. The status names its run, and a run never replaces the status of a
@@ -80,12 +87,34 @@ gh api --method POST "repos/$GH_REPO/statuses/$TARGET_SHA" -f state="$state" -f 
 	-f description="$description" -f target_url="$RUN_URL" >/dev/null
 echo "Posted \"$context\" $state on ${TARGET_SHA:0:9}."
 
-[ "$state" = success ] && [ "$GATE" = ca-item ] || exit 0
-pr="$(gh api "repos/$GH_REPO/pulls/$GATE_PR" --jq '[.state, .head.sha, .base.ref] | @tsv')"
-IFS=$'\t' read -r pr_state pr_head pr_base <<<"$pr"
-if [ "$pr_state" != open ] || [ "$pr_base" != ca-canary ] || [ "$pr_head" != "$TARGET_SHA" ]; then
-	echo "Pull request #$GATE_PR is $pr_state into $pr_base at ${pr_head:0:9}, not open into ca-canary at the soaked ${TARGET_SHA:0:9}. ca-soaked is not added."
+[ "$GATE" = ca-item ] && [ "$mode" = final ] || exit 0
+
+# soaked_head: true when the pull request is open into ca-canary and its head
+# is the soaked commit. Sets pr_state, pr_head, and pr_base.
+soaked_head() {
+	local pr
+	pr="$(gh api "repos/$GH_REPO/pulls/$GATE_PR" --jq '[.state, .head.sha, .base.ref] | @tsv')" ||
+		{ echo "ERROR: cannot read pull request #$GATE_PR." >&2; exit 1; }
+	IFS=$'\t' read -r pr_state pr_head pr_base <<<"$pr"
+	[ "$pr_state" = open ] && [ "$pr_base" = ca-canary ] && [ "$pr_head" = "$TARGET_SHA" ]
+}
+remove_soaked() {
+	if gh api --method DELETE "repos/$GH_REPO/issues/$GATE_PR/labels/ca-soaked" >/dev/null 2>&1; then
+		echo "Removed ca-soaked from pull request #$GATE_PR."
+	fi
+}
+
+if ! soaked_head; then
+	echo "Pull request #$GATE_PR is $pr_state into $pr_base at ${pr_head:0:9}, not open into ca-canary at the soaked ${TARGET_SHA:0:9}. ca-soaked is not changed."
+	exit 0
+fi
+if [ "$state" != success ]; then
+	remove_soaked
 	exit 0
 fi
 gh api --method POST "repos/$GH_REPO/issues/$GATE_PR/labels" -f "labels[]=ca-soaked" >/dev/null
 echo "Added ca-soaked to pull request #$GATE_PR."
+if ! soaked_head; then
+	echo "Pull request #$GATE_PR moved to ${pr_head:0:9} after the label was added."
+	remove_soaked
+fi

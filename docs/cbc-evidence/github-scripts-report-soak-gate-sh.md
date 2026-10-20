@@ -9,7 +9,7 @@ The artifact is new for issue #791. Local tests pass. The review package, the ho
     "id": "github-scripts-report-soak-gate-sh",
     "commit": "17b6ecb7cc1b7313438df5ad490fa19dbe3a76a7",
     "commit_is_base": true,
-    "sha256": "ac4f650e16e4f49a058fbf85ca6605916eb3b926abbe8ecc756bfc3fbfc2d07b",
+    "sha256": "5329a9d557c239505d51e4259a53f9ea8f35ebabe9a693fbec76b38976138d55",
     "working_tree": true
   },
   "claim": "docs/claims/soak-release-gates.md",
@@ -17,7 +17,7 @@ The artifact is new for issue #791. Local tests pass. The review package, the ho
     "CLAIM-SOAK-GATE-001"
   ],
   "claim_digests": {
-    "docs/claims/soak-release-gates.md": "78b2a444a81f236732e7ddde43c14d07d1caf337631ccbbf57cc4edeb83b9ba6"
+    "docs/claims/soak-release-gates.md": "c91f163c83ba31518449f589c346f2bd46e7c2d8c761e6ecaafd539582f5dbb3"
   },
   "adapter": null,
   "status": "pending",

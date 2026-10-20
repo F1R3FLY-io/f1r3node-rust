@@ -177,7 +177,13 @@ cat >"$TMP/bin/gh" <<'SH'
 printf '%s\n' "$*" >>"$GH_LOG"
 case "$*" in
   *"/commits/"*"/status"*) printf '%s\n' "${FAKE_CURRENT_URL:-}" ;;
-  *"/pulls/"*) printf '%s\n' "${FAKE_PR:-}" ;;
+  *"/pulls/"*)
+    [ "${FAKE_PR_FAIL:-0}" = 1 ] && exit 1
+    reads=$(($(cat "$PR_READS") + 1))
+    printf '%s\n' "$reads" >"$PR_READS"
+    # FAKE_PR_AFTER is the pull request after the first read.
+    if [ "$reads" -gt 1 ] && [ -n "${FAKE_PR_AFTER:-}" ]; then printf '%s\n' "$FAKE_PR_AFTER"; else printf '%s\n' "${FAKE_PR:-}"; fi
+    ;;
   *"/statuses/"* | *"/labels"*) ;;
   *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
 esac
@@ -191,8 +197,9 @@ report() {
 	local mode="$1"
 	shift
 	: >"$TMP/gh.log"
+	printf '0\n' >"$TMP/pr_reads"
 	set +e
-	out="$(env PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_REPO=example/repo GATE=ca-item GATE_PR=12 \
+	out="$(env PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PR_READS="$TMP/pr_reads" GH_REPO=example/repo GATE=ca-item GATE_PR=12 \
 		TARGET_SHA="$SHA" RUN_URL="$RUN_URL" GITHUB_SERVER_URL=https://github.com \
 		FAKE_PR="$(printf 'open\t%s\tca-canary' "$SHA")" "$@" bash "$REPORT" "$mode" 2>&1)"
 	status=$?
@@ -203,17 +210,20 @@ posted() {
 		fail "no $1 status for $2: $(cat "$TMP/gh.log")"
 }
 labelled() { grep -q 'issues/12/labels -f labels\[\]=ca-soaked' "$TMP/gh.log"; }
+unlabelled() { grep -Fq "api --method DELETE repos/example/repo/issues/12/labels/ca-soaked" "$TMP/gh.log"; }
 PASS=(SOAK_RESULT=success COMPLETED=true PREFLIGHT=passed VERDICT=pass LAUNCH_RESULT=success)
 
 report pending
 [ "$status" -eq 0 ] || fail "the pending report failed: $out"
 posted pending 'Soak Gate (22h)'
 ! labelled || fail "a pending report added ca-soaked"
+if unlabelled || grep -q ./pulls/. "$TMP/gh.log"; then fail "a pending report changed the labels: $(cat "$TMP/gh.log")"; fi
 
 report final "${PASS[@]}"
 [ "$status" -eq 0 ] || fail "the passing report failed: $out"
 posted success 'Soak Gate (22h)'
 labelled || fail "a passed soak did not add ca-soaked: $(cat "$TMP/gh.log")"
+! unlabelled || fail "a passed soak removed ca-soaked: $(cat "$TMP/gh.log")"
 
 report final "${PASS[@]}" GATE=ca-release GATE_PR=
 posted success 'Soak Gate (60h)'
@@ -225,25 +235,43 @@ for broken in SOAK_RESULT=failure COMPLETED= PREFLIGHT=failed VERDICT=regress VE
 	[ "$status" -eq 0 ] || fail "the report with $broken failed: $out"
 	posted failure 'Soak Gate (22h)'
 	! labelled || fail "a soak with $broken added ca-soaked"
+	unlabelled || fail "a soak with $broken kept ca-soaked: $(cat "$TMP/gh.log")"
 done
 
 report final "${PASS[@]}" SOAK_RESULT=cancelled
 posted error 'Soak Gate (22h)'
+unlabelled || fail "a cancelled soak kept ca-soaked: $(cat "$TMP/gh.log")"
 report final "${PASS[@]}" SOAK_RESULT=skipped LAUNCH_RESULT=cancelled
 posted error 'Soak Gate (22h)'
 
 report final "${PASS[@]}" FAKE_PR="$(printf 'open\t%s\tca-canary' "$OTHER")"
 posted success 'Soak Gate (22h)'
 ! labelled || fail "ca-soaked was added after the head moved"
-[[ "$out" == *"ca-soaked is not added"* ]] || fail "a moved head was not reported: $out"
+[[ "$out" == *"ca-soaked is not changed"* ]] || fail "a moved head was not reported: $out"
 report final "${PASS[@]}" FAKE_PR="$(printf 'closed\t%s\tca-canary' "$SHA")"
 ! labelled || fail "ca-soaked was added to a closed pull request"
 report final "${PASS[@]}" FAKE_PR="$(printf 'open\t%s\tdev' "$SHA")"
 ! labelled || fail "ca-soaked was added to a pull request into dev"
 
+report final "${PASS[@]}" FAKE_PR_AFTER="$(printf 'open\t%s\tca-canary' "$OTHER")"
+[ "$status" -eq 0 ] || fail "the report with a head that moved during the label add failed: $out"
+labelled && unlabelled || fail "a head that moved during the label add kept ca-soaked: $(cat "$TMP/gh.log")"
+[ "$(grep -n 'labels -f labels' "$TMP/gh.log" | cut -d: -f1)" -lt "$(grep -n 'DELETE' "$TMP/gh.log" | cut -d: -f1)" ] ||
+	fail "ca-soaked was removed before it was added: $(cat "$TMP/gh.log")"
+[[ "$out" == *"after the label was added"* ]] || fail "a head that moved during the label add was not reported: $out"
+
+report final "${PASS[@]}" SOAK_RESULT=failure FAKE_PR="$(printf 'open\t%s\tca-canary' "$OTHER")"
+! unlabelled || fail "a failed soak of an older commit removed the label of the new head"
+report final "${PASS[@]}" FAKE_PR_FAIL=1
+[ "$status" -ne 0 ] || fail "a failed pull request read was ignored: $out"
+! labelled || fail "ca-soaked was added without a pull request read"
+report final "${PASS[@]}" GATE=ca-release GATE_PR= SOAK_RESULT=failure
+! unlabelled || fail "a failed ca-release gate removed a label"
+if grep -q '/pulls/' "$TMP/gh.log"; then fail "a failed ca-release gate read a pull request"; fi
+
 report final "${PASS[@]}" FAKE_CURRENT_URL=https://github.com/example/repo/actions/runs/501/attempts/1
 [ "$status" -eq 0 ] || fail "the report under a newer run failed: $out"
-if grep -q "repos/example/repo/statuses/" "$TMP/gh.log" || labelled; then fail "a run replaced the status of a newer run: $(cat "$TMP/gh.log")"; fi
+if grep -q "repos/example/repo/statuses/" "$TMP/gh.log" || labelled || unlabelled; then fail "a run replaced the status of a newer run: $(cat "$TMP/gh.log")"; fi
 report final "${PASS[@]}" FAKE_CURRENT_URL=https://github.com/example/repo/actions/runs/499/attempts/2
 posted success 'Soak Gate (22h)'
 
@@ -253,4 +281,4 @@ for bad in GATE= GATE=ca-other TARGET_SHA=main GATE_PR=x RUN_URL=https://github.
 	[[ ! -s "$TMP/gh.log" ]] || fail "the report with $bad still called gh: $(cat "$TMP/gh.log")"
 done
 
-printf 'PASS: a gate run needs a manual dispatch, a commit SHA, and the 22h ca-item or 60h ca-release duration, and refuses canary, preflight-only, skipped preflight, window restart, candidate, and scheduled inputs. Gate runs have their own concurrency group and runner label, publish no checkpoint or series, and restart with a full window. Soak Gate is success only for a completed soak with a passed preflight and a pass verdict, error for a cancelled soak, and failure otherwise. ca-soaked is added only to an open ca-canary pull request whose head is the soaked commit, and a run never replaces the status of a newer run.\n'
+printf 'PASS: a gate run needs a manual dispatch, a commit SHA, and the 22h ca-item or 60h ca-release duration, and refuses canary, preflight-only, skipped preflight, window restart, candidate, and scheduled inputs. Gate runs have their own concurrency group and runner label, publish no checkpoint or series, and restart with a full window. Soak Gate is success only for a completed soak with a passed preflight and a pass verdict, error for a cancelled soak, and failure otherwise. ca-soaked is added only to an open ca-canary pull request whose head is the soaked commit, and it is removed when the head moves during the label add. A final failure, error, or cancellation of the soaked head removes ca-soaked, and a run never replaces the status of a newer run.\n'
