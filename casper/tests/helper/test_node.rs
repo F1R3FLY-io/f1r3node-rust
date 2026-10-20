@@ -65,7 +65,7 @@ pub struct TestNode {
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<KeyValueDeployStorage>,
     pub rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
@@ -1053,11 +1053,11 @@ impl TestNode {
                 block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
             )
             .expect("Failed to insert genesis into DAG storage in TestNode");
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             resources::key_value_deploy_storage_from_dyn(&mut *kvm)
                 .await
                 .unwrap(),
-        ));
+        );
 
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             resources::key_value_rejected_deploy_buffer_from_dyn(&mut *kvm)

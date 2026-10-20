@@ -2063,7 +2063,7 @@ pub async fn compute_parents_post_state(
                             );
                         }
                         match buffer.lock() {
-                            Ok(mut guard) => {
+                            Ok(guard) => {
                                 if let Err(err) = guard.add(deploys_to_buffer) {
                                     tracing::warn!("RejectedDeployBuffer add failed: {}", err);
                                 }

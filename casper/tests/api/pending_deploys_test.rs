@@ -107,7 +107,6 @@ async fn fresh_deploy_storage_returns_is_rejected_false() {
     nodes[0]
         .casper
         .deploy_storage
-        .lock()
         .add(vec![deploy.clone()])
         .expect("add fresh deploy");
 
@@ -174,7 +173,6 @@ async fn sig_in_both_pools_emitted_once_as_rejected() {
     nodes[0]
         .casper
         .deploy_storage
-        .lock()
         .add(vec![duplicated.clone(), only_fresh.clone()])
         .expect("add storage deploys");
     nodes[0]
@@ -222,7 +220,6 @@ async fn both_pools_snapshot_together() {
     nodes[0]
         .casper
         .deploy_storage
-        .lock()
         .add(vec![fresh.clone()])
         .expect("add fresh");
     nodes[0]
@@ -264,7 +261,6 @@ async fn deployer_filter_returns_only_matching() {
     nodes[0]
         .casper
         .deploy_storage
-        .lock()
         .add(vec![deploy_a.clone(), deploy_b.clone()])
         .expect("add deploys");
 
@@ -312,7 +308,6 @@ async fn cap_truncates_and_reports_total_available() {
     nodes[0]
         .casper
         .deploy_storage
-        .lock()
         .add(deploys)
         .expect("add deploys");
 
@@ -377,7 +372,6 @@ async fn a_future_dated_deploy_is_still_reported_as_pending() {
     nodes[0]
         .casper
         .deploy_storage
-        .lock()
         .add(vec![future.clone()])
         .expect("add future deploy");
 
@@ -446,13 +440,11 @@ fn seed_undecodable_record(node: &TestNode) -> Vec<u8> {
     let damaged_key = node
         .casper
         .deploy_storage
-        .lock()
         .store
         .encode_key(&vec![7u8; 64])
         .expect("damaged key");
     node.casper
         .deploy_storage
-        .lock()
         .store
         .raw_store()
         .put_one(damaged_key.clone(), vec![0xff, 0x01])
@@ -486,7 +478,6 @@ async fn undecodable_records_do_not_hide_valid_pending_deploys() {
     nodes[0]
         .casper
         .deploy_storage
-        .lock()
         .add(vec![fresh.clone()])
         .expect("add fresh deploy");
     nodes[0]
@@ -520,7 +511,6 @@ async fn undecodable_records_do_not_hide_valid_pending_deploys() {
         nodes[0]
             .casper
             .deploy_storage
-            .lock()
             .store
             .raw_store()
             .get_one(&damaged_key)
