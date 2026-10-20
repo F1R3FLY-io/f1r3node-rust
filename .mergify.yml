@@ -16,8 +16,12 @@
 #             is a ca/ item too, so it needs the same soak.
 #   ca-daily  the daily back-merge (backmerge/ca-release-<sha> into
 #             ca-canary) from ca-daily-sync.yml. It needs the light ci.yml
-#             checks only and no review. A push to ca-canary runs the heavy
-#             pipeline after the merge.
+#             checks only and no review, so it accepts only pull requests
+#             that the promotion app opened. CA Daily Provenance verifies the
+#             release source and each clean base merge with trusted code. A
+#             back-merge opened by hand with just ca-backmerge is merged by a
+#             maintainer. A push to ca-canary runs the heavy pipeline after
+#             the merge.
 #
 # Every merge is a merge commit, so ca-canary keeps the dev and ca-release
 # history, and ca-release keeps the ca-canary history. Each queue merges one
@@ -64,7 +68,9 @@ queue_rules:
     queue_conditions:
       - base=ca-canary
       - head~=^backmerge/ca-release-[0-9a-f]{12}$
+      - author=f1r3node-promotion[bot]
     merge_conditions:
+      - check-success=CA Daily Provenance
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -85,6 +91,7 @@ pull_request_rules:
     conditions:
       - base=ca-canary
       - head~=^backmerge/ca-release-[0-9a-f]{12}$
+      - author=f1r3node-promotion[bot]
     actions:
       queue:
         name: ca-daily

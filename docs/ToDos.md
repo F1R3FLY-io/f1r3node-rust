@@ -73,6 +73,34 @@ mr_status:
 
 ---
 
+### EPIC-029: Trusted Daily Back-merges
+
+```yaml
+epic_id: EPIC-029
+title: "Trusted Daily Back-merges"
+status: in_progress
+priority: p1
+user_story: US-013
+branch: ci/ca-release-train
+tasks:
+  - id: TASK-029-1
+    title: "Validate daily back-merges with trusted code and permit clean base merges"
+    status: in_progress
+    claimed_by: pi-session
+    claimed_at: 2026-10-20T19:05:51Z
+    review_requested_at: 2026-10-20
+    review_type: human
+    progress: "Local provenance, protected-head, tag, routing, and workflow invariant tests pass. ShellCheck passes. Hosted validation remains pending."
+    notes: "Review follow-up for issues #791 and PR #792. Preserve the accepted ca-soaked label risk."
+    acceptance:
+      - "Tests accept the release source and repeated clean base merges."
+      - "Tests reject foreign sources, edited merge trees, single-parent additions, forks, and invalid metadata."
+      - "A pull_request_target workflow runs only base code and posts CA Daily Provenance on the event head SHA."
+      - "The ca-daily queue requires CA Daily Provenance, and the existing workflow invariant checks pass."
+```
+
+---
+
 ### EPIC-024: Spike: Tokio and LMDB Disk Access, and Detection of Delayed Writes
 
 ```yaml

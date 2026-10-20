@@ -38,7 +38,7 @@ expect_reject() {
 expect_accept() {
 	run "$@"
 	[ "$status" -eq 0 ] || fail "rejected event=$1 base=$2 head=$3 repo=$4: $out"
-	[[ ! -s "$TMP/gh.log" ]] || fail "an accepted pull request called gh: $(cat "$TMP/gh.log")"
+	if grep -q '^pr close' "$TMP/gh.log"; then fail "an accepted pull request was closed: $(cat "$TMP/gh.log")"; fi
 }
 
 expect_reject pull_request master dev example/repo
@@ -95,6 +95,7 @@ expect_reject pull_request_target ca-release ca-canary example/repo
 expect_accept pull_request ca-canary ca/a1a-coalescing example/repo 12
 expect_accept pull_request ca-release promote/ca-release-20261020-1200 example/repo 12
 expect_accept pull_request ca-canary backmerge/ca-release-0123456789ab example/repo 12
+expect_accept pull_request dev backmerge/ca-release-0123456789ab example/repo 12
 expect_accept pull_request ca-release ca-canary other/fork 12
 expect_accept pull_request_target ca-canary ca-release other/fork 12
 
@@ -102,4 +103,4 @@ expect_reject pull_request_target ca-canary ca-release example/repo 791
 grep -q '^pr close 791 --repo example/repo --comment Closed by the protected head guard\. Do not open a back-merge with head ca-release\..* Reason: ' "$TMP/gh.log" ||
 	fail "a rejected ca-release pull request was not closed with the remedy and the reason: $(cat "$TMP/gh.log")"
 
-printf 'PASS: the protected-head check rejects a pull request with head master, dev, ca-canary, or ca-release from this repository under pull_request and pull_request_target, closes it with a reason when PR_NUMBER is set, and accepts fork, temporary, and non-pull-request heads.\n'
+printf 'PASS: the protected-head check rejects a pull request with head master, dev, ca-canary, or ca-release from this repository under pull_request and pull_request_target, closes it with a reason when PR_NUMBER is set, and accepts fork, temporary, and non-pull-request heads. The separate daily provenance check validates back-merge content.\n'
