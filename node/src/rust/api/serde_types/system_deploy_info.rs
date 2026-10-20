@@ -459,6 +459,7 @@ mod tests {
             data: Some(ListParWithRandom {
                 pars: vec![sample_par()],
                 random_state: vec![9, 9].into(),
+                ..Default::default()
             }),
         }
     }

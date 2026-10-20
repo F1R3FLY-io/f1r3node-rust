@@ -1,5 +1,6 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ReceiveSortMatcher.scala
 
+use super::cost_accounting_sorter::sort_signature;
 use super::par_sort_matcher::ParSortMatcher;
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
 use super::sortable::Sortable;
@@ -33,6 +34,7 @@ impl ReceiveSortMatcher {
                 score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
             },
         };
+        let sorted_cost_signature = bind.cost_signature.as_ref().map(sort_signature);
 
         ScoredTerm {
             term: ReceiveBind {
@@ -44,12 +46,20 @@ impl ReceiveSortMatcher {
                 source: Some(sorted_channel.term),
                 remainder: bind.remainder,
                 free_count: bind.free_count,
+                cost_signature: sorted_cost_signature
+                    .as_ref()
+                    .map(|signature| signature.term.clone()),
             },
             score: Tree::Node(
                 vec![sorted_channel.score]
                     .into_iter()
                     .chain(sorted_patterns.into_iter().map(|p| p.score))
                     .chain(vec![sorted_remainder.score].into_iter())
+                    .chain(
+                        sorted_cost_signature
+                            .into_iter()
+                            .map(|signature| signature.score),
+                    )
                     .collect(),
             ),
         }

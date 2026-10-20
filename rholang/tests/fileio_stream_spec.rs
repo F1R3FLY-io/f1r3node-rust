@@ -77,6 +77,9 @@ mod tests {
     /// entries, (c) close removed the fd.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn stream_open_next_until_eos_close() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         // safe_descend rejects rel = "." with RootSelf; the streaming
         // primitive matches bulk fs_entries in requiring a
@@ -233,6 +236,9 @@ mod tests {
     /// `RhoRuntimeImpl` (streaming-slice Step 4).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn deploy_error_rollback_sweeps_stream_fds() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub/pre"), b"1").unwrap();
@@ -286,6 +292,9 @@ mod tests {
     /// **Triage status**: un-ignored by slice 5.80 (same wiring).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn nested_soft_checkpoints_preserve_outer_dir_fd_snapshot() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("a")).unwrap();
         std::fs::create_dir(dir.path().join("b")).unwrap();
@@ -499,6 +508,9 @@ mod tests {
     /// and it only fires on deploy revert — not on deploy commit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn open_without_close_leaves_fd_in_table() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub/a"), b"x").unwrap();

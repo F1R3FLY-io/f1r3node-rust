@@ -160,11 +160,9 @@ async fn a_validator_bonded_later_that_never_runs_does_not_stall_finalization() 
         .await
         .unwrap();
     assert!(
-        carrier
-            .body
-            .deploys
-            .iter()
-            .any(|processed| processed.deploy.sig == deploy.sig && !processed.is_failed),
+        carrier.body.deploys.iter().any(
+            |processed| processed.identity_bytes() == &deploy.sig[..] && !processed.is_failed()
+        ),
         "the user deploy must be included and executed"
     );
 

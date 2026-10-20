@@ -242,7 +242,11 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     }
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a.deploys;
+    block_a.body.deploys = checkpoint_a
+        .deploys
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -298,7 +302,11 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     }
     let mut block_b = block_b_raw;
     block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b.deploys;
+    block_b.body.deploys = checkpoint_b
+        .deploys
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_b.body.system_deploys = checkpoint_b.system_deploys;
     block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");

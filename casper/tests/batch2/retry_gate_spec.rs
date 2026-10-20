@@ -208,7 +208,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
                 .body
                 .deploys
                 .iter()
-                .any(|pd| pd.deploy.sig == loser_sig),
+                .any(|pd| pd.identity_bytes() == &loser_sig[..]),
             "the proposer must defer a retry whose rejection is not settled \
              in its floor (gate closed); it minted the loser {} instead",
             short(&loser_sig),
@@ -281,7 +281,11 @@ async fn premature_retry_is_rejected_by_every_validator() {
             bonds: checkpoint.bonds,
             block_number: next_block_num,
         },
-        deploys: checkpoint.deploys,
+        deploys: checkpoint
+            .deploys
+            .into_iter()
+            .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+            .collect(),
         rejected_deploys: checkpoint.rejected_deploys,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
@@ -412,14 +416,14 @@ async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == loser_sig),
+            .any(|pd| pd.identity_bytes() == &loser_sig[..]),
         "with the rejection settled in the floor, the owner's create must \
          re-propose the loser (body sigs: {:?})",
         retried
             .body
             .deploys
             .iter()
-            .map(|pd| short(&pd.deploy.sig))
+            .map(|pd| short(&Bytes::copy_from_slice(pd.identity_bytes())))
             .collect::<Vec<_>>(),
     );
     for (i, node) in nodes.iter_mut().enumerate() {

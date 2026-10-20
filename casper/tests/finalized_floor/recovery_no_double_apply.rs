@@ -158,7 +158,7 @@ async fn recovery_effect_is_applied_at_most_once() {
             None,
         );
         let b2_sigs: HashSet<Bytes> =
-            b2.body.deploys.iter().map(|pd| pd.deploy.sig.clone()).collect();
+            b2.body.deploys.iter().map(|pd| prost::bytes::Bytes::copy_from_slice(pd.identity_bytes())).collect();
         assert!(
             !b2_sigs.contains(&sig_won),
             "the already-applied effect is NOT re-proposed into the next block (no double-apply)"

@@ -64,6 +64,37 @@ fn evar_resolves_from_env() {
     assert_int(&result, 7);
 }
 
+/// Changed by DR-131: the metered push and lookup went with host work. The
+/// test keeps its check that an owned push builds the map that `put` builds.
+#[test]
+fn owned_environment_push_matches_put() {
+    let mut owned = Env::<Par>::new();
+    let mut copied = Env::<Par>::new();
+    for value in 0..16 {
+        owned.push(gint(value)).expect("a level below i32::MAX");
+        copied = copied.put(gint(value));
+        assert_eq!(owned.env_map, copied.env_map);
+        assert_eq!(owned.level, copied.level);
+    }
+}
+
+/// Changed by DR-131: the metered evaluation went with host work. The test
+/// keeps its check that a guard over a pushed binding evaluates to true.
+#[test]
+fn guard_evaluation_reads_a_pushed_binding() {
+    let mut env = Env::<Par>::new();
+    env.push(gint(7)).expect("a level below i32::MAX");
+    let guard = par_of(ExprInstance::EAndBody(EAnd {
+        p1: Some(par_of(ExprInstance::EEqBody(EEq {
+            p1: Some(evar(0)),
+            p2: Some(gint(7)),
+        }))),
+        p2: Some(gbool(true)),
+    }));
+    let expected = eval(&guard, &env).unwrap();
+    assert_bool(&expected, true);
+}
+
 #[test]
 fn evar_unbound_fails() {
     let env = Env::<Par>::new();

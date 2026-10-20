@@ -2049,6 +2049,7 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
         UnfInstance::GSysAuthTokenBody(_) => RhoExpr::ExprUnforg {
             data: RhoUnforg::UnforgSysAuthToken,
         },
+        UnfInstance::GAuthorityIdBody(_) | UnfInstance::GPrincipalIdBody(_) => return None,
     })
 }
 

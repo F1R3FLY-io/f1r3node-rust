@@ -2,10 +2,15 @@ use std::sync::Arc;
 
 use shared::rust::store::key_value_store::KeyValueStore;
 
-use crate::rspace::errors::HistoryError;
+use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history_action::HistoryAction;
 use crate::rspace::history::instances::radix_history::RadixHistory;
+pub struct NativePreparedHistory {
+    pub(crate) next: Box<dyn History>,
+    pub(crate) store: Arc<dyn KeyValueStore>,
+    pub(crate) writes: Vec<(Vec<u8>, Vec<u8>)>,
+}
 
 pub type StagedHistory = (Box<dyn History>, Vec<(Vec<u8>, Vec<u8>)>);
 
@@ -17,9 +22,18 @@ pub trait History: Send + Sync {
 
     fn stage(&self, actions: Vec<HistoryAction>) -> Result<StagedHistory, HistoryError>;
 
-    fn root(&self) -> Blake2b256Hash;
+    fn prepare_native(
+        &self,
+        actions: Vec<HistoryAction>,
+    ) -> Result<NativePreparedHistory, RSpaceError>;
+
+    fn root_ref(&self) -> &Blake2b256Hash;
+
+    fn root(&self) -> Blake2b256Hash { self.root_ref().clone() }
 
     fn reset(&self, root: &Blake2b256Hash) -> Result<Box<dyn History>, HistoryError>;
+
+    fn snapshot_native(&self) -> Box<dyn History>;
 }
 
 pub struct HistoryInstances;

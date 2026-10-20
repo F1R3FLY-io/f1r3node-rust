@@ -22,4 +22,24 @@ pub trait Match<P, A, K>: Send + Sync {
     /// consume back so the messages stay in the tuple space and the
     /// continuation stays installed.
     fn check_commit(&self, _k: &K, _matched: &[A]) -> bool { true }
+
+    /// Added by DR-129 (E3-a): whether `check_commit` can return false for
+    /// the continuation `k`, for any matched data. Under dev's random play
+    /// order, play tries one greedy tuple and stores the operation when the
+    /// commit vetoes it, so replay's greedy pass in its own order can find a
+    /// tuple that passes. The Stored check of replay therefore skips such a
+    /// continuation. The default is false, so a matcher that overrides
+    /// `check_commit` must override this method too.
+    fn commit_may_veto(&self, _k: &K) -> bool { false }
+
+    /// Changed by DR-131 S6: `check_commit` over borrowed matched data,
+    /// without a meter (D-I). The native replay passes the matched data by
+    /// reference, so it does not copy them (D-M6, DR-88). The default copies
+    /// the data and calls `check_commit`, so every matcher keeps its result.
+    /// A matcher can override it to read the data in place.
+    fn check_commit_by_reference(&self, k: &K, matched: &[&A]) -> bool
+    where A: Clone {
+        let owned: Vec<A> = matched.iter().map(|value| (*value).clone()).collect();
+        self.check_commit(k, &owned)
+    }
 }

@@ -1009,7 +1009,7 @@ impl BlockAPI {
             .body
             .deploys
             .iter()
-            .flat_map(|pd| pd.deploy_log.iter())
+            .flat_map(|pd| pd.deploy_log().iter())
             .collect();
 
         let log: Vec<RspaceEvent> = serialized_log

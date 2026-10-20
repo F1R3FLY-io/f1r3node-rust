@@ -336,7 +336,14 @@ pub fn parent_metadatas_above_block_number(
     Ok(result)
 }
 
-pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
+pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> {
+    block
+        .body
+        .deploys
+        .iter()
+        .filter_map(|deploy| deploy.as_legacy().cloned())
+        .collect()
+}
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()

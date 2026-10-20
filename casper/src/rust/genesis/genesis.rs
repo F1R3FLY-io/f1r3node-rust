@@ -7,7 +7,7 @@ use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy, ProcessedUserDeploy,
 };
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
@@ -251,7 +251,7 @@ impl Genesis {
                     let b_bytes = b.to_proto().encode_to_vec();
                     a_bytes.cmp(&b_bytes)
                 });
-                deploy
+                ProcessedUserDeploy::Legacy(deploy)
             })
             .collect();
 

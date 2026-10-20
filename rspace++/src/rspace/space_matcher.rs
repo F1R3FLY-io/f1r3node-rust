@@ -14,6 +14,50 @@ use crate::rspace::metrics_constants::{
 
 type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
 
+/// Added by DR-129 (E1): a join can name one channel more than once at run
+/// time. The COMM records only the set of produces, not which datum went to
+/// which pattern, so replay works that assignment out again in its own order,
+/// which puts the source hash first (`candidate_order`). This gives the list
+/// of each repeated channel one stable order by source hash, with the
+/// incoming datum of a produce (index -1) first, so the greedy assignment is
+/// the one that replay finds. Data with one source hash have equal content.
+/// The list in the caller's order goes into `rollback`, so a failed match
+/// restores it.
+fn order_repeated_channels<C, P, A>(
+    channel_pattern_pairs: &[(C, P)],
+    channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+) where
+    C: Clone + std::hash::Hash + Eq,
+    A: Clone,
+{
+    let compare = |(left, left_index): &(Datum<A>, i32), (right, right_index): &(Datum<A>, i32)| {
+        (*left_index != -1)
+            .cmp(&(*right_index != -1))
+            .then_with(|| left.source.hash.cmp(&right.source.hash))
+    };
+    for (position, (channel, _)) in channel_pattern_pairs.iter().enumerate() {
+        let first = !channel_pattern_pairs[..position]
+            .iter()
+            .any(|(earlier, _)| earlier == channel);
+        let repeated = channel_pattern_pairs[position + 1..]
+            .iter()
+            .any(|(later, _)| later == channel);
+        if !(first && repeated) {
+            continue;
+        }
+        if let Some(data) = channel_to_indexed_data.get_mut(channel) {
+            if data
+                .windows(2)
+                .any(|pair| compare(&pair[0], &pair[1]) == std::cmp::Ordering::Greater)
+            {
+                rollback.push((channel.clone(), data.clone()));
+                data.sort_by(compare);
+            }
+        }
+    }
+}
+
 pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
 where
     C: Clone + std::hash::Hash + Eq + Send + Sync,
@@ -72,6 +116,9 @@ where
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
         rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
+        // Added by DR-129 (E1): a stable order for a channel that the join
+        // names more than once.
+        order_repeated_channels(channel_pattern_pairs, channel_to_indexed_data, rollback);
         let mut acc = Vec::with_capacity(channel_pattern_pairs.len());
 
         for (channel, pattern) in channel_pattern_pairs {
@@ -161,7 +208,12 @@ where
                 if !matcher.check_commit(&cont.continuation, &matched_data) {
                     // Guard rejected: roll back and try the next
                     // waiting continuation, just like a spatial miss.
-                    for (ch, original) in rollback {
+                    // Changed by DR-129 (R3): a channel that the join names
+                    // more than once is saved once for each match. The
+                    // restore runs in reverse, so the first saved list, the
+                    // whole one, is the last one written back.
+                    // for (ch, original) in rollback {
+                    for (ch, original) in rollback.into_iter().rev() {
                         channel_to_index_data.insert(ch, original);
                     }
                     continue;
@@ -179,7 +231,9 @@ where
             }
 
             // Restore only the channels that were actually mutated
-            for (ch, original) in rollback {
+            // Changed by DR-129 (R3): in reverse, as above.
+            // for (ch, original) in rollback {
+            for (ch, original) in rollback.into_iter().rev() {
                 channel_to_index_data.insert(ch, original);
             }
         }

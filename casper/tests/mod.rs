@@ -10,6 +10,7 @@ mod finalized_floor;
 mod fork_choice;
 mod genesis;
 mod helper;
+mod legacy_corpus;
 mod merging;
 mod multi_node;
 mod repeat_deploy;

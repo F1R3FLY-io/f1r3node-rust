@@ -12,6 +12,9 @@ use proptest::prelude::*;
 use rand::Rng;
 use tracing::warn;
 
+pub mod native_index;
+pub(crate) mod native_store;
+
 use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::hot_store_action::{
@@ -179,6 +182,35 @@ where
             })
             .collect()
     }
+}
+
+// Changed by D-C2c (D-S1, DR-96): a view of the digest-keyed store holds the
+// shared entry; a view of the legacy store keeps its shard snapshot.
+// /// A copy-free view of the cached data of one channel: an O(1) snapshot of
+// /// its persistent shard and the channel key. It holds no lock (C2, DR-82).
+// pub struct NativeDataView<C, A: Clone> {
+//     shard: imbl::HashMap<C, Vec<Datum<A>>>,
+//     channel: C,
+// }
+//
+// impl<C: Clone + Hash + Eq, A: Clone> NativeDataView<C, A> {
+//     pub fn values(&self) -> &[Datum<A>] {
+// self.shard.get(&self.channel).map_or(&[], Vec::as_slice) } }
+
+/// A copy-free view of the cached data of one channel. It holds no lock
+/// (C2, DR-82). It is the shared entry of the digest-keyed store (D-C2c,
+/// DR-96). Changed by DR-131 S6: the view of the legacy store's shard is
+/// deleted with the legacy native methods.
+pub struct NativeDataView<C, A: Clone> {
+    entry: Arc<native_index::NativeEntry<C, Vec<Datum<A>>>>,
+}
+
+impl<C, A: Clone> NativeDataView<C, A> {
+    fn from_entry(entry: Arc<native_index::NativeEntry<C, Vec<Datum<A>>>>) -> Self {
+        Self { entry }
+    }
+
+    pub fn values(&self) -> &[Datum<A>] { self.entry.value.as_slice() }
 }
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala

@@ -668,7 +668,7 @@ impl Validate {
                 Err(e) => return Either::Left(BlockError::from_validation_error(e)),
             };
             for pd in &block.body.deploys {
-                let sig = &pd.deploy.sig;
+                let sig = &prost::bytes::Bytes::copy_from_slice(pd.identity_bytes());
                 if !rejected.contains(sig) {
                     continue;
                 }
@@ -708,8 +708,8 @@ impl Validate {
             .body
             .deploys
             .iter()
-            .filter(|pd| !exempt.contains(&pd.deploy.sig))
-            .map(|pd| pd.deploy.sig.to_vec())
+            .filter(|pd| !exempt.contains(pd.identity_bytes()))
+            .map(|pd| pd.identity_bytes().to_vec())
             .collect();
         if deploy_key_set.is_empty() {
             return Either::Right(ValidBlock::Valid);
@@ -1160,7 +1160,7 @@ impl Validate {
         if b.body
             .deploys
             .iter()
-            .all(|deploy| deploy.deploy.data.shard_id == shard_id)
+            .all(|deploy| deploy.shard_id() == shard_id)
         {
             Either::Right(ValidBlock::Valid)
         } else {
@@ -1216,11 +1216,9 @@ impl Validate {
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
         // Check if block contains user deploys (non-system deploys)
-        let has_user_deploys = b
-            .body
-            .deploys
-            .iter()
-            .any(|pd| !is_system_deploy_id(&pd.deploy.sig));
+        let has_user_deploys = b.body.deploys.iter().any(|pd| {
+            !is_system_deploy_id(&prost::bytes::Bytes::copy_from_slice(pd.identity_bytes()))
+        });
         // Slash deploys are liveness-critical recovery actions and must not be blocked
         // by empty-block progress checks.
         let has_slash_system_deploys = b.body.system_deploys.iter().any(|system_deploy| {
@@ -1923,7 +1921,7 @@ impl Validate {
         if b.body
             .deploys
             .iter()
-            .all(|deploy| deploy.deploy.data.phlo_price >= min_phlo_price)
+            .all(|deploy| deploy.phlo_price() >= min_phlo_price)
         {
             Either::Right(ValidBlock::Valid)
         } else {

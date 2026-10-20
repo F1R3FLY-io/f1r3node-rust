@@ -146,6 +146,9 @@ mod tests {
     /// regression that lowered MAX_WRITE_BYTES would surface here.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d03_fs_write_at_max_bytes_succeeds() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"").unwrap();
         let runtime = create_runtime().await;
@@ -206,6 +209,9 @@ mod tests {
     /// FSERR_QUOTA_EXCEEDED.  Bounds the constant from below.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d03_fs_write_over_max_bytes_rejects() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"").unwrap();
         let runtime = create_runtime().await;

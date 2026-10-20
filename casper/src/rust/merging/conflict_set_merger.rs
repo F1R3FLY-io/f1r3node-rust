@@ -1672,13 +1672,15 @@ mod tests {
 
     fn datum_state_change(channel: &[u8], added: &[&[u8]], removed: &[&[u8]]) -> StateChange {
         use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
-        let sc = StateChange::empty();
-        sc.datums_changes
-            .insert(Blake2b256Hash(channel.to_vec()), ChannelChange {
-                added: added.iter().map(|d| d.to_vec()).collect(),
-                removed: removed.iter().map(|d| d.to_vec()).collect(),
-            });
-        sc
+        StateChange {
+            datums_changes: rspace_plus_plus::rspace::merger::state_change::FrozenMap::from_map([
+                (Blake2b256Hash(channel.to_vec()), ChannelChange {
+                    added: added.iter().map(|d| d.to_vec()).collect(),
+                    removed: removed.iter().map(|d| d.to_vec()).collect(),
+                }),
+            ]),
+            ..StateChange::empty()
+        }
     }
 
     #[test]

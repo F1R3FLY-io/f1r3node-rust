@@ -1,4 +1,5 @@
 pub mod dag;
+pub mod fallible_sort;
 pub mod grpc;
 pub mod hashable_set;
 pub mod metrics_constants;

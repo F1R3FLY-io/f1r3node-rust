@@ -21,6 +21,8 @@ pub fn vector_par(_locally_free: Vec<u8>, _connective_used: bool) -> Par {
         conditionals: Vec::new(),
         locally_free: _locally_free,
         connective_used: _connective_used,
+        cost_signed_terms: Vec::new(),
+        cost_stacks: Vec::new(),
     }
 }
 
@@ -115,6 +117,12 @@ pub fn concatenate_pars(p: Par, that: Par) -> Par {
             .into_iter()
             .chain(p.conditionals)
             .collect(),
+        cost_signed_terms: that
+            .cost_signed_terms
+            .into_iter()
+            .chain(p.cost_signed_terms)
+            .collect(),
+        cost_stacks: that.cost_stacks.into_iter().chain(p.cost_stacks).collect(),
         locally_free: union(that.locally_free, p.locally_free),
         connective_used: that.connective_used || p.connective_used,
     }

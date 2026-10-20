@@ -304,7 +304,7 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
             if let Err(err) = this.runtime_manager.get_or_compute_block_index(
                 &block.block_hash,
                 proto_util::block_number(block),
-                &block.body.deploys,
+                &crate::rust::util::proto_util::deploys(block),
                 &block.body.system_deploys,
                 &Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash),
                 &Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash),

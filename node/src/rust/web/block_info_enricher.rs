@@ -442,6 +442,7 @@ mod tests {
                 ret_unforg_for_data,
             ],
             random_state: vec![],
+            ..Default::default()
         };
 
         ReportCommProto {

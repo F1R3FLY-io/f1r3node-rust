@@ -1455,7 +1455,7 @@ impl RuntimeManager {
         let computed_post_state = self
             .replay_compute_state(
                 &block.body.state.pre_state_hash,
-                block.body.deploys.clone(),
+                crate::rust::util::proto_util::deploys(block),
                 block.body.system_deploys.clone(),
                 &block_data,
                 Some(invalid_blocks),

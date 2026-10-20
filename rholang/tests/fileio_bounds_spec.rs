@@ -116,6 +116,9 @@ mod tests {
     /// available count).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d03_fs_read_at_max_bytes_succeeds() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"hi").unwrap();
         let runtime = create_runtime().await;
@@ -159,6 +162,9 @@ mod tests {
     /// (before any actual read).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d03_fs_read_over_max_bytes_rejects() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"hi").unwrap();
         let runtime = create_runtime().await;

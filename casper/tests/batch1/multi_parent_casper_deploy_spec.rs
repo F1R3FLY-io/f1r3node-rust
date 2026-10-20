@@ -258,7 +258,7 @@ async fn multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos(
         "Block should have at least one deploy"
     );
     assert!(
-        block.body.deploys[0].is_failed,
+        block.body.deploys[0].is_failed(),
         "Deploy should be marked as failed due to insufficient phlos"
     );
 }
@@ -295,7 +295,7 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
         "Block should have at least one deploy"
     );
     assert!(
-        !block.body.deploys[0].is_failed,
+        !block.body.deploys[0].is_failed(),
         "Deploy should succeed with sufficient phlos"
     );
 }

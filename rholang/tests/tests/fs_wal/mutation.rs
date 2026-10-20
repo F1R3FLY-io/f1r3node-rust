@@ -12,6 +12,9 @@ use super::*;
 /// payload_ref is `Hash(blake2b256(payload))`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn write_on_consensus_cap_appends_wal_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data.bin");
     std::fs::write(&path, b"").unwrap();
@@ -89,6 +92,9 @@ async fn write_on_consensus_cap_appends_wal_entry() {
 /// there's no hash to key off of).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_write_persists_bytes_to_attached_payload_store() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -176,6 +182,9 @@ async fn consensus_write_persists_bytes_to_attached_payload_store() {
 /// observer nodes hit this path).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_write_without_payload_store_still_journals() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data.bin");
     std::fs::write(&path, b"").unwrap();
@@ -227,6 +236,9 @@ async fn consensus_write_without_payload_store_still_journals() {
 /// consensus with peers whose disks are still healthy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn persist_error_does_not_abort_consensus_write() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use std::sync::{Arc, Mutex};
 
     use rholang::rust::interpreter::io::wal::PayloadPersistence;
@@ -399,6 +411,9 @@ async fn write_on_oracular_cap_does_not_append_wal() {
 /// offset populated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn write_at_on_consensus_cap_appends_write_at_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data.bin");
     std::fs::write(&path, vec![0u8; 100]).unwrap();
@@ -439,6 +454,9 @@ async fn write_at_on_consensus_cap_appends_write_at_entry() {
 /// = new length.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn truncate_on_consensus_cap_appends_truncate_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data.bin");
     std::fs::write(&path, vec![0u8; 100]).unwrap();
@@ -479,6 +497,9 @@ async fn truncate_on_consensus_cap_appends_truncate_entry() {
 /// Multiple mutations produce WAL entries in insertion order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multiple_mutations_append_in_order() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data.bin");
     std::fs::write(&path, vec![0u8; 100]).unwrap();
@@ -532,6 +553,9 @@ async fn multiple_mutations_append_in_order() {
 /// Consensus caps produce WAL entries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn only_consensus_caps_produce_wal_entries() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let path_orc = dir.path().join("orc.bin");
     let path_con = dir.path().join("con.bin");
@@ -626,6 +650,9 @@ async fn failed_write_does_not_append_wal_entry() {
 /// established pattern; see the top-level module doc).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_consensus_write_appends_wal_entry_marked_failure() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.bin");
     std::fs::write(&path, b"existing").unwrap();
@@ -2012,6 +2039,9 @@ async fn consensus_fs_chmod_reexecute_changes_follower_file_mode() {
 /// fresh err vs cached ok → CONSENSUS_DIVERGENCE fires.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_fs_chmod_reexecute_detects_divergence() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use std::os::unix::fs::PermissionsExt;
 
     use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
@@ -2287,6 +2317,9 @@ async fn consensus_fs_remove_file_reexecute_removes_follower_file() {
 /// vs cached [true] → CONSENSUS_DIVERGENCE fires.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_fs_remove_file_reexecute_detects_divergence() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
 
     let dir = tempfile::tempdir().unwrap();
@@ -2553,6 +2586,9 @@ async fn consensus_fs_rename_reexecute_renames_follower_file() {
 /// err vs cached [true] → CONSENSUS_DIVERGENCE fires.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_fs_rename_reexecute_detects_divergence() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
 
     let dir = tempfile::tempdir().unwrap();
@@ -2825,6 +2861,9 @@ async fn consensus_fs_copy_file_reexecute_copies_to_follower_file() {
 /// where verify was hashing only the boolean portion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_fs_copy_file_reexecute_detects_byte_count_divergence() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
 
     let dir = tempfile::tempdir().unwrap();
@@ -3486,6 +3525,9 @@ async fn consensus_fs_remove_dir_recursive_symmetric_syscall_error_finalizes_to_
 /// H-29-3 slice 1 — Consensus fs_chmod journals a Chmod entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chmod_on_consensus_appends_wal_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.bin"), b"x").unwrap();
     let runtime = create_runtime().await;
@@ -3591,6 +3633,9 @@ async fn chmod_wal_is_byte_identical_on_leader_and_follower() {
 /// RemoveFile entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remove_file_on_consensus_appends_wal_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("victim.bin"), b"").unwrap();
     let runtime = create_runtime().await;
@@ -3624,6 +3669,9 @@ async fn remove_file_on_consensus_appends_wal_entry() {
 /// with `path` = from-canon-path and `extra_path` = to-canon-path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rename_on_consensus_appends_wal_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.bin"), b"").unwrap();
     let runtime = create_runtime().await;
@@ -3662,6 +3710,9 @@ async fn rename_on_consensus_appends_wal_entry() {
 /// entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn copy_file_on_consensus_appends_wal_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("src.bin"), b"payload").unwrap();
     let runtime = create_runtime().await;
@@ -3716,6 +3767,9 @@ async fn copy_file_on_consensus_appends_wal_entry() {
 /// divergent on-disk uids while their WALs stayed byte-identical.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chown_on_consensus_rejects_with_fserr_unsupported() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.bin"), b"").unwrap();
     let runtime = create_runtime().await;
@@ -3804,6 +3858,9 @@ async fn chown_on_consensus_rejects_with_fserr_unsupported() {
 /// pins the [true] reply shape) — this pin adds the WAL invariant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chown_on_oracular_does_not_journal() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.bin"), b"").unwrap();
     let runtime = create_runtime().await;
@@ -4204,6 +4261,9 @@ async fn recursive_remove_dir_wal_is_byte_identical_on_leader_and_follower() {
 /// a nonexistent path so the syscall reliably fails with ENOENT.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_remove_file_on_consensus_appends_failure_entry() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let runtime = create_runtime().await;
     let term = format!(
@@ -4284,6 +4344,9 @@ async fn failed_remove_file_on_consensus_appends_failure_entry() {
 /// WriteAt.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pb_m_14_file_state_identity_via_wal_replay() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     // Two dirs with IDENTICAL base contents at IDENTICAL relative
     // paths.  The leader mutates leader_dir; the applier
     // reconstructs the same state on follower_dir purely from the
@@ -4457,6 +4520,9 @@ async fn pb_m_14_file_state_identity_via_wal_replay() {
 ///   sequential Write records wrong offset → byte divergence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pb_m_14_file_state_identity_sequential_write() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let leader_dir = tempfile::tempdir().unwrap();
     let follower_dir = tempfile::tempdir().unwrap();
     // Base file: 64 zero bytes.  Sequential writes will land

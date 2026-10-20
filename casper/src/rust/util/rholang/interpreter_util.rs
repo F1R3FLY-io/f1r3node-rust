@@ -453,7 +453,9 @@ pub async fn validate_block_checkpoint(
                 // Find duplicates across all deploy sigs in the block
                 let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
                 for pd in &block.body.deploys {
-                    *sig_counts.entry(pd.deploy.sig.clone()).or_insert(0) += 1;
+                    *sig_counts
+                        .entry(prost::bytes::Bytes::copy_from_slice(pd.identity_bytes()))
+                        .or_insert(0) += 1;
                 }
                 for rd in &block.body.rejected_deploys {
                     *sig_counts.entry(rd.sig.clone()).or_insert(0) += 1;
@@ -1330,7 +1332,7 @@ pub async fn compute_parents_post_state(
                 let block_index = crate::rust::merging::block_index::new(
                     &b.block_hash,
                     b.body.state.block_number,
-                    &b.body.deploys,
+                    &crate::rust::util::proto_util::deploys(&b),
                     &b.body.system_deploys,
                     &Blake2b256Hash::from_bytes_prost(pre_state),
                     &Blake2b256Hash::from_bytes_prost(post_state),
@@ -2008,19 +2010,21 @@ pub async fn compute_parents_post_state(
                                     continue;
                                 }
                                 for pd in &block.body.deploys {
-                                    if sig_set.contains(&pd.deploy.sig) {
+                                    if sig_set.contains(pd.identity_bytes()) {
                                         tracing::info!(
                                             target: "f1r3fly.casper.deploy_lifecycle",
                                             event = "buffer_candidate",
-                                            deploy_sig = %hex::encode(&pd.deploy.sig),
+                                            deploy_sig = %hex::encode(pd.identity_bytes()),
                                             carrier = %hex::encode(&src_block),
                                             carrier_block = block.body.state.block_number,
                                             valid_after_block =
-                                                pd.deploy.data.valid_after_block_number,
+                                                pd.valid_after_block_number(),
                                             floor_block = floor_block_number,
                                             "deploy lifecycle"
                                         );
-                                        deploys_to_buffer.push(pd.deploy.clone());
+                                        if let Some(legacy) = pd.as_legacy() {
+                                            deploys_to_buffer.push(legacy.deploy.clone());
+                                        }
                                     }
                                 }
                             }
@@ -2497,7 +2501,7 @@ mod backstop_tests {
                 for pd in &block.body.deploys {
                     super::note_inclusion(
                         &mut dispositions,
-                        pd.deploy.sig.clone(),
+                        prost::bytes::Bytes::copy_from_slice(pd.identity_bytes()),
                         bn,
                         &hash,
                         &block.sender,
@@ -2552,7 +2556,7 @@ mod backstop_tests {
                 let block = block_store.get(hash).expect("read").expect("held");
                 let bn = block.body.state.block_number;
                 for pd in &block.body.deploys {
-                    if pd.deploy.sig == *sig {
+                    if pd.identity_bytes() == &sig[..] {
                         super::record_disposition(&mut disposition, sig.clone(), bn, true);
                     }
                 }

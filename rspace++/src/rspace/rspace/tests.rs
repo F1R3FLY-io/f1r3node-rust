@@ -6,10 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::rspace::r#match::Match;
+use crate::rspace::operation_context::{self, OperationOrder};
 use crate::rspace::rspace_interface::ISpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::trace::event::{Event, IOEvent};
+
+mod checkpoint_failure_tests;
+// Added by DR-129 (M34): F1-F3 and F7 of the random-order restoration.
+mod random_candidate_order_tests;
 
 // ── minimal types ─────────────────────────────────────────────────────────
 
@@ -29,6 +34,98 @@ async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+fn order(step: u64) -> OperationOrder {
+    OperationOrder {
+        session: [9; 32],
+        path: vec![(step, 0)].into(),
+    }
+}
+
+#[tokio::test]
+async fn ordered_event_log_uses_causal_order_instead_of_arrival_order() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(2),
+        rspace.produce("later".to_string(), "two".to_string(), false),
+    )
+    .await
+    .unwrap();
+    operation_context::scope(
+        order(1),
+        rspace.produce("earlier".to_string(), "one".to_string(), false),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rspace.take_event_log().await, vec![
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"earlier".to_string(),
+            &"one".to_string(),
+            false,
+        ))),
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"later".to_string(),
+            &"two".to_string(),
+            false,
+        ))),
+    ]);
+}
+
+#[tokio::test]
+async fn soft_checkpoint_preserves_and_reverts_canonical_event_order() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(3),
+        rspace.produce("third".to_string(), "three".to_string(), false),
+    )
+    .await
+    .unwrap();
+    operation_context::scope(
+        order(1),
+        rspace.produce("first".to_string(), "one".to_string(), false),
+    )
+    .await
+    .unwrap();
+
+    let checkpoint = rspace.create_soft_checkpoint().await;
+    let expected = checkpoint.log.clone();
+    assert_eq!(expected, vec![
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"first".to_string(),
+            &"one".to_string(),
+            false,
+        ))),
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"third".to_string(),
+            &"three".to_string(),
+            false,
+        ))),
+    ]);
+    rspace.revert_to_soft_checkpoint(checkpoint).await.unwrap();
+    assert_eq!(rspace.take_event_log().await, expected);
+}
+
+#[tokio::test]
+async fn produce_metadata_updates_reach_causally_ordered_events() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(1),
+        rspace.produce("service".to_string(), "request".to_string(), false),
+    )
+    .await
+    .unwrap();
+    let updated = Produce::create(&"service".to_string(), &"request".to_string(), false)
+        .mark_as_non_deterministic(vec![b"response".to_vec()]);
+    rspace.update_produce(updated).await;
+
+    let log = rspace.take_event_log().await;
+    let Event::IoEvent(IOEvent::Produce(produce)) = &log[0] else {
+        panic!("expected produce event")
+    };
+    assert!(!produce.is_deterministic);
+    assert_eq!(produce.output_value, vec![b"response".to_vec()]);
 }
 
 // Measures contention on the event_log mutex while N concurrent tasks call
@@ -473,4 +570,53 @@ async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
          ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops x2 calls/op — see issue \
          #50"
     );
+}
+
+/// Changed by DR-131 S6: the test was
+/// `checkpoint_root_unchanged_by_uncached_read`. The uncached read went with
+/// host work (DU-8), and the settlement reads use `get_data`, which fills the
+/// store. The test keeps its checks for that read: the read exports its
+/// fills, and a checkpoint keeps the root, also after a write and on the
+/// replay space.
+#[tokio::test]
+async fn checkpoint_root_unchanged_by_filling_read() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.expect("in-memory stores");
+    let (play, replay) = RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch)))
+        .expect("play and replay spaces");
+    let data_channel = "history-data".to_string();
+    let empty_channel = "history-empty".to_string();
+    for index in 0..5 {
+        play.produce(data_channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .expect("produce");
+    }
+    let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+    play.reset(&root).await.expect("reset to the root");
+    play.get_data(&data_channel).await;
+    play.get_data(&empty_channel).await;
+    assert!(!play.get_store().changes().is_empty(), "the read fills the store");
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, root);
+
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    let written_root = play.create_checkpoint().await.expect("checkpoint").root;
+    assert_ne!(written_root, root);
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    for channel in [&data_channel, &empty_channel] {
+        play.get_data(channel).await;
+    }
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, written_root);
+
+    replay.reset(&root).await.expect("reset to the root");
+    for channel in [&data_channel, &empty_channel, &data_channel] {
+        replay.get_data(channel).await;
+    }
+    assert_eq!(replay.create_checkpoint().await.expect("checkpoint").root, root);
 }

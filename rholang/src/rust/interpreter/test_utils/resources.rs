@@ -51,6 +51,9 @@ where
     F: FnOnce(RhoRuntimeImpl) -> Fut,
     Fut: Future<Output = R>,
 {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let temp_dir = Builder::new()
         .prefix(prefix)
         .tempdir()
@@ -140,6 +143,9 @@ pub async fn create_runtimes_with_services(
         >,
     >,
 ) {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let hrstores =
         RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
             stores,

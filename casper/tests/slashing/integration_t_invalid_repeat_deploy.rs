@@ -82,7 +82,11 @@ async fn integration_t_invalid_repeat_deploy() {
         system_deploy_error: None,
     };
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {
-        b.body.deploys = vec![d1_processed];
+        b.body.deploys = vec![
+            models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy(
+                d1_processed,
+            ),
+        ];
     })
     .await
     .expect("propose_with_block_mutation");

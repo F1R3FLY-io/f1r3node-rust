@@ -11,10 +11,13 @@ use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::{Byte, ByteVector};
 
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
-use crate::rspace::errors::RadixTreeError;
+use crate::rspace::errors::{RSpaceError, RadixTreeError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::Either;
 use crate::rspace::history::history_action::HistoryActionTrait;
+
+mod native;
+pub(crate) use native::NativeRadixBuilder;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub enum Item {
@@ -249,26 +252,19 @@ pub fn decode(bv: ByteVector) -> Node {
 }
 
 fn common_prefix(b1: ByteVector, b2: ByteVector) -> (ByteVector, ByteVector, ByteVector) {
-    fn go(
-        common: ByteVector,
-        l: ByteVector,
-        r: ByteVector,
-    ) -> (ByteVector, ByteVector, ByteVector) {
-        if r.is_empty() || l.is_empty() {
-            (common, l, r)
-        } else {
-            let (l_head, l_tail) = l.split_first().unwrap();
-            let (r_head, r_tail) = r.split_first().unwrap();
-            if l_head == r_head {
-                let mut new_common = common.clone();
-                new_common.push(*l_head);
-                go(new_common, l_tail.to_vec(), r_tail.to_vec())
-            } else {
-                (common, l, r)
-            }
-        }
+    let length = b1
+        .iter()
+        .zip(&b2)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if length == 0 {
+        return (Vec::new(), b1, b2);
     }
-    go(Vec::new(), b1, b2)
+    let mut common = b1;
+    let left = common.split_off(length);
+    let mut right = b2;
+    let right = right.split_off(length);
+    (common, left, right)
 }
 
 pub fn hash_node(node: &Node) -> (ByteVector, ByteVector) {
@@ -960,6 +956,34 @@ impl RadixTreeImpl {
         node_bytes_hash
     }
 
+    pub(crate) fn save_native_root(&self, node: &Node) -> Result<ByteVector, RSpaceError> {
+        for item in node {
+            let (prefix, payload) = match item {
+                Item::EmptyItem => continue,
+                Item::Leaf { prefix, value } => (prefix, value),
+                Item::NodePtr { prefix, ptr } => (prefix, ptr),
+            };
+            if prefix.len() > 127 || payload.len() != DEF_SIZE {
+                return Err(RadixTreeError::SerializationError(
+                    "invalid native radix node".to_owned(),
+                )
+                .into());
+            }
+        }
+        let (key, bytes) = hash_node(node);
+        if let Some(existing) = self.cache_r.get(&key) {
+            if existing.value().as_ref() != node {
+                return Err(RadixTreeError::CollisionError(format!(
+                    "Radix Tree - Collision in cache: record with key = {} has already existed.",
+                    hex::encode(&key)
+                ))
+                .into());
+            }
+        }
+        self.cache_w.insert(key.clone(), bytes);
+        Ok(key)
+    }
+
     /**
      * Save all [[cacheW]] to [[store]]
      *
@@ -1028,6 +1052,40 @@ impl RadixTreeImpl {
             .collect();
 
         Ok(kv_absent)
+    }
+
+    pub(crate) fn prepare_native_commit(
+        &self,
+    ) -> Result<Vec<(ByteVector, ByteVector)>, RSpaceError> {
+        let mut writes = Vec::with_capacity(self.cache_w.len());
+        for entry in self.cache_w.iter() {
+            let key = entry.key();
+            let value = entry.value();
+            let mut present = false;
+            let mut collision = false;
+            self.store.with_value(key, &mut |existing| {
+                if let Some(existing) = existing {
+                    present = true;
+                    collision = existing != value.as_slice();
+                }
+                Ok(())
+            })?;
+            if collision {
+                return Err(RadixTreeError::CollisionError(format!(
+                    "1 collisions in KVDB (first collision with key = {}.",
+                    hex::encode(key)
+                ))
+                .into());
+            }
+            if !present {
+                writes.push((key.clone(), value.clone()));
+            }
+        }
+        Ok(writes)
+    }
+
+    pub fn prepare_commit(&self) -> Result<Vec<(ByteVector, ByteVector)>, RadixTreeError> {
+        self.pending_writes()
     }
 
     /**
@@ -1652,5 +1710,113 @@ impl RadixTreeImpl {
             }
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod native_commit_tests {
+    use std::sync::Arc;
+
+    use shared::rust::store::key_value_store::KeyValueStore;
+
+    use super::{Item, RadixTreeImpl, common_prefix, empty_node, hash_node};
+    use crate::rspace::errors::{RSpaceError, RadixTreeError};
+    use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    #[test]
+    fn prepared_writes_reject_collisions_before_publication() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let tree = RadixTreeImpl::new(store.clone());
+        let node = empty_node();
+        let (key, value) = hash_node(&node);
+        assert_eq!(tree.save_node(node), key);
+        assert_eq!(tree.prepare_commit().unwrap(), vec![(key.clone(), value.clone())]);
+        assert_eq!(store.get_one(&key).unwrap(), None);
+        assert_eq!(
+            tree.prepare_native_commit()
+                .expect("native commit preparation"),
+            vec![(key.clone(), value.clone())]
+        );
+        assert_eq!(store.get_one(&key).unwrap(), None);
+
+        store.put_one(key.clone(), vec![1]).unwrap();
+        assert!(matches!(tree.prepare_commit(), Err(RadixTreeError::CollisionError(_))));
+        assert!(matches!(
+            tree.prepare_native_commit(),
+            Err(RSpaceError::RadixTreeError(RadixTreeError::CollisionError(_)))
+        ));
+        assert_eq!(store.get_one(&key).unwrap(), Some(vec![1]));
+
+        store.put_one(key.clone(), value).unwrap();
+        assert!(tree.prepare_commit().unwrap().is_empty());
+        assert!(
+            tree.prepare_native_commit()
+                .expect("native commit preparation")
+                .is_empty()
+        );
+    }
+
+    /// Changed by DR-131 S6: the native root save no longer reserves host
+    /// work before the hash and the cache growth. The test keeps its checks
+    /// that the save returns the node's key and stages one write without
+    /// publishing it.
+    #[test]
+    fn native_root_save_stages_one_write_without_publication() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let node = empty_node();
+        let (expected, _) = hash_node(&node);
+        let tree = RadixTreeImpl::new(store.clone());
+        assert_eq!(tree.save_native_root(&node).expect("native root save"), expected);
+        assert_eq!(
+            tree.prepare_native_commit()
+                .expect("native commit preparation")
+                .len(),
+            1
+        );
+        assert_eq!(store.get_one(&expected).expect("history store read"), None);
+    }
+
+    #[test]
+    fn compaction_preserves_leaf_pointer_and_branch_shapes() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let tree = RadixTreeImpl::new(store);
+        assert_eq!(tree.save_node_and_create_item(empty_node(), vec![9], true), Item::EmptyItem);
+
+        let mut one = empty_node();
+        one[7] = Item::Leaf {
+            prefix: vec![8],
+            value: vec![1; 32],
+        };
+        assert_eq!(tree.save_node_and_create_item(one, vec![9], true), Item::Leaf {
+            prefix: vec![9, 7, 8],
+            value: vec![1; 32],
+        });
+
+        let mut branch = empty_node();
+        branch[7] = Item::Leaf {
+            prefix: vec![],
+            value: vec![1; 32],
+        };
+        branch[8] = Item::Leaf {
+            prefix: vec![],
+            value: vec![2; 32],
+        };
+        let (expected, _) = hash_node(&branch);
+        assert_eq!(tree.save_node_and_create_item(branch, vec![9], true), Item::NodePtr {
+            prefix: vec![9],
+            ptr: expected,
+        });
+    }
+
+    #[test]
+    fn prefix_splits_preserve_common_and_unmatched_bytes() {
+        assert_eq!(common_prefix(vec![], vec![1]), (vec![], vec![], vec![1]));
+        assert_eq!(common_prefix(vec![1], vec![2]), (vec![], vec![1], vec![2]));
+        assert_eq!(common_prefix(vec![1, 2], vec![1, 2]), (vec![1, 2], vec![], vec![]));
+        assert_eq!(
+            common_prefix(vec![1, 2, 3], vec![1, 2, 4, 5]),
+            (vec![1, 2], vec![3], vec![4, 5])
+        );
+        assert_eq!(common_prefix(vec![1, 2], vec![1, 2, 3]), (vec![1, 2], vec![], vec![3]));
     }
 }

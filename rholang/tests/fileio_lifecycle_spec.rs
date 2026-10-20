@@ -84,6 +84,9 @@ mod tests {
     /// unrelated file.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn deploy_error_rollback_sweeps_post_checkpoint_fds() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("pre.bin"), b"pre").unwrap();
         std::fs::write(dir.path().join("post.bin"), b"post").unwrap();
@@ -200,6 +203,9 @@ mod tests {
     /// pin (or both) depending on which slot the refactor picks.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn nested_soft_checkpoints_preserve_outer_fd_snapshot() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.bin"), b"a").unwrap();
         std::fs::write(dir.path().join("b.bin"), b"b").unwrap();
@@ -277,6 +283,9 @@ mod tests {
     /// post-reset and confirms it survives the unbalanced revert.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reset_clears_dir_fs_snapshot_stack() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut runtime = create_runtime().await;
@@ -331,6 +340,9 @@ mod tests {
     /// exercises the dir stack path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn unbalanced_dir_revert_without_matching_create_is_no_op() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut runtime = create_runtime().await;
@@ -433,6 +445,9 @@ mod tests {
     /// and works here as a cheap cap-filler).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn dir_handle_table_cap_surfaces_fserr_quota_exceeded_at_handler_boundary() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         use rholang::rust::interpreter::io::dir_handle_table::DirHandle;
         use rholang::rust::interpreter::io::{ConsensusMode, MAX_OPEN_FDS};
 

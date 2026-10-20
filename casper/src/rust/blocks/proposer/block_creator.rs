@@ -20,7 +20,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    ProcessedSystemDeploy, ProcessedUserDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -1647,7 +1647,9 @@ fn collect_branch_user_deploy_sigs(
             .unwrap_or(false);
         if !excluded {
             for deploy in &block.body.deploys {
-                sigs.insert(deploy.deploy.sig.clone());
+                sigs.insert(prost::bytes::Bytes::copy_from_slice(
+                    deploy.identity_bytes(),
+                ));
             }
         }
 
@@ -1671,7 +1673,7 @@ fn classify_branch_deploy_info(
         .body
         .deploys
         .iter()
-        .map(|deploy| deploy.deploy.sig.clone())
+        .map(|deploy| prost::bytes::Bytes::copy_from_slice(deploy.identity_bytes()))
         .collect();
     let parent_frontier: Vec<BlockHash> = casper_snapshot
         .parents
@@ -3653,11 +3655,11 @@ pub async fn create_with_progress(
         tracing::info!(
             target: "f1r3fly.casper.deploy_lifecycle",
             event = "carrier_created",
-            deploy_sig = %hex::encode(&processed.deploy.sig),
+            deploy_sig = %hex::encode(processed.identity_bytes()),
             block_hash = %hex::encode(&signed_block.block_hash),
             block_number = signed_block.body.state.block_number,
             sender = %hex::encode(&signed_block.sender),
-            failed = processed.is_failed,
+            failed = processed.is_failed(),
             parents = ?signed_block.header.parents_hash_list.iter().map(hex::encode).collect::<Vec<_>>(),
             "deploy lifecycle"
         );
@@ -3747,7 +3749,10 @@ fn package_block(
 
     let body = Body {
         state,
-        deploys,
+        deploys: deploys
+            .into_iter()
+            .map(ProcessedUserDeploy::Legacy)
+            .collect(),
         rejected_deploys,
         system_deploys,
         extra_bytes: Bytes::new(),

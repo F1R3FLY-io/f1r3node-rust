@@ -15,8 +15,9 @@ use models::rust::utils::{new_boundvar_par, new_freevar_var, new_gstring_par};
 use rand::seq::IndexedRandom;
 use rand::Rng;
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::CostManager;
+use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 use rholang::rust::interpreter::util::prepend_connective;
 use rspace_plus_plus::rspace::history::Either;
@@ -27,9 +28,10 @@ fn env() -> Env<Par> { Env::new() }
 
 fn substitute_instance() -> Substitute {
     let cost = Cost::create(0, "substitute_test".to_string());
-    let cost_manager = CostManager::new(cost);
-
-    Substitute { cost: cost_manager }
+    let budget = RuntimeBudget::new(cost);
+    Substitute {
+        metering: MeteredMachine::new(budget),
+    }
 }
 
 fn generate_random_subsequence<T: Clone>(items: &[T]) -> Vec<T> {

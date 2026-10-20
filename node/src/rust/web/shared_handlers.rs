@@ -398,7 +398,15 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         | OperatorNotDefined { .. }
         | OperatorExpectedError { .. }
         | SubstituteError(_)
-        | SortMatchError(_) => (
+        | SortMatchError(_)
+        | SignedLimitExhausted
+        | SystemProcessShapeError(_)
+        | DivisionByZero(_)
+        | ArithmeticOverflow(_)
+        | ArgumentOutOfRange(_)
+        | BundlePermissionError(_)
+        | ValueTypeError(_)
+        | TermStructureError(_) => (
             S::UNPROCESSABLE_ENTITY,
             "rholang_execution_error",
             ie.to_string(),

@@ -90,7 +90,10 @@ fn inject_post_state_hash(
 ) -> Result<(), CasperError> {
     let mut updated_block = block.clone();
     updated_block.body.state.post_state_hash = post_state_hash;
-    updated_block.body.deploys = processed_deploys;
+    updated_block.body.deploys = processed_deploys
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_store.put(block.block_hash.clone(), &updated_block)?;
     block_dag_storage.insert(
         &updated_block,

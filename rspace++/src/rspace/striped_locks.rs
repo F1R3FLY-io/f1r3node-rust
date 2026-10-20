@@ -11,6 +11,8 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
+pub(crate) mod native;
+
 pub(crate) const NUM_LOCK_STRIPES: usize = 4096;
 
 pub(crate) struct HeldLock {

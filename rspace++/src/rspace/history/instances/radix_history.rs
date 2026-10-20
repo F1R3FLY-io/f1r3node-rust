@@ -7,16 +7,18 @@ use std::sync::Arc;
 use shared::rust::ByteVector;
 use shared::rust::store::key_value_store::KeyValueStore;
 
-use crate::rspace::errors::HistoryError;
+use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::history::history::{History, StagedHistory};
+use crate::rspace::history::history::{History, NativePreparedHistory, StagedHistory};
 use crate::rspace::history::history_action::{HistoryAction, HistoryActionTrait};
-use crate::rspace::history::radix_tree::{Node, RadixTreeImpl, empty_node, hash_node};
+use crate::rspace::history::radix_tree::{
+    NativeRadixBuilder, Node, RadixTreeImpl, empty_node, hash_node,
+};
 
 pub struct RadixHistory {
     root_hash: Blake2b256Hash,
     root_node: Node,
-    imple: RadixTreeImpl,
+    imple: Arc<RadixTreeImpl>,
     store: Arc<dyn KeyValueStore>,
 }
 
@@ -25,7 +27,7 @@ impl RadixHistory {
         root: Blake2b256Hash,
         store: Arc<dyn KeyValueStore>,
     ) -> Result<RadixHistory, HistoryError> {
-        let imple = RadixTreeImpl::new(store.clone());
+        let imple = Arc::new(RadixTreeImpl::new(store.clone()));
         let node = imple.load_node(root.bytes(), Some(true))?;
 
         Ok(RadixHistory {
@@ -78,7 +80,7 @@ impl History for RadixHistory {
                 // Avoid cloning RadixTreeImpl caches into each checkpointed history instance.
                 // A fresh tree backed by the same store preserves correctness and reduces
                 // allocator pressure from DashMap clone paths.
-                let new_imple = RadixTreeImpl::new(self.store.clone());
+                let new_imple = Arc::new(RadixTreeImpl::new(self.store.clone()));
                 let new_history = RadixHistory {
                     root_hash,
                     root_node: new_root_node,
@@ -96,7 +98,7 @@ impl History for RadixHistory {
                 Box::new(RadixHistory {
                     root_hash: self.root_hash.clone(),
                     root_node: self.root_node.clone(),
-                    imple: RadixTreeImpl::new(self.store.clone()),
+                    imple: Arc::new(RadixTreeImpl::new(self.store.clone())),
                     store: self.store.clone(),
                 }),
                 Vec::new(),
@@ -104,10 +106,49 @@ impl History for RadixHistory {
         }
     }
 
-    fn root(&self) -> Blake2b256Hash { self.root_hash.clone() }
+    fn prepare_native(
+        &self,
+        actions: Vec<HistoryAction>,
+    ) -> Result<NativePreparedHistory, RSpaceError> {
+        if !self.has_no_duplicates(&actions) {
+            return Err(HistoryError::ActionError(
+                "Cannot process duplicate actions on one key.".to_string(),
+            )
+            .into());
+        }
+        let tree = RadixTreeImpl::new(self.store.clone());
+        let builder = NativeRadixBuilder::new(&tree);
+        let updated = builder.make_actions(&self.root_node, actions)?;
+        let Some(root_node) = updated else {
+            return Ok(NativePreparedHistory {
+                next: Box::new(RadixHistory {
+                    root_hash: self.root_hash.clone(),
+                    root_node: self.root_node.clone(),
+                    imple: Arc::new(RadixTreeImpl::new(self.store.clone())),
+                    store: self.store.clone(),
+                }),
+                store: self.store.clone(),
+                writes: Vec::new(),
+            });
+        };
+        let root_hash = Blake2b256Hash::from_bytes(tree.save_native_root(&root_node)?);
+        let writes = tree.prepare_native_commit()?;
+        Ok(NativePreparedHistory {
+            next: Box::new(RadixHistory {
+                root_hash,
+                root_node,
+                imple: Arc::new(RadixTreeImpl::new(self.store.clone())),
+                store: self.store.clone(),
+            }),
+            store: self.store.clone(),
+            writes,
+        })
+    }
+
+    fn root_ref(&self) -> &Blake2b256Hash { &self.root_hash }
 
     fn reset(&self, root: &Blake2b256Hash) -> Result<Box<dyn History>, HistoryError> {
-        let imple = RadixTreeImpl::new(self.store.clone());
+        let imple = Arc::new(RadixTreeImpl::new(self.store.clone()));
         let node = imple.load_node(root.bytes(), Some(true))?;
 
         Ok(Box::new(RadixHistory {
@@ -116,5 +157,14 @@ impl History for RadixHistory {
             imple,
             store: self.store.clone(),
         }))
+    }
+
+    fn snapshot_native(&self) -> Box<dyn History> {
+        Box::new(RadixHistory {
+            root_hash: self.root_hash.clone(),
+            root_node: self.root_node.clone(),
+            imple: Arc::clone(&self.imple),
+            store: Arc::clone(&self.store),
+        })
     }
 }

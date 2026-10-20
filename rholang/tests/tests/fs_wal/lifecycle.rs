@@ -58,6 +58,9 @@ async fn bad_cmode_open_produces_no_handle_no_wal() {
 /// `raw_fd` returns `Some` → assertion fires.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_fs_close_replay_releases_follower_shadow_fd() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("data.bin"), b"phase-2-close-release-pin").unwrap();
 
@@ -148,6 +151,9 @@ async fn consensus_fs_close_replay_releases_follower_shadow_fd() {
 /// divergence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_append_open_is_rejected() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("data.bin"), b"").unwrap();
     let runtime = create_runtime().await;

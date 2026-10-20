@@ -5,7 +5,7 @@ use std::hash::Hash;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use indexmap::IndexSet;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use rspace_plus_plus::rspace::errors::HistoryError;
@@ -23,6 +23,7 @@ use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use crate::rust::interpreter::accounting::authority::merge_authorities;
 use crate::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 
 pub struct RholangMergingLogic;
@@ -108,8 +109,9 @@ impl RholangMergingLogic {
         // None = channel doesn't exist yet (treat as 0); Err = invariant
         // violation (non-numeric or multi-value pre-state) — propagate so the
         // merge is rejected rather than silently substituting 0.
-        let init_num =
-            Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or_default();
+        let base_data = get_base_data(channel_hash)?;
+        let init_num = Self::convert_to_read_number(|_| Ok(base_data.clone()))(channel_hash)?
+            .unwrap_or_default();
         // Terminal apply that WRITES the merged number-channel value. Mirror the
         // vault rule in conflict_set_merger::cal_merged_result (range + `>= 0`):
         // a wrapping_add here could silently commit an overflowed/negative balance
@@ -123,16 +125,55 @@ impl RholangMergingLogic {
             ))
         })?;
 
+        let added = changes
+            .added
+            .iter()
+            .map(|bytes| {
+                bincode::deserialize::<Datum<ListParWithRandom>>(bytes).map_err(|error| {
+                    HistoryError::MergeError(format!("Invalid numeric merge datum: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let base_binary = base_data
+            .iter()
+            .map(serializers::encode_datum)
+            .collect::<Vec<_>>();
+        let retained_base = StateChange::multiset_diff(&base_binary, &changes.removed)
+            .iter()
+            .map(|bytes| {
+                bincode::deserialize::<Datum<ListParWithRandom>>(bytes).map_err(|error| {
+                    HistoryError::MergeError(format!("Invalid numeric merge base datum: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut authorities = Vec::new();
+        for datum in retained_base.iter().chain(&added) {
+            if datum.a.cost_stack.is_some() || Self::try_get_number_with_rnd(&datum.a).is_none() {
+                return Err(HistoryError::MergeError(
+                    "Numeric merge requires numeric data without a resource stack".to_string(),
+                ));
+            }
+            if let Some(authority) = &datum.a.cost_authority {
+                authorities.push(authority);
+            }
+        }
+        let cost_authority = if authorities.is_empty() {
+            None
+        } else {
+            Some(merge_authorities(authorities).map_err(|error| {
+                HistoryError::MergeError(format!("Invalid numeric merge authority: {error}"))
+            })?)
+        };
+
         // Calculate merged random generator (use only unique changes as input)
         let new_rnd = if changes.added.iter().collect::<HashSet<_>>().len() == 1 {
             // Single branch, just use available random generator
-            Self::decode_rnd(changes.added.first().unwrap().to_vec())
+            Blake2b512Random::from_bytes(&added[0].a.random_state)
         } else {
             // Multiple branches, merge random generators
-            let rnd_added_sorted = changes
-                .added
+            let rnd_added_sorted = added
                 .iter()
-                .map(|bytes| Self::decode_rnd(bytes.to_vec()))
+                .map(|datum| Blake2b512Random::from_bytes(&datum.a.random_state))
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .map(|rnd| (rnd.clone(), rnd.to_bytes()))
@@ -145,13 +186,24 @@ impl RholangMergingLogic {
             // Extract sorted random generators
             let sorted_rnds = sorted.into_iter().map(|(rnd, _)| rnd).collect::<Vec<_>>();
 
+            if sorted_rnds.len() < 2 {
+                return Err(HistoryError::MergeError(
+                    "Numeric merge requires one distinct datum or at least two distinct random states".to_string(),
+                ));
+            }
+
             // Merge the random generators
             Blake2b512Random::merge(sorted_rnds)
         };
 
         // Create final merged value
-        let datum_encoded =
-            Self::create_datum_encoded(channel_hash, &new_val, merge_type, new_rnd)?;
+        let datum_encoded = Self::create_datum_encoded(
+            channel_hash,
+            &new_val,
+            merge_type,
+            new_rnd,
+            cost_authority,
+        )?;
 
         // Create update store action
         Ok(HotStoreTrieAction::TrieInsertAction(
@@ -160,12 +212,6 @@ impl RholangMergingLogic {
                 data: vec![datum_encoded],
             }),
         ))
-    }
-
-    fn decode_rnd(par_with_rnd_encoded: Vec<u8>) -> Blake2b512Random {
-        let datum: Datum<ListParWithRandom> = serializers::decode_datum(&par_with_rnd_encoded);
-
-        Blake2b512Random::from_bytes(&datum.a.random_state)
     }
 
     /// §3c single-value-cell discriminator (RCA-asi-devnet-finality-halt).
@@ -271,6 +317,7 @@ impl RholangMergingLogic {
         num: &BigInt,
         merge_type: MergeType,
         rnd: Blake2b512Random,
+        cost_authority: Option<CostAuthority>,
     ) -> Result<Vec<u8>, HistoryError> {
         // Create value with random generator
         let num_par = match merge_type {
@@ -285,6 +332,8 @@ impl RholangMergingLogic {
         let par_with_rnd = ListParWithRandom {
             pars: vec![num_par],
             random_state: rnd.to_bytes(),
+            cost_authority,
+            cost_stack: None,
         };
 
         // Create hash of the data
@@ -361,6 +410,10 @@ pub struct NumberChannel {
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogicSpec.scala
 #[cfg(test)]
+#[path = "numeric_merge_accounting_tests.rs"]
+mod numeric_merge_accounting_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
@@ -372,6 +425,8 @@ mod tests {
         let lpwr = ListParWithRandom {
             pars: vec![RhoNumber::create_par(n)],
             random_state: vec![0u8; 32],
+            cost_authority: None,
+            cost_stack: None,
         };
         Datum::create(&"chan".to_string(), lpwr, false)
     }
@@ -381,6 +436,8 @@ mod tests {
         let lpwr = ListParWithRandom {
             pars: vec![RhoNumber::create_par(1), RhoNumber::create_par(2)],
             random_state: vec![0u8; 32],
+            cost_authority: None,
+            cost_stack: None,
         };
         Datum::create(&"chan".to_string(), lpwr, false)
     }
@@ -487,6 +544,8 @@ mod tests {
         let value = ListParWithRandom {
             pars: vec![leaf],
             random_state: vec![0u8; 32],
+            cost_authority: None,
+            cost_stack: None,
         };
         assert!(RholangMergingLogic::try_get_number_with_rnd(&value).is_none());
     }
@@ -657,6 +716,26 @@ mod tests {
         assert_eq!(result, vec![expected_map0]);
     }
 
+    #[test]
+    fn test_calculate_num_channel_diff_bitmask_round_trips_to_or_merge() {
+        let ch = "X".to_string();
+        let mt = MergeType::BitmaskOr;
+        let previous = BigInt::from(0b0001i64);
+        let current = BigInt::from(0b0100i64);
+        let mut init_values = HashMap::new();
+        init_values.insert(ch.clone(), previous.clone());
+
+        let mut map0 = BTreeMap::new();
+        map0.insert(ch.clone(), (current.clone(), mt));
+        let result = RholangMergingLogic::calculate_num_channel_diff(vec![map0], |k: &String| {
+            init_values.get(k).cloned()
+        });
+
+        let diff = result[0].get(&ch).cloned().unwrap().0;
+        assert_eq!(&previous | &diff, BigInt::from(0b0101));
+        assert_eq!(&previous | &diff, &previous | &current);
+    }
+
     // ---- Phase-7 W7.1/W7.2: checked apply + checked diff (fail loudly, never
     // launder an overflowed/negative number-channel value into consensus state) ----
 
@@ -673,6 +752,7 @@ mod tests {
             &BigInt::from(n),
             MergeType::BitmaskOr,
             test_rnd(),
+            None,
         )
         .unwrap();
         vec![serializers::decode_datum(&encoded)]
@@ -684,6 +764,7 @@ mod tests {
             n,
             MergeType::IntegerAdd,
             test_rnd(),
+            None,
         )
         .unwrap();
         vec![serializers::decode_datum(&encoded)]
@@ -698,6 +779,7 @@ mod tests {
             &BigInt::from(0),
             MergeType::IntegerAdd,
             test_rnd(),
+            None,
         )
         .unwrap();
         ChannelChange {
@@ -837,10 +919,12 @@ mod tests {
         let int_value = ListParWithRandom {
             pars: vec![RhoNumber::create_par(7)],
             random_state: vec![],
+            ..Default::default()
         };
         let bigint_value = ListParWithRandom {
             pars: vec![RhoBigInt::create_par(&BigInt::from(7))],
             random_state: vec![],
+            ..Default::default()
         };
         assert_eq!(
             RholangMergingLogic::number_merge_type(&int_value, MergeType::IntegerAdd),

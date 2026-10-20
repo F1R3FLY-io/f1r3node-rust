@@ -845,6 +845,7 @@ fn empty_repository_over(
     let past_roots = RootRepository {
         roots_store: Box::new(RootsStoreInstances::roots_store(roots_store.clone())),
     };
+    let node_store = history_store.clone();
     let empty_history =
         HistoryInstances::create(RadixHistory::empty_root_node_hash(), history_store.clone())
             .unwrap();
@@ -856,6 +857,7 @@ fn empty_repository_over(
         roots_repository: Arc::new(Mutex::new(past_roots)),
         checkpoint_writer,
         leaf_store: create_inmem_cold_store(),
+        node_store,
         rspace_exporter: Arc::new(EmptyExporter),
         rspace_importer: Arc::new(EmptyImporter),
         _marker: std::marker::PhantomData,

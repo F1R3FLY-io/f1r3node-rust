@@ -50,17 +50,17 @@ use models::rhoapi::Par;
 use crate::rust::interpreter::accounting::noop::Metering;
 use crate::rust::interpreter::contract_call::ContractCall;
 use crate::rust::interpreter::dispatch::RhoDispatch;
+use crate::rust::interpreter::execution_space::ExecutionSpace;
 use crate::rust::interpreter::io::handle_table::FileHandleTable;
 use crate::rust::interpreter::io::handler_trait::syscall_ctx::SyscallCtx;
 use crate::rust::interpreter::io::ConsensusMode;
-use crate::rust::interpreter::rho_runtime::RhoISpace;
 
 /// The per-runtime handler-dispatch surface.  See the module
 /// docstring for field roles and clone semantics.
 #[derive(Clone)]
 pub struct FsProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub handles: FileHandleTable,
     pub mode: ConsensusMode,
     pub metering: Arc<dyn Metering>,
@@ -72,7 +72,7 @@ impl FsProcesses {
     /// `rho_runtime::fs_handlers_to_definitions` (slice 5.31).
     pub fn new(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
+        space: ExecutionSpace,
         handles: FileHandleTable,
         mode: ConsensusMode,
         metering: Arc<dyn Metering>,
@@ -93,7 +93,7 @@ impl FsProcesses {
     /// field-wise.
     pub fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
+            space: self.space.clone().into(),
             dispatcher: self.dispatcher.clone(),
         }
     }

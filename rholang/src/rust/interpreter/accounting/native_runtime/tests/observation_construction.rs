@@ -1,0 +1,860 @@
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use prost::Message;
+use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
+use rspace_plus_plus::rspace::rspace_interface::{
+    RSpaceOperationCompletion, RSpaceOperationSource,
+};
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
+
+use super::*;
+use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
+use crate::rust::interpreter::accounting::native_phlo_rules::NativeBudgetReplayDecision;
+use crate::rust::interpreter::accounting::{
+    byte_accounting, observation_construction as build, IntroductionRecord,
+};
+
+fn unmeasured(authority: &models::rhoapi::CostAuthority) -> IntroductionRecord {
+    IntroductionRecord {
+        authority: authority.clone(),
+        measurement: None,
+    }
+}
+
+fn inputs(size: usize) -> (Par, ListParWithRandom, TaggedContinuation, COMM) {
+    let channel = Par::default();
+    let data = ListParWithRandom {
+        random_state: vec![7; size],
+        cost_authority: Some(authority(1)),
+        ..Default::default()
+    };
+    let continuation = TaggedContinuation {
+        cost_authority: Some(authority(1)),
+        ..Default::default()
+    };
+    let producer = Produce::create(&channel, &data, false);
+    let source = COMM {
+        consume: Consume::create(
+            &vec![channel.clone()],
+            &vec![BindPattern::default()],
+            &continuation,
+            false,
+        ),
+        produces: vec![producer.clone()],
+        peeks: Default::default(),
+        times_repeated: [(producer, 1)].into_iter().collect(),
+    };
+    (channel, data, continuation, source)
+}
+
+/// Changed by DR-131: the exhaustion half of this test went with host work.
+/// The test keeps its check that a cancelled transfer leaves no pending debit.
+#[test]
+fn native_stack_transfer_cancellation_leaves_no_pending_debit() {
+    let cost_authority = authority(1);
+    let cell = cost_authority.regions[0].signature.clone().unwrap();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+        .unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    let reservation = budget
+        .prepare_authority_stack_transfer([42; 32], vec![cell], &cost_authority)
+        .unwrap();
+    assert_eq!(
+        budget
+            .authority_state
+            .lock()
+            .unwrap()
+            .pending_stack_transfers
+            .len(),
+        1
+    );
+    drop(reservation);
+    let state = budget.authority_state.lock().unwrap();
+    assert!(state.pending_stack_transfers.is_empty());
+    assert!(state.pending_stack_event_ids.is_empty());
+    assert!(state.reserved.0.is_empty());
+    assert!(state.realized.0.is_empty());
+}
+
+/// Changed by DR-131: the rollback no longer follows a host-work rejection.
+/// The test keeps its check that the rollback clears the committed and the
+/// pending transfers.
+#[test]
+fn native_stack_rollback_clears_committed_and_pending_transfers() {
+    let cost_authority = authority(1);
+    let cell = cost_authority.regions[0].signature.clone().unwrap();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+        .unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    budget
+        .prepare_authority_stack_transfer([51; 32], vec![cell.clone()], &cost_authority)
+        .unwrap()
+        .commit();
+    let pending = budget
+        .prepare_authority_stack_transfer([52; 32], vec![cell], &cost_authority)
+        .unwrap();
+    budget.rollback_authority_stack_transfers().unwrap();
+    let state = budget.authority_state.lock().unwrap();
+    assert!(state.pending_stack_transfers.is_empty());
+    assert!(state.pending_stack_event_ids.is_empty());
+    assert!(state.stack_births.is_empty());
+    assert!(state.events.is_empty());
+    assert!(state.reserved.0.is_empty());
+    assert!(state.realized.0.is_empty());
+    drop(state);
+    drop(pending);
+}
+
+#[test]
+fn native_observation_construction_keeps_introduction_and_payload_authorities_separate() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+        .unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    let (channel, data, continuation, comm) = inputs(17);
+    let introduction_authority = authority(3);
+    let producer = &comm.produces[0];
+    let event_id = byte_accounting::produce_introduction_identity(producer);
+    budget
+        .register_introduction_authority(
+            event_id,
+            AuthorityByteEventKind::ProduceIntroduction,
+            &introduction_authority,
+        )
+        .unwrap();
+    let resolved = budget
+        .introduction_authority(event_id, AuthorityByteEventKind::ProduceIntroduction)
+        .unwrap();
+    let before_rows = budget.byte_observations();
+    let before_usage = budget.native_phlo_usage();
+    let before_registry = budget.introduction_authorities.lock().unwrap().clone();
+    let expected = build::produce_introduction(producer, &channel, &data, &resolved)
+        .unwrap()
+        .into_native()
+        .unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            build::produce_introduction(producer, &channel, &data, &resolved)
+                .unwrap()
+                .into_native()
+                .unwrap(),
+            expected
+        );
+    }
+    assert_eq!(budget.byte_observations(), before_rows);
+    assert_eq!(budget.native_phlo_usage(), before_usage);
+    assert!(budget
+        .native_budget_recording()
+        .unwrap()
+        .unwrap()
+        .attempts
+        .is_empty());
+    assert_eq!(
+        *budget.introduction_authorities.lock().unwrap(),
+        before_registry
+    );
+    assert_eq!(expected.authority, resolved);
+    assert_ne!(expected.authority, data.cost_authority.clone().unwrap());
+    assert_eq!(
+        expected.measurement.unwrap().introduction_bytes,
+        (channel.encoded_len() + data.encoded_len()) as u64 + 64
+    );
+    with_operation(&budget, || {
+        budget.reserve_produce_introduction_measured(
+            event_id,
+            &resolved,
+            expected.measurement.unwrap(),
+            false,
+        )
+    })
+    .unwrap();
+    assert_eq!(budget.byte_observations().rows[0].as_ref(), &expected);
+
+    let channels = [channel];
+    let patterns = [BindPattern::default()];
+    let expected = build::consume_introduction(
+        &comm.consume,
+        &channels,
+        &patterns,
+        &continuation,
+        &introduction_authority,
+    )
+    .unwrap()
+    .into_native()
+    .unwrap();
+    with_operation(&budget, || {
+        budget.reserve_consume_introduction_measured(
+            expected.event_id,
+            &introduction_authority,
+            expected.measurement.unwrap(),
+            false,
+        )
+    })
+    .unwrap();
+    assert_eq!(budget.byte_observations().rows[1].as_ref(), &expected);
+    assert_ne!(expected.authority, continuation.cost_authority.unwrap());
+}
+
+#[test]
+fn native_observation_construction_does_not_insert_fallback_authority() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+        .unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    let (channel, data, _, comm) = inputs(17);
+    let id = byte_accounting::produce_introduction_identity(&comm.produces[0]);
+    let kind = AuthorityByteEventKind::ProduceIntroduction;
+    let fallback = budget.fallback_introduction_authority(id, kind).unwrap();
+    let observed = build::produce_introduction(&comm.produces[0], &channel, &data, &fallback)
+        .unwrap()
+        .into_native()
+        .unwrap();
+    assert!(budget.introduction_authorities.lock().unwrap().is_empty());
+    assert!(budget.byte_observations().rows.is_empty());
+    assert!(budget
+        .native_budget_recording()
+        .unwrap()
+        .unwrap()
+        .attempts
+        .is_empty());
+    assert_eq!(budget.native_phlo_usage(), Some(0));
+    let resolved = budget.introduction_authority(id, kind).unwrap();
+    assert_eq!(resolved, observed.authority);
+    assert_eq!(budget.introduction_authorities.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn native_comm_construction_matches_recorded_measurements_for_every_persistence_pair() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    for continuation_persistent in [false, true] {
+        for data_persistent in [false, true] {
+            let budget = RuntimeBudget::new(Cost::unsafe_max());
+            budget
+                .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+                .unwrap();
+            let _scope = budget.enter_comm_accounting_scope();
+            let (channel, data, continuation, mut comm) = inputs(33);
+            let producer = Produce::create(&channel, &data, data_persistent);
+            comm.consume = Consume::create(
+                &vec![channel],
+                &vec![BindPattern::default()],
+                &continuation,
+                continuation_persistent,
+            );
+            comm.produces = vec![producer.clone()];
+            comm.times_repeated = [(producer, 1)].into_iter().collect();
+            let observed = build::comm(
+                &comm,
+                &continuation,
+                continuation_persistent,
+                &[(&data, data_persistent)],
+                &system_residue(),
+            )
+            .unwrap()
+            .into_native()
+            .unwrap();
+            let raw = observed.measurement.unwrap();
+            assert_eq!(raw.transfer_bytes, data.encoded_len() as u64);
+            assert_eq!(raw.trace_bytes, 128);
+            assert_eq!(raw.introduction_bytes, 0);
+            assert!(observed.legacy_amount.is_none());
+            assert_eq!(observed.authority.regions.len(), 1);
+            assert_eq!(
+                observed.authority == authority(1),
+                !continuation_persistent && !data_persistent
+            );
+            with_operation(&budget, || {
+                budget.reserve_comm_authority_measured(observed.event_id, &observed.authority, raw)
+            })
+            .unwrap();
+            assert_eq!(budget.byte_observations().rows[0].as_ref(), &observed);
+            let before_usage = budget.native_phlo_usage();
+            let before_rows = budget.byte_observations();
+            assert_eq!(
+                build::comm(
+                    &comm,
+                    &continuation,
+                    continuation_persistent,
+                    &[(&data, data_persistent)],
+                    &system_residue()
+                )
+                .unwrap()
+                .into_native()
+                .unwrap(),
+                observed
+            );
+            assert_eq!(budget.native_phlo_usage(), before_usage);
+            assert_eq!(budget.byte_observations(), before_rows);
+            assert_eq!(
+                budget
+                    .native_budget_recording()
+                    .unwrap()
+                    .unwrap()
+                    .attempts
+                    .len(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn native_observation_construction_rejects_empty_and_conflicting_authority_but_preserves_unit() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    let (channel, data, mut continuation, comm) = inputs(1);
+    assert!(build::produce_introduction(
+        &comm.produces[0],
+        &channel,
+        &data,
+        &CostAuthority::default()
+    )
+    .unwrap()
+    .into_native()
+    .is_err());
+    let unit = authority(0);
+    let observed = build::produce_introduction(&comm.produces[0], &channel, &data, &unit)
+        .unwrap()
+        .into_native()
+        .unwrap();
+    assert_eq!(observed.authority, unit);
+    assert!(!observed.authority.regions.is_empty());
+    assert!(authority::authority_demand(&observed.authority)
+        .unwrap()
+        .0
+        .is_empty());
+    continuation.cost_authority.as_mut().unwrap().regions[0].signature =
+        unit.regions[0].signature.clone();
+    assert!(build::comm(
+        &comm,
+        &continuation,
+        true,
+        &[(&data, false)],
+        &system_residue()
+    )
+    .is_err());
+}
+
+#[test]
+fn native_observation_preserves_legacy_measurements_without_legacy_amounts() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    for owners in [0, 1, 3] {
+        let budget = RuntimeBudget::new(Cost::unsafe_max());
+        let _scope = budget.enter_comm_accounting_scope();
+        let auth = authority(owners);
+        let (channel, mut data, mut continuation, comm) = inputs(19);
+        data.cost_authority = Some(auth.clone());
+        continuation.cost_authority = Some(auth.clone());
+        let native = build::produce_introduction(&comm.produces[0], &channel, &data, &auth)
+            .unwrap()
+            .into_native()
+            .unwrap();
+        budget
+            .reserve_produce_introduction_measured(
+                native.event_id,
+                &auth,
+                native.measurement.unwrap(),
+                false,
+            )
+            .unwrap();
+        let mut recorded = budget.byte_observations().rows[0].as_ref().clone();
+        assert_eq!(
+            recorded.legacy_amount,
+            Some(
+                native
+                    .measurement
+                    .unwrap()
+                    .cost(byte_accounting::BYTE_COST_SCHEDULE_V1)
+                    .unwrap()
+            )
+        );
+        recorded.legacy_amount = None;
+        assert_eq!(recorded, native);
+        let native = build::comm(
+            &comm,
+            &continuation,
+            false,
+            &[(&data, false)],
+            &system_residue(),
+        )
+        .unwrap()
+        .into_native()
+        .unwrap();
+        budget
+            .reserve_comm_authority_measured(
+                native.event_id,
+                &native.authority,
+                native.measurement.unwrap(),
+            )
+            .unwrap();
+        let mut recorded = budget.byte_observations().rows[1].as_ref().clone();
+        assert_eq!(recorded.legacy_amount.is_some(), owners > 0);
+        recorded.legacy_amount = None;
+        assert_eq!(recorded, native);
+    }
+}
+
+#[tokio::test]
+async fn native_typed_replay_preserves_denied_comm_and_accepted_introduction_usage() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    for produce in [false, true] {
+        let (channel, data, continuation, comm) = inputs(200);
+        let auth = authority(1);
+        let channels = [channel.clone()];
+        let patterns = [BindPattern::default()];
+        let source = if produce {
+            RSpaceOperationSource::Produce(&comm.produces[0])
+        } else {
+            RSpaceOperationSource::Consume(&comm.consume)
+        };
+        let introduction = if produce {
+            build::produce_introduction(&comm.produces[0], &channel, &data, &auth).unwrap()
+        } else {
+            build::consume_introduction(&comm.consume, &channels, &patterns, &continuation, &auth)
+                .unwrap()
+        }
+        .into_native()
+        .unwrap();
+        let comm_observation = build::comm(
+            &comm,
+            &continuation,
+            false,
+            &[(&data, false)],
+            &system_residue(),
+        )
+        .unwrap()
+        .into_native()
+        .unwrap();
+        let limit = introduction.measurement.unwrap().introduction_bytes;
+        let budget = RuntimeBudget::new(Cost::unsafe_max());
+        budget
+            .reset_for_native_execution(config(limit, [0, 1, 1, 0]))
+            .unwrap();
+        let _scope = budget.enter_comm_accounting_scope();
+        let order = || OperationOrder {
+            session: budget.deploy_id(),
+            path: vec![(0, 0)].into(),
+        };
+        operation_context::scope(order(), async {
+            // Changed by DR-132 (D1-A, T11): the later hooks run under the row
+            // name that the start returns.
+            // budget
+            //     .start_native_operation(source, &channels, &[])
+            //     .unwrap();
+            let name = budget
+                .start_native_operation(source, &channels, &[])
+                .expect("native operation start")
+                .expect("native accounting names each row");
+            operation_context::sync_scope(name, || {
+                if produce {
+                    budget
+                        .reserve_produce_introduction_measured(
+                            introduction.event_id,
+                            &auth,
+                            introduction
+                                .measurement
+                                .expect("the introduction carries its measurement"),
+                            false,
+                        )
+                        .expect("the produce introduction reserves");
+                } else {
+                    budget
+                        .observe_native_consume_peeks(&std::collections::BTreeSet::new())
+                        .expect("the consume observes its peeks");
+                    budget
+                        .reserve_consume_introduction_measured(
+                            introduction.event_id,
+                            &auth,
+                            introduction
+                                .measurement
+                                .expect("the introduction carries its measurement"),
+                            false,
+                        )
+                        .expect("the consume introduction reserves");
+                }
+                budget
+                    .observe_native_comm_source(&comm)
+                    .expect("the COMM source is observed");
+                assert!(matches!(
+                    budget.reserve_comm_authority_measured(
+                        comm_observation.event_id,
+                        &comm_observation.authority,
+                        comm_observation
+                            .measurement
+                            .expect("the COMM observation carries its measurement")
+                    ),
+                    Err(InterpreterError::OutOfPhlogistonsError)
+                ));
+                budget.finish_native_operation(source, RSpaceOperationCompletion::Rejected);
+            });
+        })
+        .await;
+        let recording = budget.native_budget_recording().unwrap().unwrap();
+        assert_eq!(recording.used, limit);
+        assert_eq!(recording.attempts.len(), 2);
+        assert!(!recording.attempts[1].granted);
+        let rows = budget.native_operation_recording().unwrap().unwrap();
+        let checked = with_contract(limit, [0, 1, 1, 0], |contract| {
+            contract
+                .check_operation_journal(recording.session, &recording, rows, journal_limits())
+                .unwrap()
+        });
+        let trace = checked
+            .bind_trace(Arc::from([]), NativeOperationTraceLimits {
+                events: 0,
+                source_entries: 100,
+                source_bytes: 100_000,
+                telemetry_items: 100,
+                telemetry_bytes: 100_000,
+            })
+            .unwrap();
+        let replay = trace.into_replay().unwrap();
+        operation_context::scope(order(), async {
+            let mut ticket = replay.reserve_current(source).unwrap();
+            ticket.authenticate_footprint(&channels, &[]).unwrap();
+            let decision = if produce {
+                ticket.observe_rho_produce(&comm.produces[0], &channel, &data, &unmeasured(&auth))
+            } else {
+                ticket.observe_rho_consume(
+                    &comm.consume,
+                    &channels,
+                    &patterns,
+                    &continuation,
+                    &std::collections::BTreeSet::new(),
+                    &unmeasured(&auth),
+                )
+            }
+            .unwrap();
+            assert_eq!(decision, NativeBudgetReplayDecision::Accepted {
+                usage: limit
+            });
+            let mut altered = data.clone();
+            altered.random_state.push(8);
+            assert!(ticket
+                .observe_rho_comm(&comm, &continuation, false, &[(&altered, false)])
+                .is_err());
+            assert_eq!(replay.completed_usage(), 0);
+            assert_eq!(
+                ticket
+                    .observe_rho_comm(&comm, &continuation, false, &[(&data, false)])
+                    .unwrap(),
+                NativeBudgetReplayDecision::Denied
+            );
+            ticket
+                .prepare_completion(NativeReplayOutcome::DeniedComm)
+                .unwrap()
+                .publish();
+            assert!(replay.reserve_current(source).is_err());
+        })
+        .await;
+        replay.check_complete().unwrap();
+        assert_eq!(replay.completed_usage(), limit);
+        assert_eq!(budget.native_phlo_usage(), Some(limit));
+        assert_eq!(
+            budget
+                .native_budget_recording()
+                .unwrap()
+                .unwrap()
+                .attempts
+                .len(),
+            2
+        );
+    }
+}
+
+/// A continuation whose body and guard have the given sizes and whose
+/// authority is fixed.
+fn continuation_with(body_bytes: usize, guard_bytes: usize) -> TaggedContinuation {
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    use models::rhoapi::ParWithRandom;
+    use models::rust::utils::new_gstring_par;
+    TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(new_gstring_par("b".repeat(body_bytes), Vec::new(), false)),
+            random_state: vec![3; 64],
+        })),
+        guard: (guard_bytes > 0)
+            .then(|| new_gstring_par("g".repeat(guard_bytes), Vec::new(), false)),
+        cost_authority: Some(authority(1)),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn native_observation_keeps_exact_payload_and_multi_owner_measurements(
+        bytes in prop::collection::vec(any::<u8>(), 0..512), owners in 1usize..17,
+    ) {
+        models::rust::record_encoding::set_record_encoding(models::rust::record_encoding::RecordEncoding::Cost);
+        let auth = authority(owners);
+        let (channel, mut data, continuation, _) = inputs(0);
+        data.random_state = bytes;
+        let source = Produce::create(&channel, &data, false);
+        let observed = build::produce_introduction(&source, &channel, &data, &auth).unwrap().into_native().unwrap();
+        prop_assert_eq!(observed.event_id, byte_accounting::produce_introduction_identity(&source));
+        prop_assert_eq!(observed.authority, authority::canonical_authority(&auth).unwrap());
+        prop_assert_eq!(observed.measurement.unwrap().introduction_bytes, (channel.encoded_len() + data.encoded_len()) as u64 + 64);
+        prop_assert!(observed.legacy_amount.is_none());
+        let channels = vec![channel; owners];
+        let patterns = vec![BindPattern::default(); owners];
+        let consume = Consume::create(&channels, &patterns, &continuation, false);
+        let observed = build::consume_introduction(&consume, &channels, &patterns, &continuation, &auth).unwrap().into_native().unwrap();
+        let messages: usize = channels.iter().map(Message::encoded_len).sum::<usize>() + patterns.iter().map(Message::encoded_len).sum::<usize>() + continuation.encoded_len();
+        prop_assert_eq!(observed.measurement.unwrap().introduction_bytes, messages as u64 + 32 + 32 * owners as u64);
+    }
+}
+
+fn system_residue() -> crate::rust::interpreter::accounting::authority::ResidueContext {
+    crate::rust::interpreter::accounting::authority::ResidueContext::system()
+}
+
+/// DR-101: a datum stored as residue of `payer` in deployment `[9; 32]`, and a
+/// COMM that consumes it.
+fn residue_inputs(payer: &Sig) -> (ListParWithRandom, TaggedContinuation, COMM) {
+    let channel = Par::default();
+    let entropy = vec![7; 17];
+    let payer_region = authority::cost_region(
+        &authority::sig_to_cost_signature(payer).unwrap(),
+        &entropy,
+        0,
+    )
+    .unwrap();
+    let seal = authority::system_residue_authority(
+        &CostAuthority {
+            regions: vec![payer_region],
+        },
+        &[9; 32],
+    )
+    .unwrap();
+    let data = ListParWithRandom {
+        random_state: entropy,
+        cost_authority: Some(seal),
+        ..Default::default()
+    };
+    let continuation = TaggedContinuation {
+        cost_authority: Some(authority(1)),
+        ..Default::default()
+    };
+    let producer = Produce::create(&channel, &data, false);
+    let source = COMM {
+        consume: Consume::create(
+            &vec![channel.clone()],
+            &vec![BindPattern::default()],
+            &continuation,
+            false,
+        ),
+        produces: vec![producer.clone()],
+        peeks: Default::default(),
+        times_repeated: [(producer, 1)].into_iter().collect(),
+    };
+    (data, continuation, source)
+}
+
+/// DR-101: play and replay resolve residue with the same deployment context.
+/// A replay with another deployment, another payer or no binding builds
+/// another observation, which the recorded-observation check rejects
+/// (`NativeBudgetTrace::authenticate`).
+#[test]
+fn a_replay_in_another_residue_context_observes_another_comm() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    use crate::rust::interpreter::accounting::authority::ResidueContext;
+
+    let payer = Sig::Ground(vec![3; 33]);
+    let (data, continuation, comm) = residue_inputs(&payer);
+    let in_deploy = ResidueContext::new(&payer, [9; 32]).unwrap();
+    let played = build::comm(&comm, &continuation, false, &[(&data, false)], &in_deploy)
+        .unwrap()
+        .into_native()
+        .unwrap();
+    let replayed = build::comm(&comm, &continuation, false, &[(&data, false)], &in_deploy)
+        .unwrap()
+        .into_native()
+        .unwrap();
+    assert!(played == replayed);
+    for context in [
+        ResidueContext::new(&payer, [10; 32]).unwrap(),
+        ResidueContext::new(&Sig::Ground(vec![4; 33]), [9; 32]).unwrap(),
+        ResidueContext::system(),
+    ] {
+        let other = build::comm(&comm, &continuation, false, &[(&data, false)], &context)
+            .unwrap()
+            .into_native()
+            .unwrap();
+        assert_eq!(other.event_id, played.event_id);
+        assert!(other.authority != played.authority);
+        assert!(other != played);
+    }
+}
+
+/// D-F2 (DR-118): a datum with one `pars` entry of `pars_bytes` text bytes,
+/// as `eval_send` builds it.
+fn datum_with(pars_bytes: usize, random_state: usize) -> ListParWithRandom {
+    ListParWithRandom {
+        pars: vec![models::rust::utils::new_gstring_par(
+            "p".repeat(pars_bytes),
+            Vec::new(),
+            false,
+        )],
+        random_state: vec![5; random_state],
+        cost_authority: Some(authority(1)),
+        cost_stack: None,
+    }
+}
+
+/// D-F2 (DR-118): a random-state size that is zero in a fixed share of the
+/// cases, because prost omits an empty random state.
+fn random_state_size() -> impl Strategy<Value = usize> { prop_oneof![Just(0usize), 1usize..256] }
+
+/// D-F2 (DR-118): the `pars` measurement that `eval_send` composes.
+fn measured_pars(data: &ListParWithRandom) -> u64 {
+    data.pars
+        .iter()
+        .map(|par| {
+            byte_accounting::message_field_bytes(1, u64::try_from(par.encoded_len()).unwrap())
+                .unwrap()
+        })
+        .sum()
+}
+
+/// D-F2 (DR-118): the body and guard measurement that `eval_receive`
+/// composes.
+fn measured_continuation(continuation: &TaggedContinuation) -> (u64, Option<u64>) {
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    let body = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => byte_accounting::par_with_random_bytes(
+            u64::try_from(body.body.as_ref().map_or(0, Message::encoded_len)).unwrap(),
+            &body.random_state,
+        )
+        .unwrap(),
+        _ => 0,
+    };
+    let guard = continuation
+        .guard
+        .as_ref()
+        .map(|guard| u64::try_from(guard.encoded_len()).unwrap());
+    (body, guard)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-F2 (DR-118): the premeasured observations have the walked event,
+    /// authority and measurement, so receipts and cost traces are unchanged.
+    #[test]
+    fn measured_introduction_observation_equals_walked_observation(
+        pars in 0usize..4096, random_state in random_state_size(),
+        body in 0usize..4096, guard in 0usize..512,
+    ) {
+        models::rust::record_encoding::set_record_encoding(models::rust::record_encoding::RecordEncoding::Cost);
+        let (channel, _, _, _) = inputs(0);
+        let data = datum_with(pars, random_state);
+        let introduction = authority(1);
+        let walked = build::produce_introduction_with_identity(
+            [1; 32], &channel, &data, &introduction,
+        ).unwrap();
+        let premeasured = build::produce_introduction_premeasured_with_identity(
+            [1; 32], &channel, &data, measured_pars(&data), &introduction,
+        ).unwrap();
+        prop_assert_eq!(premeasured.event_id, walked.event_id);
+        prop_assert_eq!(premeasured.kind, walked.kind);
+        prop_assert_eq!(&premeasured.authority, &walked.authority);
+        prop_assert_eq!(premeasured.measurement, walked.measurement);
+
+        let continuation = continuation_with(body, guard);
+        let (body, guard) = measured_continuation(&continuation);
+        let channels = vec![channel];
+        let patterns = vec![BindPattern::default()];
+        let walked = build::consume_introduction_with_identity(
+            [2; 32], &channels, &patterns, &continuation, &introduction,
+        ).unwrap();
+        let premeasured = build::consume_introduction_premeasured_with_identity(
+            [2; 32], &channels, &patterns, &continuation, body, guard, &introduction,
+        ).unwrap();
+        prop_assert_eq!(premeasured.event_id, walked.event_id);
+        prop_assert_eq!(premeasured.kind, walked.kind);
+        prop_assert_eq!(&premeasured.authority, &walked.authority);
+        prop_assert_eq!(premeasured.measurement, walked.measurement);
+    }
+
+}
+
+/// D-F2 (DR-118): a continuation whose shape differs from its measurement,
+/// and a record without a measurement, are walked: the measurement is the
+/// walked one.
+#[test]
+fn unmeasured_or_mismatched_introductions_fall_back_to_the_walk() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
+    let introduction = authority(1);
+    let (channel, _, _, _) = inputs(0);
+    let channels = vec![channel.clone()];
+    let patterns = vec![BindPattern::default()];
+    let continuation = continuation_with(1_024, 0);
+    let (body, _) = measured_continuation(&continuation);
+    assert_eq!(
+        build::consume_introduction_premeasured_with_identity(
+            [2; 32],
+            &channels,
+            &patterns,
+            &continuation,
+            body,
+            Some(0),
+            &introduction,
+        )
+        .unwrap()
+        .measurement,
+        byte_accounting::consume_introduction_charge(&channels, &patterns, &continuation).unwrap()
+    );
+
+    let record = unmeasured(&introduction);
+    let data = datum_with(1_024, 64);
+    let recorded =
+        build::produce_introduction_recorded_with_identity([1; 32], &channel, &data, &record)
+            .unwrap();
+    let walked =
+        build::produce_introduction_with_identity([1; 32], &channel, &data, &introduction).unwrap();
+    assert_eq!(recorded.event_id, walked.event_id);
+    assert_eq!(recorded.authority, walked.authority);
+    assert_eq!(recorded.measurement, walked.measurement);
+    let recorded = build::consume_introduction_recorded_with_identity(
+        [2; 32],
+        &channels,
+        &patterns,
+        &continuation,
+        &record,
+    )
+    .unwrap();
+    let walked = build::consume_introduction_with_identity(
+        [2; 32],
+        &channels,
+        &patterns,
+        &continuation,
+        &introduction,
+    )
+    .unwrap();
+    assert_eq!(recorded.event_id, walked.event_id);
+    assert_eq!(recorded.authority, walked.authority);
+    assert_eq!(recorded.measurement, walked.measurement);
+}

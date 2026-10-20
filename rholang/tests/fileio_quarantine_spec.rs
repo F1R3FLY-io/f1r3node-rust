@@ -138,6 +138,9 @@ mod tests {
     /// error code.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fs_open_with_parent_traversal_returns_quarantine_error() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         // Sibling directory outside the tempdir root — the attacker
         // target.
@@ -184,6 +187,9 @@ mod tests {
     /// swap attack surface.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fs_open_with_symlink_component_returns_quarantine_error() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         use std::os::unix::fs::symlink;
         let dir = tempfile::tempdir().unwrap();
         // Create a real subdir + a file inside it.
@@ -236,6 +242,9 @@ mod tests {
     /// M-04 makes the refusal earlier + more explicit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn consensus_fs_open_with_path_escape_returns_quarantine_or_unsupported() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         let sibling = tempfile::tempdir().unwrap();
         std::fs::write(sibling.path().join("secret.bin"), b"attacker's target")
@@ -292,6 +301,9 @@ mod tests {
     /// `[true, fd]` (bypass) or a different error code.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn consensus_fs_open_with_registered_root_path_escape_returns_quarantine() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         let sibling = tempfile::tempdir().unwrap();
         std::fs::write(sibling.path().join("secret.bin"), b"attacker's target")

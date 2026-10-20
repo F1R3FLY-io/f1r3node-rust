@@ -130,7 +130,7 @@ impl ReportingCasper for RhoReporterCasper {
         Self::replay_deploys(
             &mut reporting_runtime,
             &pre_state_hash,
-            &block.body.deploys,
+            &crate::rust::util::proto_util::deploys(block),
             &block.body.system_deploys,
             with_cost_accounting(&block.header.parents_hash_list),
             &block_data,

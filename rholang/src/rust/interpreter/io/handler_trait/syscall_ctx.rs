@@ -42,16 +42,16 @@ use models::rhoapi::Par;
 
 use crate::rust::interpreter::accounting::noop::Metering;
 use crate::rust::interpreter::dispatch::RhoDispatch;
+use crate::rust::interpreter::execution_space::ExecutionSpace;
 use crate::rust::interpreter::io::handle_table::FileHandleTable;
 use crate::rust::interpreter::io::lock::DeployScope;
 use crate::rust::interpreter::io::ConsensusMode;
-use crate::rust::interpreter::rho_runtime::RhoISpace;
 
 /// Borrowed per-call context threaded into every fs_* handler's
 /// `dispatch` method + per-step hooks.
 pub struct SyscallCtx<'a> {
     pub dispatcher: &'a RhoDispatch,
-    pub space: &'a RhoISpace,
+    pub space: &'a ExecutionSpace,
     pub handles: &'a FileHandleTable,
     pub mode: ConsensusMode,
     pub metering: &'a Arc<dyn Metering>,
@@ -70,7 +70,7 @@ impl<'a> SyscallCtx<'a> {
     /// port) without touching this signature.
     pub fn new(
         dispatcher: &'a RhoDispatch,
-        space: &'a RhoISpace,
+        space: &'a ExecutionSpace,
         handles: &'a FileHandleTable,
         mode: ConsensusMode,
         metering: &'a Arc<dyn Metering>,
@@ -102,7 +102,7 @@ const _SYSCALL_CTX_SHAPE_WITNESS: fn() = || {
     #[allow(dead_code)]
     fn assert_shape<'a>(ctx: &SyscallCtx<'a>) {
         let _: &RhoDispatch = ctx.dispatcher;
-        let _: &RhoISpace = ctx.space;
+        let _: &ExecutionSpace = ctx.space;
         let _: &FileHandleTable = ctx.handles;
         let _: ConsensusMode = ctx.mode;
         let _: &Arc<dyn Metering> = ctx.metering;
@@ -117,7 +117,7 @@ const _SYSCALL_CTX_NEW_SIG_WITNESS: fn() = || {
     #[allow(dead_code)]
     fn assert_new_sig<'a>(
         dispatcher: &'a RhoDispatch,
-        space: &'a RhoISpace,
+        space: &'a ExecutionSpace,
         handles: &'a FileHandleTable,
         mode: ConsensusMode,
         metering: &'a Arc<dyn Metering>,

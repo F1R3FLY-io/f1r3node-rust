@@ -14,6 +14,12 @@ impl RootRepository {
         self.roots_store.record_root(root)
     }
 
+    pub fn commit_native(&self, root: &Blake2b256Hash) -> Result<(), RootError> {
+        self.roots_store.record_root_atomic(root)
+    }
+
+    pub fn supports_atomic_record(&self) -> bool { self.roots_store.supports_atomic_record() }
+
     pub fn current_root(&self) -> Result<Blake2b256Hash, RootError> {
         match self.roots_store.current_root()? {
             None => {
@@ -51,9 +57,13 @@ impl RootRepository {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+
+    use shared::rust::store::key_value_store::KeyValueStore;
 
     use super::*;
+    use crate::rspace::history::roots_store::RootsStoreInstances;
+    use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
     /// Minimal in-memory RootsStore for testing the lookup-vs-set distinction.
     /// Tracks recorded roots and the current-root pointer separately so tests
@@ -131,6 +141,31 @@ mod tests {
             repo.roots_store.current_root().unwrap(),
             Some(b),
             "contains_root must not move the current-root pointer"
+        );
+    }
+
+    /// Changed by DR-131 S6: the native root record no longer prepays host
+    /// work. The test keeps its check that `commit_native` publishes the
+    /// root as the current root.
+    #[test]
+    fn native_root_record_publishes_the_current_root() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let repository = RootRepository {
+            roots_store: Box::new(RootsStoreInstances::roots_store(store.clone())),
+        };
+        let root = Blake2b256Hash::new(b"native root");
+        assert_eq!(
+            store
+                .get_one(&b"current-root".to_vec())
+                .expect("roots store read"),
+            None
+        );
+        repository.commit_native(&root).expect("atomic root record");
+        assert_eq!(
+            store
+                .get_one(&b"current-root".to_vec())
+                .expect("roots store read"),
+            Some(root.bytes())
         );
     }
 }

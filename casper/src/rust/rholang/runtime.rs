@@ -33,9 +33,12 @@ use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
+use rholang::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -1168,12 +1171,32 @@ impl RuntimeOps {
     ) -> Result<EvaluateResult, CasperError> {
         let deploy_data = SystemProcessDeployData::from_deploy(deploy);
         self.runtime.set_deploy_data(deploy_data).await;
+        let _legacy_scope = self.runtime.cost.enter_legacy_scope();
+
+        let parsing_cost = Cost::create(deploy.data.term.len() as i64, "parsing");
+        if deploy.data.phlo_limit >= 0 && deploy.data.phlo_limit < parsing_cost.value {
+            self.runtime
+                .cost
+                .set(Cost::create(deploy.data.phlo_limit, "Evaluate deploy"));
+            return Ok(EvaluateResult {
+                cost: Cost::create(deploy.data.phlo_limit, "Evaluate deploy"),
+                errors: vec![InterpreterError::OutOfPhlogistonsError],
+                economic_failures: EvaluationFailureSummary::single(PhloFailure::Certificate),
+                ..EvaluateResult::default()
+            });
+        }
+
+        let execution_limit = if deploy.data.phlo_limit < 0 {
+            deploy.data.phlo_limit
+        } else {
+            deploy.data.phlo_limit - parsing_cost.value
+        };
 
         let result = self
             .runtime
             .evaluate(
                 &deploy.data.term,
-                Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
+                Cost::create(execution_limit, "Evaluate deploy"),
                 normalizer_env_from_deploy(deploy)
                     .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
                 Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
@@ -1181,7 +1204,28 @@ impl RuntimeOps {
             .await;
 
         match result {
-            Ok(eval_result) => Ok(eval_result),
+            Ok(mut eval_result) => {
+                if deploy.data.phlo_limit >= 0 {
+                    eval_result.cost.value = match eval_result.errors.as_slice() {
+                        []
+                        | [InterpreterError::UserAbortError]
+                        | [InterpreterError::IfConditionTypeError { .. }] => eval_result
+                            .cost
+                            .value
+                            .checked_add(parsing_cost.value)
+                            .ok_or_else(|| {
+                                CasperError::RuntimeError(
+                                    "legacy parsing charge overflowed".to_string(),
+                                )
+                            })?,
+                        [InterpreterError::ParserError(_)]
+                        | [InterpreterError::OperatorNotDefined { .. }]
+                        | [InterpreterError::OperatorExpectedError { .. }] => parsing_cost.value,
+                        _ => deploy.data.phlo_limit,
+                    };
+                }
+                Ok(eval_result)
+            }
             Err(e) => Err(CasperError::InterpreterError(e)),
         }
     }
@@ -1190,6 +1234,7 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<EvaluateResult, CasperError> {
+        let _legacy_scope = self.runtime.cost.enter_legacy_scope();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }

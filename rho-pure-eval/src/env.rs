@@ -39,10 +39,22 @@ impl<A: Clone> Env<A> {
         }
     }
 
+    /// Changed by DR-131 S8: an overflow of the level gives `None`, as the
+    /// checked `get` does. An allocation failure aborts, as on dev.
+    pub fn push(&mut self, a: A) -> Option<()> {
+        let next = self.level.checked_add(1)?;
+        self.env_map.insert(self.level, a);
+        self.level = next;
+        Some(())
+    }
+
     pub fn get(&self, k: &i32) -> Option<A> {
-        self.env_map
-            .get(&((self.level + self.shift) - k - 1))
-            .cloned()
+        let position = self
+            .level
+            .checked_add(self.shift)?
+            .checked_sub(*k)?
+            .checked_sub(1)?;
+        self.env_map.get(&position).cloned()
     }
 
     pub fn shift(&self, j: i32) -> Env<A> {

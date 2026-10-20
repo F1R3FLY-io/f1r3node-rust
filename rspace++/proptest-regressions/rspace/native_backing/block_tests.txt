@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c88443e430a7c465ea7cdbda28ad95331ef7550eeea8176bdc2d7728746e1be4 # shrinks to record = Counters({Produce { channel_hash: Blake2b256Hash(81e47a19e6b29b0a65b9591762ce5143ed30d0261e5d24a3201752506b20f15c), hash: Blake2b256Hash(d477e9cb6ff84ca74077ec6b96fb9d74f3b723870b5d25f3baec43ae3faa476c), persistent: false, is_deterministic: true, output_value: [], failed: false }: 0}), count = 0

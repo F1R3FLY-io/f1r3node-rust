@@ -98,5 +98,22 @@ fn main() {
         "#[serde(serialize_with = \"crate::rust::serde_helpers::serialize_as_empty_bytes\")]\n    pub locally_free: ::prost::alloc::vec::Vec<u8>,",
     );
 
+    let modified_content = [
+        "cost_signed_terms",
+        "cost_stacks",
+        "cost_authority",
+        "cost_stack",
+        "cost_signature",
+    ]
+    .iter()
+    .fold(modified_content, |content, field| {
+        content.replace(
+            &format!("    pub {field}: "),
+            &format!(
+                "    #[serde(serialize_with = \"crate::rust::record_encoding::serialize_cost_field\", deserialize_with = \"crate::rust::record_encoding::deserialize_cost_field\", default)]\n    pub {field}: "
+            ),
+        )
+    });
+
     fs::write(file_path, modified_content).expect("Unable to write file");
 }

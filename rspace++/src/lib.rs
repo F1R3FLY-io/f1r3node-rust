@@ -1,3 +1,4 @@
+#![cfg_attr(test, feature(allocator_api, btreemap_alloc))]
 #![allow(
     clippy::type_complexity,
     clippy::ptr_arg,

@@ -207,6 +207,8 @@ impl Par {
             bundles: [self.bundles.clone(), other.bundles].concat(),
             connectives: [self.connectives.clone(), other.connectives].concat(),
             conditionals: [self.conditionals.clone(), other.conditionals].concat(),
+            cost_signed_terms: [self.cost_signed_terms.clone(), other.cost_signed_terms].concat(),
+            cost_stacks: [self.cost_stacks.clone(), other.cost_stacks].concat(),
             locally_free: union(self.locally_free.clone(), other.locally_free),
             connective_used: self.connective_used || other.connective_used,
         }
@@ -266,6 +268,20 @@ pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {
         })
         .cloned()
         .collect()
+}
+
+/// D-D2 (DR-104): [`no_frees_exprs`] in place. It keeps the same expressions in
+/// the same order without copying them (`MatcherReadsByReference.retain_equals_filter`).
+pub fn retain_no_frees(exprs: &mut Vec<Expr>) {
+    exprs.retain(|expr| match &expr.expr_instance {
+        Some(EVarBody(EVar { v: Some(v) })) => match &v.var_instance {
+            Some(FreeVar(_)) => false,
+            Some(Wildcard(_)) => false,
+            _ => true,
+        },
+
+        _ => true,
+    });
 }
 
 // See shared/src/main/scala/coop/rchain/catscontrib/Alternative_.scala - guard

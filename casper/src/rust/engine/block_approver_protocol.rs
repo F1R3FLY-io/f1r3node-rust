@@ -262,7 +262,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 None,
             );
 
-        let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
+        let block_deploys: &Vec<ProcessedDeploy> = &crate::rust::util::proto_util::deploys(block);
 
         if block_deploys.len() != genesis_blessed_contracts.len() {
             return Err(

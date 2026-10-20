@@ -987,6 +987,10 @@ fn store_reason(error: KvStoreError) -> String {
             "production_error:last_finalized_block_uninitialized".to_string()
         }
         KvStoreError::MissingBlock { .. } => "production_error:missing_block".to_string(),
+        KvStoreError::AtomicityUnavailable(_) => {
+            "production_error:atomicity_unavailable".to_string()
+        }
+        KvStoreError::TransactionConflict(_) => "production_error:transaction_conflict".to_string(),
     }
 }
 

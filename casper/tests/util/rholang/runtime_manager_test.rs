@@ -835,7 +835,10 @@ async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_pars
             .await;
 
             assert!(result.1.is_failed);
-            assert!(result.1.cost.cost == costs::parsing_cost(bad_rholang).value as u64);
+            assert!(
+                result.1.cost.cost
+                    == costs::Cost::create(bad_rholang.len() as i64, "parsing").value as u64
+            );
         },
     )
     .await
@@ -861,13 +864,15 @@ async fn compute_state_should_charge_for_parsing_and_execution() {
             .unwrap();
 
             let runtime = runtime_manager.spawn_runtime().await.unwrap();
+            let legacy_scope = runtime.cost.enter_legacy_scope();
             runtime.cost.set(inital_phlo.clone());
             let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
             let _ = runtime.inj(term, Env::new(), rand).await;
             let phlos_left = runtime.cost.get();
             let reduction_cost = inital_phlo - phlos_left;
+            drop(legacy_scope);
 
-            let parsing_cost = costs::parsing_cost(correct_rholang);
+            let parsing_cost = costs::Cost::create(correct_rholang.len() as i64, "parsing");
 
             let result = compute_state(
                 &mut runtime_manager,
@@ -2176,7 +2181,12 @@ async fn bridge_query_survives_multi_parent_merge() {
 
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a.deploys.clone();
+    block_a.body.deploys = checkpoint_a
+        .deploys
+        .clone()
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -2257,7 +2267,11 @@ async fn bridge_query_survives_multi_parent_merge() {
 
     let mut block_b = block_b_raw;
     block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b.deploys;
+    block_b.body.deploys = checkpoint_b
+        .deploys
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_b.body.system_deploys = checkpoint_b.system_deploys;
     block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
@@ -2566,7 +2580,12 @@ async fn concurrent_registry_inserts_should_not_conflict() {
 
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a.deploys.clone();
+    block_a.body.deploys = checkpoint_a
+        .deploys
+        .clone()
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -2631,7 +2650,12 @@ async fn concurrent_registry_inserts_should_not_conflict() {
 
     let mut block_b = block_b_raw;
     block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b.deploys.clone();
+    block_b.body.deploys = checkpoint_b
+        .deploys
+        .clone()
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_b.body.system_deploys = checkpoint_b.system_deploys;
     block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
@@ -3336,7 +3360,12 @@ new deployId(`rho:system:deployId`) in {
     );
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a.deploys.clone();
+    block_a.body.deploys = checkpoint_a
+        .deploys
+        .clone()
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -3395,7 +3424,12 @@ new deployId(`rho:system:deployId`) in {
     );
     let mut block_b = block_b_raw;
     block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b.deploys.clone();
+    block_b.body.deploys = checkpoint_b
+        .deploys
+        .clone()
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_b.body.system_deploys = checkpoint_b.system_deploys;
     block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
@@ -3454,7 +3488,12 @@ new deployId(`rho:system:deployId`) in {
     );
     let mut block_c = block_c_raw;
     block_c.body.state.post_state_hash = checkpoint_c.post_state_hash.clone();
-    block_c.body.deploys = checkpoint_c.deploys.clone();
+    block_c.body.deploys = checkpoint_c
+        .deploys
+        .clone()
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_c.body.system_deploys = checkpoint_c.system_deploys;
     block_c.body.state.bonds = checkpoint_c.bonds;
     block_store.put_block_message(&block_c).expect("store C");
@@ -3507,7 +3546,12 @@ new deployId(`rho:system:deployId`) in {
     );
     let mut block_d = block_d_raw;
     block_d.body.state.post_state_hash = checkpoint_d.post_state_hash.clone();
-    block_d.body.deploys = checkpoint_d.deploys.clone();
+    block_d.body.deploys = checkpoint_d
+        .deploys
+        .clone()
+        .into_iter()
+        .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+        .collect();
     block_d.body.system_deploys = checkpoint_d.system_deploys;
     block_d.body.state.bonds = checkpoint_d.bonds;
     block_store.put_block_message(&block_d).expect("store D");
@@ -4003,7 +4047,10 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
                 bonds: vec![],
                 block_number: 1,
             },
-            deploys: processed_deploys,
+            deploys: processed_deploys
+                .into_iter()
+                .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+                .collect(),
             rejected_deploys: vec![],
             system_deploys: processed_system_deploys,
             extra_bytes: prost::bytes::Bytes::new(),
@@ -4154,7 +4201,10 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
                 bonds: vec![],
                 block_number: LAGGING_HEIGHT as i64,
             },
-            deploys: processed_deploys,
+            deploys: processed_deploys
+                .into_iter()
+                .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+                .collect(),
             rejected_deploys: vec![],
             system_deploys: processed_system_deploys,
             extra_bytes: prost::bytes::Bytes::new(),

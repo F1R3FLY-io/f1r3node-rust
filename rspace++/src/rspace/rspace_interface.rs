@@ -9,6 +9,7 @@ use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
+use super::operation_context::OperationOrder;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::checkpoint::SoftCheckpoint;
@@ -33,15 +34,70 @@ pub struct ContResult<C, P, K> {
 
 pub type MaybeProduceCandidate<C, P, A, K> = Option<ProduceCandidate<C, P, A, K>>;
 pub type MaybeConsumeResult<C, P, A, K> = Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>)>;
-/// Observer invoked synchronously on every RSpace mutation.  The
-/// production observer (fileio's `host_work::ReductionCoordinator`)
-/// uses `observe_*` to track per-dimension host-work usage; triage
-/// has no observer wired in yet, so the trait is landed as
-/// scaffolding and the default `set_accounting_observer` is a no-op.
-///
-/// `Send + Sync` because the ISpace is often shared across tokio
-/// tasks and the observer must be callable from any of them.
+pub type MaybeProduceResult<C, P, A, K> =
+    Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>, Produce)>;
+
+#[derive(Clone, Copy, Debug)]
+pub enum RSpaceOperationSource<'a> {
+    Produce(&'a Produce),
+    Consume(&'a Consume),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RSpaceOperationCompletion {
+    Stored,
+    Matched,
+    Rejected,
+}
+
+#[derive(Clone, Debug)]
+pub enum ReplayOperationDirective {
+    Store,
+    RejectedIntroduction,
+    AcceptedComm(std::sync::Arc<COMM>),
+    RejectedComm(std::sync::Arc<COMM>),
+}
+
+impl RSpaceOperationCompletion {
+    pub fn from_result<T>(result: &Result<Option<T>, RSpaceError>) -> Self {
+        match result {
+            Ok(Some(_)) => Self::Matched,
+            Ok(None) => Self::Stored,
+            Err(_) => Self::Rejected,
+        }
+    }
+}
+
 pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
+    fn replay_operation_directive(
+        &self,
+        _source: RSpaceOperationSource<'_>,
+    ) -> Result<Option<ReplayOperationDirective>, RSpaceError> {
+        Ok(None)
+    }
+
+    // Changed by DR-132: the start hook returns the name of the recorded
+    // operation, and RSpace runs the rest of the locked operation under it.
+    // Racing evaluation sets no outer name.
+    // ) -> Result<(), RSpaceError> {
+    //     Ok(())
+    // }
+    fn observe_operation_start(
+        &self,
+        _source: RSpaceOperationSource<'_>,
+        _channels: &[C],
+        _joins: &[Vec<C>],
+    ) -> Result<Option<OperationOrder>, RSpaceError> {
+        Ok(None)
+    }
+
+    fn observe_operation_finish(
+        &self,
+        _source: RSpaceOperationSource<'_>,
+        _completion: RSpaceOperationCompletion,
+    ) {
+    }
+
     fn observe_produce(
         &self,
         source: &Produce,
@@ -69,8 +125,10 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
     ) -> Result<(), RSpaceError>;
 }
 
-pub type MaybeProduceResult<C, P, A, K> =
-    Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>, Produce)>;
+/// Added by DR-132: the accounting observer of a locked operation and the
+/// name of its recorded row. The rest of the operation runs under the name.
+pub type AccountingStart<C, P, A, K> =
+    (Option<std::sync::Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, Option<OperationOrder>);
 
 /** The interface for RSpace
  *

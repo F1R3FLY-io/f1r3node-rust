@@ -459,7 +459,7 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
                 .body
                 .deploys
                 .iter()
-                .map(|pd| pd.deploy.sig.clone())
+                .map(|pd| prost::bytes::Bytes::copy_from_slice(pd.identity_bytes()))
                 .collect(),
             _ => Vec::new(),
         }

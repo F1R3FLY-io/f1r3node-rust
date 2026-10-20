@@ -289,7 +289,11 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
             bonds: checkpoint.bonds,
             block_number: next_block_num,
         },
-        deploys: checkpoint.deploys,
+        deploys: checkpoint
+            .deploys
+            .into_iter()
+            .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+            .collect(),
         rejected_deploys: Vec::new(),
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),

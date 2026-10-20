@@ -38,8 +38,10 @@ where
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(arc_swap::ArcSwap::new(Arc::new(store))),
             matcher,
+            accounting_observer: Arc::new(std::sync::RwLock::new(None)),
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
+            ordered_event_log: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             produce_counter: Arc::new(
                 (0..striped_locks::NUM_LOCK_STRIPES)
                     .map(|_| std::sync::Mutex::new(BTreeMap::new()))

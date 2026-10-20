@@ -954,11 +954,11 @@ fn inspect_parent_updates(
             update.has_new_parents = true;
             if !update.has_new_parent_with_user_deploys {
                 if let Ok(Some(block)) = casper.block_store().get(current_hash) {
-                    let has_user_deploys = block
-                        .body
-                        .deploys
-                        .iter()
-                        .any(|processed| !is_system_deploy_id(&processed.deploy.sig));
+                    let has_user_deploys = block.body.deploys.iter().any(|processed| {
+                        !is_system_deploy_id(&prost::bytes::Bytes::copy_from_slice(
+                            processed.identity_bytes(),
+                        ))
+                    });
                     if has_user_deploys {
                         update.has_new_parent_with_user_deploys = true;
                     }
@@ -995,11 +995,11 @@ fn cone_has_user_work(
                 break;
             }
             if let Ok(Some(block)) = casper.block_store().get(&hash) {
-                let carries_deploy = block
-                    .body
-                    .deploys
-                    .iter()
-                    .any(|processed| !is_system_deploy_id(&processed.deploy.sig));
+                let carries_deploy = block.body.deploys.iter().any(|processed| {
+                    !is_system_deploy_id(&prost::bytes::Bytes::copy_from_slice(
+                        processed.identity_bytes(),
+                    ))
+                });
                 if carries_deploy || !block.body.rejected_deploys.is_empty() {
                     return true;
                 }

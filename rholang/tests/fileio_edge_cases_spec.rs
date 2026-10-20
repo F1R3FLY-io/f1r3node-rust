@@ -149,6 +149,9 @@ mod tests {
     /// must present a consistent Rholang surface regardless.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d04_fs_write_zero_bytes_is_noop_returning_ok_zero() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"seed").unwrap();
         let runtime = create_runtime().await;
@@ -192,6 +195,9 @@ mod tests {
     /// error code — we pin the shape invariant.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d04_fs_write_at_i64_max_offset_is_well_formed() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"seed").unwrap();
         let runtime = create_runtime().await;
@@ -239,6 +245,9 @@ mod tests {
     /// EFBIG depending on filesystem.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d04_fs_seek_i64_max_offset_is_well_formed() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"seed").unwrap();
         let runtime = create_runtime().await;
@@ -285,6 +294,9 @@ mod tests {
     /// offset near u64::MAX.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d04_fs_write_at_negative_offset_rejects_with_bad_arg() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"seed").unwrap();
         let runtime = create_runtime().await;
@@ -337,6 +349,9 @@ mod tests {
     /// so this test specifically pins the "set" gate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn d04_fs_seek_negative_offset_rejects_with_bad_arg() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"seed").unwrap();
         let runtime = create_runtime().await;

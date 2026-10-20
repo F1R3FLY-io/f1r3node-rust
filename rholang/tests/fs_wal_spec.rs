@@ -97,6 +97,9 @@ mod tests {
     /// WAL entries.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn wal_entries_include_rel_in_path() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.bin"), b"").unwrap();
         std::fs::write(dir.path().join("b.bin"), b"").unwrap();
@@ -149,6 +152,9 @@ mod tests {
     /// empty WAL — no ghost entries from a prior block.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reset_clears_wal() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"").unwrap();
         let mut runtime = create_runtime().await;
@@ -351,6 +357,9 @@ mod tests {
     /// full ordering documentation.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sec3_wal_cap_full_pre_charge_burns_cost() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         use rholang::rust::interpreter::io::wal::{
             PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES,
         };
@@ -513,6 +522,9 @@ mod tests {
     /// to only unwind to the inner boundary.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn nested_soft_checkpoints_preserve_outer_wal_mark() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.bin"), b"").unwrap();
         let mut runtime = create_runtime().await;
@@ -599,6 +611,9 @@ mod tests {
     /// appended during the reverted deploy.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn revert_soft_checkpoint_truncates_wal() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("pre.bin"), b"").unwrap();
         std::fs::write(dir.path().join("post.bin"), b"").unwrap();
@@ -727,6 +742,9 @@ mod tests {
     /// (hash-verified read).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn wal_to_snapshot_end_to_end_round_trip() {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         use rholang::rust::interpreter::io::snapshot::{
             encode_wal_slice, read_snapshot_bytes, SnapshotWriter,
         };

@@ -63,7 +63,7 @@ async fn lock_results(register_vault: bool) -> Vec<Par> {
         .add_block_from_deploys(std::slice::from_ref(&bridge))
         .await
         .unwrap();
-    assert!(block.body.deploys.iter().all(|deploy| !deploy.is_failed));
+    assert!(block.body.deploys.iter().all(|deploy| !deploy.is_failed()));
     let post_state = proto_util::post_state_hash(&block);
 
     let deploy_id = Par::default().with_unforgeables(vec![GUnforgeable {

@@ -12,7 +12,9 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
+use rspace_plus_plus::rspace::state::rspace_importer::{
+    RSpaceImporter, RSpaceImporterInstance, StateItemsError,
+};
 use serde::{Deserialize, Serialize};
 use shared::rust::{Byte, ByteVector};
 
@@ -116,6 +118,23 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 
     let end_point = space2.create_checkpoint().await.unwrap();
     assert_eq!(end_point.root, RadixHistory::empty_root_node_hash())
+}
+
+#[tokio::test]
+async fn corrupted_history_hash_returns_error() {
+    let (_, _, importer, _, _, _) = test_setup().await;
+    let root = Blake2b256Hash::from_bytes(vec![1; 32]);
+    let claimed_hash = Blake2b256Hash::from_bytes(vec![2; 32]);
+    let result = RSpaceImporterInstance::validate_state_items(
+        &[(claimed_hash, vec![3; 16])],
+        &[],
+        vec![(root, None)],
+        750,
+        0,
+        importer,
+    );
+
+    assert!(matches!(result, Err(StateItemsError::HistoryHashMismatch { .. })));
 }
 
 #[tokio::test]

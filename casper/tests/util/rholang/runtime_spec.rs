@@ -71,6 +71,7 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     .trim_start();
 
     let random = Tools::rng(&Blake2b256Hash::from_bytes(vec![0; 1]).bytes());
+    let _legacy_scope = runtime.cost.enter_legacy_scope();
     let r = runtime
         .evaluate(contract, Cost::unsafe_max(), HashMap::new(), random)
         .await;

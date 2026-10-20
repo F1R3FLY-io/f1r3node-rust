@@ -1,0 +1,22 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc da891c77dffc220ef66586ac5fedfaa4c635c359860529e741c0fc46f0703912 # shrinks to pars = 0, body = 0, guard = 0, random_state = 0, dimension = 0, consume = false
+cc 2fda0d5ca4c0c2deae958948592f8d5114fd9ac05130819c43c62d865c498f64 # shrinks to first_pars = 0, second_pars = 0, first_body = 0, second_body = 0, first_guard = 1, second_guard = 1, random_state = 0
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5da9ed68640206298b73e2f819e898cc11a92308cfb1c1750647fa3fadde062a # shrinks to small = 0, extra = 1, random_state = 0
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 416ce4091b3a6ff1582c55d8f06606191eb68b6d47a509ab0870b9810ea6dc08 # shrinks to pars = 0, random_state = 0, body = 0, guard = 0

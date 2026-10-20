@@ -14,35 +14,42 @@ use crypto::rust::signatures::signed::Signed;
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rhoapi::g_unforgeable::UnfInstance::{
+    GAuthorityIdBody, GDeployerIdBody, GPrincipalIdBody, GPrivateBody,
+};
+use models::rhoapi::{
+    Bundle, ETuple, Expr, GAuthorityId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable,
+    ListParWithRandom, Par, Var,
+};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::rholang::implicits::single_expr;
 use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+use super::accounting::RuntimeBudget;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
+use super::execution_space::ExecutionSpace;
 use super::grpc_client_service::GrpcClientService;
 use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
-use super::rho_runtime::RhoISpace;
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
-    RhoSysAuthToken, RhoUri,
+    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber,
+    RhoSingleCustodyId, RhoString, RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
 #[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
+use crate::rust::interpreter::rho_type::{Extractor, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
@@ -604,9 +611,90 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
     ])
 }
 
+/// Added by DR-114: the processes that native funded execution records and
+/// replays. It extends dev's `non_deterministic_ops` with the four Chroma
+/// processes that dev also runs in replay (U5, oracle mode). The legacy path
+/// keeps calling `non_deterministic_ops`.
+pub fn is_native_recorded_op(body_ref: BodyRef) -> bool {
+    matches!(
+        body_ref,
+        BodyRefs::GPT4
+            | BodyRefs::DALLE3
+            | BodyRefs::TEXT_TO_AUDIO
+            | BodyRefs::OLLAMA_CHAT
+            | BodyRefs::OLLAMA_GENERATE
+            | BodyRefs::OLLAMA_MODELS
+            | BodyRefs::GRPC_TELL
+            | BodyRefs::CHROMA_QUERY
+            | BodyRefs::CHROMA_GET_COLLECTION_META
+            | BodyRefs::CHROMA_CREATE_COLLECTION
+            | BodyRefs::CHROMA_UPSERT_ENTRIES
+            | BodyRefs::CHROMA_DELETE_DOCUMENTS
+    )
+}
+
+/// Added by DR-114: the processes that take the native path: the recorded
+/// set and the four print processes.
+fn is_native_external_process(body_ref: BodyRef) -> bool {
+    is_native_recorded_op(body_ref)
+        || matches!(
+            body_ref,
+            BodyRefs::STDOUT | BodyRefs::STDOUT_ACK | BodyRefs::STDERR | BodyRefs::STDERR_ACK
+        )
+}
+
+// Added by DR-114: the codes of a native external-service failure reply. The
+// message is fixed text that names the process. It never carries the
+// provider's text, because provider errors can echo masked keys.
+const EXT_BAD_ARG: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_BAD_ARG");
+const EXT_FAILED: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_FAILED");
+const EXT_OUTPUT_TOO_LARGE: super::io::errors::FserrCode =
+    super::io::errors::FserrCode("EXT_OUTPUT_TOO_LARGE");
+
+/// Added by DR-114: the outcome of one external-service call in native play.
+enum NativeCallOutcome {
+    /// The service answered. The reply is dev's bare value.
+    Reply(Vec<Par>),
+    /// The call is well shaped, but an argument has the wrong content.
+    BadArgument,
+    /// The service failed or is disabled.
+    Failed,
+}
+
+/// Added by DR-114: the name, the arity and the acknowledgement of each
+/// recorded process. `grpcTell` is fire-and-forget and has no ack.
+fn native_recorded_signature(
+    body_ref: BodyRef,
+) -> Result<(&'static str, usize, bool), InterpreterError> {
+    Ok(match body_ref {
+        BodyRefs::GPT4 => ("gpt4", 2, true),
+        BodyRefs::DALLE3 => ("dalle3", 2, true),
+        BodyRefs::TEXT_TO_AUDIO => ("text_to_audio", 2, true),
+        BodyRefs::OLLAMA_CHAT => ("ollama_chat", 3, true),
+        BodyRefs::OLLAMA_GENERATE => ("ollama_generate", 3, true),
+        BodyRefs::OLLAMA_MODELS => ("ollama_models", 1, true),
+        BodyRefs::GRPC_TELL => ("grpc_tell", 3, false),
+        BodyRefs::CHROMA_QUERY => ("chroma_query", 3, true),
+        BodyRefs::CHROMA_GET_COLLECTION_META => ("chroma_get_collection_meta", 2, true),
+        BodyRefs::CHROMA_CREATE_COLLECTION => ("chroma_create_collection", 4, true),
+        BodyRefs::CHROMA_UPSERT_ENTRIES => ("chroma_upsert_entries", 3, true),
+        BodyRefs::CHROMA_DELETE_DOCUMENTS => ("chroma_delete_documents", 3, true),
+        other => {
+            return Err(InterpreterError::BugFoundError(format!(
+                "native recorded call: unknown process {other}"
+            )))
+        }
+    })
+}
+
+/// Added by DR-114: a `[false, code, message]` failure reply.
+fn native_failure_reply(name: &str, code: super::io::errors::FserrCode, text: &str) -> Par {
+    super::io::response::err(code, format!("{name}: {text}"))
+}
+
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
@@ -617,11 +705,12 @@ pub struct ProcessContext {
     /// consulting it directly instead of duplicating the table.
     pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
+    pub cost: RuntimeBudget,
 }
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
+        space: ExecutionSpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
@@ -631,6 +720,7 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        cost: RuntimeBudget,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -650,6 +740,7 @@ impl ProcessContext {
                 grpc_client_service,
                 chromadb_service,
             ),
+            cost,
         }
     }
 }
@@ -718,7 +809,57 @@ impl Definition {
                 + Sync,
         >,
     ) {
-        (self.body_ref, (self.handler)(context))
+        // Changed by DR-114: native funded execution records and replays
+        // external outputs instead of banning them (U1-U3, PM:354-389, File I/O
+        // oracle mode). The legacy path still runs dev's handlers.
+        // let forbidden = matches!(
+        //     self.body_ref,
+        //     BodyRefs::STDOUT
+        //         | BodyRefs::STDOUT_ACK
+        //         | BodyRefs::STDERR
+        //         | BodyRefs::STDERR_ACK
+        //         | BodyRefs::GPT4
+        //         | BodyRefs::DALLE3
+        //         | BodyRefs::TEXT_TO_AUDIO
+        //         | BodyRefs::GRPC_TELL
+        //         | BodyRefs::OLLAMA_CHAT
+        //         | BodyRefs::OLLAMA_GENERATE
+        //         | BodyRefs::OLLAMA_MODELS
+        //         | BodyRefs::CHROMA_CREATE_COLLECTION
+        //         | BodyRefs::CHROMA_GET_COLLECTION_META
+        //         | BodyRefs::CHROMA_UPSERT_ENTRIES
+        //         | BodyRefs::CHROMA_QUERY
+        //         | BodyRefs::CHROMA_DELETE_DOCUMENTS
+        // );
+        let native = is_native_external_process(self.body_ref);
+        let body_ref = self.body_ref;
+        let cost = context.cost.clone();
+        let native_processes = context.system_processes.clone();
+        let handler = (self.handler)(context);
+        (
+            self.body_ref,
+            Box::new(move |args| {
+                // Changed by DR-114: see above.
+                // if forbidden && cost.native_execution_active() {
+                //     Box::pin(async {
+                //         Err(InterpreterError::ReduceError(
+                //             "native funded execution forbids external service calls".to_string(),
+                //         ))
+                //     })
+                // } else {
+                //     handler(args)
+                // }
+                if native && cost.native_execution_active() {
+                    let processes = native_processes.clone();
+                    let cost = cost.clone();
+                    Box::pin(
+                        async move { processes.native_external_call(body_ref, args, &cost).await },
+                    )
+                } else {
+                    handler(args)
+                }
+            }),
+        )
     }
 
     pub fn to_urn_map(&self) -> (String, Par) {
@@ -770,9 +911,16 @@ impl BlockData {
 }
 
 #[derive(Clone)]
+pub enum DeployAuthority {
+    Legacy(PublicKey),
+    Principal(GPrincipalId),
+    Compound(GAuthorityId),
+}
+
+#[derive(Clone)]
 pub struct DeployData {
     pub timestamp: i64,
-    pub deployer_id: PublicKey,
+    pub authority: DeployAuthority,
     pub deploy_id: Vec<u8>,
 }
 
@@ -780,7 +928,7 @@ impl DeployData {
     pub fn empty() -> Self {
         DeployData {
             timestamp: 0,
-            deployer_id: PublicKey::from_bytes(&[0]),
+            authority: DeployAuthority::Legacy(PublicKey::from_bytes(&[0])),
             deploy_id: vec![0],
         }
     }
@@ -788,8 +936,72 @@ impl DeployData {
     pub fn from_deploy(template: &Signed<casper_message::DeployData>) -> Self {
         DeployData {
             timestamp: template.data.time_stamp,
-            deployer_id: template.pk.clone(),
+            authority: DeployAuthority::Legacy(template.pk.clone()),
             deploy_id: template.sig.to_vec(),
+        }
+    }
+
+    pub fn from_cosigned(
+        template: &crypto::rust::signatures::signed::Cosigned<
+            models::rust::cost_deploy_data::DeployData,
+        >,
+    ) -> Self {
+        if template.is_envelope_bound() {
+            let identity = template
+                .envelope_commitment()
+                .expect("validated protocol-v6 envelope identity");
+            return Self::from_bound(template, template.data.time_stamp, &identity);
+        }
+        let primary = template.primary();
+        DeployData {
+            timestamp: template.data.time_stamp,
+            authority: DeployAuthority::Legacy(primary.pk.clone()),
+            deploy_id: primary.sig.to_vec(),
+        }
+    }
+
+    pub fn from_envelope(template: &DeployEnvelope) -> Self {
+        let timestamp = template.body().time_stamp;
+        let identity = template.identity().as_bytes();
+        match template.view() {
+            DeployEnvelopeRef::Legacy(_) => Self {
+                timestamp,
+                authority: DeployAuthority::Legacy(template.primary().pk.clone()),
+                deploy_id: template.identity().as_bytes().to_vec(),
+            },
+            DeployEnvelopeRef::BodyV61(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::Funded(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::OfferedFunded(template) => {
+                Self::from_bound(template, timestamp, identity)
+            }
+        }
+    }
+
+    fn from_bound<A>(
+        template: &crypto::rust::signatures::signed::Cosigned<A>,
+        timestamp: i64,
+        identity: &[u8],
+    ) -> Self
+    where
+        A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage,
+    {
+        let selected = template
+            .selected_signers_v61()
+            .expect("validated protocol-v6 selected signers");
+        let authority = if let [signer] = selected.as_slice() {
+            DeployAuthority::Principal(GPrincipalId {
+                key_family: 1,
+                public_key: signer.pk.bytes.to_vec(),
+            })
+        } else {
+            DeployAuthority::Compound(GAuthorityId {
+                id: models::rust::normalizer_env::authority_id_v61(&selected),
+            })
+        };
+        Self {
+            timestamp,
+            authority,
+            deploy_id: identity.to_vec(),
         }
     }
 }
@@ -798,7 +1010,7 @@ impl DeployData {
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
@@ -816,7 +1028,7 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
+        space: ExecutionSpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
@@ -984,6 +1196,336 @@ impl SystemProcesses {
         Ok(ret)
     }
 
+    // DR-114 native section start
+
+    /// Added by DR-114: an external-service or print call in native funded
+    /// execution.
+    pub async fn native_external_call(
+        &self,
+        body_ref: BodyRef,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+        cost: &RuntimeBudget,
+    ) -> Result<Vec<Par>, InterpreterError> {
+        match body_ref {
+            BodyRefs::STDOUT | BodyRefs::STDOUT_ACK | BodyRefs::STDERR | BodyRefs::STDERR_ACK => {
+                self.native_print(body_ref, contract_args).await
+            }
+            _ => {
+                self.native_recorded_call(body_ref, contract_args, cost)
+                    .await
+            }
+        }
+    }
+
+    /// Added by DR-114: stdout and stderr in native funded execution. Play
+    /// formats and prints. Replay neither formats nor prints. The
+    /// acknowledged forms reply `Nil` in both.
+    async fn native_print(
+        &self,
+        body_ref: BodyRef,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let (name, acknowledged, to_stderr) = match body_ref {
+            BodyRefs::STDOUT => ("std_out", false, false),
+            BodyRefs::STDOUT_ACK => ("std_out_ack", true, false),
+            BodyRefs::STDERR => ("std_err", false, true),
+            _ => ("std_err_ack", true, true),
+        };
+        let Some((produce, is_replay, _, args)) = self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error(name));
+        };
+        let (message, ack) = match (acknowledged, args.as_slice()) {
+            (false, [message]) => (message, None),
+            (true, [message, ack]) => (message, Some(ack)),
+            _ => return Err(illegal_argument_error(name)),
+        };
+        if !is_replay {
+            let text = stacker::maybe_grow(1 << 20, 2 << 20, || {
+                PrettyPrinter::new().build_string_from_message(message)
+            });
+            if to_stderr {
+                eprintln!("{text}");
+            } else {
+                println!("{text}");
+            }
+        }
+        match ack {
+            Some(ack) => {
+                let output = vec![Par::default()];
+                produce(&output, ack).await?;
+                Ok(output)
+            }
+            None => Ok(vec![]),
+        }
+    }
+
+    /// Added by DR-114: one recorded external-service call. Play calls the
+    /// service once, and the dispatcher records the reply on the triggering
+    /// produce. Replay produces the record and never calls the service. A
+    /// failure is a paid `[false, code, message]` reply, so it is recorded and
+    /// replayed like a success.
+    async fn native_recorded_call(
+        &self,
+        body_ref: BodyRef,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+        cost: &RuntimeBudget,
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let (name, arity, acknowledged) = native_recorded_signature(body_ref)?;
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error(name));
+        };
+        if args.len() != arity {
+            return Err(illegal_argument_error(name));
+        }
+        let (request, ack) = if acknowledged {
+            (&args[..arity - 1], args.last())
+        } else {
+            (&args[..], None)
+        };
+        let reply = if is_replay {
+            if previous_output.is_empty() {
+                return Err(InterpreterError::BugFoundError(format!(
+                    "native replay of {name} has no recorded output"
+                )));
+            }
+            previous_output
+        } else {
+            match self.native_service_call(body_ref, request).await {
+                NativeCallOutcome::Reply(reply) => {
+                    let bytes = reply.iter().try_fold(0_u64, |total, par| {
+                        u64::try_from(par.encoded_len())
+                            .ok()
+                            .and_then(|bytes| bytes.checked_add(64))
+                            .and_then(|bytes| total.checked_add(bytes))
+                    });
+                    match bytes {
+                        Some(bytes) if cost.take_native_record_room(bytes) => reply,
+                        _ => vec![native_failure_reply(
+                            name,
+                            EXT_OUTPUT_TOO_LARGE,
+                            "external output exceeds the record room",
+                        )],
+                    }
+                }
+                NativeCallOutcome::BadArgument => {
+                    vec![native_failure_reply(name, EXT_BAD_ARG, "invalid argument")]
+                }
+                NativeCallOutcome::Failed => vec![native_failure_reply(
+                    name,
+                    EXT_FAILED,
+                    "external service failed",
+                )],
+            }
+        };
+        if let Some(ack) = ack {
+            if let Err(cause) = produce(&reply, ack).await {
+                return Err(InterpreterError::ProduceFailureWithOutput {
+                    cause: Box::new(cause),
+                    output_not_produced: reply.iter().map(|par| par.encode_to_vec()).collect(),
+                });
+            }
+        }
+        Ok(reply)
+    }
+
+    /// Added by DR-114: the service call of one recorded process in native
+    /// play. It parses the request as dev's handler does, and keeps dev's
+    /// bare reply on success.
+    async fn native_service_call(&self, body_ref: BodyRef, request: &[Par]) -> NativeCallOutcome {
+        use NativeCallOutcome::{BadArgument, Failed, Reply};
+        match body_ref {
+            BodyRefs::GPT4 | BodyRefs::DALLE3 => {
+                let [prompt] = request else {
+                    return BadArgument;
+                };
+                let Some(prompt) = RhoString::unapply(prompt) else {
+                    return BadArgument;
+                };
+                let service = self.openai_service.lock().await.clone();
+                let response = if body_ref == BodyRefs::GPT4 {
+                    service.gpt4_chat_completion(&prompt).await
+                } else {
+                    service.dalle3_create_image(&prompt).await
+                };
+                match response {
+                    Ok(response) => Reply(vec![RhoString::create_par(response)]),
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::TEXT_TO_AUDIO => {
+                let [input] = request else { return BadArgument };
+                let Some(input) = RhoString::unapply(input) else {
+                    return BadArgument;
+                };
+                let service = self.openai_service.lock().await.clone();
+                let audio_path = format!("audio_{}.mp3", uuid::Uuid::new_v4());
+                match service.create_audio_speech(&input, &audio_path).await {
+                    Ok(bytes) => Reply(vec![RhoByteArray::create_par(bytes)]),
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::OLLAMA_CHAT | BodyRefs::OLLAMA_GENERATE => {
+                let [model, prompt] = request else {
+                    return BadArgument;
+                };
+                let (Some(model), Some(prompt)) =
+                    (RhoString::unapply(model), RhoString::unapply(prompt))
+                else {
+                    return BadArgument;
+                };
+                let service = self.ollama_service.lock().await.clone();
+                let response = if body_ref == BodyRefs::OLLAMA_CHAT {
+                    let messages = vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: prompt,
+                    }];
+                    service.chat(Some(&model), messages).await
+                } else {
+                    service.generate(Some(&model), &prompt).await
+                };
+                match response {
+                    Ok(response) => Reply(vec![RhoString::create_par(response)]),
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::OLLAMA_MODELS => {
+                let service = self.ollama_service.lock().await.clone();
+                match service.list_models().await {
+                    Ok(models) => {
+                        let list_expr = Expr {
+                            expr_instance: Some(ExprInstance::EListBody(models::rhoapi::EList {
+                                ps: models.into_iter().map(RhoString::create_par).collect(),
+                                locally_free: BitSet::default(),
+                                connective_used: false,
+                                remainder: None,
+                            })),
+                        };
+                        Reply(vec![Par::default().with_exprs(vec![list_expr])])
+                    }
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::GRPC_TELL => {
+                let [host, port, payload] = request else {
+                    return BadArgument;
+                };
+                let (Some(host), Some(port), Some(payload)) = (
+                    RhoString::unapply(host),
+                    RhoNumber::unapply(port),
+                    RhoString::unapply(payload),
+                ) else {
+                    return BadArgument;
+                };
+                let Ok(port) = u64::try_from(port) else {
+                    return BadArgument;
+                };
+                match self.grpc_client_service.tell(&host, port, &payload).await {
+                    Ok(_) => Reply(vec![Par::default()]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_CREATE_COLLECTION => {
+                let [name, ignore_or_update, metadata] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(ignore_or_update), Some(metadata)) = (
+                    RhoString::unapply(name),
+                    RhoBoolean::unapply(ignore_or_update),
+                    if metadata.is_nil() {
+                        Some(None)
+                    } else {
+                        <Metadata as Extractor>::unapply(metadata).map(Some)
+                    },
+                ) else {
+                    return BadArgument;
+                };
+                match self
+                    .chromadb_service
+                    .create_collection(&name, ignore_or_update, metadata)
+                    .await
+                {
+                    Ok(_) => Reply(vec![Par::default()]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_GET_COLLECTION_META => {
+                let [name] = request else { return BadArgument };
+                let Some(name) = RhoString::unapply(name) else {
+                    return BadArgument;
+                };
+                match self.chromadb_service.get_collection_meta(&name).await {
+                    Ok(None) => Reply(vec![RhoNil::create_par()]),
+                    Ok(Some(meta)) => Reply(vec![meta.into()]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_UPSERT_ENTRIES => {
+                let [name, entries] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(entries)) = (
+                    RhoString::unapply(name),
+                    <CollectionEntries as Extractor>::unapply(entries),
+                ) else {
+                    return BadArgument;
+                };
+                match self.chromadb_service.upsert_entries(&name, entries).await {
+                    Ok(_) => Reply(vec![RhoString::create_par(name)]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_QUERY => {
+                let [name, doc_texts] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(doc_texts)) = (
+                    RhoString::unapply(name),
+                    <Vec<RhoString> as Extractor>::unapply(doc_texts),
+                ) else {
+                    return BadArgument;
+                };
+                match self
+                    .chromadb_service
+                    .query(&name, doc_texts.iter().map(|text| text.as_ref()).collect())
+                    .await
+                {
+                    Ok(results) => Reply(vec![RhoList::create_par(
+                        results.into_iter().map(Into::into).collect(),
+                    )]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_DELETE_DOCUMENTS => {
+                let [name, doc_ids] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(doc_ids)) = (
+                    RhoString::unapply(name),
+                    <Vec<RhoString> as Extractor>::unapply(doc_ids),
+                ) else {
+                    return BadArgument;
+                };
+                match self.chromadb_service.delete_documents(&name, doc_ids).await {
+                    Ok(_) => Reply(vec![RhoString::create_par(name)]),
+                    Err(_) => Failed,
+                }
+            }
+            // The signature check admits only the recorded set, and a Chroma
+            // process exists only in a chromadb build.
+            _ => Failed,
+        }
+    }
+
+    // DR-114 native section end
+
     pub async fn vault_address(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -1020,7 +1562,7 @@ impl SystemProcesses {
             },
 
             "fromDeployerId" => {
-                match RhoDeployerId::unapply(second_par).map(VaultAddress::from_deployer_id) {
+                match RhoSingleCustodyId::unapply(second_par).map(VaultAddress::from_deployer_id) {
                     Some(Some(ra)) => RhoString::create_par(ra.to_base58()),
                     _ => Par::default(),
                 }
@@ -1057,7 +1599,7 @@ impl SystemProcesses {
             return Err(illegal_argument_error("deployer_id_ops"));
         };
 
-        let response = RhoDeployerId::unapply(second_par)
+        let response = RhoSingleCustodyId::unapply(second_par)
             .map(RhoByteArray::create_par)
             .unwrap_or_default();
 
@@ -1214,7 +1756,11 @@ impl SystemProcesses {
         }
 
         // 3. Unknown URN.
-        Err(InterpreterError::ReduceError(format!(
+        // Changed by DR-128 (bug 11414): an unknown URN is an illegal argument,
+        // as the other argument checks of this process are. Native execution
+        // makes it the user failure `SystemProcessShapeError` (DR-114).
+        // Err(InterpreterError::ReduceError(format!(
+        Err(InterpreterError::IllegalArgumentError(format!(
             "registry_lookup: unknown URN: {}",
             urn_str
         )))
@@ -1293,12 +1839,14 @@ impl SystemProcesses {
             return Err(illegal_argument_error("get_block_data"));
         };
 
-        let data = block_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
-            RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
-        ];
+        let output = {
+            let data = block_data.read().await;
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
+                RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1321,12 +1869,27 @@ impl SystemProcesses {
             ));
         };
 
-        let data = deploy_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
-            RhoDeployId::create_par(data.deploy_id.clone()),
-        ];
+        let output = {
+            let data = deploy_data.read().await;
+            let authority = match &data.authority {
+                DeployAuthority::Legacy(public_key) => GUnforgeable {
+                    unf_instance: Some(GDeployerIdBody(GDeployerId {
+                        public_key: public_key.bytes.to_vec(),
+                    })),
+                },
+                DeployAuthority::Principal(principal) => GUnforgeable {
+                    unf_instance: Some(GPrincipalIdBody(principal.clone())),
+                },
+                DeployAuthority::Compound(authority) => GUnforgeable {
+                    unf_instance: Some(GAuthorityIdBody(authority.clone())),
+                },
+            };
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
+                Par::default().with_unforgeables(vec![authority]),
+                RhoDeployId::create_par(data.deploy_id.clone()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -2179,7 +2742,7 @@ impl SystemProcesses {
         };
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 
@@ -2251,7 +2814,7 @@ impl SystemProcesses {
         let result_par = RhoList::create_par(result_par_vec);
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 

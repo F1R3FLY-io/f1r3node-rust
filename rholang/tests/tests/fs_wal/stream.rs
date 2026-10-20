@@ -27,6 +27,9 @@ use super::*;
 /// divergences.  This pin makes the ban load-bearing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn entries_stream_open_rejects_consensus_with_fserr_unsupported() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
     let runtime = create_runtime().await;

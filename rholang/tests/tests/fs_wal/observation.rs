@@ -34,6 +34,9 @@ use super::*;
 /// omission proof.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_entries_consensus_mode_smoke_test() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     // fs_entries needs to safe_descend from root into a
     // non-empty rel (safe_descend rejects empty rel with
@@ -2291,6 +2294,9 @@ async fn consensus_fs_entries_reexecute_matches_leader_on_identical_state() {
 /// about ordering flakiness.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_fs_entries_reexecute_detects_divergence() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
 
     let dir = tempfile::tempdir().unwrap();
@@ -2562,6 +2568,9 @@ async fn consensus_fs_entries_reexecute_handles_empty_directory() {
 /// would surface here as a non-empty WAL.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oracular_fs_entries_on_empty_directory_returns_ok_empty_no_wal() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("empty_sub")).unwrap();
     let runtime = create_runtime().await;
@@ -2954,6 +2963,9 @@ async fn consensus_fs_seek_reexecute_moves_follower_os_fd_position() {
 /// forgot to update the test's expectations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_fs_seek_reexecute_detects_divergence() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("data.bin");
     // Leader sees a 16-byte file → SEEK_END returns 16.

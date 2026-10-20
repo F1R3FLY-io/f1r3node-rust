@@ -82,6 +82,9 @@ struct Conf {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut conf = Conf::parse();
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
 
     let data_dir = conf
         .data_dir

@@ -3,6 +3,33 @@ use std::fmt::Debug;
 
 use crate::rust::ByteBuffer;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AtomicStoreOperation {
+    Put(ByteBuffer),
+    PutIfAbsentOrEqual(ByteBuffer),
+    Delete,
+    CompareAndSwap {
+        expected: Option<ByteBuffer>,
+        replacement: Option<ByteBuffer>,
+    },
+}
+
+pub struct AtomicStoreMutation<'a> {
+    pub store: &'a dyn KeyValueStore,
+    pub key: ByteBuffer,
+    pub operation: AtomicStoreOperation,
+}
+
+pub type ValueReader<'a> = dyn FnMut(Option<&[u8]>) -> Result<(), KvStoreError> + 'a;
+pub type EntryReader<'a> = dyn FnMut(&[u8], &[u8]) -> Result<(), KvStoreError> + 'a;
+
+pub fn strict_atomic_mutate(mutations: &[AtomicStoreMutation<'_>]) -> Result<(), KvStoreError> {
+    match mutations.first() {
+        Some(first) => first.store.strict_atomic_mutate(mutations),
+        None => Ok(()),
+    }
+}
+
 // See shared/src/main/scala/coop/rchain/store/KeyValueStore.scala
 pub trait KeyValueStore: Send + Sync + 'static {
     /// Enables downcasting to a concrete store type (e.g. `LmdbKeyValueStore`)
@@ -14,6 +41,22 @@ pub trait KeyValueStore: Send + Sync + 'static {
     fn as_any(&self) -> &dyn std::any::Any;
 
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError>;
+
+    fn with_value(
+        &self,
+        key: &ByteBuffer,
+        reader: &mut ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        let value = self.get(&vec![key.clone()])?.into_iter().next().flatten();
+        reader(value.as_deref())
+    }
+
+    fn visit_entries(&self, reader: &mut EntryReader<'_>) -> Result<(), KvStoreError> {
+        for (key, value) in self.to_map()? {
+            reader(&key, &value)?;
+        }
+        Ok(())
+    }
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError>;
 
@@ -31,6 +74,17 @@ pub trait KeyValueStore: Send + Sync + 'static {
     fn clone_box(&self) -> Box<dyn KeyValueStore>;
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError>;
+
+    fn strict_atomic_mutate(
+        &self,
+        _mutations: &[AtomicStoreMutation<'_>],
+    ) -> Result<(), KvStoreError> {
+        Err(KvStoreError::AtomicityUnavailable(
+            "key-value backend does not provide strict transactions".to_string(),
+        ))
+    }
+
+    fn supports_strict_atomic_mutate(&self) -> bool { false }
 
     fn print_store(&self) -> Result<(), KvStoreError>;
 
@@ -133,6 +187,8 @@ pub enum KvStoreError {
     SerializationError(String),
     InvalidArgument(String),
     LockError(String),
+    AtomicityUnavailable(String),
+    TransactionConflict(String),
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
     LastFinalizedBlockUninitialized,
@@ -155,6 +211,12 @@ impl std::fmt::Display for KvStoreError {
             KvStoreError::SerializationError(e) => write!(f, "SerializationError error: {}", e),
             KvStoreError::InvalidArgument(e) => write!(f, "Invalid argument: {}", e),
             KvStoreError::LockError(e) => write!(f, "Lock error: {}", e),
+            KvStoreError::AtomicityUnavailable(e) => {
+                write!(f, "Atomic transaction unavailable: {}", e)
+            }
+            KvStoreError::TransactionConflict(e) => {
+                write!(f, "Atomic transaction conflict: {}", e)
+            }
             KvStoreError::LastFinalizedBlockUninitialized => write!(
                 f,
                 "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"

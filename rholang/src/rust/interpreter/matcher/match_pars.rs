@@ -1,5 +1,5 @@
 use models::rhoapi::{
-    Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, ReceiveBind, Send,
+    Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, ReceiveBind, Send,
 };
 
 /*
@@ -56,6 +56,21 @@ pub fn compare_connectives_without_locally_free(a: &Connective, b: &Connective) 
     a.connective_instance == b.connective_instance
 }
 
+pub fn compare_conditionals_without_locally_free(a: &If, b: &If) -> bool {
+    a.condition
+        .as_ref()
+        .zip(b.condition.as_ref())
+        .is_some_and(|(left, right)| match_pars(left, right))
+        && a.if_true
+            .as_ref()
+            .zip(b.if_true.as_ref())
+            .is_some_and(|(left, right)| match_pars(left, right))
+        && a.if_false
+            .as_ref()
+            .zip(b.if_false.as_ref())
+            .is_some_and(|(left, right)| match_pars(left, right))
+}
+
 pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBind) -> bool {
     a.patterns
         .iter()
@@ -74,6 +89,10 @@ pub fn match_pars(target: &Par, pattern: &Par) -> bool {
         && target.matches.len() == pattern.matches.len()
         && target.unforgeables.len() == pattern.unforgeables.len()
         && target.bundles.len() == pattern.bundles.len()
+        && target.connectives.len() == pattern.connectives.len()
+        && target.conditionals.len() == pattern.conditionals.len()
+        && target.cost_signed_terms.len() == pattern.cost_signed_terms.len()
+        && target.cost_stacks.len() == pattern.cost_stacks.len()
         && target
             .sends
             .iter()
@@ -114,5 +133,12 @@ pub fn match_pars(target: &Par, pattern: &Par) -> bool {
             .iter()
             .zip(pattern.connectives.iter())
             .all(|(t, p)| compare_connectives_without_locally_free(t, p))
+        && target
+            .conditionals
+            .iter()
+            .zip(pattern.conditionals.iter())
+            .all(|(t, p)| compare_conditionals_without_locally_free(t, p))
+        && target.cost_signed_terms == pattern.cost_signed_terms
+        && target.cost_stacks == pattern.cost_stacks
         && target.connective_used == pattern.connective_used
 }

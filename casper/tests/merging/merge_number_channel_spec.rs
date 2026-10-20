@@ -162,6 +162,7 @@ async fn run_test_case(
     };
     let rm = mk_runtime_manager("merging-test", Some(mergeable_tags)).await;
     let mut runtime = rm.spawn_runtime().await.unwrap();
+    let _legacy_scope = runtime.cost.enter_legacy_scope();
 
     async fn run_rholang(
         runtime: &mut RhoRuntimeImpl,

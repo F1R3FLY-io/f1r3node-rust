@@ -1162,7 +1162,11 @@ async fn build_block_with_invalid_justification(
 
     let body = Body {
         state: post_state,
-        deploys: deploys.to_vec(),
+        deploys: deploys
+            .iter()
+            .cloned()
+            .map(models::rust::casper::protocol::casper_message::ProcessedUserDeploy::Legacy)
+            .collect(),
         rejected_deploys: vec![],
         system_deploys: vec![],
         extra_bytes: Bytes::new(),

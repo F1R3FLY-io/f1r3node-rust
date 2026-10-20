@@ -44,6 +44,25 @@ impl Sortable<GUnforgeable> for UnforgeableSortMatcher {
                     },
                     score: Tree::<ScoreAtom>::create_node_from_i32(Score::SYS_AUTH_TOKEN, vec![]),
                 },
+
+                UnfInstance::GAuthorityIdBody(id) => ScoredTerm {
+                    term: GUnforgeable {
+                        unf_instance: Some(UnfInstance::GAuthorityIdBody(id.clone())),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::AUTHORITY_ID, vec![
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(id.id.clone()),
+                    ]),
+                },
+
+                UnfInstance::GPrincipalIdBody(id) => ScoredTerm {
+                    term: GUnforgeable {
+                        unf_instance: Some(UnfInstance::GPrincipalIdBody(id.clone())),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::PRINCIPAL_ID, vec![
+                        Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(id.key_family)),
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(id.public_key.clone()),
+                    ]),
+                },
             },
             None => ScoredTerm {
                 term: unf.clone(),
