@@ -382,7 +382,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/scripts
 
-      - name: Reject a pull request with head master or dev
+      - name: Reject a pull request with a protected head
         shell: bash -euo pipefail {0}
         env:
           EVENT_NAME: ${{ github.event_name }}

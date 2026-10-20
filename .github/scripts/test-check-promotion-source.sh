@@ -82,4 +82,24 @@ set -e
 expect_reject pull_request dev master example/repo '1; rm'
 [[ ! -s "$TMP/gh.log" ]] || fail "a non-numeric PR_NUMBER called gh: $(cat "$TMP/gh.log")"
 
-printf 'PASS: the protected-head check rejects a pull request with head master or dev from this repository under pull_request and pull_request_target, closes it with a reason when PR_NUMBER is set, and accepts fork, temporary, and non-pull-request heads.\n'
+expect_reject pull_request ca-release ca-canary example/repo
+[[ "$out" == *"just ca-promote"* ]] || fail "a promotion with head ca-canary does not name just ca-promote: $out"
+expect_reject pull_request ca-canary ca-release example/repo
+[[ "$out" == *"just ca-backmerge"* ]] || fail "a back-merge with head ca-release does not name just ca-backmerge: $out"
+expect_reject pull_request dev ca-canary example/repo
+[[ "$out" == *"temporary branch at the ca-canary commit"* ]] || fail "head ca-canary to dev does not name a temporary branch: $out"
+expect_reject pull_request ca-canary ca-canary example/repo
+expect_reject pull_request master ca-release example/repo
+expect_reject pull_request_target ca-release ca-canary example/repo
+
+expect_accept pull_request ca-canary ca/a1a-coalescing example/repo 12
+expect_accept pull_request ca-release promote/ca-release-20261020-1200 example/repo 12
+expect_accept pull_request ca-canary backmerge/ca-release-0123456789ab example/repo 12
+expect_accept pull_request ca-release ca-canary other/fork 12
+expect_accept pull_request_target ca-canary ca-release other/fork 12
+
+expect_reject pull_request_target ca-canary ca-release example/repo 791
+grep -q '^pr close 791 --repo example/repo --comment Closed by the protected head guard\. Do not open a back-merge with head ca-release\..* Reason: ' "$TMP/gh.log" ||
+	fail "a rejected ca-release pull request was not closed with the remedy and the reason: $(cat "$TMP/gh.log")"
+
+printf 'PASS: the protected-head check rejects a pull request with head master, dev, ca-canary, or ca-release from this repository under pull_request and pull_request_target, closes it with a reason when PR_NUMBER is set, and accepts fork, temporary, and non-pull-request heads.\n'

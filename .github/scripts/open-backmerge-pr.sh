@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# Opens a master -> dev back-merge pull request from a temporary backmerge/*
-# branch at the current origin/master commit.
+# Opens a back-merge pull request from a temporary backmerge/* branch at the
+# current commit of the source branch. Two back-merges exist:
 #
-# Do not open the back-merge from master itself. A pull request with head
-# master shows "Update branch", which merges dev into master through the
-# admin bypass of masterProtect. On #747 that pushed dev onto master outside
-# promotion (bf4915d57, 2026-10-16). The Promotion Source check in ci.yml
-# rejects a pull request with head master.
+#   master -> dev            `just backmerge`, branch backmerge/master-<sha>
+#   ca-release -> ca-canary  `just ca-backmerge`, branch backmerge/ca-release-<sha>
+#
+# BACKMERGE_SOURCE and BACKMERGE_TARGET select the back-merge. They default to
+# master and dev, and any other pair is refused.
+#
+# Do not open the back-merge from the source branch itself. A pull request
+# with head master shows "Update branch", which merges dev into master through
+# the admin bypass of masterProtect. On #747 that pushed dev onto master
+# outside promotion (bf4915d57, 2026-10-16). The Promotion Source check in
+# ci.yml rejects a pull request with a protected head.
 #
 # The branch is created through the GitHub API, so no local checkout or push
 # (and no pre-push hook) is needed. The pull request is opened with the
 # caller's gh login, so CI runs on it. The dev merge queue merges with a merge
-# commit, so dev keeps the master history.
+# commit, so dev keeps the master history. The ca-canary queue must merge the
+# same way.
 #
 # The Promote and Back-merge workflow runs this script with a GitHub App token
 # and sets BACKMERGE_TRIGGERED_BY. The app is then the pull request author, so
@@ -19,8 +26,19 @@
 # body names that user and asks a different ci-maintainer to approve.
 set -euo pipefail
 
+source_branch="${BACKMERGE_SOURCE:-master}"
+target_branch="${BACKMERGE_TARGET:-dev}"
+case "$source_branch:$target_branch" in
+	master:dev) recipe="just backmerge" ;;
+	ca-release:ca-canary) recipe="just ca-backmerge" ;;
+	*)
+		echo "ERROR: no back-merge from '$source_branch' to '$target_branch'. Use master to dev or ca-release to ca-canary." >&2
+		exit 2
+		;;
+esac
+
 # Check the login first, before any git or gh call.
-creator="created by \`just backmerge\`"
+creator="created by \`$recipe\`"
 review=""
 if [ -n "${BACKMERGE_TRIGGERED_BY:-}" ]; then
 	login="${BACKMERGE_TRIGGERED_BY%"[bot]"}"
@@ -36,43 +54,43 @@ remote="${BACKMERGE_REMOTE:-origin}"
 repo="${BACKMERGE_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 stamp="${BACKMERGE_TIMESTAMP:-$(date -u +%Y%m%d-%H%M%S)}"
 
-git fetch --quiet "$remote" dev master
-sha="$(git rev-parse "$remote/master")"
-[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: $remote/master does not resolve to a commit." >&2; exit 2; }
+git fetch --quiet "$remote" "$target_branch" "$source_branch"
+sha="$(git rev-parse "$remote/$source_branch")"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: $remote/$source_branch does not resolve to a commit." >&2; exit 2; }
 
-if git merge-base --is-ancestor "$sha" "$remote/dev"; then
-	echo "Nothing to back-merge: $remote/dev already contains $remote/master (${sha:0:9})."
+if git merge-base --is-ancestor "$sha" "$remote/$target_branch"; then
+	echo "Nothing to back-merge: $remote/$target_branch already contains $remote/$source_branch (${sha:0:9})."
 	exit 0
 fi
 
-# One back-merge at a time. A second pull request would merge the same master
+# One back-merge at a time. A second pull request would merge the same source
 # commits twice and split the review.
-if ! open_prs="$(gh pr list --repo "$repo" --base dev --state open --json number,headRefName \
+if ! open_prs="$(gh pr list --repo "$repo" --base "$target_branch" --state open --json number,headRefName \
 	--jq '[.[] | select(.headRefName | startswith("backmerge/")) | "#\(.number)"] | join(" ")')"; then
-	echo "ERROR: the open pull requests to dev could not be listed." >&2
+	echo "ERROR: the open pull requests to $target_branch could not be listed." >&2
 	exit 1
 fi
 if [ -n "$open_prs" ]; then
-	echo "A back-merge pull request is already open: $open_prs. Merge or close it, then run just backmerge again."
+	echo "A back-merge pull request is already open: $open_prs. Merge or close it, then run $recipe again."
 	exit 0
 fi
 
-count="$(git rev-list --count "$remote/dev..$sha")"
-# The branch is named after the master commit. A second run for the same
+count="$(git rev-list --count "$remote/$target_branch..$sha")"
+# The branch is named after the source commit. A second run for the same
 # commit, also a concurrent one, then fails at branch creation instead of
 # opening a second pull request.
-branch="backmerge/master-${sha:0:12}"
+branch="backmerge/$source_branch-${sha:0:12}"
 if ! gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null; then
-	echo "ERROR: $branch was not created. If the branch exists, a back-merge of this master commit is already in progress." >&2
+	echo "ERROR: $branch was not created. If the branch exists, a back-merge of this $source_branch commit is already in progress." >&2
 	exit 1
 fi
-echo "Created $branch at ${sha:0:9} ($remote/master, $count commits not on dev)."
+echo "Created $branch at ${sha:0:9} ($remote/$source_branch, $count commits not on $target_branch)."
 
-if ! gh pr create --repo "$repo" --base dev --head "$branch" \
-	--title "Back-merge master into dev ($stamp)" \
-	--body "Merges \`master\` at \`${sha:0:9}\` into \`dev\` ($count commits).
+if ! gh pr create --repo "$repo" --base "$target_branch" --head "$branch" \
+	--title "Back-merge $source_branch into $target_branch ($stamp)" \
+	--body "Merges \`$source_branch\` at \`${sha:0:9}\` into \`$target_branch\` ($count commits).
 
-This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. Merge it with a merge commit, not a squash or a rebase, so that \`dev\` keeps the \`master\` history.$review"; then
+This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. Merge it with a merge commit, not a squash or a rebase, so that \`$target_branch\` keeps the \`$source_branch\` history.$review"; then
 	echo "ERROR: the pull request was not opened. Deleting $branch." >&2
 	gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null ||
 		echo "WARNING: delete $branch by hand." >&2

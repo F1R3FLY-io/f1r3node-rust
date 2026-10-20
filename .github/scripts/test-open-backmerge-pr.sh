@@ -132,4 +132,58 @@ if grep -q '^pr create' "$TMP/gh.log"; then
 	fail "a failed branch creation still opened a pull request: $(cat "$TMP/gh.log")"
 fi
 
-printf 'PASS: just backmerge opens the dev pull request from backmerge/master-<sha> at the master commit, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation for the same master commit, names the user who started the workflow, and deletes the branch when the pull request fails.\n'
+run_ca_tool() {
+	(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+		BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary BACKMERGE_TIMESTAMP="$1" bash "$TOOL")
+}
+
+git_quiet -C "$TMP/seed" push --quiet origin HEAD:refs/heads/ca-canary HEAD:refs/heads/ca-release
+
+: >"$TMP/gh.log"
+out="$(run_ca_tool 20261020-1300)"
+[[ "$out" == *"Nothing to back-merge: origin/ca-canary already contains origin/ca-release"* ]] ||
+	fail "ca-release equal to ca-canary did not report nothing to back-merge: $out"
+[[ ! -s "$TMP/gh.log" ]] || fail "ca-release equal to ca-canary still called gh: $(cat "$TMP/gh.log")"
+
+git_quiet -C "$TMP/seed" commit --allow-empty -m daily-feed
+git_quiet -C "$TMP/seed" push --quiet origin HEAD:refs/heads/ca-release
+release_sha="$(git -C "$TMP/seed" rev-parse HEAD)"
+ca_branch="backmerge/ca-release-${release_sha:0:12}"
+
+: >"$TMP/gh.log"
+out="$(run_ca_tool 20261020-1301)"
+[[ "$out" == *"Created $ca_branch at ${release_sha:0:9} (origin/ca-release, 1 commits not on ca-canary)"* ]] ||
+	fail "the ca-canary backmerge branch was not reported: $out"
+grep -q '^pr list --repo example/repo --base ca-canary --state open ' "$TMP/gh.log" ||
+	fail "the open back-merge pull requests to ca-canary were not listed: $(cat "$TMP/gh.log")"
+grep -Fxq "api repos/example/repo/git/refs -f ref=refs/heads/$ca_branch -f sha=$release_sha" "$TMP/gh.log" ||
+	fail "the ca-canary backmerge branch was not created at the ca-release commit: $(cat "$TMP/gh.log")"
+grep -q "^pr create --repo example/repo --base ca-canary --head $ca_branch --title Back-merge ca-release into ca-canary (20261020-1301) " "$TMP/gh.log" ||
+	fail "the pull request was not opened from the backmerge branch to ca-canary: $(cat "$TMP/gh.log")"
+grep -Fq 'created by `just ca-backmerge`.' "$TMP/gh.log" ||
+	fail "the just ca-backmerge body does not name just ca-backmerge: $(cat "$TMP/gh.log")"
+grep -Fq 'so that `ca-canary` keeps the `ca-release` history.' "$TMP/gh.log" ||
+	fail "the just ca-backmerge body does not ask for a merge commit into ca-canary: $(cat "$TMP/gh.log")"
+if grep -q -- '--head ca-release' "$TMP/gh.log"; then
+	fail "the pull request used ca-release as its head branch"
+fi
+
+: >"$TMP/gh.log"
+out="$(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_OPEN_BACKMERGE='#792' BACKMERGE_REPOSITORY=example/repo \
+	BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary BACKMERGE_TIMESTAMP=20261020-1302 bash "$TOOL")"
+[[ "$out" == *"already open: #792. Merge or close it, then run just ca-backmerge again."* ]] ||
+	fail "an open ca-canary back-merge pull request was not reported: $out"
+
+for pair in dev:master master:ca-canary ca-release:dev ca-canary:ca-release; do
+	: >"$TMP/gh.log"
+	if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+		BACKMERGE_REMOTE=no-such-remote BACKMERGE_SOURCE="${pair%%:*}" BACKMERGE_TARGET="${pair#*:}" \
+		BACKMERGE_TIMESTAMP=20261020-1303 bash "$TOOL") >/dev/null 2>"$TMP/err"; then
+		fail "the back-merge pair $pair did not fail the command"
+	fi
+	grep -q "no back-merge from '${pair%%:*}' to '${pair#*:}'" "$TMP/err" ||
+		fail "the back-merge pair $pair was not refused before git fetch: $(cat "$TMP/err")"
+	[[ ! -s "$TMP/gh.log" ]] || fail "the back-merge pair $pair still called gh: $(cat "$TMP/gh.log")"
+done
+
+printf 'PASS: just backmerge opens the dev pull request from backmerge/master-<sha> at the master commit, just ca-backmerge opens the ca-canary pull request from backmerge/ca-release-<sha> at the ca-release commit, other branch pairs are refused, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation for the same master commit, names the user who started the workflow, and deletes the branch when the pull request fails.\n'

@@ -124,6 +124,14 @@ promote:
 backmerge:
     bash .github/scripts/open-backmerge-pr.sh
 
+# Open a ca-canary to ca-release promotion PR from a temporary promote/* branch
+ca-promote:
+    PROMOTE_SOURCE=ca-canary PROMOTE_TARGET=ca-release bash .github/scripts/open-promotion-pr.sh
+
+# Open a ca-release to ca-canary back-merge PR from a temporary backmerge/* branch
+ca-backmerge:
+    BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary bash .github/scripts/open-backmerge-pr.sh
+
 # =================================================================
 # HELP
 # =================================================================

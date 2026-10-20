@@ -90,4 +90,47 @@ fi
 grep -Fxq "api -X DELETE repos/example/repo/git/refs/heads/promote/20261009-094501" "$TMP/gh.log" ||
 	fail "a failed pull request creation did not delete the promote branch: $(cat "$TMP/gh.log")"
 
-printf 'PASS: just promote opens the master pull request from a promote/* branch at the dev commit, names the user who started the workflow, and deletes the branch when the pull request fails.\n'
+run_ca_tool() {
+	(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PROMOTE_REPOSITORY=example/repo \
+		PROMOTE_SOURCE=ca-canary PROMOTE_TARGET=ca-release PROMOTE_TIMESTAMP="$1" bash "$TOOL")
+}
+
+git_quiet -C "$TMP/seed" push --quiet origin HEAD:refs/heads/ca-canary HEAD:refs/heads/ca-release
+
+: >"$TMP/gh.log"
+out="$(run_ca_tool 20261020-1200)"
+[[ "$out" == *"Nothing to promote: origin/ca-release already contains origin/ca-canary"* ]] ||
+	fail "ca-canary equal to ca-release did not report nothing to promote: $out"
+[[ ! -s "$TMP/gh.log" ]] || fail "ca-canary equal to ca-release still called gh: $(cat "$TMP/gh.log")"
+
+git_quiet -C "$TMP/seed" commit --allow-empty -m ca-item
+git_quiet -C "$TMP/seed" push --quiet origin HEAD:refs/heads/ca-canary
+canary_sha="$(git -C "$TMP/seed" rev-parse HEAD)"
+
+: >"$TMP/gh.log"
+out="$(run_ca_tool 20261020-1201)"
+[[ "$out" == *"Created promote/ca-release-20261020-1201 at ${canary_sha:0:9} (origin/ca-canary, 1 commits not on ca-release)"* ]] ||
+	fail "the ca-release promote branch was not reported: $out"
+grep -Fxq "api repos/example/repo/git/refs -f ref=refs/heads/promote/ca-release-20261020-1201 -f sha=$canary_sha" "$TMP/gh.log" ||
+	fail "the ca-release promote branch was not created at the ca-canary commit: $(cat "$TMP/gh.log")"
+grep -q '^pr create --repo example/repo --base ca-release --head promote/ca-release-20261020-1201 --title Promote ca-canary to ca-release (20261020-1201) ' "$TMP/gh.log" ||
+	fail "the pull request was not opened from the promote branch to ca-release: $(cat "$TMP/gh.log")"
+grep -Fq 'created by `just ca-promote`.' "$TMP/gh.log" ||
+	fail "the just ca-promote body does not name just ca-promote: $(cat "$TMP/gh.log")"
+if grep -q -- '--head ca-canary' "$TMP/gh.log"; then
+	fail "the pull request used ca-canary as its head branch"
+fi
+
+for pair in master:dev dev:ca-release ca-canary:master ca-release:ca-canary; do
+	: >"$TMP/gh.log"
+	if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PROMOTE_REPOSITORY=example/repo \
+		PROMOTE_REMOTE=no-such-remote PROMOTE_SOURCE="${pair%%:*}" PROMOTE_TARGET="${pair#*:}" \
+		PROMOTE_TIMESTAMP=20261020-1202 bash "$TOOL") >/dev/null 2>"$TMP/err"; then
+		fail "the promotion pair $pair did not fail the command"
+	fi
+	grep -q "no promotion from '${pair%%:*}' to '${pair#*:}'" "$TMP/err" ||
+		fail "the promotion pair $pair was not refused before git fetch: $(cat "$TMP/err")"
+	[[ ! -s "$TMP/gh.log" ]] || fail "the promotion pair $pair still called gh: $(cat "$TMP/gh.log")"
+done
+
+printf 'PASS: just promote opens the master pull request from a promote/* branch at the dev commit, just ca-promote opens the ca-release pull request from a promote/ca-release-* branch at the ca-canary commit, other branch pairs are refused, names the user who started the workflow, and deletes the branch when the pull request fails.\n'
