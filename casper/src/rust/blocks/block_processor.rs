@@ -1006,7 +1006,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                             &equivocations,
                             &invalid,
                         ),
-                        None => self.block_store.contains_key(&hash.0).unwrap_or(true),
+                        None => match self.block_store.contains_key(&hash.0) {
+                            Ok(stored) => stored,
+                            Err(error) => {
+                                tracing::warn!(
+                                    hash = ?hash,
+                                    %error,
+                                    "Preserved CasperBuffer hash after block read failure"
+                                );
+                                true
+                            }
+                        },
                     };
                     self.casper_buffer.enforce_limits_with_readiness(
                         max_blocks,
