@@ -18,10 +18,13 @@
 //! horizon root enters an `ST<StatePartPath>` state machine as
 //! `Init → Requested → Received → Done`. A request loop fans out all
 //! pending paths in parallel via `try_join_all`, while a response loop
-//! demultiplexes incoming `StoreItemsMessage`s by `start_path`, applies
-//! items, paginates within each root, and on the terminal cursor calls
-//! `set_root` + verifies via `runtime_manager.has_root` (loud-fail on
-//! byzantine peer).
+//! demultiplexes incoming `StoreItemsMessage`s by `start_path`, validates
+//! each chunk against its own hashes and the trie walk from its start path
+//! (a chunk that fails is not imported and its path is asked again), applies
+//! the items, paginates within each root, and on the terminal cursor calls
+//! `set_root`. The `runtime_manager.has_root` check after it reads the same
+//! roots store `set_root` wrote, so it does not prove the trie is there: the
+//! per-chunk validation is what keeps forged data out.
 //!
 //! Wire format (`StoreItemsMessageRequest` / `StoreItemsMessage`) is shared
 //! with `lfs_tuple_space_requester`. Pagination semantics: a response with
@@ -37,7 +40,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use models::rust::casper::protocol::casper_message::StoreItemsMessage;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
+use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
 use tokio::sync::mpsc;
 
 use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
@@ -138,6 +141,15 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         (Self { d: new_d }, is_valid)
     }
 
+    /// Return a Received key to Init so it is requested again.
+    pub fn rejected(&self, k: Key) -> Self {
+        let mut new_d = self.d.clone();
+        if self.d.get(&k) == Some(&ReqStatus::Received) {
+            new_d.insert(k, ReqStatus::Init);
+        }
+        Self { d: new_d }
+    }
+
     pub fn done(&self, k: Key) -> Self {
         let is_received = self.d.get(&k) == Some(&ReqStatus::Received);
         if is_received {
@@ -171,6 +183,28 @@ pub trait HorizonRequesterOps: Send + Sync {
         path: &StatePartPath,
         page_size: i32,
     ) -> Result<(), CasperError>;
+
+    /// Check a chunk before it is imported: its items must hash to their keys
+    /// and must be exactly the nodes a walk of the trie from `start_path`
+    /// yields. The declared sender of a streamed chunk is not authenticated,
+    /// so nothing is written until this passes.
+    fn validate_horizon_chunk(
+        &self,
+        history_items: &[(Blake2b256Hash, Vec<u8>)],
+        data_items: &[(Blake2b256Hash, Vec<u8>)],
+        start_path: &StatePartPath,
+        get_from_history: Arc<dyn RSpaceImporter>,
+    ) -> Result<(), CasperError> {
+        RSpaceImporterInstance::validate_state_items(
+            history_items,
+            data_items,
+            start_path.clone(),
+            PAGE_SIZE,
+            0,
+            get_from_history,
+        )
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+    }
 }
 
 /// Per-root pagination accounting. Used to detect the "terminal cursor on
@@ -212,7 +246,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
     async fn process_store_items_message(
         &self,
         message: StoreItemsMessage,
-    ) -> Result<(), CasperError> {
+    ) -> Result<bool, CasperError> {
         let StoreItemsMessage {
             start_path,
             last_path,
@@ -240,7 +274,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
         };
         if !was_known {
             tracing::debug!("LFS forward-horizon: ignoring chunk for unknown/stale path");
-            return Ok(());
+            return Ok(false);
         }
 
         // Find which roots this chunk's pagination chain belongs to.
@@ -257,11 +291,30 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             tracing::warn!(
                 "LFS forward-horizon: received chunk for path with no root mapping; ignoring"
             );
-            return Ok(());
+            return Ok(false);
         }
 
-        // Apply items to local rspace. Radix nodes are content-addressed so
-        // the importer can validate keys against contents internally.
+        // Nothing is written until the chunk is validated. An empty chunk
+        // writes nothing, and the empty-terminal check below must still see it.
+        let is_empty = history_items.is_empty() && data_items.is_empty();
+        if !is_empty {
+            if let Err(err) = self.request_ops.validate_horizon_chunk(
+                &history_items,
+                &data_items,
+                &start_path,
+                self.state_importer.clone(),
+            ) {
+                tracing::warn!(
+                    error = %err,
+                    "LFS forward-horizon: rejected invalid chunk for path (length: {}); it will be requested again",
+                    start_path.len()
+                );
+                let mut state = self.st.lock().expect("ST lock");
+                *state = state.rejected(start_path);
+                return Ok(false);
+            }
+        }
+
         let history_count = history_items.len();
         let data_count = data_items.len();
         self.state_importer.set_history_items(history_items);
@@ -387,7 +440,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             let _ = self.request_tx.try_send(false);
         }
 
-        Ok(())
+        Ok(true)
     }
 
     async fn request_next(&self, resend: bool) -> Result<(), CasperError> {
@@ -566,6 +619,7 @@ pub async fn stream<T: HorizonRequesterOps>(
 
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        let mut no_progress_deadline = Box::pin(tokio::time::sleep(overall_deadline));
         let mut last_progress = std::time::Instant::now();
         let mut last_done: usize = 0;
         let outstanding_roots =
@@ -577,12 +631,31 @@ pub async fn stream<T: HorizonRequesterOps>(
                 // we don't starve the demux while issuing more sends.
                 biased;
 
+                // Polled before the responses: a peer that keeps the response queue
+                // non-empty must not hold off the no-progress deadline.
+                _ = &mut no_progress_deadline => {
+                    tracing::error!(
+                        "LFS forward-horizon: no progress for {:?} (deadline {:?}); giving up",
+                        last_progress.elapsed(),
+                        overall_deadline
+                    );
+                    *last_error_for_stream.lock().expect("last_error lock") =
+                        Some(CasperError::RuntimeError(format!(
+                            "LFS forward-horizon: peer made no progress within {:?}",
+                            overall_deadline
+                        )));
+                    break;
+                }
+
                 Some(message) = store_items_message_receiver.recv() => {
-                    if let Err(e) = processor.process_store_items_message(message).await {
-                        tracing::error!(error = ?e, "LFS forward-horizon store items processing failed; terminating stream");
-                        *last_error_for_stream.lock().expect("last_error lock") = Some(e);
-                        break;
-                    }
+                    let imported = match processor.process_store_items_message(message).await {
+                        Ok(imported) => imported,
+                        Err(e) => {
+                            tracing::error!(error = ?e, "LFS forward-horizon store items processing failed; terminating stream");
+                            *last_error_for_stream.lock().expect("last_error lock") = Some(e);
+                            break;
+                        }
+                    };
 
                     let current_state = st_for_stream
                         .lock()
@@ -592,6 +665,9 @@ pub async fn stream<T: HorizonRequesterOps>(
                     if done > last_done {
                         last_done = done;
                         last_progress = std::time::Instant::now();
+                        no_progress_deadline
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + overall_deadline);
                     }
                     let is_finished = current_state.is_finished();
 
@@ -628,9 +704,13 @@ pub async fn stream<T: HorizonRequesterOps>(
                         break;
                     }
 
-                    // Activity = reset backoff.
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    // Reset the backoff only for an imported chunk: a peer that
+                    // sends nothing but rejected or stale chunks must still run
+                    // into the no-progress deadline.
+                    if imported {
+                        current_timeout = request_timeout;
+                        idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    }
                     yield current_state;
                 }
 
@@ -658,19 +738,6 @@ pub async fn stream<T: HorizonRequesterOps>(
 
                 _ = &mut idle_timeout => {
                     let stalled_for = last_progress.elapsed();
-                    if stalled_for >= overall_deadline {
-                        tracing::error!(
-                            "LFS forward-horizon: no progress for {:?} (deadline {:?}); giving up",
-                            stalled_for,
-                            overall_deadline
-                        );
-                        *last_error_for_stream.lock().expect("last_error lock") =
-                            Some(CasperError::RuntimeError(format!(
-                                "LFS forward-horizon: peer made no progress within {:?}",
-                                overall_deadline
-                            )));
-                        break;
-                    }
                     let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
                     tracing::warn!(
                         "LFS forward-horizon: no responses for {:?}; resending (stalled {:?} of {:?}). backoff -> {:?}",
@@ -934,6 +1001,17 @@ mod tests {
             // decrements via a shared counter when it feeds a response.
             // We don't decrement here because the response handler
             // is what unblocks the next request cycle.
+            Ok(())
+        }
+
+        /// The canned responses carry placeholder items, not real trie nodes.
+        fn validate_horizon_chunk(
+            &self,
+            _history_items: &[(Blake2b256Hash, Vec<u8>)],
+            _data_items: &[(Blake2b256Hash, Vec<u8>)],
+            _start_path: &StatePartPath,
+            _get_from_history: Arc<dyn RSpaceImporter>,
+        ) -> Result<(), CasperError> {
             Ok(())
         }
     }

@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use crate::engine::setup::TestFixture;
 use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
 
-fn genesis_root(fixture: &TestFixture) -> Blake2b256Hash {
+pub(crate) fn genesis_root(fixture: &TestFixture) -> Blake2b256Hash {
     Blake2b256Hash::from_bytes_prost(&fixture.genesis.body.state.post_state_hash)
 }
 
@@ -51,9 +51,10 @@ fn stranger() -> PeerNode {
 
 /// The chunks a bootstrap serves for `root`, exactly as
 /// `Running::handle_state_items_message_request` builds them.
-fn export_chunks(
+pub(crate) fn export_chunks(
     store: &RSpaceStore,
     root: &Blake2b256Hash,
+    page_size: i32,
 ) -> Result<Vec<StoreItemsMessage>, String> {
     let exporter = Arc::new(RSpaceExporterStore::create(
         store.history.clone(),
@@ -67,7 +68,7 @@ fn export_chunks(
             exporter.clone(),
             start_path.clone(),
             0,
-            PAGE_SIZE,
+            page_size,
         )
         .map_err(|e| e.to_string())?;
         let last_path = history.last_path.clone();
@@ -96,7 +97,7 @@ fn export_chunks(
 }
 
 /// The exporter lists a chunk's history nodes in no fixed order.
-fn history_keys(chunks: &[StoreItemsMessage]) -> std::collections::BTreeSet<Vec<u8>> {
+pub(crate) fn history_keys(chunks: &[StoreItemsMessage]) -> std::collections::BTreeSet<Vec<u8>> {
     chunks
         .iter()
         .flat_map(|chunk| chunk.history_items.iter().map(|(key, _)| key.bytes()))
@@ -105,14 +106,14 @@ fn history_keys(chunks: &[StoreItemsMessage]) -> std::collections::BTreeSet<Vec<
 
 /// An rspace store of its own: the genesis store is shared by every test in
 /// the binary, and these tests must be free to corrupt what they hold.
-async fn private_store() -> RSpaceStore {
+pub(crate) async fn private_store() -> RSpaceStore {
     let mut kvm = mk_test_rnode_store_manager_shared(generate_scope_id());
     (*kvm).r_space_stores().await.expect("private rspace store")
 }
 
 /// The importer and root check the node wires into the requester:
 /// `RSpaceImporterImpl` over the live stores, and a roots-store lookup.
-fn importer_and_has_root(store: &RSpaceStore) -> (Arc<dyn RSpaceImporter>, HasRootFn) {
+pub(crate) fn importer_and_has_root(store: &RSpaceStore) -> (Arc<dyn RSpaceImporter>, HasRootFn) {
     let importer: Arc<dyn RSpaceImporter> = Arc::new(RSpaceImporterImpl {
         history_store: store.history.clone(),
         value_store: store.cold.clone(),
@@ -127,7 +128,11 @@ fn importer_and_has_root(store: &RSpaceStore) -> (Arc<dyn RSpaceImporter>, HasRo
     (importer, has_root)
 }
 
-fn seed(importer: &Arc<dyn RSpaceImporter>, root: &Blake2b256Hash, chunks: &[StoreItemsMessage]) {
+pub(crate) fn seed(
+    importer: &Arc<dyn RSpaceImporter>,
+    root: &Blake2b256Hash,
+    chunks: &[StoreItemsMessage],
+) {
     for chunk in chunks {
         importer.set_history_items(
             chunk
@@ -175,7 +180,7 @@ fn running(
     )
 }
 
-async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+pub(crate) async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {}", what);
@@ -209,7 +214,8 @@ async fn honest_chunks_for_a_missing_root_are_imported_and_recorded() {
     let fixture = TestFixture::new().await;
     fixture.transport_layer.reset();
     let root = genesis_root(&fixture);
-    let honest = export_chunks(&fixture.rspace_store, &root).expect("genesis state exports");
+    let honest =
+        export_chunks(&fixture.rspace_store, &root, PAGE_SIZE).expect("genesis state exports");
 
     let store = private_store().await;
     let (importer, has_root) = importer_and_has_root(&store);
@@ -234,7 +240,7 @@ async fn honest_chunks_for_a_missing_root_are_imported_and_recorded() {
     }
 
     wait_for("the root to be recorded", || has_root(&root).unwrap()).await;
-    let imported = export_chunks(&store, &root).expect("the imported state reads back");
+    let imported = export_chunks(&store, &root, PAGE_SIZE).expect("the imported state reads back");
     assert_eq!(
         history_keys(&imported),
         history_keys(&honest),
@@ -259,7 +265,8 @@ async fn a_forged_chunk_does_not_overwrite_held_state_or_record_its_root() {
     let fixture = TestFixture::new().await;
     fixture.transport_layer.reset();
     let held_root = genesis_root(&fixture);
-    let honest = export_chunks(&fixture.rspace_store, &held_root).expect("genesis state exports");
+    let honest =
+        export_chunks(&fixture.rspace_store, &held_root, PAGE_SIZE).expect("genesis state exports");
 
     let store = private_store().await;
     let (importer, has_root) = importer_and_has_root(&store);
@@ -307,7 +314,7 @@ async fn a_forged_chunk_does_not_overwrite_held_state_or_record_its_root() {
         "a forged item overwrote a history node the store already held"
     );
     assert!(
-        export_chunks(&store, &held_root).is_ok(),
+        export_chunks(&store, &held_root, PAGE_SIZE).is_ok(),
         "the held state no longer reads back from the store"
     );
     assert!(
