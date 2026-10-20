@@ -6,8 +6,15 @@
 //!
 //! | number | why it decides things | measured |
 //! |---|---|---|
-//! | `size_of::<Step<'_, CloneTraversal>>()` | the work stack holds one `Step` per pending obligation, so this multiplies by **depth**. At depth 4,096 one extra word is +32 kB of live heap on the validator path. | **16 B** |
-//! | `size_of::<Par>()` | every byte-movement argument in every report about the clone conversion is denominated in it — "three extra 248-byte moves per node" is the whole hypothesis | **248 B** |
+//! | `size_of::<Step<'_, CloneTraversal>>()` | the work stack holds one `Step` per pending obligation, so this multiplies by **depth**. At depth 4,096 one extra word is +32 kB of live heap on the validator path. | **24 B** (16 B before the merge of feature/cost-accounted-rho) |
+//! | `size_of::<Par>()` | every byte-movement argument in every report about the clone conversion is denominated in it — "three extra 248-byte moves per node" is the whole hypothesis | **296 B** (248 B before the merge of feature/cost-accounted-rho) |
+//!
+//! Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+//! test): the merge added two `Vec` fields to `Par` and grew the clone cut set to
+//! three members (`Par`, `CostSignature`, `CostStack`). This file failed on both
+//! numbers. `models/codegen/schema.rs` records the new measurement (MEASURED
+//! 2026-10-20). The user accepted the extra word per level on 2026-10-20, and the
+//! pins below now hold the merged widths.
 //!
 //! ## ★ Why a gate and not a comment
 //!
@@ -36,8 +43,16 @@
 //! An earlier report charged a measured regression to *"the wider `Kont` (8→16 B,
 //! so `Step` 16→24 B)"*; the second half of that never happened. [`niche_packing`]
 //! below is that fact, executed.
+//!
+//! Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+//! test): the paragraph above describes the one-member cut set. In the merged tree
+//! `CloneNode` and `CloneKont` each carry a tag word, so `Step` is 24 B.
+//! [`niche_packing`] still checks the niche fact on a fixed control shape.
 
-use models::rhoapi::Par;
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+// test): `CostSignature` is the widest variant of the merged `CloneVal`.
+// use models::rhoapi::Par;
+use models::rhoapi::{CostSignature, Par};
 use models::rust::rholang::drive::{Outcome, Step, Traversal};
 use models::rust::rholang::term_ops::{CloneKont, CloneNode, CloneTraversal, CloneVal};
 
@@ -48,13 +63,24 @@ const WORD: usize = std::mem::size_of::<usize>();
 /// The pinned width of one work-stack cell for the generated clone traversal, in
 /// words.
 ///
-/// `Step` is `enum { Descend(CloneNode<'t>), Combine(CloneKont<'t>) }` where both
-/// payloads are a single `&'t Par`, so the whole cell is a discriminant plus a
-/// pointer.
-const STEP_WORDS: usize = 2;
+/// `Step` is `enum { Descend(CloneNode<'t>), Combine(CloneKont<'t>) }`.
+///
+/// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+/// pin test): the clone cut set now has three members. So `CloneNode` is a tag
+/// word and a reference (2 words), and `CloneKont` is a tag word, `src` and `base`
+/// (3 words). rustc stores `Step`'s discriminant in unused values of
+/// `CloneKont`'s tag, so the cell is 3 words. The user accepted the extra word per
+/// level on 2026-10-20, after the measurement in `models/codegen/schema.rs`.
+/// Before the merge the cell was a discriminant plus a pointer, 2 words.
+// const STEP_WORDS: usize = 2;
+const STEP_WORDS: usize = 3;
 
 /// `size_of::<Par>()`, asserted rather than quoted.
-const PAR_BYTES: usize = 248;
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+// test): the merge added `cost_signed_terms` and `cost_stacks` to `Par`, two `Vec`
+// fields of 24 B each.
+// const PAR_BYTES: usize = 248;
+const PAR_BYTES: usize = 296;
 
 // ---------------------------------------------------------------------------
 // The RED subject: a deliberately widened node
@@ -68,7 +94,12 @@ const PAR_BYTES: usize = 248;
 /// this gate* rather than assumed to re-pack.
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-struct Wide<'t>(&'t Par, u64, u64);
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+// test): the merged `Step` is 24 B, as wide as the old `Wide`, so the control was
+// INERT. One more `u64` keeps `Wide` 16 bytes wider than the merged `CloneNode`,
+// and its `Step` is wider than the clone's again.
+// struct Wide<'t>(&'t Par, u64, u64);
+struct Wide<'t>(&'t Par, u64, u64, u64);
 
 /// A traversal whose `Node` is [`Wide`]. Never driven — it exists only so
 /// `size_of::<Step<'_, WideTraversal>>()` is a thing this file can read.
@@ -121,34 +152,62 @@ impl Traversal for WideTraversal {
 #[test]
 fn the_par_width_every_byte_argument_is_denominated_in_is_pinned() {
     let measured = std::mem::size_of::<Par>();
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): the message now gives both measurements. At 248 B the moves were
+    // inline stores in `drive_with`. At 304 B they are `memcpy` calls.
     assert_eq!(
         measured, PAR_BYTES,
         "★ `size_of::<Par>()` is {measured} B, not {PAR_BYTES} B. This number is not a \
          detail: `models/codegen/schema.rs`'s clone-throughput section prices the \
-         driven form's overhead as THREE EXTRA 248-BYTE MOVES PER NODE, and the \
-         deterministic confirmation of that hypothesis is `drive_with`'s measured +93.6 \
-         write references per node against `3 × 248 / 8 = 93`. If `Par` changed width, \
-         BOTH the hypothesis and its confirmation have to be recomputed — the agreement \
-         to 0.7% is arithmetic about this constant, not a law. Recompute them, then move \
-         this pin."
+         driven form's overhead as THREE EXTRA VALUE MOVES PER NODE. At 248 B the \
+         deterministic confirmation was `drive_with`'s measured +93.6 write references \
+         per node against `3 × 248 / 8 = 93`. At the merged 304-B `CloneVal` the moves \
+         are `memcpy` calls instead, 2.5 per node at budget 0 (MEASURED 2026-10-20). If \
+         `Par` changed width, BOTH the hypothesis and its confirmation have to be \
+         recomputed. Recompute them, then move this pin."
     );
-    // ★ `CloneVal` is what the value stack holds, and it is a single-variant enum
-    // over `Par` — so it is exactly a `Par`, with no discriminant. That identity is
-    // the reason a value-stack push/pop IS a `Par` move.
+    // ★ `CloneVal` is what the value stack holds.
+    //
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): `CloneVal` is now a three-variant enum over `Par`, `CostSignature`
+    // and `CostStack`. Its widest variant is `CostSignature`: the `repr(C)` oneof
+    // `cost_signature::Value` holds a whole `Par` after a 4-byte tag padded to one
+    // word. rustc stores `CloneVal`'s discriminant in unused values of that tag. So
+    // `CloneVal` is as wide as `CostSignature`, one word wider than `Par`, and a
+    // value-stack push or pop moves 304 B. Before the merge `CloneVal` was a
+    // single-variant enum over `Par`, exactly `Par`-sized.
     assert_eq!(
         std::mem::size_of::<CloneVal>(),
-        measured,
-        "`CloneVal` must be exactly `Par`-sized: rustc lays a single-variant enum out as \
-         its payload with no discriminant, which is what makes 'a `vals` push moves 248 \
-         bytes' a true statement rather than an approximation. It is {} B against `Par`'s \
-         {measured} B.",
+        // measured,
+        measured + WORD,
+        "`CloneVal` must be one word wider than `Par`: it is a three-variant enum whose \
+         widest variant, `CostSignature`, is a `Par` behind a one-word tag, and rustc \
+         stores `CloneVal`'s discriminant in unused values of that tag. That is what \
+         makes 'a `vals` push moves 304 bytes' a true statement rather than an \
+         approximation. It is {} B against `Par`'s {measured} B.",
+        std::mem::size_of::<CloneVal>()
+    );
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+    // test): the reason for the pin above, executed rather than quoted.
+    assert_eq!(
+        std::mem::size_of::<CostSignature>(),
+        std::mem::size_of::<CloneVal>(),
+        "`CostSignature` is {} B against `CloneVal`'s {} B. They must be EQUAL: \
+         `CostSignature` is the widest variant of `CloneVal`, and `CloneVal`'s \
+         discriminant goes in unused values of its tag. If they now differ, the \
+         explanation of the `CloneVal` width in this file and in `models/codegen/schema.rs` \
+         needs recomputing from the current layout.",
+        std::mem::size_of::<CostSignature>(),
         std::mem::size_of::<CloneVal>()
     );
 }
 
 /// ★★★ The per-level pin: one work-stack cell, in words.
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+// test): the cell is three words after the merge, so the name says three.
+// fn one_work_stack_cell_is_two_words_and_tail_did_not_change_that() {
 #[test]
-fn one_work_stack_cell_is_two_words_and_tail_did_not_change_that() {
+fn one_work_stack_cell_is_three_words_and_tail_did_not_change_that() {
     let step = std::mem::size_of::<Step<'_, CloneTraversal>>();
     assert_eq!(
         step,
@@ -162,12 +221,18 @@ fn one_work_stack_cell_is_two_words_and_tail_did_not_change_that() {
          is where it gets reviewed. Do not raise the budget to make a build pass.",
         STEP_WORDS * WORD
     );
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): the cut set has three members, so `CloneNode` has three variants
+    // and carries a tag word next to the reference.
     assert_eq!(
         std::mem::size_of::<CloneNode<'_>>(),
-        WORD,
-        "`CloneNode` must be one word (a bare `&Par`): the `{{Par}}` cut set has one \
-         member, so the enum has one variant and rustc gives it no discriminant. It is {} \
-         B.",
+        // WORD,
+        2 * WORD,
+        "`CloneNode` must be two words, a tag and a reference: the cut set \
+         `{{Par, CostSignature, CostStack}}` has three members, so the enum has three \
+         variants and rustc gives it a tag word. Before the merge of \
+         feature/cost-accounted-rho the cut set had one member and `CloneNode` was one \
+         word. It is {} B.",
         std::mem::size_of::<CloneNode<'_>>()
     );
     // ★★ `CloneKont` is budgeted at TWO words, not one, and the difference is a
@@ -195,14 +260,30 @@ fn one_work_stack_cell_is_two_words_and_tail_did_not_change_that() {
     //     same reason as `CloneNode`. It is 16 B.
     //       left: 16
     //      right: 8
+    //
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): the prediction above came true. The merge gave `CloneKont` a third
+    // word, a tag for its three variants, and `Step` grew from 16 B to 24 B. The
+    // `Step` assertion above caught it:
+    //
+    //     assertion `left == right` failed: ★ `size_of::<Step<'_, CloneTraversal>>()`
+    //     is 24 B, not 16 B (2 words). This is the ONLY type in the driver that
+    //     multiplies by DEPTH: ...
+    //       left: 24
+    //      right: 16
+    //
+    // The user accepted the extra word per level on 2026-10-20, after the
+    // measurement in `models/codegen/schema.rs`. So the budget is now three words,
+    // and a FOURTH word would grow `Step` again.
     assert!(
-        std::mem::size_of::<CloneKont<'_>>() <= 2 * WORD,
-        "`CloneKont` is {} B, over its two-word budget. One word is the bare `&'t Par`; the \
-         second is `base`, the value-stack index that deletes a whole `ExprInstance` dispatch \
-         walk per node (-54.3 Ir/node, measured). A THIRD word is NOT free: two words fit \
-         because rustc packs `Step`'s discriminant into the `&Par` null niche (see \
-         `niche_packing`), and a third would grow `Step` — which multiplies by DEPTH. If a \
-         `Kont` needs more state, put it in `Traversal::State`, the discipline `bincode_decoder`'s \
+        // std::mem::size_of::<CloneKont<'_>>() <= 2 * WORD,
+        std::mem::size_of::<CloneKont<'_>>() <= 3 * WORD,
+        "`CloneKont` is {} B, over its three-word budget. One word is the `&'t` source \
+         reference, the second is `base`, the value-stack index that deletes a whole \
+         `ExprInstance` dispatch walk per node (-54.3 Ir/node, measured), and the third \
+         is the tag for the three cut-set members. A FOURTH word is NOT free: `Step` is \
+         as wide as `CloneKont`, and `Step` multiplies by DEPTH. If a `Kont` needs more \
+         state, put it in `Traversal::State`, the discipline `bincode_decoder`'s \
          `ParFrame`/`ReceiveTail`/`NewFrame` already follow.",
         std::mem::size_of::<CloneKont<'_>>()
     );
@@ -210,9 +291,11 @@ fn one_work_stack_cell_is_two_words_and_tail_did_not_change_that() {
 
 /// ★ The RED, executed: a genuinely wider `Node` makes a genuinely wider `Step`.
 ///
-/// Without this, `one_work_stack_cell_is_two_words_and_tail_did_not_change_that`
+/// Without this, `one_work_stack_cell_is_three_words_and_tail_did_not_change_that`
 /// could be passing because `size_of` returns a constant, or because the author
 /// wrote down whatever it printed. Here the mechanism is shown to *respond*.
+/// (Changed by the merge of feature/cost-accounted-rho, plan step 1.9, type-size
+/// pin test: that test was `one_work_stack_cell_is_two_words_and_tail_did_not_change_that`.)
 #[test]
 fn the_width_pin_responds_to_a_deliberately_widened_node() {
     let narrow = std::mem::size_of::<Step<'_, CloneTraversal>>();
@@ -233,6 +316,11 @@ fn the_width_pin_responds_to_a_deliberately_widened_node() {
     // a reviewer of a `Step`-widening design must read the measured number rather
     // than count the fields added. The first draft of this assertion expected
     // `narrow + 2 * WORD` and was wrong for exactly this reason.
+    //
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): the merged narrow `Step` is 24 B, so `Wide` is now
+    // `&Par, u64, u64, u64` = 32 B. The relation is the same as before: the widened
+    // `Step` is exactly `Wide`, one word more than the narrow `Step`.
     assert_eq!(
         wide,
         std::mem::size_of::<Wide<'_>>(),
@@ -243,10 +331,13 @@ fn the_width_pin_responds_to_a_deliberately_widened_node() {
          in `drive.rs` needs recomputing from the current layout.",
         std::mem::size_of::<Wide<'_>>()
     );
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): the message said "two extra words", but the assertion has always
+    // required one.
     assert_eq!(
         wide,
         narrow + WORD,
-        "the widened `Step` is {wide} B; two extra words over {narrow} B were expected. \
+        "the widened `Step` is {wide} B; one extra word over {narrow} B was expected. \
          The RED is calibrated as well as red: an unexpected size means the layout is \
          doing something (padding, niche reuse) that the narrow assertion's reasoning does \
          not account for, and that reasoning is what a reviewer of a `Step`-widening \
@@ -262,7 +353,9 @@ fn the_width_pin_responds_to_a_deliberately_widened_node() {
 /// never occupies a per-level cell: it lives in a register pair or an `sret` slot
 /// for the length of the `match` that consumes it. The clone instance's `Outcome`
 /// is 256 B — an order of magnitude past any stack-cell budget — and that is
-/// **fine**, which is the whole point.
+/// **fine**, which is the whole point. (Changed by the merge of
+/// feature/cost-accounted-rho, plan step 1.9, type-size pin test: it is 312 B
+/// after the merge, still `CloneVal` plus one tag word.)
 #[test]
 fn outcome_is_not_on_the_per_level_stack_and_is_deliberately_unbudgeted() {
     let outcome = std::mem::size_of::<Outcome<CloneVal, CloneNode<'_>>>();
@@ -276,9 +369,11 @@ fn outcome_is_not_on_the_per_level_stack_and_is_deliberately_unbudgeted() {
     );
     // The `Tail` arm's payload is a `Node`, which is strictly smaller than the
     // `Val` arm's — so `Tail` costs ZERO even in `Outcome`'s own layout.
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): the merged `CloneNode` is two words, so the message says two.
     assert!(
         std::mem::size_of::<CloneNode<'_>>() < std::mem::size_of::<CloneVal>(),
-        "`Outcome::Tail(Node)` must not be the widest arm: its payload is one word while \
+        "`Outcome::Tail(Node)` must not be the widest arm: its payload is two words while \
          `Outcome::Value(Val)` carries a whole `Par`. If that ever inverts, adding `Tail` \
          DID grow the return value and the claim 'Tail costs nothing' needs restating."
     );
@@ -356,16 +451,24 @@ fn niche_packing() {
         std::mem::size_of::<PaddedKont<'_>>()
     );
     let padded_step = std::mem::size_of::<Step<'_, PaddedKontTraversal>>();
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+    // pin test): this control has a fixed shape, a one-word `Node` and a two-word
+    // `Kont`, so its `Step` is two words. It used `STEP_WORDS` while the clone's
+    // `Step` was also two words. The merge moved the clone's `Step` to three words,
+    // so the control states its own width.
     assert_eq!(
         padded_step,
-        STEP_WORDS * WORD,
+        // STEP_WORDS * WORD,
+        2 * WORD,
         "★ `Step` over a 2-word `Kont` is {padded_step} B, not {} B. The point of this \
          test is that it IS still {} B — rustc packs the discriminant into the non-null \
          reference's niche, so widening `Kont` from 1 word to 2 costs NOTHING per level. \
          If this now differs, the 2026-07-29 measurement that refuted \
          '`Step` 16 → 24 B' no longer applies to the current compiler and the earlier \
          attribution deserves a fresh look.",
-        STEP_WORDS * WORD,
-        STEP_WORDS * WORD
+        // STEP_WORDS * WORD,
+        // STEP_WORDS * WORD
+        2 * WORD,
+        2 * WORD
     );
 }

@@ -626,7 +626,14 @@ fn the_recorded_epathmap_entries_migrated_from_a_vec_to_a_deduplicating_trie() {
     );
 
     // The archive still describes a map holding the SAME leaf twice.
-    let leaf = format!("{:?}", recorded_gbool_false_par());
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // corpus was recorded before `Par` had its two cost fields, so its `Debug`
+    // text ends at `connective_used`. The current `Debug` text also prints the
+    // two empty cost fields. They are removed here so that the leaf has the
+    // recorded form.
+    // let leaf = format!("{:?}", recorded_gbool_false_par());
+    let leaf = format!("{:?}", recorded_gbool_false_par())
+        .replace(", cost_signed_terms: [], cost_stacks: []", "");
     assert_eq!(
         recorded[0].1.matches(&leaf).count(),
         2,

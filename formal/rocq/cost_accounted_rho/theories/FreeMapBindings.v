@@ -1,5 +1,7 @@
 (* D-D1a (epic 8946, Phase D; decision record DR-103, part 1): a free-variable
-   binding charges B-tree bounds instead of whole-map walks.
+   binding charges B-tree bounds instead of whole-map walks. Part 2 (D-D1b),
+   at the end of this file, proves that a remainder binding can merge in
+   place.
 
    The matcher binds each free variable in a free map, a standard BTreeMap
    from i32 levels to Par bindings. Before DR-103, each binding charged a walk
@@ -58,6 +60,14 @@
    tree_search_bound), rholang/src/rust/interpreter/matcher/spatial_matcher.rs
    (MatcherWork::reserve_free_map_search and reserve_free_map_insert), and the
    call sites in list_match.rs and match.rs. *)
+
+(* DR-131: the matcher no longer charges host work. collection_backing.rs is
+   deleted, and the mergers of the remainder handler make no reservations.
+   Part 1 describes the deleted binding charges. In part 2,
+   in_place_merge_equals_copy_merge still describes the in-place merge: with
+   no reservation, every merger assigns last and the insert is admitted.
+   rejected_merge_leaves_map and assign_first_merge_changes_map_on_rejection
+   describe a rejected merge, which the matcher can no longer produce. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia NArith.
 From CostAccountedRho Require OrderedLookupBound IncrementalTreeBacking.
@@ -444,410 +454,154 @@ Theorem twelve_byte_header_undercounts_internal_split :
   12 * slot_bytes + 12 * edge_bytes + 12 * link_bytes + 12 < level_work (level true 11 0).
 Proof. vm_compute. lia. Qed.
 
-Module StringMapInsertion.
+(* Part 2 (D-D1b; DR-103, part 2): a remainder binding merges in place.
 
-Definition weighted_level_work key value word index (moves : level_moves) :=
-  slots moves * (key + value) + edges moves * word + links moves * (word + index)
-  + lengths moves * index + parents moves * word.
+   handle_remainder merges the remainder of a pattern into the binding at its
+   level. Before D-D1b it copied the binding, or started a new one, merged the
+   copy, reserved the insert and inserted the copy, so a rejected merge left
+   the free map unchanged. The in-place merge changes the stored binding, and
+   only a new binding is inserted, after its merge and its insert
+   reservation. A merger is a sequence of reservations, each of which the
+   meter can reject, and assignments to the binding.
 
-Definition weighted_level_charge key value word index :=
-  12 * (key + value) + 12 * word + 12 * (word + index) + 4 * index + word.
+   - If every merger assigns after all its reservations (assigns_last) and
+     the budget admits the insert, the in-place merge gives the free map of
+     the copy merge (in_place_merge_equals_copy_merge).
+   - A rejected in-place merge leaves the free map unchanged
+     (rejected_merge_leaves_map).
+   - Negative control: a merger that assigns before a rejected reservation
+     changes the stored binding in place, while the copy merge leaves it
+     (assign_first_merge_changes_map_on_rejection).
 
-Lemma weighted_moves_monotone : forall key value word index left right,
-  slots left <= slots right -> edges left <= edges right -> links left <= links right ->
-  lengths left <= lengths right -> parents left <= parents right ->
-  weighted_level_work key value word index left <= weighted_level_work key value word index right.
-Proof.
-  intros key value word index left right Hslots Hedges Hlinks Hlengths Hparents.
-  pose proof (Nat.mul_le_mono_r _ _ (key + value) Hslots) as Hslot_bytes.
-  pose proof (Nat.mul_le_mono_r _ _ word Hedges) as Hedge_bytes.
-  pose proof (Nat.mul_le_mono_r _ _ (word + index) Hlinks) as Hlink_bytes.
-  pose proof (Nat.mul_le_mono_r _ _ index Hlengths) as Hlength_bytes.
-  pose proof (Nat.mul_le_mono_r _ _ word Hparents) as Hparent_bytes.
-  unfold weighted_level_work. lia.
-Qed.
+   Rust correspondence: handle_remainder in list_match.rs; the ten field
+   mergers of a Par remainder, merge_set_remainder and merge_map_remainder in
+   spatial_matcher.rs. *)
 
-Theorem weighted_insert_level_moves_bounded : forall key value word index internal len edge,
-  len <= 11 -> edge <= len ->
-  weighted_level_work key value word index (level internal len edge) <=
-    weighted_level_charge key value word index.
-Proof.
-  intros key value word index internal len edge Hlen Hedge.
-  destruct (insert_level_moves_bounded internal len edge Hlen Hedge)
-    as [Hslots [Hedges [Hlinks [Hlengths Hparents]]]].
-  assert (Hcharge : weighted_level_work key value word index
-      {| slots := 12; edges := 12; links := 12; lengths := 4; parents := 1 |} =
-      weighted_level_charge key value word index).
-  { unfold weighted_level_work, weighted_level_charge.
-    cbn [slots edges links lengths parents]. lia. }
-  rewrite <- Hcharge.
-  apply weighted_moves_monotone; assumption.
-Qed.
+Section InPlaceMerge.
+  Variable K V : Type.
+  Variable key_eq_dec : forall a b : K, {a = b} + {a <> b}.
 
-Definition weighted_map_writes word (last : last_level) :=
-  match last with
-  | StopsAt _ _ _ => word
-  | NewRoot | FirstLeaf => word + 2 * word
-  | Replaces => 0
-  end.
+  Inductive merge_step :=
+  | Reserve (accepted : bool)
+  | Assign (update : V -> V).
 
-Lemma weighted_last_level_within_charge : forall key value word index last,
-  valid_last last ->
-  weighted_level_work key value word index (last_moves last) + weighted_map_writes word last <=
-    weighted_level_charge key value word index.
-Proof.
-  intros key value word index [internal len edge | | |] Hvalid.
-  - destruct Hvalid as [Hlen Hedge].
-    assert (Hfit : weighted_level_work key value word index (fit_level internal len edge) <=
-      weighted_level_work key value word index
-        {| slots := 11; edges := 11; links := 11; lengths := 1; parents := 0 |}).
-    { apply weighted_moves_monotone; unfold fit_level;
-        destruct internal; cbn [slots edges links lengths parents]; lia. }
-    change (weighted_level_work key value word index (fit_level internal len edge) + word <=
-      weighted_level_charge key value word index).
-    eapply Nat.le_trans.
-    + exact (proj1 (Nat.add_le_mono_r _ _ word) Hfit).
-    + unfold weighted_level_work, weighted_level_charge.
-      cbn [slots edges links lengths parents]. lia.
-  - unfold last_moves, new_root_level, weighted_map_writes, weighted_level_work, weighted_level_charge.
-    cbn [slots edges links lengths parents]. nia.
-  - unfold last_moves, first_leaf_level, weighted_map_writes, weighted_level_work, weighted_level_charge.
-    cbn [slots edges links lengths parents]. nia.
-  - unfold last_moves, replace_level, weighted_map_writes, weighted_level_work, weighted_level_charge.
-    cbn [slots edges links lengths parents]. nia.
-Qed.
+  (* The value after the steps that ran, and whether every reservation was
+     accepted. A rejected reservation stops the merger. *)
+  Fixpoint run (steps : list merge_step) (value : V) : V * bool :=
+    match steps with
+    | [] => (value, true)
+    | Reserve true :: rest => run rest value
+    | Reserve false :: _ => (value, false)
+    | Assign update :: rest => run rest (update value)
+    end.
 
-Definition weighted_split_work key value word index (splits : list (bool * nat)) :=
-  fold_right (fun step total =>
-    weighted_level_work key value word index (split_level (fst step) (snd step)) + total) 0 splits.
+  Definition is_assign (step : merge_step) : Prop :=
+    match step with Assign _ => True | Reserve _ => False end.
 
-Definition weighted_insert_path_work key value word index splits last :=
-  weighted_split_work key value word index splits +
-    (weighted_level_work key value word index (last_moves last) + weighted_map_writes word last).
+  Fixpoint assigns_last (steps : list merge_step) : Prop :=
+    match steps with
+    | [] => True
+    | Reserve _ :: rest => assigns_last rest
+    | Assign _ :: rest => Forall is_assign rest
+    end.
 
-Lemma weighted_split_work_within_charge : forall key value word index splits,
-  Forall (fun step => snd step <= 11) splits ->
-  weighted_split_work key value word index splits <=
-    length splits * weighted_level_charge key value word index.
-Proof.
-  intros key value word index splits.
-  induction splits as [| [internal edge] rest IH]; intros Hvalid.
-  - change (0 <= 0). lia.
-  - inversion Hvalid as [| step tail Hedge Hrest]; subst.
-    cbn [snd] in Hedge.
-    pose proof (weighted_insert_level_moves_bounded key value word index internal 11 edge
-      ltac:(lia) Hedge) as Hlevel.
-    change (weighted_level_work key value word index (split_level internal edge) <=
-      weighted_level_charge key value word index) in Hlevel.
-    specialize (IH Hrest).
-    change (weighted_level_work key value word index (split_level internal edge) +
-      weighted_split_work key value word index rest <=
-      S (length rest) * weighted_level_charge key value word index).
-    rewrite Nat.mul_succ_l. lia.
-Qed.
+  Lemma assigns_only_accept : forall steps value,
+    Forall is_assign steps -> snd (run steps value) = true.
+  Proof.
+    induction steps as [| [[|] | update] rest IH]; intros value Hall; cbn [run].
+    - reflexivity.
+    - inversion Hall as [| ? ? Hstep]; contradiction.
+    - inversion Hall as [| ? ? Hstep]; contradiction.
+    - inversion Hall as [| ? ? Hstep Hrest]; subst. apply IH. exact Hrest.
+  Qed.
 
-Theorem weighted_insert_path_within_charge : forall key value word index splits last height,
-  Forall (fun step => snd step <= 11) splits -> valid_last last ->
-  length splits + 1 <= height ->
-  weighted_insert_path_work key value word index splits last <=
-    height * weighted_level_charge key value word index.
-Proof.
-  intros key value word index splits last height Hsplits Hlast Hheight.
-  pose proof (weighted_split_work_within_charge key value word index splits Hsplits) as Hwork.
-  pose proof (weighted_last_level_within_charge key value word index last Hlast) as Hfinal.
-  pose proof (Nat.mul_le_mono_r _ _ (weighted_level_charge key value word index) Hheight) as Hscale.
-  rewrite Nat.mul_add_distr_r in Hscale.
-  unfold weighted_insert_path_work. lia.
-Qed.
+  Lemma rejected_run_keeps_value : forall steps value,
+    assigns_last steps -> snd (run steps value) = false -> fst (run steps value) = value.
+  Proof.
+    induction steps as [| [[|] | update] rest IH]; intros value Hlast Hrejected; cbn [run] in *.
+    - discriminate.
+    - apply IH; assumption.
+    - reflexivity.
+    - rewrite (assigns_only_accept rest (update value) Hlast) in Hrejected. discriminate.
+  Qed.
 
-Theorem weighted_insert_within_rust_charge : forall key value word index splits last height tree entries,
-  OrderedLookupBound.wf true height tree -> OrderedLookupBound.size tree <= entries + 1 ->
-  Forall (fun step => snd step <= 11) splits -> valid_last last ->
-  length splits + 1 <= height ->
-  weighted_insert_path_work key value word index splits last <=
-    OrderedLookupBound.height_bound (entries + 1) * weighted_level_charge key value word index.
-Proof.
-  intros key value word index splits last height tree entries Htree Hsize Hsplits Hlast Hlevels.
-  pose proof (OrderedLookupBound.btree_height_bound height tree Htree) as Hheight.
-  pose proof (OrderedLookupBound.height_bound_monotone _ _ Hsize) as Hsize_height.
-  apply weighted_insert_path_within_charge; [exact Hsplits | exact Hlast | lia].
-Qed.
+  Lemma run_accepted_insert : forall steps value,
+    run (steps ++ [Reserve true]) value = run steps value.
+  Proof.
+    induction steps as [| [[|] | update] rest IH]; intros value; cbn [run app]; auto.
+  Qed.
 
-Theorem original_level_weights_are_preserved : forall moves,
-  weighted_level_work 4 296 8 2 moves = level_work moves.
-Proof. intro moves. reflexivity. Qed.
+  Definition update_map (map : K -> option V) (key : K) (value : V) : K -> option V :=
+    fun other => if key_eq_dec key other then Some value else map other.
 
-Definition string_comparison_scan word incoming resident :=
-  2 * (Nat.min incoming resident + word).
+  (* Before D-D1b: merge a copy, reserve the insert, then insert. *)
+  Definition copy_merge (steps : list merge_step) (insert_accepted : bool)
+    (map : K -> option V) (key : K) (fresh : V) : K -> option V :=
+    let start := match map key with Some value => value | None => fresh end in
+    let (merged, accepted) := run (steps ++ [Reserve insert_accepted]) start in
+    if accepted then update_map map key merged else map.
 
-Definition string_search_scan word incoming resident_lengths :=
-  fold_right (fun resident total => string_comparison_scan word incoming resident + total)
-    0 resident_lengths.
+  (* D-D1b: merge an existing binding in place; merge a new binding, reserve
+     its insert, then insert it. *)
+  Definition in_place_merge (steps : list merge_step) (insert_accepted : bool)
+    (map : K -> option V) (key : K) (fresh : V) : K -> option V :=
+    match map key with
+    | Some value => update_map map key (fst (run steps value))
+    | None =>
+        let (merged, accepted) := run (steps ++ [Reserve insert_accepted]) fresh in
+        if accepted then update_map map key merged else map
+    end.
 
-Lemma incoming_length_bounds_comparison : forall word incoming resident,
-  string_comparison_scan word incoming resident <= 2 * (incoming + word).
-Proof.
-  intros word incoming resident. unfold string_comparison_scan.
-  pose proof (Nat.le_min_l incoming resident). lia.
-Qed.
+  Definition in_place_accepted (steps : list merge_step) (insert_accepted : bool)
+    (map : K -> option V) (key : K) (fresh : V) : bool :=
+    match map key with
+    | Some value => snd (run steps value)
+    | None => snd (run (steps ++ [Reserve insert_accepted]) fresh)
+    end.
 
-Lemma incoming_length_bounds_comparison_trace : forall word incoming resident_lengths,
-  string_search_scan word incoming resident_lengths <=
-    length resident_lengths * (2 * (incoming + word)).
-Proof.
-  intros word incoming resident_lengths.
-  induction resident_lengths as [| resident rest IH].
-  - change (0 <= 0). lia.
-  - pose proof (incoming_length_bounds_comparison word incoming resident) as Hcomparison.
-    change (string_comparison_scan word incoming resident + string_search_scan word incoming rest <=
-      S (length rest) * (2 * (incoming + word))).
-    rewrite Nat.mul_succ_l. lia.
-Qed.
+  Theorem in_place_merge_equals_copy_merge : forall steps map key fresh other,
+    assigns_last steps ->
+    in_place_merge steps true map key fresh other = copy_merge steps true map key fresh other.
+  Proof.
+    intros steps map key fresh other Hlast.
+    unfold in_place_merge, copy_merge.
+    destruct (map key) as [value |] eqn:Hstored; [| reflexivity].
+    rewrite run_accepted_insert.
+    destruct (run steps value) as [merged accepted] eqn:Hrun. cbn [fst].
+    destruct accepted; [reflexivity |].
+    pose proof (rejected_run_keeps_value steps value Hlast) as Hkeep.
+    rewrite Hrun in Hkeep. cbn [fst snd] in Hkeep. specialize (Hkeep eq_refl). subst merged.
+    unfold update_map. destruct (key_eq_dec key other) as [Hsame | Hdiff].
+    - subst other. symmetry. exact Hstored.
+    - reflexivity.
+  Qed.
 
-Theorem incoming_string_search_within_rust_charge : forall word incoming resident_lengths comparisons entries,
-  length resident_lengths <= comparisons -> comparisons <= search_operations entries ->
-  string_search_scan word incoming resident_lengths <=
-    2 * (incoming + word) * search_operations entries.
-Proof.
-  intros word incoming resident_lengths comparisons entries Hlength Hcomparisons.
-  pose proof (incoming_length_bounds_comparison_trace word incoming resident_lengths) as Hscan.
-  assert (Hcount : length resident_lengths <= search_operations entries) by lia.
-  pose proof (Nat.mul_le_mono_r _ _ (2 * (incoming + word)) Hcount) as Hscale.
-  rewrite (Nat.mul_comm (search_operations entries) (2 * (incoming + word))) in Hscale.
-  lia.
-Qed.
+  Theorem rejected_merge_leaves_map : forall steps insert_accepted map key fresh other,
+    assigns_last steps ->
+    in_place_accepted steps insert_accepted map key fresh = false ->
+    in_place_merge steps insert_accepted map key fresh other = map other.
+  Proof.
+    intros steps insert_accepted map key fresh other Hlast Hrejected.
+    unfold in_place_accepted in Hrejected. unfold in_place_merge.
+    destruct (map key) as [value |] eqn:Hstored.
+    - rewrite (rejected_run_keeps_value steps value Hlast Hrejected).
+      unfold update_map. destruct (key_eq_dec key other) as [Hsame | Hdiff].
+      + subst other. symmetry. exact Hstored.
+      + reflexivity.
+    - destruct (run (steps ++ [Reserve insert_accepted]) fresh) as [merged accepted] eqn:Hrun.
+      cbn [snd] in Hrejected. subst accepted. reflexivity.
+  Qed.
+End InPlaceMerge.
 
-Definition terminal_node_allocation (last : last_level) :=
-  match last with NewRoot | FirstLeaf => 1 | StopsAt _ _ _ | Replaces => 0 end.
+Arguments Reserve {V} accepted.
+Arguments Assign {V} update.
 
-Definition transient_node_count (splits : list (bool * nat)) last :=
-  length splits + terminal_node_allocation last.
-
-Theorem transient_insert_nodes_fit_height : forall (splits : list (bool * nat)) last height,
-  length splits + 1 <= height -> transient_node_count splits last <= height.
-Proof.
-  intros splits last height Hheight. unfold transient_node_count, terminal_node_allocation.
-  destruct last; lia.
-Qed.
-
-Theorem transient_backing_covers_source_allocations : forall splits last height node_bytes allocations,
-  length splits + 1 <= height -> length allocations <= transient_node_count splits last ->
-  Forall (fun bytes => bytes <= node_bytes) allocations ->
-  fold_right Nat.add 0 allocations <= height * node_bytes.
-Proof.
-  intros splits last height node_bytes allocations Hheight Hcount Hsizes.
-  pose proof (transient_insert_nodes_fit_height splits last height Hheight) as Hnodes.
-  pose proof (NativeCheckpointBacking.allocation_sum allocations node_bytes Hsizes) as Hbytes.
-  assert (Hall : length allocations <= height) by lia.
-  pose proof (Nat.mul_le_mono_r _ _ node_bytes Hall) as Hscale. lia.
-Qed.
-
-Record accepted_insert := AcceptedInsert {
-  insert_splits : list (bool * nat);
-  insert_last : last_level;
-  entries_before : nat
-}.
-
-Definition insert_height event := OrderedLookupBound.height_bound (entries_before event + 1).
-
-Definition valid_insert_source event :=
-  Forall (fun step => snd step <= 11) (insert_splits event) /\
-  valid_last (insert_last event) /\ length (insert_splits event) + 1 <= insert_height event.
-
-Definition inserted_entry event := match insert_last event with Replaces => 0 | _ => 1 end.
-
-Definition batch_heights events := fold_right (fun event total => insert_height event + total) 0 events.
-Definition batch_allocated_nodes events := fold_right (fun event total =>
-  transient_node_count (insert_splits event) (insert_last event) + total) 0 events.
-Definition batch_inserted_entries events := fold_right (fun event total => inserted_entry event + total) 0 events.
-
-Lemma insertion_batch_nodes_fit_prepaid_heights : forall events,
-  Forall valid_insert_source events -> batch_allocated_nodes events <= batch_heights events.
-Proof.
-  intros events Hvalid. induction Hvalid as [| event rest Hevent Hrest IH].
-  - reflexivity.
-  - destruct Hevent as [Hsplits [Hlast Hheight]].
-    pose proof (transient_insert_nodes_fit_height (insert_splits event) (insert_last event)
-      (insert_height event) Hheight) as Hnodes.
-    change (transient_node_count (insert_splits event) (insert_last event) + batch_allocated_nodes rest <=
-      insert_height event + batch_heights rest). lia.
-Qed.
-
-Lemma insertion_batch_entries_fit_attempts : forall events,
-  batch_inserted_entries events <= length events.
-Proof.
-  intro events. induction events as [| event rest IH].
-  - reflexivity.
-  - change (inserted_entry event + batch_inserted_entries rest <= S (length rest)).
-    unfold inserted_entry. destruct (insert_last event); lia.
-Qed.
-
-Record owning_trace := OwningTrace {
-  extracted_entries : nat;
-  descended_edges : nat;
-  released_nodes : nat;
-  inspected_lengths : nat
-}.
-
-Definition owning_trace_source entries nodes trace :=
-  extracted_entries trace = entries /\ descended_edges trace <= nodes - 1 /\
-  released_nodes trace = nodes /\ inspected_lengths trace <= entries + nodes.
-
-Definition owning_trace_actions trace :=
-  extracted_entries trace + descended_edges trace + released_nodes trace.
-
-Definition owning_trace_scanned key value word trace :=
-  extracted_entries trace * (key + value) + descended_edges trace * word +
-  released_nodes trace * (word + 2) + inspected_lengths trace * 2.
-
-Lemma node_occupancies_bound_entries : forall occupancies,
-  Forall (fun count => count <= 11) occupancies ->
-  fold_right Nat.add 0 occupancies <= 11 * length occupancies.
-Proof.
-  intros occupancies Hoccupied. induction Hoccupied as [| count rest Hcount Hrest IH].
-  - reflexivity.
-  - cbn [fold_right length]. lia.
-Qed.
-
-Theorem owning_trace_actions_fit : forall entries nodes trace,
-  owning_trace_source entries nodes trace -> owning_trace_actions trace <= entries + 2 * nodes.
-Proof.
-  intros entries nodes trace [Hextracted [Hdescended [Hreleased Hlengths]]].
-  unfold owning_trace_actions. lia.
-Qed.
-
-Theorem owning_trace_scans_fit_node_envelope : forall key value word alignment occupancies trace,
-  8 <= alignment -> Forall (fun count => count <= 11) occupancies ->
-  owning_trace_source (fold_right Nat.add 0 occupancies) (length occupancies) trace ->
-  owning_trace_scanned key value word trace <=
-    length occupancies * NativeCheckpointBacking.node_layout_bound key value word alignment.
-Proof.
-  intros key value word alignment occupancies trace Halignment Hoccupied
-    [Hextracted [Hdescended [Hreleased Hlengths]]].
-  pose proof (node_occupancies_bound_entries occupancies Hoccupied) as Hentries.
-  assert (Hdown : descended_edges trace <= length occupancies) by lia.
-  pose proof (Nat.mul_le_mono_r _ _ word Hdown) as Hdown_bytes.
-  assert (Hextract : extracted_entries trace <= 11 * length occupancies) by lia.
-  pose proof (Nat.mul_le_mono_r _ _ (key + value) Hextract) as Hentry_bytes.
-  assert (Hreads : inspected_lengths trace <= 12 * length occupancies) by lia.
-  pose proof (Nat.mul_le_mono_r _ _ 2 Hreads) as Hlength_bytes.
-  assert (Hpadding : 22 <= 11 * word + 8 * alignment) by lia.
-  pose proof (Nat.mul_le_mono_l _ _ (length occupancies) Hpadding) as Hnode_padding.
-  unfold owning_trace_scanned, NativeCheckpointBacking.node_layout_bound.
-  rewrite Hreleased. nia.
-Qed.
-
-Definition prepaid_owning_actions events := length events + 2 * batch_heights events.
-Definition prepaid_owning_scanned key value word alignment events :=
-  batch_heights events * NativeCheckpointBacking.node_layout_bound key value word alignment.
-
-Theorem accepted_insertions_prepay_final_owning_traversal :
-  forall key value word alignment events occupancies trace,
-  8 <= alignment -> Forall valid_insert_source events ->
-  Forall (fun count => count <= 11) occupancies ->
-  fold_right Nat.add 0 occupancies <= batch_inserted_entries events ->
-  length occupancies <= batch_allocated_nodes events ->
-  owning_trace_source (fold_right Nat.add 0 occupancies) (length occupancies) trace ->
-  owning_trace_actions trace <= prepaid_owning_actions events /\
-  owning_trace_scanned key value word trace <= prepaid_owning_scanned key value word alignment events.
-Proof.
-  intros key value word alignment events occupancies trace Halignment Hvalid Hoccupied
-    Hentries Hnodes Htrace.
-  pose proof (insertion_batch_nodes_fit_prepaid_heights events Hvalid) as Hnode_credit.
-  pose proof (insertion_batch_entries_fit_attempts events) as Hentry_credit.
-  pose proof (owning_trace_actions_fit _ _ trace Htrace) as Hactions.
-  pose proof (owning_trace_scans_fit_node_envelope key value word alignment occupancies trace
-    Halignment Hoccupied Htrace) as Hscanned.
-  assert (Hnode_bound : length occupancies <= batch_heights events) by lia.
-  pose proof (Nat.mul_le_mono_r _ _
-    (NativeCheckpointBacking.node_layout_bound key value word alignment) Hnode_bound) as Hscan_credit.
-  unfold prepaid_owning_actions, prepaid_owning_scanned. split; lia.
-Qed.
-
-Theorem per_insert_owning_credit_composes : forall events,
-  fold_right (fun event total => 1 + 2 * insert_height event + total) 0 events =
-    prepaid_owning_actions events.
-Proof.
-  intro events. induction events as [| event rest IH].
-  - reflexivity.
-  - change (1 + 2 * insert_height event +
-      fold_right (fun next total => 1 + 2 * insert_height next + total) 0 rest =
-      S (length rest) + 2 * (insert_height event + batch_heights rest)).
-    rewrite IH. unfold prepaid_owning_actions. lia.
-Qed.
-
-Theorem per_insert_owning_scan_credit_composes : forall key value word alignment events,
-  fold_right (fun event total =>
-    insert_height event * NativeCheckpointBacking.node_layout_bound key value word alignment + total)
-    0 events = prepaid_owning_scanned key value word alignment events.
-Proof.
-  intros key value word alignment events. induction events as [| event rest IH].
-  - reflexivity.
-  - change (insert_height event * NativeCheckpointBacking.node_layout_bound key value word alignment +
-      fold_right (fun next total =>
-        insert_height next * NativeCheckpointBacking.node_layout_bound key value word alignment + total)
-        0 rest =
-      (insert_height event + batch_heights rest) *
-        NativeCheckpointBacking.node_layout_bound key value word alignment).
-    rewrite IH. unfold prepaid_owning_scanned. rewrite Nat.mul_add_distr_r. reflexivity.
-Qed.
-
-Definition comparison_allowance word incoming comparisons :=
-  if comparisons =? 0 then 0 else 2 * (incoming + word) * comparisons.
-
-Theorem zero_comparisons_skip_key_length_arithmetic : forall word incoming comparisons,
-  comparison_allowance word incoming comparisons = 2 * (incoming + word) * comparisons.
-Proof.
-  intros word incoming [| comparisons].
-  - unfold comparison_allowance. rewrite Nat.mul_0_r. reflexivity.
-  - reflexivity.
-Qed.
-
-Definition insertion_reservation key value word alignment entries incoming :=
-  let height := OrderedLookupBound.height_bound (entries + 1) in
-  let comparisons := search_operations entries in
-  let node_bytes := NativeCheckpointBacking.node_layout_bound key value word alignment in
-  (3 + 4 * height + comparisons,
-    comparison_allowance word incoming comparisons +
-      height * weighted_level_charge key value word 2 + height * node_bytes,
-    height * node_bytes).
-
-Theorem insertion_reservation_components_compose : forall key value word alignment entries incoming,
-  let height := OrderedLookupBound.height_bound (entries + 1) in
-  let comparisons := search_operations entries in
-  let node_bytes := NativeCheckpointBacking.node_layout_bound key value word alignment in
-  insertion_reservation key value word alignment entries incoming =
-    (2 * (1 + height) + comparisons + (1 + 2 * height),
-      2 * (incoming + word) * comparisons +
-        height * weighted_level_charge key value word 2 + height * node_bytes,
-      height * node_bytes).
-Proof.
-  intros key value word alignment entries incoming.
-  cbv zeta. unfold insertion_reservation.
-  rewrite zero_comparisons_skip_key_length_arithmetic.
-  assert (Hoperations : 3 + 4 * OrderedLookupBound.height_bound (entries + 1) +
-      search_operations entries =
-      2 * (1 + OrderedLookupBound.height_bound (entries + 1)) + search_operations entries +
-        (1 + 2 * OrderedLookupBound.height_bound (entries + 1))) by lia.
-  rewrite Hoperations. reflexivity.
-Qed.
-
-Print Assumptions weighted_insert_level_moves_bounded.
-Print Assumptions weighted_insert_path_within_charge.
-Print Assumptions weighted_insert_within_rust_charge.
-Print Assumptions original_level_weights_are_preserved.
-Print Assumptions incoming_length_bounds_comparison.
-Print Assumptions incoming_string_search_within_rust_charge.
-Print Assumptions transient_insert_nodes_fit_height.
-Print Assumptions transient_backing_covers_source_allocations.
-Print Assumptions insertion_batch_nodes_fit_prepaid_heights.
-Print Assumptions insertion_batch_entries_fit_attempts.
-Print Assumptions owning_trace_actions_fit.
-Print Assumptions owning_trace_scans_fit_node_envelope.
-Print Assumptions accepted_insertions_prepay_final_owning_traversal.
-Print Assumptions per_insert_owning_credit_composes.
-Print Assumptions per_insert_owning_scan_credit_composes.
-Print Assumptions zero_comparisons_skip_key_length_arithmetic.
-Print Assumptions insertion_reservation_components_compose.
-
-End StringMapInsertion.
+(* Negative control: a merger that assigns before a rejected reservation
+   changes the stored binding in place, while the copy merge leaves it. *)
+Theorem assign_first_merge_changes_map_on_rejection :
+  let steps := [Assign S; Reserve false] in
+  let map := fun key : nat => if Nat.eqb key 0 then Some 0 else None in
+  in_place_accepted nat nat steps true map 0 0 = false
+  /\ in_place_merge nat nat Nat.eq_dec steps true map 0 0 0 = Some 1
+  /\ copy_merge nat nat Nat.eq_dec steps true map 0 0 0 = Some 0.
+Proof. vm_compute. repeat split; reflexivity. Qed.

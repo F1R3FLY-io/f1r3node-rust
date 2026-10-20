@@ -95,12 +95,15 @@ impl MeteredMachine {
         self.reserve_cost(BillableKind::Comm, amount)
     }
 
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-19): DR-131
+    // removed `BackingMeter` and every host-work bound, so the doc below no
+    // longer ends with these three lines:
+    // /// Bounded offered-deploy host work (including target-only EPathMap entry
+    // /// substitution) is enforced separately by `BackingMeter`; it does not
+    // /// change the consensus `BillableKind` cost projection.
     /// Record a non-COMM structural reduction (new / match / if). The committed
     /// source D3 policy keeps Reduction, Primitive, and Substitution events in
     /// the diagnostic log/digest but contributes zero consensus consumed units.
-    /// Bounded offered-deploy host work (including target-only EPathMap entry
-    /// substitution) is enforced separately by `BackingMeter`; it does not
-    /// change the consensus `BillableKind` cost projection.
     pub fn reserve_reduction(&self, amount: Cost) -> Result<(), InterpreterError> {
         self.reserve_cost(BillableKind::Reduction, amount)
     }

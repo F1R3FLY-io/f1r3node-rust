@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_obligation::{
     PhloObligationKeyError, PhloObligationKeyLimits, PhloObligationKeyV1,
 };
@@ -9,13 +8,12 @@ use models::rust::phlo_wire::PhloWireError;
 use thiserror::Error;
 
 use super::{
-    push_key_entry, reserve_key_work, resource_key, resource_key_with_host_work, resource_weight,
-    CheckedPhloExecution, PhloExecutionError, PhloOutcome, PhloResource, WorkBudget,
+    push_key_entry, resource_key, resource_weight, CheckedPhloExecution, PhloExecutionError,
+    PhloOutcome, PhloResource, WorkBudget,
 };
 use crate::rust::interpreter::accounting::monetary_allocation::{
     check_funding_assignment, FundingAssignmentError, FundingAssignmentTotals,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 mod policy;
 pub use policy::{
@@ -58,24 +56,6 @@ impl<'a> CheckedPhloObligations<'a> {
         limits: PhloObligationKeyLimits,
         aggregate_bytes: usize,
     ) -> Result<Vec<Vec<u8>>, PhloObligationError> {
-        self.encode_keys(limits, aggregate_bytes, None)
-    }
-
-    pub fn encoded_keys_with_budget(
-        &self,
-        limits: PhloObligationKeyLimits,
-        aggregate_bytes: usize,
-        host: &HostWorkBudget,
-    ) -> Result<Vec<Vec<u8>>, PhloObligationError> {
-        self.encode_keys(limits, aggregate_bytes, Some(host))
-    }
-
-    fn encode_keys(
-        &self,
-        limits: PhloObligationKeyLimits,
-        aggregate_bytes: usize,
-        host: Option<&HostWorkBudget>,
-    ) -> Result<Vec<Vec<u8>>, PhloObligationError> {
         let mut output = Vec::new();
         let mut output_reserved = 0;
         let mut remaining = aggregate_bytes;
@@ -91,45 +71,22 @@ impl<'a> CheckedPhloObligations<'a> {
             let record = match key {
                 PhloObligationKey::Fee => PhloObligationKeyV1::Fee,
                 PhloObligationKey::Resource(resource) => PhloObligationKeyV1::Resource(
-                    resource_key_with_host_work(*resource, &mut budget, host)?.into_wire()?,
+                    resource_key(*resource, &mut budget)?.into_wire()?,
                 ),
                 PhloObligationKey::RetainedResource(resource) => {
                     PhloObligationKeyV1::RetainedResource(
-                        resource_key_with_host_work(*resource, &mut budget, host)?.into_wire()?,
+                        resource_key(*resource, &mut budget)?.into_wire()?,
                     )
                 }
             };
             let mut key_limits = limits;
             key_limits.wire.total_bytes = key_limits.wire.total_bytes.min(remaining);
-            let nodes = match &record {
-                PhloObligationKeyV1::Fee => 0,
-                PhloObligationKeyV1::Resource(resource)
-                | PhloObligationKeyV1::RetainedResource(resource) => resource.authority.len(),
-            };
-            reserve_key_work(
-                host,
-                HostWorkDimension::VerificationOperations,
-                nodes
-                    .checked_mul(2)
-                    .and_then(|n| n.checked_add(16))
-                    .ok_or(PhloExecutionError::ArithmeticOverflow)?,
-            )?;
             let prepared = record.prepare_encoding(key_limits)?;
-            reserve_key_work(
-                host,
-                HostWorkDimension::SearchStateBytes,
-                prepared.encoded_len(),
-            )?;
-            reserve_key_work(
-                host,
-                HostWorkDimension::VerificationOperations,
-                prepared.encoded_len(),
-            )?;
             let encoded = prepared.encode()?;
             remaining = remaining
                 .checked_sub(encoded.len())
                 .ok_or(PhloObligationKeyError::Wire(PhloWireError::LimitExceeded))?;
-            push_key_entry(&mut output, &mut output_reserved, encoded, host)?;
+            push_key_entry(&mut output, &mut output_reserved, encoded)?;
         }
         Ok(output)
     }
@@ -171,41 +128,19 @@ pub enum PhloObligationError {
 
 impl<'a> PhloResource<'a> {
     /// The canonical obligation-key encoding of this resource (C8, DR-87).
-    /// The key derivation, its work limits and its host-work charges are
-    /// those of the settlement key encoding, so equal encodings mean equal
-    /// resource keys.
+    /// The key derivation and its work limits are those of the settlement key
+    /// encoding, so equal encodings mean equal resource keys.
     pub fn encoded_obligation_key(
         self,
         limits: PhloObligationKeyLimits,
-        host: &HostWorkBudget,
     ) -> Result<Vec<u8>, PhloObligationError> {
         let mut budget = WorkBudget {
             remaining_nodes: limits.authority_nodes,
             remaining_bytes: limits.wire.field_bytes,
         };
-        let resource = resource_key_with_host_work(self, &mut budget, Some(host))?.into_wire()?;
-        reserve_key_work(
-            Some(host),
-            HostWorkDimension::VerificationOperations,
-            resource
-                .authority
-                .len()
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(16))
-                .ok_or(PhloExecutionError::ArithmeticOverflow)?,
-        )?;
+        let resource = resource_key(self, &mut budget)?.into_wire()?;
         let record = PhloObligationKeyV1::Resource(resource);
         let prepared = record.prepare_encoding(limits)?;
-        reserve_key_work(
-            Some(host),
-            HostWorkDimension::SearchStateBytes,
-            prepared.encoded_len(),
-        )?;
-        reserve_key_work(
-            Some(host),
-            HostWorkDimension::VerificationOperations,
-            prepared.encoded_len(),
-        )?;
         Ok(prepared.encode()?)
     }
 }

@@ -28,6 +28,11 @@ pub mod merging;
 pub mod metrics_constants;
 pub mod ollama_service;
 pub mod openai_service;
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the unit tests that require a panic.
+#[cfg(test)]
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+pub mod panic_child;
 pub mod pretty_printer;
 /// The printer's recursive oracle twin. `cfg(test)`: never built for production.
 /// Its own text cites `739368a4` block by block; `rholang/tests/normalize_oracle_provenance.rs`
@@ -49,7 +54,6 @@ pub mod storage;
 pub mod substitute;
 pub mod substitute_combine;
 pub mod substitute_drive;
-mod substitute_metered_combine;
 #[cfg(test)]
 #[path = "../../../tests/support/substitute_oracle.rs"]
 pub mod substitute_oracle;

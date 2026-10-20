@@ -1,11 +1,8 @@
-use std::io::Write;
-
 use bincode;
 use serde::Serialize;
 
 use super::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::errors::RSpaceError;
-use crate::rspace::hashing::native_source::SourceMeter;
 
 /// Authenticated consensus context supplied by the caller. This is never
 /// selected by inspecting a payload or by trying one decoder after another.
@@ -18,36 +15,6 @@ pub enum EventCodecEpoch {
 
 pub const COST_EVENT_DOMAIN_V1: &[u8] = b"f1r3node:rspace-event-cost:v1";
 pub const COST_CHANNEL_KEY_DOMAIN_V1: &[u8] = b"f1r3node:rspace-channel-key-cost:v1";
-
-/// One bincode output chunk, charged by the native source meter before it is
-/// observed by a hash or stored in a vector. The generated models trampoline
-/// and bounded serde test-double fallback both write through this interface;
-/// neither may build an unmetered whole-leg buffer first.
-pub trait BincodeByteSink {
-    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), RSpaceError>;
-}
-
-struct SerdeSinkAdapter<'a> {
-    sink: &'a mut dyn BincodeByteSink,
-    error: Option<RSpaceError>,
-}
-
-impl Write for SerdeSinkAdapter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self.error.is_some() {
-            return Err(std::io::ErrorKind::Other.into());
-        }
-        match self.sink.write_bytes(bytes) {
-            Ok(()) => Ok(bytes.len()),
-            Err(error) => {
-                self.error = Some(error);
-                Err(std::io::ErrorKind::Other.into())
-            }
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
 
 /// The serialization contract of EPathMap-bearing event hashing.
 ///
@@ -87,50 +54,6 @@ pub trait StableHashSerialize: Serialize {
     /// CostV1 cannot encode v7-only structure. Schema-extended roots override
     /// this to refuse a nonempty parallel tail before the v6 layout is emitted.
     fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> { Ok(()) }
-
-    /// Native validation hook. Bounded historical/test values need no extra
-    /// traversal; models overrides for canonical Par and its event wrappers.
-    fn stable_hash_contains_cost_metered(
-        &self,
-        _meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        self.stable_hash_contains_cost()
-    }
-
-    fn stable_hash_validate_cost_v1_metered(
-        &self,
-        _meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError> {
-        self.stable_hash_validate_cost_v1()
-    }
-
-    /// Emit bincode's exact write chunks into a charge-before-write sink.
-    /// Bounded test doubles keep serde's native chunk trace; recursive rhoapi
-    /// roots override this with the generated explicit-stack machine.
-    fn stable_hash_write_metered(&self, sink: &mut dyn BincodeByteSink) -> Result<(), RSpaceError> {
-        let mut adapter = SerdeSinkAdapter { sink, error: None };
-        let result = bincode::serialize_into(&mut adapter, self);
-        if let Some(error) = adapter.error {
-            return Err(error);
-        }
-        result.map_err(|error| RSpaceError::InterpreterError(error.to_string()))
-    }
-
-    /// Pre-cost positional layout through the same sink. Schema-extended
-    /// models roots override this; unchanged bounded types use the default.
-    fn stable_hash_write_legacy_metered(
-        &self,
-        sink: &mut dyn BincodeByteSink,
-    ) -> Result<(), RSpaceError> {
-        self.stable_hash_write_metered(sink)
-    }
-
-    fn stable_hash_write_cost_v1_metered(
-        &self,
-        sink: &mut dyn BincodeByteSink,
-    ) -> Result<(), RSpaceError> {
-        self.stable_hash_write_metered(sink)
-    }
 }
 
 // Reference forwarding: `&T` hashes as `T` (serde serializes through
@@ -150,38 +73,6 @@ impl<T: StableHashSerialize + ?Sized> StableHashSerialize for &T {
 
     fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> {
         (**self).stable_hash_validate_cost_v1()
-    }
-
-    fn stable_hash_contains_cost_metered(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        (**self).stable_hash_contains_cost_metered(meter)
-    }
-
-    fn stable_hash_validate_cost_v1_metered(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError> {
-        (**self).stable_hash_validate_cost_v1_metered(meter)
-    }
-
-    fn stable_hash_write_metered(&self, sink: &mut dyn BincodeByteSink) -> Result<(), RSpaceError> {
-        (**self).stable_hash_write_metered(sink)
-    }
-
-    fn stable_hash_write_legacy_metered(
-        &self,
-        sink: &mut dyn BincodeByteSink,
-    ) -> Result<(), RSpaceError> {
-        (**self).stable_hash_write_legacy_metered(sink)
-    }
-
-    fn stable_hash_write_cost_v1_metered(
-        &self,
-        sink: &mut dyn BincodeByteSink,
-    ) -> Result<(), RSpaceError> {
-        (**self).stable_hash_write_cost_v1_metered(sink)
     }
 }
 

@@ -1,8 +1,5 @@
-use std::mem::size_of;
-
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::block::state_hash::StateHash;
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use rholang::rust::interpreter::accounting::monetary_allocation::{
     canonical_funding_key_order, monetary_scope_for_custodies, FundingSearchError, MonetaryCursor,
     MonetaryCursorError,
@@ -12,10 +9,9 @@ use rholang::rust::interpreter::accounting::phlo_controls::{
 };
 use rholang::rust::interpreter::accounting::phlo_execution::{
     CheckedNativeSignedPhloFamilyPolicy, CheckedPhloFundingFamily, NativePhloPolicyError,
-    PhloFamilyCursorSnapshot, PhloFamilyFundingLimits, PhloFundingIntentView, PhloFundingSource,
+    PhloFamilyCursorSnapshot, PhloFamilyFundingLimits, PhloFundingIntentView,
     PhloPolicyCaptureError, PhloScopedCursorSnapshot, SignedPhloConsentLimits,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 use super::*;
 use crate::rust::casper::CasperShardConf;
@@ -62,8 +58,6 @@ pub enum DirectWalletPolicySnapshotError {
     ScopeCollision,
     #[error("funding snapshot allocation failed")]
     AllocationFailed,
-    #[error("funding snapshot work calculation overflowed")]
-    Overflow,
     #[error(transparent)]
     Wallet(#[from] DirectWalletSnapshotError),
     #[error(transparent)]
@@ -76,8 +70,6 @@ pub enum DirectWalletPolicySnapshotError {
     Cursor(#[from] MonetaryCursorError),
     #[error(transparent)]
     Search(#[from] FundingSearchError),
-    #[error(transparent)]
-    HostWork(#[from] HostWorkReservationError),
     #[error(transparent)]
     Read(#[from] CasperError),
 }
@@ -118,16 +110,6 @@ fn check_genesis_minimum(
     Ok(())
 }
 
-fn reserve(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), DirectWalletPolicySnapshotError> {
-    let amount = u64::try_from(amount).map_err(|_| DirectWalletPolicySnapshotError::Overflow)?;
-    budget.reserve(dimension, HostWorkUnits::new(amount))?;
-    Ok(())
-}
-
 fn resource_policy_context() -> [u8; 32] {
     Blake2b256::hash(
         b"f1r3node:monetary-resource:canonical-family-lexicographic-minimax:v1:SystemVault:General"
@@ -161,14 +143,11 @@ async fn read_cursor_pair(
     scopes: [[u8; 32]; 2],
     count: NonZeroUsize,
     parallel: NonZeroUsize,
-    budget: &HostWorkBudget,
 ) -> Result<[Option<MonetaryCursor>; 2], DirectWalletPolicySnapshotError> {
     check_root(reader, expected)?;
     if scopes[0] == scopes[1] {
         return Err(DirectWalletPolicySnapshotError::ScopeCollision);
     }
-    reserve(budget, HostWorkDimension::SearchCandidates, 2)?;
-    reserve(budget, HostWorkDimension::VerificationOperations, 2)?;
     let resource = reader.read_monetary_cursor(scopes[0], count);
     let fee = reader.read_monetary_cursor(scopes[1], count);
     let pair = if parallel.get() > 1 {
@@ -191,7 +170,6 @@ impl<'a, A> DirectWalletFunding<'a, A> {
         adopted: &AdoptedResourcePolicy,
         pre_state_hash: StateHash,
         parallel_reads: NonZeroUsize,
-        budget: &HostWorkBudget,
     ) -> Result<DirectWalletPolicySnapshot<'a, A>, DirectWalletPolicySnapshotError> {
         let expected = pre_state_hash
             .as_ref()
@@ -202,30 +180,12 @@ impl<'a, A> DirectWalletFunding<'a, A> {
         if count.get() != self.record().sources.len() {
             return Err(DirectWalletPolicySnapshotError::InvalidCohort);
         }
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .get()
-                .checked_mul(2 * size_of::<&[u8]>() + size_of::<DirectWalletSource<'a>>())
-                .ok_or(DirectWalletPolicySnapshotError::Overflow)?,
-        )?;
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            count
-                .get()
-                .checked_mul(96)
-                .and_then(|n| n.checked_add(512))
-                .ok_or(DirectWalletPolicySnapshotError::Overflow)?,
-        )?;
-        reserve(budget, HostWorkDimension::SearchCandidates, count.get())?;
         let mut original = Vec::new();
         original
             .try_reserve_exact(count.get())
             .map_err(|_| DirectWalletPolicySnapshotError::AllocationFailed)?;
         original.extend(self.record().sources.iter().map(|source| source.custody()));
-        let order = canonical_funding_key_order(&original, budget)?;
+        let order = canonical_funding_key_order(&original)?;
         let mut canonical_custodies = Vec::new();
         canonical_custodies
             .try_reserve_exact(count.get())
@@ -250,7 +210,7 @@ impl<'a, A> DirectWalletFunding<'a, A> {
             event_codec_epoch: adopted.event_codec_epoch(),
         };
         let wallets = self
-            .read_snapshot(&reader, expected, parallel_reads, budget)
+            .read_snapshot(&reader, expected, parallel_reads)
             .await?;
         let [resource_cursor, fee_cursor] = read_cursor_pair(
             &reader,
@@ -258,7 +218,6 @@ impl<'a, A> DirectWalletFunding<'a, A> {
             [resource_scope, fee_scope],
             count,
             parallel_reads,
-            budget,
         )
         .await?;
         Ok(DirectWalletPolicySnapshot {
@@ -283,22 +242,8 @@ impl<'a, A> DirectWalletPolicySnapshot<'a, A> {
     fn bind_native_family_with<'s>(
         &'s self,
         policy_limits: PhloFamilyFundingLimits,
-        budget: &HostWorkBudget,
         bind: impl FnOnce() -> Result<CheckedDirectWalletFunding<'s, A>, DirectWalletBindingError>,
     ) -> Result<Option<CheckedDirectWalletPolicy<'s, A>>, DirectWalletPolicySnapshotError> {
-        let source_count = self.wallets.sources().len();
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            source_count,
-        )?;
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            source_count
-                .checked_mul(size_of::<(&[u8], PhloFundingSource<'_>)>())
-                .ok_or(DirectWalletPolicySnapshotError::Overflow)?,
-        )?;
         let bound = bind()?;
         let snapshots = PhloFamilyCursorSnapshot {
             canonical_custodies: &self.canonical_custodies,
@@ -313,13 +258,13 @@ impl<'a, A> DirectWalletPolicySnapshot<'a, A> {
         };
         let Some(policy) = bound
             .consent()
-            .plan_funding_policy(snapshots, policy_limits, budget)?
+            .plan_funding_policy(snapshots, policy_limits)?
         else {
             return Ok(None);
         };
         Ok(Some(CheckedDirectWalletPolicy {
             snapshot: self,
-            policy: policy.into_native(budget)?,
+            policy: policy.into_native()?,
         }))
     }
 }
@@ -340,7 +285,6 @@ macro_rules! impl_wallet_policy_binding {
                 signed_limits: SignedPhloConsentLimits,
                 policy_limits: PhloFamilyFundingLimits,
                 $($context: &CasperShardConf, resource_policy: PhloSchedulePolicy<'_>,)?
-                budget: &HostWorkBudget,
             ) -> Result<
                 Option<CheckedDirectWalletPolicy<'s, $envelope>>,
                 DirectWalletPolicySnapshotError,
@@ -349,7 +293,7 @@ macro_rules! impl_wallet_policy_binding {
                     family.cases()[0].obligations.execution().controls(), $context,
                 )?;
                 view.check_schedule_policy(resource_policy)?;)?
-                self.bind_native_family_with(policy_limits, budget, || {
+                self.bind_native_family_with(policy_limits, || {
                     self.wallets.bind_family(view, family, terms, signed_limits)
                 })
             }
@@ -370,7 +314,6 @@ impl DirectWalletPolicySnapshot<'_, OfferedFundedDeploy> {
         policy_limits: PhloFamilyFundingLimits,
         adopted_shard: &CasperShardConf,
         genesis_policy: &GenesisResourcePolicy,
-        budget: &HostWorkBudget,
     ) -> Result<
         Option<CheckedDirectWalletPolicy<'s, OfferedFundedDeploy>>,
         DirectWalletPolicySnapshotError,
@@ -384,7 +327,6 @@ impl DirectWalletPolicySnapshot<'_, OfferedFundedDeploy> {
             signed_limits,
             policy_limits,
             &context,
-            budget,
         )
     }
 
@@ -396,14 +338,13 @@ impl DirectWalletPolicySnapshot<'_, OfferedFundedDeploy> {
         signed_limits: SignedPhloConsentLimits,
         policy_limits: PhloFamilyFundingLimits,
         context: &AdoptedResourcePolicy,
-        budget: &HostWorkBudget,
     ) -> Result<
         Option<CheckedDirectWalletPolicy<'s, OfferedFundedDeploy>>,
         DirectWalletPolicySnapshotError,
     > {
         context.check_controls(family.cases()[0].obligations.execution().controls())?;
         context.genesis().check_funding_intent(view)?;
-        self.bind_native_family_with(policy_limits, budget, || {
+        self.bind_native_family_with(policy_limits, || {
             self.wallets.bind_family(view, family, terms, signed_limits)
         })
     }

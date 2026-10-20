@@ -9,7 +9,9 @@ use smallvec::SmallVec;
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::reduce::ReducerCore;
-use super::system_processes::{non_deterministic_ops, RhoDispatchMap};
+// Changed by DR-114: native funded execution has its own recorded set.
+// use super::system_processes::{non_deterministic_ops, RhoDispatchMap};
+use super::system_processes::{is_native_recorded_op, non_deterministic_ops, RhoDispatchMap};
 use super::unwrap_option_safe;
 
 pub fn build_env(data_list: Vec<ListParWithRandom>) -> Env<Par> {
@@ -124,7 +126,15 @@ impl RholangAndScalaDispatcher {
                     Ok(DispatchType::DeterministicCall)
                 }
                 TaggedCont::ScalaBodyRef(_ref) => {
-                    let is_non_deterministic = non_deterministic_ops().contains(&_ref);
+                    // Changed by DR-114: native funded execution records and
+                    // replays its own set of external-service processes.
+                    // let is_non_deterministic = non_deterministic_ops().contains(&_ref);
+                    let native = self.native_execution_active();
+                    let is_non_deterministic = if native {
+                        is_native_recorded_op(_ref)
+                    } else {
+                        non_deterministic_ops().contains(&_ref)
+                    };
                     let dispatch_table = self._dispatch_table.read().await;
                     match dispatch_table.get(&_ref) {
                         Some(f) => {
@@ -133,6 +143,38 @@ impl RholangAndScalaDispatcher {
                                     is_non_deterministic,
                                     output,
                                 ),
+                                // Added by DR-114: in native funded execution a
+                                // recorded reply that cannot be produced keeps its
+                                // record, and a malformed system-process call is a
+                                // classified user failure (§4.1 option A).
+                                // Changed by the merge of feature/cost-accounted-rho:
+                                // F1R3Lang's `InterpreterError` has an iterative `Drop`,
+                                // so a pattern cannot move the message out of it
+                                // (E0509). The arm takes the message by reference.
+                                // Err(e) if native => match e {
+                                //     e @ InterpreterError::ProduceFailureWithOutput { .. }
+                                //         if is_non_deterministic =>
+                                //     {
+                                //         Ok(DispatchType::FailedNonDeterministicCall(e))
+                                //     }
+                                //     InterpreterError::IllegalArgumentError(message) => {
+                                //         Err(InterpreterError::SystemProcessShapeError(message))
+                                //     }
+                                //     e => Err(e),
+                                // },
+                                Err(mut e) if native => match e {
+                                    e @ InterpreterError::ProduceFailureWithOutput { .. }
+                                        if is_non_deterministic =>
+                                    {
+                                        Ok(DispatchType::FailedNonDeterministicCall(e))
+                                    }
+                                    InterpreterError::IllegalArgumentError(ref mut message) => {
+                                        Err(InterpreterError::SystemProcessShapeError(
+                                            std::mem::take(message),
+                                        ))
+                                    }
+                                    e => Err(e),
+                                },
                                 Err(e) if is_non_deterministic => {
                                     // Non-deterministic process failed - return FailedNonDeterministicCall
                                     // so the produce event can be marked as failed for replay safety
@@ -150,6 +192,14 @@ impl RholangAndScalaDispatcher {
             },
             None => Ok(DispatchType::Skip),
         }
+    }
+
+    /// Added by DR-114: whether the reducer runs native funded execution.
+    pub(crate) fn native_execution_active(&self) -> bool {
+        self.reducer
+            .get()
+            .and_then(|weak| weak.upgrade())
+            .is_some_and(|reducer| reducer.metering.budget().native_execution_active())
     }
 
     fn dispatch_type(

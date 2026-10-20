@@ -1,0 +1,63 @@
+' Merge index of a failed offered deploy (DR-115, bug 10986).
+' A user failure rolls back the user events U of the deploy log and keeps the
+' settlement: the wallet settlement events W and the receipt events R. The
+' operation journal of the committed evidence fixes U, and replay binds the same
+' prefix. The merge index takes log[U..] with the stored wallet map, so a block
+' in a merged branch brings its charge into the merged state, or the merge
+' rejects its chain with a record.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-115);
+'                  casper/src/rust/merging/block_index.rs (committed_log);
+'                  casper/src/rust/util/rholang/costacc/offered_evidence.rs
+'                  (failed_offered_committed_suffix, committed_user_event_count).
+' Formal model:    formal/rocq/cost_accounted_rho/theories/FailedSettlementMergeIndex.v;
+'                  formal/tlaplus/cost_accounted_rho/FailedSettlementMergeIndex.tla.
+' Palette:  rolled back = reject red · empty segment = delta amber · committed = pool green
+'           evidence = supply blue · index rule = gate teal · merge = process lilac
+'           kept charge = note green · rejection record = note red
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/failed-offered-merge-index.puml
+'          (or: ./render.sh failed-offered-merge-index.puml)
+
+@startuml failed-offered-merge-index
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam RectangleBorderColor #333333
+skinparam PackageBorderColor #666666
+title Merge index of a failed offered deploy (DR-115)
+
+package "Block A: one failed offered deploy" $ca_pkg_amber {
+  rectangle "**deploy log**, <latex>n</latex> events, in this order\n|<$ca_rejectfill> **U**: user events, positions <latex>[0, U)</latex>, rolled back |<$ca_delta> **G**: grant-issue events, empty for a user failure |<$ca_pool> **W**: wallet settlement, positions <latex>[U, U + W)</latex>, committed |<$ca_pool> **R**: receipts, positions <latex>[U + W, n)</latex>, committed |" as LOG $ca_note_grey
+  rectangle "stored mergeable map\nwallet channels only" as MAP $ca_pool
+}
+
+rectangle "committed native cost evidence\noperation journal: <latex>U = \sum_{j} w(j)</latex>\n<latex>w</latex>: Rejected 0, Stored 1, Matched 2\nwallet_settlement_log_events = W" as EV $ca_supply
+
+rectangle "**committed_log()**\nsuccess: the whole log\nfailed legacy: none (the dev rule)\nfailed offered: <latex>\mathrm{log}[U..]</latex>\nfails closed on a decode error\nor when <latex>n - U < W</latex>" as CL $ca_gate
+
+rectangle "**DeployIndex** of A\nevents: W then R\nnumber channels: the wallet map" as DI $ca_process
+
+rectangle "**DagMerger.merge**\nbase block: its post-state holds the charge\nbranch block: apply the kept chain,\nor reject it with a record" as MERGE $ca_process
+
+rectangle "merged pre-state keeps\nthe payer debit, the fee,\nthe receipts and the\nprepaid consumption" as KEPT $ca_note_green
+rectangle "rejection record\n(the deploy is not applied;\nowner recovery is gap G6)" as REC $ca_note_red
+
+EV -[$ca_instantiate]-> CL : boundary U\n(the replay decode)
+LOG -[$ca_credit]-> CL : W then R are indexed\nU is not indexed
+CL -[$ca_credit]-> DI : events W then R
+MAP -[$ca_credit]-> DI : number channels
+DI -[$ca_neutral]-> MERGE
+MERGE -[$ca_credit]-> KEPT : chain kept
+MERGE -[$ca_debit]-> REC : chain conflicts
+
+note bottom of CL
+  Replay binds the same prefix <latex>\mathrm{log}[..U]</latex>
+  to the native user trace (native_user_event_count),
+  so the merge and replay use one boundary.
+end note
+
+legend right
+  red: rolled back · amber: empty segment · green: committed
+  blue: committed evidence · teal: the index rule · lilac: merge
+endlegend
+@enduml

@@ -1,0 +1,91 @@
+' Inside one deploy evaluation: the single-order reduction scheduler of this
+' branch against dev's racing evaluation (amendment of 2026-10-13). Both
+' designs end in the same place: play writes a record, and replay follows the
+' record. The left branch shows what the scheduler adds and which
+' cost-accounting guarantees it supplies today. The right branch shows dev's
+' evaluation. The proposal keeps the scheduler and does not propose a return.
+' The analysis of what a return would need (the former proposal §3.7.6) was
+' removed on 2026-10-13 by the user's decision.
+'
+' Code anchors (at e38ff0de8 unless named): deterministic_reduction.rs
+'   split :92-133 · complete frontier :827-841 · one component :1068-1072 ·
+'   key [2, 0] :1120-1122 · dev a06e3e7b3 reduce.rs:318-337 ·
+'   dev ops_produce.rs:251-261 · dev docs/rholang-evaluation-order.md:5, 25-26.
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §3.7.
+' Palette: deploy input = supply blue · scheduler steps = process lilac ·
+'   racing steps = control amber · RSpace candidate pick = gate teal ·
+'   record = delta orange · replay = surface salmon ·
+'   guarantees of the scheduler = green note
+' The legend also defines every name and abbreviation that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh consensus-proposal-scheduler-vs-racing.puml
+
+@startuml consensus-proposal-scheduler-vs-racing
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+title Inside one deploy: the single-order scheduler (this branch) against racing evaluation (dev)
+
+start
+:a deploy body with parallel branches,\nfor example <latex>P \mid Q \mid R</latex>; <<$ca_supply>>
+split
+  :**This branch: the single-order scheduler**\nsplit the participant into child participants,\neach with a causal path (deterministic_reduction.rs:92-133); <<$ca_process>>
+  :each child submits one RSpace intent and waits; <<$ca_process>>
+  :complete frontier: every live participant\nwaits or has completed (:827-841); <<$ca_process>>
+  :native execution adds the key [2, 0] to every footprint,\nso each native frontier is one conflict component\n(:1120-1122, assertion :1068-1072); <<$ca_process>>
+  :run the intents one at a time, in causal order:\nthe single order of a native deploy; <<$ca_process>>
+  note left $ca_note_green
+    **What it supplies to cost accounting today**
+    · equal replay host work at live map sizes
+      (DR-78, DR-79 step 5, DR-100)
+    · operation names by causal path
+      (DR-74, DR-84 to DR-86)
+    · order-dependent decisions without a record
+      (the G3 design draft)
+    · checkpoints that never see a partial evaluation
+  end note
+split again
+  :**Dev: racing evaluation**\nspawn each branch as a Tokio task\nand await every handle (dev reduce.rs:318-337); <<$ca_control>>
+  :the tasks race: per-channel locks serialize\none channel, and arrival order decides the rest; <<$ca_control>>
+end split
+:RSpace picks one matching candidate:\nthe canonical order at e38ff0de8, and a random pick\nafter the restoration of dev's pick (dev ops_produce.rs:251-261); <<$ca_gate>>
+:play writes the record: the event log\nand the native cost evidence; <<$ca_delta>>
+:replay follows the record: the recorded COMMs,\nwhatever the order of the run; <<$ca_surface>>
+note right $ca_note_grey
+  Dev: "Rholang Is Non-Deterministic By Design"
+  (docs/rholang-evaluation-order.md:5). Replay
+  "uses the play event log to force the exact same
+  COMMs during replay, regardless of evaluation order"
+  (lines 25-26). Record and replay in §7 works
+  under both branches of this diagram.
+end note
+stop
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| the input: one deploy body |
+  |<$ca_process>| a step of the single-order scheduler of this branch |
+  |<$ca_control>| a step of dev's racing evaluation |
+  |<$ca_gate>| the RSpace candidate pick |
+  |<$ca_delta>| the record that play writes |
+  |<$ca_surface>| replay of the record |
+  |<$ca_note_green>| what the scheduler supplies today |
+
+  |= name |= meaning |
+  | participant | one live causal branch of a reducer evaluation |
+  | intent | a typed request for one RSpace produce or consume |
+  | complete frontier | the point at which every live participant waits on one intent or has completed |
+  | footprint, [2, 0] | the resources that an intent can touch, and the common key that native execution adds to every footprint |
+  | conflict component | a connected component of intents whose footprints intersect |
+  | native deploy | an offered (v6) deploy under the native cost meter. Legacy deploys bypass the queue. |
+  | COMM | one RSpace communication event: a send that matches a receive |
+  | DR-n | decision record n of the cost-accounting decision records |
+  | G3 | installer funding, a gap of epic 8946 that has no code yet |
+  | HEAD, e38ff0de8 | the code basis of the proposal on feature/cost-accounted-rho |
+  | dev, a06e3e7b3 | the integration branch of F1R3node, at the commit that the dev citations use |
+endlegend
+
+@enduml

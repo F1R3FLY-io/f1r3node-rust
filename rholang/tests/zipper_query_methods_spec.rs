@@ -389,11 +389,18 @@ mod native_query_identity_tests {
     /// on [`codec_adversarial_map`] instead (see W2b-1 note there).
     fn raw_adversarial_map() -> RholangSetPathMap {
         let mut map = RholangSetPathMap::new();
-        map.insert(b"ab\xFF".to_vec(), ()); // value exactly at segment end
-        map.insert(b"ab\xFFq\xFF".to_vec(), ());
-        map.insert(b"abc\xFFq\xFF".to_vec(), ()); // sibling segment "abc" extends "ab"
-        map.insert(b"b\xFFq\xFF".to_vec(), ());
-        map.insert(b"\xFFz\xFF".to_vec(), ()); // EMPTY first segment
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `insert` takes the key through `AsRef`.
+        // map.insert(b"ab\xFF".to_vec(), ()); // value exactly at segment end
+        // map.insert(b"ab\xFFq\xFF".to_vec(), ());
+        // map.insert(b"abc\xFFq\xFF".to_vec(), ()); // sibling segment "abc" extends "ab"
+        // map.insert(b"b\xFFq\xFF".to_vec(), ());
+        // map.insert(b"\xFFz\xFF".to_vec(), ()); // EMPTY first segment
+        map.insert(b"ab\xFF", ()); // value exactly at segment end
+        map.insert(b"ab\xFFq\xFF", ());
+        map.insert(b"abc\xFFq\xFF", ()); // sibling segment "abc" extends "ab"
+        map.insert(b"b\xFFq\xFF", ());
+        map.insert(b"\xFFz\xFF", ()); // EMPTY first segment
         map
     }
 
@@ -699,7 +706,8 @@ mod native_query_runtime_tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{Expr, Par};
     use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-    use rholang::rust::interpreter::test_utils::resources::with_runtime;
+    use rholang::rust::interpreter::test_utils::resources::{with_runtime, with_runtime_for_epoch};
+    use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 
     async fn eval_ok(runtime: &mut RhoRuntimeImpl, term: &str) {
         let res = runtime
@@ -855,8 +863,14 @@ mod native_query_runtime_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn repeated_query_costs_are_identical() {
         let program = query_program();
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+        // two charges are compared below, so both runtimes run in CostV1, the
+        // protocol-6 cost epoch. On a Legacy runtime both charges are 0, so the
+        // comparison proves nothing.
+        let epoch = EventCodecEpoch::CostV1;
 
-        let cost_cold = with_runtime("native-query-cost-a-", {
+        // let cost_cold = with_runtime("native-query-cost-a-", {
+        let cost_cold = with_runtime_for_epoch(epoch, "native-query-cost-a-", {
             let program = program.clone();
             move |mut runtime| async move {
                 let res = runtime
@@ -869,7 +883,8 @@ mod native_query_runtime_tests {
         })
         .await;
 
-        let cost_warm = with_runtime("native-query-cost-b-", {
+        // let cost_warm = with_runtime("native-query-cost-b-", {
+        let cost_warm = with_runtime_for_epoch(epoch, "native-query-cost-b-", {
             let program = program.clone();
             move |mut runtime| async move {
                 let res = runtime
@@ -882,6 +897,9 @@ mod native_query_runtime_tests {
         })
         .await;
 
+        // Added by the merge of feature/cost-accounted-rho (finding R1-39): the
+        // comparison is evidence only when the runs charge something.
+        assert!(cost_cold > 0, "the query program must be charged");
         assert_eq!(
             cost_cold, cost_warm,
             "trie memoization must not change charged costs"

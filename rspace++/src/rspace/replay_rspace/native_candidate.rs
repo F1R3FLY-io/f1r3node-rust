@@ -2,7 +2,7 @@ use super::native_epoch::NativeCandidateIdentity;
 use super::*;
 use crate::rspace::candidate_order::canonical_candidates;
 
-pub(super) mod metered;
+pub(super) mod selection;
 
 pub(super) struct PreparedConsumeCandidate<C, A: Clone> {
     pub(super) data: Vec<ConsumeCandidate<C, A>>,
@@ -65,6 +65,15 @@ where
         if expected.is_some_and(|identity| !identity.matches_consume(consume_ref)) {
             return Ok(None);
         }
+        // Added by DR-129 (E3-a): with no recorded identity this call is the
+        // Stored check of directive replay (`native_directive.rs`). It skips a
+        // continuation whose commit can veto.
+        // Disabled by user decision 6 (2026-10-16): play and this selection
+        // both search every assignment (defect D1), so the Stored check
+        // finds a selection only when play could have fired one.
+        // if expected.is_none() && self.matcher.commit_may_veto(continuation) {
+        //     return Ok(None);
+        // }
         let mut candidates: HashMap<_, _> = channels
             .iter()
             .map(|channel| {
@@ -121,9 +130,19 @@ where
             |channels| {
                 Ok(canonical_candidates(self.get_store().get_continuations_arc(&channels)?)
                     .into_iter()
+                    // Changed by DR-129 (E3-a): with no recorded identity (the
+                    // Stored check) the oracle skips a continuation whose
+                    // commit can veto.
+                    // Changed back by user decision 6 (2026-10-16): play and
+                    // this selection both search every assignment (defect
+                    // D1), so the filter keeps only the identity check.
                     .filter(|(waiting, _)| {
                         expected.is_none_or(|identity| identity.matches_consume(&waiting.source))
                     })
+                    // .filter(|(waiting, _)| match expected {
+                    //     Some(identity) => identity.matches_consume(&waiting.source),
+                    //     None => !self.matcher.commit_may_veto(&waiting.continuation),
+                    // })
                     .collect())
             },
             |c| {

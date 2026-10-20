@@ -48,15 +48,20 @@ async fn check_initialization(names: Vec<String>) {
             .is_empty()
     );
     assert_eq!(history.root(), root);
+    // Changed by DR-131 S6: a charge cut no longer fails the installation,
+    // so an invalid template after `accepted` valid templates fails it.
     for accepted in 0..names.len() {
-        let epoch = Epoch::default();
-        *epoch.remaining_calls.lock().unwrap() = Some(accepted);
+        let mut requests = templates(&names[..accepted]);
+        requests.push((Vec::new(), Install {
+            patterns: Vec::new(),
+            continuation: "k".to_owned(),
+        }));
         assert!(
             Session::new_with_installs(
                 history.clone(),
                 Arc::new(Box::new(Matcher)),
-                epoch,
-                templates(&names),
+                Epoch::default(),
+                requests,
             )
             .is_err()
         );
@@ -149,50 +154,6 @@ async fn private_initialization_rejects_matching_prestate_without_consuming_it()
         fresh.get_data(&"occupied".to_owned()).await.unwrap(),
         play.get_data(&"occupied".to_owned()).await.unwrap()
     );
-}
-
-#[tokio::test]
-async fn every_installation_reservation_cut_leaves_history_and_other_sessions_unchanged() {
-    let base = session().await;
-    let history = base.space.get_history_repository();
-    let root = history.root();
-    let names = ["first".to_owned(), "second".to_owned()];
-    let baseline_epoch = Epoch::default();
-    let baseline = Session::new_with_installs(
-        history.clone(),
-        Arc::new(Box::new(Matcher)),
-        baseline_epoch.clone(),
-        templates(&names),
-    )
-    .unwrap();
-    let calls = baseline_epoch.calls.load(Ordering::Relaxed);
-    assert!(calls > names.len());
-    assert!(baseline_epoch.bytes.load(Ordering::Relaxed) > 0);
-    assert_templates(&baseline, &names).await;
-    for accepted in 0..calls {
-        let epoch = Epoch::default();
-        *epoch.remaining_calls.lock().unwrap() = Some(accepted);
-        assert!(
-            Session::new_with_installs(
-                history.clone(),
-                Arc::new(Box::new(Matcher)),
-                epoch,
-                templates(&names),
-            )
-            .is_err(),
-            "accepted={accepted}"
-        );
-        assert_eq!(history.root(), root);
-    }
-    for name in &names {
-        assert!(
-            base.get_continuations(std::slice::from_ref(name))
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(base.get_joins(name).await.unwrap().is_empty());
-    }
 }
 
 #[tokio::test]

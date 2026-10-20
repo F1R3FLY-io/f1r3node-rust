@@ -281,7 +281,6 @@ pub trait ColdStoreDecode: Sized {
     }
 }
 
-
 /// The delegating prefix decode for **bounded-depth** types: run bincode over
 /// an `io::Cursor` and report the cursor's final position as the consumed
 /// count.
@@ -446,7 +445,6 @@ impl ColdStoreDecode for u8 {
     }
 }
 
-
 /// `String` is one of the rspace++ **test-double** instantiations
 /// (`RSpace<String, Pattern, String, StringsCaptor>` in
 /// `rspace++/tests/storage_actions_test.rs`), and it is a `std` type, so the
@@ -458,7 +456,6 @@ impl ColdStoreDecode for String {
         legacy_prefix(bytes)
     }
 }
-
 
 /// `Vec<u8>` — the raw-channel test-double instantiation used by the history
 /// and exporter suites. Bounded by definition.

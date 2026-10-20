@@ -1,6 +1,13 @@
 use loom::sync::{Arc, Mutex};
 use loom::thread;
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the negative controls below.
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
+use panic_child::PanicChild;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Store {
     tuples: Vec<u8>,
@@ -101,13 +108,37 @@ fn selected_indices_remain_valid_until_publication() {
 }
 
 #[test]
-#[should_panic(expected = "retired different tuples")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "retired different tuples")]
 fn ascending_retirement_changes_the_selected_tuple_set() {
+    let child = PanicChild::new(
+        module_path!(),
+        "ascending_retirement_changes_the_selected_tuple_set",
+    );
+    if !child.is_child() {
+        child.expect_panic("retired different tuples");
+        return;
+    }
+    child.subject_reached();
     loom::model(|| check(true, true, false));
 }
 
 #[test]
-#[should_panic(expected = "stale candidate index")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "stale candidate index")]
 fn releasing_the_guard_before_publication_invalidates_selection() {
+    let child = PanicChild::new(
+        module_path!(),
+        "releasing_the_guard_before_publication_invalidates_selection",
+    );
+    if !child.is_child() {
+        child.expect_panic("stale candidate index");
+        return;
+    }
+    child.subject_reached();
     loom::model(|| check(false, false, false));
 }

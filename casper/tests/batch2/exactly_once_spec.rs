@@ -27,14 +27,19 @@ use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
-use casper::rust::util::construct_deploy;
-use crypto::rust::signatures::signed::Signed;
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -53,7 +58,9 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -70,12 +77,19 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
 /// Every datum currently on `@"<name>"` at `state_hash`, decoded to string
 /// payloads. The exactly-once assert is a datum COUNT on these cells.
 async fn string_datums(node: &TestNode, state_hash: &Bytes, name: &str) -> Vec<String> {
-    let channel = Par {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GString(name.to_string())),
-        }],
-        ..Default::default()
-    };
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-33): F1R3Lang
+    // gives `Par` an iterative `Drop`, so a struct-update literal cannot move the
+    // other fields out of `Default::default()` (E0509). The builder makes the
+    // same `Par`. The old literal was:
+    // let channel = Par {
+    //     exprs: vec![Expr {
+    //         expr_instance: Some(ExprInstance::GString(name.to_string())),
+    //     }],
+    //     ..Default::default()
+    // };
+    let channel = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GString(name.to_string())),
+    }]);
     node.runtime_manager
         .get_data(state_hash.clone(), &channel)
         .await
@@ -234,7 +248,9 @@ async fn stage_floor_covered_reinstatement() -> (
     String,
     Bytes,
     &'static str,
-    Signed<DeployData>,
+    // Changed by DR-116 (gap G6): the loser is an offered deploy.
+    // Signed<DeployData>,
+    construct_deploy::OfferedDeploy,
     BlockMessage,
 ) {
     let (mut nodes, shard_id) = three_node_network().await;
@@ -244,7 +260,9 @@ async fn stage_floor_covered_reinstatement() -> (
         r#"@"race"!("s")"#.to_string(),
         None,
         None,
-        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+        // Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
         Some(0),
         Some(shard_id.clone()),
     )
@@ -262,6 +280,10 @@ async fn stage_floor_covered_reinstatement() -> (
 
     // nodes[2]'s neutral branch off S FIRST, so its later merge takes the
     // loser's chain via SCOPE (not spine inheritance).
+    // Changed by DR-116 (gap G6): N1 carries no offer. Under bug 11004 any two
+    // offered siblings conflict, so a spacer offer in N1 makes X reject the loser.
+    // Restored by DR-119 (bug 11004): the spacer's cohort shares no cost-cursor
+    // lock with the contenders' cohort, so N1 carries dev's spacer again.
     let _n1 = nodes[2]
         .add_block_from_deploys(std::slice::from_ref(
             &construct_deploy::basic_deploy_data(
@@ -273,6 +295,10 @@ async fn stage_floor_covered_reinstatement() -> (
         ))
         .await
         .expect("neutral branch N1 on nodes[2]");
+    // let _n1 = nodes[2]
+    //     .add_block_from_deploys(&[])
+    //     .await
+    //     .expect("neutral branch N1 on nodes[2]");
 
     // Contenders: both consume the seed (genuine conflict) and both write
     // a witness cell whose datum records which contender's execution is
@@ -295,11 +321,13 @@ async fn stage_floor_covered_reinstatement() -> (
             r#"for (@v <- @"race") { @"race"!("f") | @"XF"!(v) | new c in { c!(0) } }"#.to_string(),
             None,
             None,
-            Some(
-                crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-                    .0
-                    .clone(),
-            ),
+            // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+            // Some(
+            // crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            // .0
+            // .clone(),
+            // ),
+            Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
         )
@@ -473,13 +501,17 @@ async fn reinstated_effect_must_not_be_executed_again() {
     nodes[2]
         .deploy_storage
         .lock()
-        .add(vec![loser_deploy.clone()])
+        // Changed by DR-116 (gap G6): the pending store holds offered envelopes.
+        // .add(vec![loser_deploy.clone()])
+        .add_envelope_if_absent(&loser_deploy.envelope)
         .expect("inject loser into deploy storage");
     nodes[2]
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .add(vec![loser_deploy])
+        // Changed by DR-116 (gap G6): the buffer holds offered envelopes.
+        // .add(vec![loser_deploy])
+        .add_envelopes(std::slice::from_ref(&loser_deploy.envelope))
         .expect("inject loser into rejected buffer");
 
     // Drive the proposal through `create` on the FULL frontier: nodes[2]'s
@@ -509,7 +541,12 @@ async fn reinstated_effect_must_not_be_executed_again() {
     let deploy_storage = nodes[2].deploy_storage.clone();
     let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
     let runtime_manager = nodes[2].runtime_manager.clone();
-    let created = block_creator::create(
+    // Added by DR-116 (gap G6): a staged proposal takes the node's adopted policy.
+    let adopted_casper = nodes[2].casper.clone();
+    // let created = block_creator::create(
+    let created = block_creator::create_with_adopted_policy(
+        adopted_casper.adopted_resource_policy.as_ref(),
+        adopted_casper.offered_funded_active,
         &snapshot,
         &validator_identity,
         None,
@@ -618,7 +655,12 @@ async fn floor_covered_effect_survives_a_late_record() {
         let deploy_storage = nodes[2].deploy_storage.clone();
         let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
         let runtime_manager = nodes[2].runtime_manager.clone();
-        let created = block_creator::create(
+        // Added by DR-116 (gap G6): a staged proposal takes the node's adopted policy.
+        let adopted_casper = nodes[2].casper.clone();
+        // let created = block_creator::create(
+        let created = block_creator::create_with_adopted_policy(
+            adopted_casper.adopted_resource_policy.as_ref(),
+            adopted_casper.offered_funded_active,
             &snapshot,
             &validator_identity,
             None,
@@ -743,7 +785,12 @@ async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
         let deploy_storage = nodes[2].deploy_storage.clone();
         let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
         let runtime_manager = nodes[2].runtime_manager.clone();
-        let created = block_creator::create(
+        // Added by DR-116 (gap G6): a staged proposal takes the node's adopted policy.
+        let adopted_casper = nodes[2].casper.clone();
+        // let created = block_creator::create(
+        let created = block_creator::create_with_adopted_policy(
+            adopted_casper.adopted_resource_policy.as_ref(),
+            adopted_casper.offered_funded_active,
             &snapshot,
             &validator_identity,
             None,

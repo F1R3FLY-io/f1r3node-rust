@@ -411,6 +411,11 @@
 //! `size_of::<Outcome<CloneVal, CloneNode<'_>>>() == 256`, of which not one byte
 //! is per-level.
 //!
+//! Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+//! test): the merge grew the clone cut set to three members, and the pinned widths
+//! are now 24 B and 312 B. `Tail` still adds nothing to [`Step`]. The record is in
+//! `models/codegen/schema.rs` (MEASURED 2026-10-20).
+//!
 //! # ★★★ THE CODEC EXEMPTION, WRITTEN DOWN — read this before proposing Stage F-3 again
 //!
 //! **The four codecs are SANCTIONED as a second pattern.** They do not host their walks on
@@ -478,7 +483,9 @@
 //! `CloneKont` from 8 B to 16 B **does not widen `Step` at all** (it stays 16 B —
 //! rustc packs the discriminant into the non-null `&Par` niche), which was measured
 //! on 2026-07-29 and refutes half of an earlier attribution that charged a
-//! regression to "`Step` 16 → 24 B". Nothing in F-1 or F-2 changed the ser/de lanes — confirmed byte-for-byte
+//! regression to "`Step` 16 → 24 B". (Changed by the merge of
+//! feature/cost-accounted-rho, plan step 1.9, type-size pin test: the merge later
+//! gave `CloneKont` a third word, a tag, and that did grow `Step` to 24 B.) Nothing in F-1 or F-2 changed the ser/de lanes — confirmed byte-for-byte
 //! by `bincode_decoder_differential` (13/13), `bincode_encoder_differential` (13/13),
 //! `serializer_par_byte_goldens` (7/7), `bincode_encoder_space` (8/8) and the
 //! `bincode_ser` / `bincode_de` depth subjects in
@@ -556,6 +563,10 @@ pub enum Step<'t, T: Traversal + 't> {
 /// `models/tests/drive_step_width_gate.rs`) against
 /// `size_of::<Outcome<CloneVal, CloneNode<'_>>>() == 256`, and the second number
 /// multiplies by nothing.
+///
+/// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+/// pin test): after the merge the two widths are 24 B and 312 B. The second number
+/// still multiplies by nothing.
 pub enum Outcome<V, N> {
     /// An ordinary child value. The driver pushes it and carries on.
     Value(V),

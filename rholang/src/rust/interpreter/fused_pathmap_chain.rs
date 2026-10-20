@@ -75,9 +75,11 @@
 //!      the fallback raises the identical `MethodArgumentNumberMismatch`;
 //!    - **(c)** the `apply`-entry target check (`eval_single_expr`
 //!      :7007-7027): a Nil view raises the exact `_`-arm
-//!      `ReduceError("Error: Multiple expressions given.")` — the Nil-chain
+//!      `ValueTypeError("Error: Multiple expressions given.")` — the Nil-chain
 //!      parity target — with the failing link's arguments already recorded
-//!      and its constant NOT charged;
+//!      and its constant NOT charged (changed by the merge of
+//!      feature/cost-accounted-rho, finding R1-41: DR-128 made the `_`-arm a
+//!      `ValueTypeError`; the old text said `ReduceError`);
 //!    - **(d)** Position-B argument re-evaluation for arity-1 links
 //!      (:3701/:3886/:4973/:5402/:5667) — yielded as a second `EEval` work
 //!      item, preserving the value pipeline byte-for-byte without recursive
@@ -635,7 +637,13 @@ impl ReducerCore {
     ) -> Result<FusedAction<'a>, InterpreterError> {
         debug_assert_eq!(state.chain.kinds[state.next_index].exact_arity(), 1);
         if matches!(state.mode, ViewMode::Nil) {
-            return Err(InterpreterError::ReduceError(
+            // Changed by the merge of feature/cost-accounted-rho (finding
+            // R1-41): DR-128 raises the reducer's `_`-arm error as
+            // `ValueTypeError`, and the fused chain must raise the same error.
+            // return Err(InterpreterError::ReduceError(
+            //     NIL_MID_CHAIN_ERROR.to_string(),
+            // ));
+            return Err(InterpreterError::ValueTypeError(
                 NIL_MID_CHAIN_ERROR.to_string(),
             ));
         }
@@ -668,7 +676,14 @@ impl ReducerCore {
                 return Ok(FusedAction::EvalPositionA { state, arg });
             }
             if matches!(state.mode, ViewMode::Nil) {
-                return Err(InterpreterError::ReduceError(
+                // Changed by the merge of feature/cost-accounted-rho (finding
+                // R1-41): DR-128 raises the reducer's `_`-arm error as
+                // `ValueTypeError`, and the fused chain must raise the same
+                // error.
+                // return Err(InterpreterError::ReduceError(
+                //     NIL_MID_CHAIN_ERROR.to_string(),
+                // ));
+                return Err(InterpreterError::ValueTypeError(
                     NIL_MID_CHAIN_ERROR.to_string(),
                 ));
             }

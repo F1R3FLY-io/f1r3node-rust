@@ -1,8 +1,3 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
-
-use super::funding_feasibility::reserve_work;
 use super::{
     allocate_capped_max_min, certify_funding_minimax, check_funding_cyclic_tie_certificate,
     check_funding_minimax_certificate, classify_fixed_funding_domain,
@@ -12,7 +7,6 @@ use super::{
     FundingMinimaxCertificate, FundingMinimaxProblem, FundingMinimaxRankResult, FundingSearchError,
     FundingSearchLimits, FundingWitnessCertificate, FundingWitnessResult,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FundingPolicyFragment {
@@ -68,7 +62,6 @@ pub(super) fn canonical_assignment(
     problem: FundingMinimaxProblem<'_>,
     contributions: &[u64],
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<
     (
         Vec<Vec<u64>>,
@@ -83,14 +76,13 @@ pub(super) fn canonical_assignment(
             ..problem
         },
         limits,
-        budget,
     )? {
         FundingWitnessResult::Canonical {
             assignment,
             totals,
             certificate,
         } => {
-            if problem.check_assignment(&assignment, limits, budget)? != totals {
+            if problem.check_assignment(&assignment, limits)? != totals {
                 return Err(FundingSearchError::InvalidResult);
             }
             Ok((assignment, totals, certificate))
@@ -111,36 +103,27 @@ pub(super) fn select_restricted_candidate(
     problem: FundingMinimaxProblem<'_>,
     cursor: usize,
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<RestrictedFundingCandidate>, FundingSearchError> {
     let FundingMinimaxRankResult::Optimal {
         assignment,
         certificate,
         ..
-    } = solve_fixed_funding_minimax_rank(problem, limits, budget)?
+    } = solve_fixed_funding_minimax_rank(problem, limits)?
     else {
         return Ok(None);
     };
-    let domain =
-        derive_funding_optimal_domain(problem, &assignment, certificate.cuts(), limits, budget)?;
-    let contribution = select_funding_cyclic_tie(&domain, cursor, limits, budget)?;
+    let domain = derive_funding_optimal_domain(problem, &assignment, certificate.cuts(), limits)?;
+    let contribution = select_funding_cyclic_tie(&domain, cursor, limits)?;
     let (assignment, totals, witness_certificate) =
-        canonical_assignment(problem, contribution.totals.source_debits(), limits, budget)?;
-    if domain.check_assignment(&assignment, limits, budget)? != totals
-        || !check_funding_minimax_certificate(
-            problem,
-            &assignment,
-            certificate.cuts(),
-            limits,
-            budget,
-        )?
+        canonical_assignment(problem, contribution.totals.source_debits(), limits)?;
+    if domain.check_assignment(&assignment, limits)? != totals
+        || !check_funding_minimax_certificate(problem, &assignment, certificate.cuts(), limits)?
         || !check_funding_cyclic_tie_certificate(
             &domain,
             &assignment,
             cursor,
             contribution.certificate.exclusions(),
             limits,
-            budget,
         )?
     {
         return Err(FundingSearchError::InvalidResult);
@@ -158,7 +141,6 @@ pub fn select_fixed_funding_policy(
     problem: FundingMinimaxProblem<'_>,
     cursor: usize,
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<FundingPolicyResult, FundingSearchError> {
     let count = problem.capacities.len();
     if count == 0 {
@@ -175,7 +157,6 @@ pub fn select_fixed_funding_policy(
         problem.obligations,
         problem.eligible,
         limits,
-        budget,
     )? {
         FundingDomainClassification::Infeasible {
             selected_obligations,
@@ -183,18 +164,6 @@ pub fn select_fixed_funding_policy(
             selected_obligations,
         }),
         FundingDomainClassification::Unrestricted { totals, .. } => {
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchCandidates,
-                count.checked_mul(68).ok_or(FundingSearchError::Overflow)?,
-            )?;
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                count
-                    .checked_mul(size_of::<u64>())
-                    .ok_or(FundingSearchError::Overflow)?,
-            )?;
             let allocation = allocate_capped_max_min(
                 problem.capacities,
                 totals.total(),
@@ -203,8 +172,8 @@ pub fn select_fixed_funding_policy(
             )
             .map_err(|_| FundingSearchError::InvalidResult)?;
             let (assignment, totals, witness_certificate) =
-                canonical_assignment(problem, &allocation.debits, limits, budget)?;
-            let rank_certificate = certify_funding_minimax(problem, &assignment, limits, budget)?
+                canonical_assignment(problem, &allocation.debits, limits)?;
+            let rank_certificate = certify_funding_minimax(problem, &assignment, limits)?
                 .ok_or(FundingSearchError::InvalidResult)?;
             let next_cursor = (totals.total() != 0).then_some(allocation.next_cursor);
             Ok(FundingPolicyResult::Selected(FundingPolicySelection {
@@ -217,7 +186,7 @@ pub fn select_fixed_funding_policy(
             }))
         }
         FundingDomainClassification::Restricted { counterexample, .. } => {
-            let selected = select_restricted_candidate(problem, cursor, limits, budget)?
+            let selected = select_restricted_candidate(problem, cursor, limits)?
                 .ok_or(FundingSearchError::InvalidResult)?;
             let next_cursor = (selected.totals.total() != 0).then_some(if cursor == count - 1 {
                 0

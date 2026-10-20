@@ -387,11 +387,19 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
 
         // Bad arguments to a system process (e.g. rho:io:stdout) — client error
         IllegalArgumentError(_) => (S::BAD_REQUEST, "illegal_argument", ie.to_string()),
+        // Added by DR-114: the same client error. Only its charge class differs.
+        SystemProcessShapeError(_) => (S::BAD_REQUEST, "illegal_argument", ie.to_string()),
 
         // === 422 Unprocessable Entity — term valid, execution failed ===
         OutOfPhlogistonsError => (
             S::UNPROCESSABLE_ENTITY,
             "out_of_phlogistons",
+            ie.to_string(),
+        ),
+        // Added by DR-113: exhaustion of the signed phlo limit.
+        SignedLimitExhausted => (
+            S::UNPROCESSABLE_ENTITY,
+            "signed_limit_exhausted",
             ie.to_string(),
         ),
         HostWorkRejected => (
@@ -402,6 +410,13 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
+        // Added by DR-128 (bug 11414): the user variants of reduce errors.
+        | DivisionByZero(_)
+        | ArithmeticOverflow(_)
+        | ArgumentOutOfRange(_)
+        | BundlePermissionError(_)
+        | ValueTypeError(_)
+        | TermStructureError(_)
         | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
@@ -954,6 +969,17 @@ mod tests {
             assert_eq!(kind, "illegal_argument");
         }
 
+        /// DR-114: a malformed system-process call in native funded execution
+        /// is the same client error. Only its charge class differs.
+        #[test]
+        fn interpreter_system_process_shape_error_is_bad_request() {
+            let (status, kind) = classify(CasperError::InterpreterError(
+                InterpreterError::SystemProcessShapeError("bad call".to_string()),
+            ));
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(kind, "illegal_argument");
+        }
+
         #[test]
         fn interpreter_execution_failures_are_unprocessable() {
             assert_eq!(
@@ -978,6 +1004,13 @@ mod tests {
                     other_type: "Int".to_string(),
                 },
                 InterpreterError::SubstituteError("boom".to_string()),
+                // Added by DR-128 (bug 11414): the user variants of reduce errors.
+                InterpreterError::DivisionByZero("boom".to_string()),
+                InterpreterError::ArithmeticOverflow("boom".to_string()),
+                InterpreterError::ArgumentOutOfRange("boom".to_string()),
+                InterpreterError::BundlePermissionError("boom".to_string()),
+                InterpreterError::ValueTypeError("boom".to_string()),
+                InterpreterError::TermStructureError("boom".to_string()),
             ] {
                 let (status, kind) = classify(CasperError::InterpreterError(err));
                 assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);

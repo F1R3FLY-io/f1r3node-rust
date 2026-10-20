@@ -1,8 +1,8 @@
 use crypto::rust::hash::blake2b256::Blake2b256;
+use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use prost::Message;
 use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce, RestingCOMM, COMM};
 use thiserror::Error;
 
@@ -100,49 +100,49 @@ fn domain_identity(domain: &[u8], source_hash: &[u8]) -> [u8; 32] {
     .expect("Blake2b-256 digest length")
 }
 
-fn domain_identity_metered(
-    domain: &[u8],
-    source_hash: &[u8],
-    meter: &dyn SourceMeter,
-) -> Result<[u8; 32], RSpaceError> {
-    let scanned = domain
-        .len()
-        .checked_add(source_hash.len())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(1, scanned, 32)?;
-    Ok(domain_identity(domain, source_hash))
-}
-
 pub fn produce_introduction_identity(source: &Produce) -> [u8; 32] {
     domain_identity(PRODUCE_INTRODUCTION_DOMAIN, &source.hash.0)
-}
-
-pub(crate) fn produce_introduction_identity_metered(
-    source: &Produce,
-    meter: &dyn SourceMeter,
-) -> Result<[u8; 32], RSpaceError> {
-    domain_identity_metered(PRODUCE_INTRODUCTION_DOMAIN, &source.hash.0, meter)
 }
 
 pub fn consume_introduction_identity(source: &Consume) -> [u8; 32] {
     domain_identity(CONSUME_INTRODUCTION_DOMAIN, &source.hash.0)
 }
 
-pub(crate) fn consume_introduction_identity_metered(
-    source: &Consume,
-    meter: &dyn SourceMeter,
-) -> Result<[u8; 32], RSpaceError> {
-    domain_identity_metered(CONSUME_INTRODUCTION_DOMAIN, &source.hash.0, meter)
+/// Added by G1-4a (DR-122): the introduction bytes of a produce whose channel
+/// and datum have the given prost lengths. `produce_introduction_charge` and
+/// `produce_introduction_charge_premeasured` charge this sum.
+pub(crate) fn produce_introduction_bytes(
+    channel: u64,
+    datum: u64,
+) -> Result<u64, ByteAccountingError> {
+    channel
+        .checked_add(datum)
+        .and_then(|bytes| bytes.checked_add(HASH_BYTES.checked_mul(2)?))
+        .ok_or(ByteAccountingError::Overflow)
+}
+
+/// Added by G1-4a (DR-122): the introduction bytes of a consume whose
+/// channels and patterns have `binds` prost bytes in total and whose
+/// continuation has `continuation` bytes.
+pub(crate) fn consume_introduction_bytes(
+    binds: u64,
+    continuation: u64,
+    channels: usize,
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([binds, continuation, event_storage_bytes(channels)?])
 }
 
 pub fn produce_introduction_charge(
     channel: &Par,
     data: &ListParWithRandom,
 ) -> Result<ByteCharge, ByteAccountingError> {
-    let introduction_bytes = message_bytes(channel)?
-        .checked_add(message_bytes(data)?)
-        .and_then(|bytes| bytes.checked_add(HASH_BYTES.checked_mul(2)?))
-        .ok_or(ByteAccountingError::Overflow)?;
+    // Changed by G1-4a (DR-122): the sum moved to `produce_introduction_bytes`.
+    // let introduction_bytes = message_bytes(channel)?
+    //     .checked_add(message_bytes(data)?)
+    //     .and_then(|bytes| bytes.checked_add(HASH_BYTES.checked_mul(2)?))
+    //     .ok_or(ByteAccountingError::Overflow)?;
+    let introduction_bytes =
+        produce_introduction_bytes(message_bytes(channel)?, message_bytes(data)?)?;
     Ok(ByteCharge {
         introduction_bytes,
         ..ByteCharge::default()
@@ -154,35 +154,255 @@ pub fn consume_introduction_charge(
     patterns: &[BindPattern],
     continuation: &TaggedContinuation,
 ) -> Result<ByteCharge, ByteAccountingError> {
-    let introduction_bytes = sum_message_bytes(channels)?
+    // Changed by G1-4a (DR-122): the sum moved to `consume_introduction_bytes`.
+    // let introduction_bytes = sum_message_bytes(channels)?
+    //     .checked_add(sum_message_bytes(patterns)?)
+    //     .and_then(|bytes| bytes.checked_add(message_bytes(continuation).ok()?))
+    //     .and_then(|bytes| bytes.checked_add(event_storage_bytes(channels.len()).ok()?))
+    //     .ok_or(ByteAccountingError::Overflow)?;
+    let binds = sum_message_bytes(channels)?
         .checked_add(sum_message_bytes(patterns)?)
-        .and_then(|bytes| bytes.checked_add(message_bytes(continuation).ok()?))
-        .and_then(|bytes| bytes.checked_add(event_storage_bytes(channels.len()).ok()?))
         .ok_or(ByteAccountingError::Overflow)?;
+    let introduction_bytes =
+        consume_introduction_bytes(binds, message_bytes(continuation)?, channels.len())?;
     Ok(ByteCharge {
         introduction_bytes,
         ..ByteCharge::default()
     })
 }
 
-pub fn comm_charge(
-    comm: &COMM,
-    data: &[(&ListParWithRandom, bool)],
+/// Added by D-F2 (DR-118): the prost lengths that the reducer measured when it
+/// built an introduction. `pars` is the framed length of the datum's `pars`
+/// field. `body` is the length of the continuation's `ParWithRandom`, and
+/// `guard` is the length of its guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntroductionMeasurement {
+    Produce { pars: u64 },
+    Consume { body: u64, guard: Option<u64> },
+}
+
+fn checked_sum<const N: usize>(parts: [u64; N]) -> Result<u64, ByteAccountingError> {
+    parts.into_iter().try_fold(0_u64, |total, part| {
+        total.checked_add(part).ok_or(ByteAccountingError::Overflow)
+    })
+}
+
+/// Added by D-F2 (DR-118): the prost length of a length-delimited field with
+/// `len` content bytes: its key, its length prefix and the content.
+pub(crate) fn message_field_bytes(tag: u32, len: u64) -> Result<u64, ByteAccountingError> {
+    let key =
+        u64::try_from(prost::encoding::key_len(tag)).map_err(|_| ByteAccountingError::Overflow)?;
+    let delimiter = u64::try_from(prost::encoding::encoded_len_varint(len))
+        .map_err(|_| ByteAccountingError::Overflow)?;
+    checked_sum([key, delimiter, len])
+}
+
+fn bytes_field_bytes(tag: u32, bytes: &[u8]) -> Result<u64, ByteAccountingError> {
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    message_field_bytes(
+        tag,
+        u64::try_from(bytes.len()).map_err(|_| ByteAccountingError::Overflow)?,
+    )
+}
+
+// Disabled by G1-4a (DR-122): its two callers frame the measured seal and
+// stack lengths through `datum_bytes` and `continuation_bytes` now, which
+// give the same lengths (the D-F2 property tests compare them with prost).
+// fn optional_message_field_bytes<M: Message>(
+//     tag: u32,
+//     message: Option<&M>,
+// ) -> Result<u64, ByteAccountingError> {
+//     message.map_or(Ok(0), |message| {
+//         u64::try_from(prost::encoding::message::encoded_len(tag, message))
+//             .map_err(|_| ByteAccountingError::Overflow)
+//     })
+// }
+
+/// Added by D-F2 (DR-118): the prost length of `ParWithRandom { body:
+/// Some(b), random_state }` when `b` has `body` bytes.
+pub(crate) fn par_with_random_bytes(
+    body: u64,
+    random_state: &[u8],
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([
+        message_field_bytes(1, body)?,
+        bytes_field_bytes(2, random_state)?,
+    ])
+}
+
+/// Added by G1-4a (DR-122): the prost length of a `ListParWithRandom` from
+/// the framed length of its `pars`, its random state and the lengths of its
+/// seal and its stack. A `None` length is an absent field.
+pub(crate) fn datum_bytes(
+    pars: u64,
+    random_state: &[u8],
+    authority: Option<u64>,
+    stack: Option<u64>,
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([
+        pars,
+        bytes_field_bytes(2, random_state)?,
+        authority.map_or(Ok(0), |len| message_field_bytes(3, len))?,
+        stack.map_or(Ok(0), |len| message_field_bytes(4, len))?,
+    ])
+}
+
+/// Added by G1-4a (DR-122): the prost length of a `TaggedContinuation` with
+/// a `ParBody` of `body` bytes, an optional guard and an optional seal.
+pub(crate) fn continuation_bytes(
+    body: u64,
+    guard: Option<u64>,
+    authority: Option<u64>,
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([
+        message_field_bytes(1, body)?,
+        guard.map_or(Ok(0), |guard| message_field_bytes(3, guard))?,
+        authority.map_or(Ok(0), |len| message_field_bytes(4, len))?,
+    ])
+}
+
+fn optional_message_len<M: Message>(
+    message: Option<&M>,
+) -> Result<Option<u64>, ByteAccountingError> {
+    message.map(|message| message_bytes(message)).transpose()
+}
+
+/// Added by D-F2 (DR-118): `produce_introduction_charge` with the framed
+/// length of `data.pars` measured by the reducer. It reads the channel, the
+/// random state, the seal and the stack.
+pub fn produce_introduction_charge_premeasured(
+    channel: &Par,
+    data: &ListParWithRandom,
+    pars: u64,
 ) -> Result<ByteCharge, ByteAccountingError> {
-    let transfer_bytes = data.iter().try_fold(0_u64, |total, (datum, _)| {
-        total
-            .checked_add(message_bytes(*datum)?)
-            .ok_or(ByteAccountingError::Overflow)
-    })?;
-    let channel_count = comm.consume.channel_hashes.len();
-    let trace_bytes = event_storage_bytes(channel_count)?
+    // Changed by G1-4a (DR-122): the sums moved to `datum_bytes` and
+    // `produce_introduction_bytes`, which the pre-execution estimate shares.
+    // let data_bytes = checked_sum([
+    //     pars,
+    //     bytes_field_bytes(2, &data.random_state)?,
+    //     optional_message_field_bytes(3, data.cost_authority.as_ref())?,
+    //     optional_message_field_bytes(4, data.cost_stack.as_ref())?,
+    // ])?;
+    // let introduction_bytes = checked_sum([
+    //     message_bytes(channel)?,
+    //     data_bytes,
+    //     HASH_BYTES
+    //         .checked_mul(2)
+    //         .ok_or(ByteAccountingError::Overflow)?,
+    // ])?;
+    let data_bytes = datum_bytes(
+        pars,
+        &data.random_state,
+        optional_message_len(data.cost_authority.as_ref())?,
+        optional_message_len(data.cost_stack.as_ref())?,
+    )?;
+    let introduction_bytes = produce_introduction_bytes(message_bytes(channel)?, data_bytes)?;
+    Ok(ByteCharge {
+        introduction_bytes,
+        ..ByteCharge::default()
+    })
+}
+
+/// Added by D-F2 (DR-118): true when `continuation` has the shape that the
+/// reducer measured: a `ParBody` and a guard exactly when the measurement has
+/// one. It reads only the body variant and the guard presence.
+pub(crate) fn consume_premeasurement_applies(
+    continuation: &TaggedContinuation,
+    guard: Option<u64>,
+) -> bool {
+    matches!(continuation.tagged_cont, Some(TaggedCont::ParBody(_)))
+        && guard.is_some() == continuation.guard.is_some()
+}
+
+/// Added by D-F2 (DR-118): `consume_introduction_charge` with the body and
+/// guard lengths measured by the reducer. It returns `None` when the
+/// continuation does not have the shape of a reducer-built continuation, and
+/// the caller then walks it.
+pub fn consume_introduction_charge_premeasured(
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+    body: u64,
+    guard: Option<u64>,
+) -> Result<Option<ByteCharge>, ByteAccountingError> {
+    if !consume_premeasurement_applies(continuation, guard) {
+        return Ok(None);
+    }
+    // Changed by G1-4a (DR-122): the sums moved to `continuation_bytes` and
+    // `consume_introduction_bytes`, which the pre-execution estimate shares.
+    // let continuation_bytes = checked_sum([
+    //     message_field_bytes(1, body)?,
+    //     guard.map_or(Ok(0), |guard| message_field_bytes(3, guard))?,
+    //     optional_message_field_bytes(4, continuation.cost_authority.as_ref())?,
+    // ])?;
+    // let introduction_bytes = checked_sum([
+    //     sum_message_bytes(channels)?,
+    //     sum_message_bytes(patterns)?,
+    //     continuation_bytes,
+    //     event_storage_bytes(channels.len())?,
+    // ])?;
+    let continuation = continuation_bytes(
+        body,
+        guard,
+        optional_message_len(continuation.cost_authority.as_ref())?,
+    )?;
+    let binds = sum_message_bytes(channels)?
+        .checked_add(sum_message_bytes(patterns)?)
+        .ok_or(ByteAccountingError::Overflow)?;
+    let introduction_bytes = consume_introduction_bytes(binds, continuation, channels.len())?;
+    Ok(Some(ByteCharge {
+        introduction_bytes,
+        ..ByteCharge::default()
+    }))
+}
+
+/// Added by G1-4a (DR-122): the transfer bytes of one datum that a COMM
+/// delivers, its prost length.
+pub fn datum_transfer_bytes(datum: &ListParWithRandom) -> Result<u64, ByteAccountingError> {
+    message_bytes(datum)
+}
+
+/// Added by G1-4a (DR-122): the trace bytes of a COMM whose consume has
+/// `channels` channels, `32 + 96 * channels`.
+pub fn comm_trace_bytes(channels: usize) -> Result<u64, ByteAccountingError> {
+    event_storage_bytes(channels)?
         .checked_add(
-            u64::try_from(channel_count)
+            u64::try_from(channels)
                 .map_err(|_| ByteAccountingError::Overflow)?
                 .checked_mul(event_storage_bytes(1)?)
                 .ok_or(ByteAccountingError::Overflow)?,
         )
-        .ok_or(ByteAccountingError::Overflow)?;
+        .ok_or(ByteAccountingError::Overflow)
+}
+
+pub fn comm_charge(
+    comm: &COMM,
+    data: &[(&ListParWithRandom, bool)],
+) -> Result<ByteCharge, ByteAccountingError> {
+    // Changed by G1-4a (DR-122): both sums moved to `datum_transfer_bytes`
+    // and `comm_trace_bytes`, which the pre-execution estimate shares.
+    // let transfer_bytes = data.iter().try_fold(0_u64, |total, (datum, _)| {
+    //     total
+    //         .checked_add(message_bytes(*datum)?)
+    //         .ok_or(ByteAccountingError::Overflow)
+    // })?;
+    // let channel_count = comm.consume.channel_hashes.len();
+    // let trace_bytes = event_storage_bytes(channel_count)?
+    //     .checked_add(
+    //         u64::try_from(channel_count)
+    //             .map_err(|_| ByteAccountingError::Overflow)?
+    //             .checked_mul(event_storage_bytes(1)?)
+    //             .ok_or(ByteAccountingError::Overflow)?,
+    //     )
+    //     .ok_or(ByteAccountingError::Overflow)?;
+    let transfer_bytes = data.iter().try_fold(0_u64, |total, (datum, _)| {
+        total
+            .checked_add(datum_transfer_bytes(datum)?)
+            .ok_or(ByteAccountingError::Overflow)
+    })?;
+    let trace_bytes = comm_trace_bytes(comm.consume.channel_hashes.len())?;
     Ok(ByteCharge {
         introduction_bytes: 0,
         transfer_bytes,
@@ -194,31 +414,31 @@ pub fn comm_charge(
 // encoded-size laws for its *EventProto* oneof arm (tag 4), including each
 // nested message and the packed repeated uint64 data-index field. They inspect
 // the RSpace source directly: no temporary Casper event is constructed, and
-// no encoding/allocation occurs before the host meter has reserved the work.
+// no temporary event encoding is needed.
 // Historical COMM keeps `comm_charge` and its original byte count unchanged.
 fn proto_varint_len(value: u64) -> usize { ((64 - value.leading_zeros() as usize).max(1) + 6) / 7 }
 
 fn proto_len_delimited(payload: usize) -> Result<usize, RSpaceError> {
-    let length = u64::try_from(payload).map_err(|_| RSpaceError::HostWorkRejected)?;
+    let length = u64::try_from(payload)
+        .map_err(|_| RSpaceError::InterpreterError(ByteAccountingError::Overflow.to_string()))?;
     1_usize
         .checked_add(proto_varint_len(length))
         .and_then(|n| n.checked_add(payload))
-        .ok_or(RSpaceError::HostWorkRejected)
+        .ok_or(RSpaceError::InterpreterError(
+            ByteAccountingError::Overflow.to_string(),
+        ))
 }
 
 fn proto_add(total: &mut usize, additional: usize) -> Result<(), RSpaceError> {
     *total = total
         .checked_add(additional)
-        .ok_or(RSpaceError::HostWorkRejected)?;
+        .ok_or(RSpaceError::InterpreterError(
+            ByteAccountingError::Overflow.to_string(),
+        ))?;
     Ok(())
 }
 
-fn proto_bytes_field(
-    length: usize,
-    repeated: bool,
-    meter: &dyn SourceMeter,
-) -> Result<usize, RSpaceError> {
-    meter.reserve(1, length, 0)?;
+fn proto_bytes_field(length: usize, repeated: bool) -> Result<usize, RSpaceError> {
     if length == 0 && !repeated {
         Ok(0)
     } else {
@@ -226,41 +446,30 @@ fn proto_bytes_field(
     }
 }
 
-fn proto_consume_len(source: &Consume, meter: &dyn SourceMeter) -> Result<usize, RSpaceError> {
-    meter.reserve(1, 0, 0)?;
+fn proto_consume_len(source: &Consume) -> Result<usize, RSpaceError> {
     let mut length = 0;
     for channel in &source.channel_hashes {
         if channel.0.len() != 32 {
             return Err(RSpaceError::ProduceCommitProtocolViolation);
         }
-        proto_add(
-            &mut length,
-            proto_bytes_field(channel.0.len(), true, meter)?,
-        )?;
+        proto_add(&mut length, proto_bytes_field(channel.0.len(), true)?)?;
     }
     if source.hash.0.len() != 32 {
         return Err(RSpaceError::ProduceCommitProtocolViolation);
     }
-    proto_add(
-        &mut length,
-        proto_bytes_field(source.hash.0.len(), false, meter)?,
-    )?;
+    proto_add(&mut length, proto_bytes_field(source.hash.0.len(), false)?)?;
     if source.persistent {
         proto_add(&mut length, 2)?;
     }
     Ok(length)
 }
 
-fn proto_produce_len(source: &Produce, meter: &dyn SourceMeter) -> Result<usize, RSpaceError> {
-    meter.reserve(1, 0, 0)?;
+fn proto_produce_len(source: &Produce) -> Result<usize, RSpaceError> {
     if source.channel_hash.0.len() != 32 || source.hash.0.len() != 32 {
         return Err(RSpaceError::ProduceCommitProtocolViolation);
     }
-    let mut length = proto_bytes_field(source.channel_hash.0.len(), false, meter)?;
-    proto_add(
-        &mut length,
-        proto_bytes_field(source.hash.0.len(), false, meter)?,
-    )?;
+    let mut length = proto_bytes_field(source.channel_hash.0.len(), false)?;
+    proto_add(&mut length, proto_bytes_field(source.hash.0.len(), false)?)?;
     if source.persistent {
         proto_add(&mut length, 2)?;
     }
@@ -268,7 +477,7 @@ fn proto_produce_len(source: &Produce, meter: &dyn SourceMeter) -> Result<usize,
         proto_add(&mut length, 2)?;
     }
     for output in &source.output_value {
-        proto_add(&mut length, proto_bytes_field(output.len(), true, meter)?)?;
+        proto_add(&mut length, proto_bytes_field(output.len(), true)?)?;
     }
     if source.failed {
         proto_add(&mut length, 2)?;
@@ -279,12 +488,10 @@ fn proto_produce_len(source: &Produce, meter: &dyn SourceMeter) -> Result<usize,
 /// Exact canonical v7 `EventProto.restingComm` bytes, paid for as trace bytes.
 /// The checked nonnegative i32 store addresses must round-trip through the
 /// Casper uint64 fields; neither ordered roster may be sorted or deduplicated.
-pub fn resting_comm_charge_metered(
+pub fn resting_comm_charge(
     event: &RestingCOMM,
     data: &[(&ListParWithRandom, bool)],
-    meter: &dyn SourceMeter,
 ) -> Result<ByteCharge, RSpaceError> {
-    meter.reserve(1, 0, 0)?;
     let count = event.ordered_produces.len();
     if event.consume.channel_hashes.len() != count
         || event.ordered_data_indices.len() != count
@@ -293,7 +500,7 @@ pub fn resting_comm_charge_metered(
     {
         return Err(RSpaceError::ProduceCommitProtocolViolation);
     }
-    let consume_len = proto_consume_len(&event.consume, meter)?;
+    let consume_len = proto_consume_len(&event.consume)?;
     let mut resting_len = proto_len_delimited(consume_len)?;
     let continuation_index = u64::try_from(event.continuation_index)
         .map_err(|_| RSpaceError::ProduceCommitProtocolViolation)?;
@@ -306,16 +513,14 @@ pub fn resting_comm_charge_metered(
         .iter()
         .zip(&event.ordered_produces)
     {
-        meter.reserve(1, 64, 0)?;
         if channel.0.as_slice() != source.channel_hash.0.as_slice() {
             return Err(RSpaceError::ProduceCommitProtocolViolation);
         }
-        let produce_len = proto_produce_len(source, meter)?;
+        let produce_len = proto_produce_len(source)?;
         proto_add(&mut resting_len, proto_len_delimited(produce_len)?)?;
     }
     let mut packed_index_len = 0;
     for index in &event.ordered_data_indices {
-        meter.reserve(1, std::mem::size_of::<i32>(), 0)?;
         let index =
             u64::try_from(*index).map_err(|_| RSpaceError::ProduceCommitProtocolViolation)?;
         proto_add(&mut packed_index_len, proto_varint_len(index))?;
@@ -324,7 +529,6 @@ pub fn resting_comm_charge_metered(
         proto_add(&mut resting_len, proto_len_delimited(packed_index_len)?)?;
     }
     for index in &event.peeks {
-        meter.reserve(1, std::mem::size_of::<i32>(), 0)?;
         let index =
             usize::try_from(*index).map_err(|_| RSpaceError::ProduceCommitProtocolViolation)?;
         if index >= count {
@@ -338,13 +542,17 @@ pub fn resting_comm_charge_metered(
         proto_add(&mut resting_len, proto_len_delimited(peek_len)?)?;
     }
     let event_len = proto_len_delimited(resting_len)?;
-    let trace_bytes = u64::try_from(event_len).map_err(|_| RSpaceError::HostWorkRejected)?;
+    let trace_bytes = u64::try_from(event_len)
+        .map_err(|_| RSpaceError::InterpreterError(ByteAccountingError::Overflow.to_string()))?;
     let mut transfer_bytes = 0_u64;
     for (datum, _) in data {
-        meter.reserve(1, 0, 0)?;
         transfer_bytes = transfer_bytes
-            .checked_add(message_bytes(*datum).map_err(|_| RSpaceError::HostWorkRejected)?)
-            .ok_or(RSpaceError::HostWorkRejected)?;
+            .checked_add(message_bytes(*datum).map_err(|_| {
+                RSpaceError::InterpreterError(ByteAccountingError::Overflow.to_string())
+            })?)
+            .ok_or(RSpaceError::InterpreterError(
+                ByteAccountingError::Overflow.to_string(),
+            ))?;
     }
     Ok(ByteCharge {
         introduction_bytes: 0,
@@ -397,8 +605,7 @@ mod tests {
         };
         let datum = ListParWithRandom::default();
         let data = [(&datum, false), (&datum, true)];
-        let unlimited = |_: usize, _: usize, _: usize| Ok(());
-        let charge = resting_comm_charge_metered(&resting, &data, &unlimited).unwrap();
+        let charge = resting_comm_charge(&resting, &data).unwrap();
         let typed = CasperEvent::RestingComm(RestingCommEvent {
             consume: ConsumeEvent {
                 channels_hashes: waiter
@@ -431,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn resting_charge_refuses_invalid_address_and_exhausted_host_meter() {
+    fn resting_charge_refuses_invalid_address() {
         let mut source = produce();
         let mut waiter = consume(1);
         source.channel_hash = waiter.channel_hashes[0].clone();
@@ -444,29 +651,22 @@ mod tests {
         };
         let datum = ListParWithRandom::default();
         let data = [(&datum, false)];
-        let unlimited = |_: usize, _: usize, _: usize| Ok(());
         assert!(matches!(
-            resting_comm_charge_metered(&resting, &data, &unlimited),
+            resting_comm_charge(&resting, &data),
             Err(RSpaceError::ProduceCommitProtocolViolation)
         ));
         resting.continuation_index = 0;
         resting.ordered_data_indices[0] = -1;
         assert!(matches!(
-            resting_comm_charge_metered(&resting, &data, &unlimited),
+            resting_comm_charge(&resting, &data),
             Err(RSpaceError::ProduceCommitProtocolViolation)
         ));
         resting.ordered_data_indices[0] = 0;
         waiter.channel_hashes.clear();
         resting.consume = waiter;
         assert!(matches!(
-            resting_comm_charge_metered(&resting, &data, &unlimited),
+            resting_comm_charge(&resting, &data),
             Err(RSpaceError::ProduceCommitProtocolViolation)
-        ));
-        resting.consume = consume(1);
-        let refused = |_: usize, _: usize, _: usize| Err(RSpaceError::HostWorkRejected);
-        assert!(matches!(
-            resting_comm_charge_metered(&resting, &data, &refused),
-            Err(RSpaceError::HostWorkRejected)
         ));
     }
 
@@ -621,5 +821,227 @@ mod tests {
                 .unwrap();
             prop_assert_eq!(producer_first, consumer_first);
         }
+    }
+
+    fn ground(bytes: Vec<u8>) -> models::rhoapi::CostSignature {
+        models::rhoapi::CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(bytes)),
+        }
+    }
+
+    fn optional_authority() -> impl Strategy<Value = Option<models::rhoapi::CostAuthority>> {
+        prop_oneof![
+            Just(None),
+            Just(Some(models::rhoapi::CostAuthority::default())),
+            prop::collection::vec(
+                (
+                    prop::collection::vec(any::<u8>(), 0..64),
+                    prop::collection::vec(any::<u8>(), 0..64)
+                ),
+                1..4
+            )
+            .prop_map(|regions| Some(models::rhoapi::CostAuthority {
+                regions: regions
+                    .into_iter()
+                    .map(|(signature, instance_id)| models::rhoapi::CostRegion {
+                        instance_id,
+                        signature: Some(ground(signature)),
+                    })
+                    .collect(),
+            })),
+        ]
+    }
+
+    fn optional_stack() -> impl Strategy<Value = Option<models::rhoapi::CostStack>> {
+        prop_oneof![
+            Just(None),
+            Just(Some(models::rhoapi::CostStack::default())),
+            prop::collection::vec(prop::collection::vec(any::<u8>(), 0..64), 1..4).prop_map(
+                |cells| Some(models::rhoapi::CostStack {
+                    cells: cells.into_iter().map(ground).collect(),
+                    parallel_tail: Vec::new(),
+                })
+            ),
+        ]
+    }
+
+    fn term() -> impl Strategy<Value = Par> {
+        prop_oneof![
+            Just(Par::default()),
+            (120_usize..17_000).prop_map(|size| models::rust::utils::new_gstring_par(
+                "d".repeat(size),
+                Vec::new(),
+                false
+            )),
+            crate::rust::interpreter::accounting::random_par_term(),
+        ]
+    }
+
+    fn bind_pattern() -> impl Strategy<Value = BindPattern> {
+        use models::rhoapi::var::{VarInstance, WildcardMsg};
+        use models::rhoapi::Var;
+        (
+            prop::collection::vec(term(), 0..3),
+            prop_oneof![
+                Just(None),
+                Just(Some(Var { var_instance: None })),
+                any::<i32>().prop_map(|index| Some(Var {
+                    var_instance: Some(VarInstance::FreeVar(index))
+                })),
+                any::<i32>().prop_map(|index| Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(index))
+                })),
+                Just(Some(Var {
+                    var_instance: Some(VarInstance::Wildcard(WildcardMsg {}))
+                })),
+            ],
+            any::<i32>(),
+        )
+            .prop_map(|(patterns, remainder, free_count)| BindPattern {
+                patterns,
+                remainder,
+                free_count,
+            })
+    }
+
+    /// A random state that is empty in a fixed share of the cases, because
+    /// prost omits an empty one (the default-field rule).
+    fn random_state() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![Just(Vec::new()), prop::collection::vec(any::<u8>(), 1..300),]
+    }
+
+    /// The `pars` measurement as the reducer composes it from the substituted
+    /// data.
+    fn reducer_pars(pars: &[Par]) -> u64 {
+        pars.iter()
+            .map(|par| message_field_bytes(1, u64::try_from(par.encoded_len()).unwrap()).unwrap())
+            .sum()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// D-F2 (DR-118): a produce introduction charged from the reducer's
+        /// measurement equals the walked charge on every datum shape.
+        #[test]
+        fn measured_produce_introduction_bytes_equal_prost_encoded_len(
+            channel in term(),
+            pars in prop::collection::vec(term(), 0..4),
+            random_state in random_state(),
+            cost_authority in optional_authority(),
+            cost_stack in optional_stack(),
+        ) {
+            let data = ListParWithRandom { pars, random_state, cost_authority, cost_stack };
+            prop_assert_eq!(
+                produce_introduction_charge_premeasured(&channel, &data, reducer_pars(&data.pars)),
+                produce_introduction_charge(&channel, &data)
+            );
+        }
+
+        /// D-F2 (DR-118): the reducer composes the length of the
+        /// continuation's `ParWithRandom` from the substituted body's length.
+        #[test]
+        fn measured_body_bytes_equal_prost_encoded_len(
+            body in term(),
+            random_state in random_state(),
+        ) {
+            let composed = par_with_random_bytes(
+                u64::try_from(body.encoded_len()).unwrap(),
+                &random_state,
+            );
+            let body = models::rhoapi::ParWithRandom { body: Some(body), random_state };
+            prop_assert_eq!(composed, Ok(u64::try_from(body.encoded_len()).unwrap()));
+        }
+
+        /// D-F2 (DR-118): a consume introduction charged from the reducer's
+        /// measurement equals the walked charge on every reducer shape, and
+        /// it asks for the walk on every other shape.
+        #[test]
+        fn measured_consume_introduction_bytes_equal_prost_encoded_len(
+            channels in prop::collection::vec(term(), 1..4),
+            patterns in prop::collection::vec(bind_pattern(), 1..4),
+            shape in 0_u8..3,
+            body in proptest::option::of(term()),
+            random_state in random_state(),
+            body_ref in any::<i64>(),
+            guard in prop_oneof![Just(None), Just(Some(Par::default())), term().prop_map(Some)],
+            measure_guard in any::<bool>(),
+            cost_authority in optional_authority(),
+        ) {
+            let tagged_cont = match shape {
+                0 => Some(TaggedCont::ParBody(models::rhoapi::ParWithRandom { body, random_state })),
+                1 => Some(TaggedCont::ScalaBodyRef(body_ref)),
+                _ => None,
+            };
+            let body = match &tagged_cont {
+                Some(TaggedCont::ParBody(body)) => u64::try_from(body.encoded_len()).unwrap(),
+                _ => 0,
+            };
+            let guard_bytes = measure_guard
+                .then(|| guard.as_ref().map_or(0, |guard| u64::try_from(guard.encoded_len()).unwrap()));
+            let continuation = TaggedContinuation { tagged_cont, guard, cost_authority };
+            let reducer_shape = matches!(continuation.tagged_cont, Some(TaggedCont::ParBody(_)))
+                && guard_bytes.is_some() == continuation.guard.is_some();
+            let expected = reducer_shape
+                .then(|| consume_introduction_charge(&channels, &patterns, &continuation).unwrap());
+            prop_assert_eq!(
+                consume_introduction_charge_premeasured(&channels, &patterns, &continuation, body, guard_bytes),
+                Ok(expected)
+            );
+        }
+    }
+
+    /// D-F2 (DR-118): the field framing equals prost's own length-delimited
+    /// framing at every varint width boundary.
+    #[test]
+    fn framing_matches_prost_at_varint_boundaries() {
+        for len in [0_usize, 1, 127, 128, 16_383, 16_384, 2_097_151, 2_097_152] {
+            let bytes = vec![0_u8; len];
+            for tag in [1_u32, 2, 3, 4, 15, 16] {
+                assert_eq!(
+                    message_field_bytes(tag, u64::try_from(len).unwrap()),
+                    Ok(u64::try_from(prost::encoding::bytes::encoded_len(tag, &bytes)).unwrap())
+                );
+            }
+        }
+    }
+
+    /// D-F2 (DR-118), negative control: prost omits a default field, so a
+    /// composition that frames every field counts bytes that the walk does
+    /// not count.
+    #[test]
+    fn naive_framing_differs_from_prost_on_default_fields() {
+        let channel = Par::default();
+        let empty = ListParWithRandom::default();
+        let walked = produce_introduction_charge(&channel, &empty).unwrap();
+        let naive = message_bytes(&channel).unwrap() + message_field_bytes(2, 0).unwrap() + 64;
+        assert_eq!(empty.encoded_len(), 0);
+        assert_ne!(naive, walked.introduction_bytes);
+        assert_eq!(
+            produce_introduction_charge_premeasured(&channel, &empty, 0),
+            Ok(walked)
+        );
+    }
+
+    #[test]
+    fn premeasured_charges_reject_overflow() {
+        let channel = Par::default();
+        let data = ListParWithRandom::default();
+        assert_eq!(
+            produce_introduction_charge_premeasured(&channel, &data, u64::MAX),
+            Err(ByteAccountingError::Overflow)
+        );
+        let continuation = TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(models::rhoapi::ParWithRandom::default())),
+            ..TaggedContinuation::default()
+        };
+        assert_eq!(
+            consume_introduction_charge_premeasured(&[channel], &[], &continuation, u64::MAX, None),
+            Err(ByteAccountingError::Overflow)
+        );
+        assert_eq!(
+            message_field_bytes(1, u64::MAX),
+            Err(ByteAccountingError::Overflow)
+        );
     }
 }

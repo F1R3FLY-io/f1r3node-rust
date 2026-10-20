@@ -423,7 +423,7 @@ fn run_probe(what: &str, depth: usize) {
             let t = nested_list(depth);
             let s = substitute_instance();
             let out = s
-                .substitute_and_charge(t, 0, &env, None)
+                .substitute_and_charge(t, 0, &env)
                 .expect("stack_depth_probe: substitute_and_charge failed");
             std::mem::forget(out);
         }
@@ -855,8 +855,12 @@ fn run_probe(what: &str, depth: usize) {
             let t = nested_conn_and(depth);
             let pc = ParCount::new(&Par::default());
             let (lo, hi) = pc.min_max_par(t);
-            std::mem::forget(lo);
-            std::mem::forget(hi);
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // `ParCount` has no drop glue, so `forget` did nothing. `black_box`
+            // keeps the measured result observable.
+            // std::mem::forget(lo);
+            // std::mem::forget(hi);
+            std::hint::black_box((lo, hi));
         }
         "free_check" => {
             // WIDTH axis: `free_check` recurses on the slice TAIL, so its

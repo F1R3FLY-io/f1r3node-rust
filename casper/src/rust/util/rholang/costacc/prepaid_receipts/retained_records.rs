@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use crypto::rust::signatures::signed::ToMessage;
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_obligation::PHLO_OBLIGATION_V1_DOMAIN;
 use models::rust::phlo_wire::PhloWireDecoder;
 use models::rust::signed_phlo_deploy::FundedDeploy;
@@ -10,9 +9,7 @@ use prost::Message;
 use rholang::rust::interpreter::accounting::phlo_execution::{
     CheckedRetainedBirthFunding, PhloObligationKey, RetainedCellBackingLimits,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
-use super::snapshot::reserve;
 use super::{
     invalid, CapturedNativeRetainedBirths, CasperError, NativePrepaidCell, NativePrepaidCellLimits,
     NativePrepaidContribution, NativePrepaidOrigin, OrderedPrepaidCells, PrepaidCellLimits,
@@ -83,7 +80,6 @@ impl<'r, 's, 'a, 'b, A> PreparedNativeRetainedReceipts<'r, 's, 'a, 'b, A> {
         runtime: &RuntimeOps,
         maximum_cells: usize,
         maximum_bytes: usize,
-        budget: &HostWorkBudget,
     ) -> Result<(), CasperError> {
         let mut remaining_cells = maximum_cells;
         let mut remaining_bytes = maximum_bytes;
@@ -94,24 +90,17 @@ impl<'r, 's, 'a, 'b, A> PreparedNativeRetainedReceipts<'r, 's, 'a, 'b, A> {
                 .iter()
                 .find(|stack| stack.source_hash == replacement.source_hash)
                 .ok_or_else(|| invalid("retained receipt has no live birth"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchCandidates,
-                self.births.stacks().len(),
-            )?;
             let head = stack
                 .stack
                 .cells
                 .first()
                 .ok_or_else(|| invalid("retained birth stack is empty"))?;
-            let data = super::read_live_data_metered(runtime, &stack.channel, budget).await?;
+            let data = super::read_live_data(runtime, &stack.channel).await?;
             for datum in &data {
                 let bytes = datum.a.encoded_len();
                 remaining_bytes = remaining_bytes
                     .checked_sub(bytes)
                     .ok_or_else(|| invalid("retained backing byte limit exceeded"))?;
-                reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-                reserve(budget, HostWorkDimension::VerificationOperations, bytes)?;
                 if let Some(cost_stack) = &datum.a.cost_stack {
                     remaining_cells = remaining_cells
                         .checked_sub(cost_stack.cells.len())
@@ -145,7 +134,6 @@ impl<'r, 's, 'a, 'b, A> NativeRetainedReceiptRecords<'r, 's, 'a, 'b, A> {
         snapshot: &PrepaidReceiptSnapshot,
         bucket: PrepaidReceiptBucketLimits,
         limits: PrepaidReceiptLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedNativeRetainedReceipts<'r, 's, 'a, 'b, A>, CasperError> {
         let root = self
             .births
@@ -154,7 +142,7 @@ impl<'r, 's, 'a, 'b, A> NativeRetainedReceiptRecords<'r, 's, 'a, 'b, A> {
             .wallets()
             .pre_state_root();
         let replacements =
-            prepare_merged_insertions(&self.records, root, snapshot, bucket, limits, budget)?;
+            prepare_merged_insertions(&self.records, root, snapshot, bucket, limits)?;
         Ok(PreparedNativeRetainedReceipts {
             births: self.births,
             replacements,
@@ -168,21 +156,14 @@ fn prepare_merged_insertions(
     snapshot: &PrepaidReceiptSnapshot,
     bucket: PrepaidReceiptBucketLimits,
     limits: PrepaidReceiptLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<NativeRetainedReceiptReplacement>, CasperError> {
     if snapshot.root() != pre_state_root || records.len() > limits.entries {
         return Err(invalid(
             "retained receipt capture root or entry limit differs",
         ));
     }
-    let scratch = records
-        .len()
-        .checked_mul(size_of::<NativeRetainedReceiptReplacement>() + size_of::<&[u8]>())
-        .ok_or_else(|| invalid("retained receipt allocation overflow"))?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, scratch)?;
     let mut groups = BTreeMap::<[u8; 32], Vec<&[u8]>>::new();
     for record in records {
-        reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
         groups
             .entry(*record.source_hash())
             .or_default()
@@ -200,7 +181,7 @@ fn prepare_merged_insertions(
             .ok_or_else(|| invalid("retained receipt source was not captured"))?;
         let mut entries = Vec::new();
         let old_occurrences = if let Some(bytes) = original {
-            charge(budget, &mut remaining, bytes.len())?;
+            charge(&mut remaining, bytes.len())?;
             let old = PrepaidReceiptBucket::decode(bytes, bucket)?;
             if old.source_hash() != &source_hash {
                 return Err(invalid("retained receipt old bucket has another source"));
@@ -230,7 +211,7 @@ fn prepare_merged_insertions(
         if replacement.len() > limits.value_bytes {
             return Err(invalid("retained receipt replacement exceeds value limit"));
         }
-        charge(budget, &mut remaining, replacement.len())?;
+        charge(&mut remaining, replacement.len())?;
         let expected = if let Some(bytes) = original {
             let mut copy = Vec::new();
             copy.try_reserve_exact(bytes.len())
@@ -259,7 +240,6 @@ pub(in crate::rust::util::rholang::costacc) fn prepare_insertions(
     snapshot: &PrepaidReceiptSnapshot,
     bucket: PrepaidReceiptBucketLimits,
     limits: PrepaidReceiptLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<([u8; 32], Vec<u8>)>, CasperError> {
     if snapshot.root() != pre_state_root {
         return Err(invalid(
@@ -276,12 +256,7 @@ pub(in crate::rust::util::rholang::costacc) fn prepare_insertions(
         .len()
         .checked_mul(size_of::<([u8; 32], Vec<u8>)>() + size_of::<PrepaidReceiptChange>())
         .ok_or_else(|| invalid("retained receipt insertion size overflow"))?;
-    charge(budget, &mut remaining, bytes)?;
-    let work = records
-        .len()
-        .checked_mul(64 * (1 + records.len().checked_ilog2().unwrap_or(0) as usize))
-        .ok_or_else(|| invalid("retained receipt insertion work overflow"))?;
-    reserve(budget, HostWorkDimension::VerificationOperations, work)?;
+    charge(&mut remaining, bytes)?;
     let mut replacements = Vec::new();
     replacements
         .try_reserve_exact(records.len())
@@ -298,7 +273,7 @@ pub(in crate::rust::util::rholang::costacc) fn prepare_insertions(
             .len()
             .checked_add(128)
             .ok_or_else(|| invalid("retained receipt bucket size overflow"))?;
-        charge(budget, &mut remaining, size)?;
+        charge(&mut remaining, size)?;
         let bytes =
             PrepaidReceiptBucket::new(*record.source_hash(), &[record.encoded_cells()], bucket)?
                 .encode(bucket)?;
@@ -324,7 +299,6 @@ impl<'s, 'a, 'b, A: std::fmt::Debug + serde::Serialize + ToMessage>
     pub fn prepare_cell_records<'r>(
         &'r self,
         limits: NativeRetainedRecordLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeRetainedReceiptRecords<'r, 's, 'a, 'b, A>, CasperError> {
         let wallets = self.settlement().snapshot().wallets();
         let deploy_id = wallets
@@ -341,7 +315,6 @@ impl<'s, 'a, 'b, A: std::fmt::Debug + serde::Serialize + ToMessage>
             wallets.pre_state_root(),
             deploy_id,
             limits,
-            budget,
         )?;
         Ok(NativeRetainedReceiptRecords {
             births: self,
@@ -350,12 +323,11 @@ impl<'s, 'a, 'b, A: std::fmt::Debug + serde::Serialize + ToMessage>
     }
 }
 
-fn charge(budget: &HostWorkBudget, remaining: &mut usize, bytes: usize) -> Result<(), CasperError> {
+fn charge(remaining: &mut usize, bytes: usize) -> Result<(), CasperError> {
     *remaining = remaining
         .checked_sub(bytes)
         .ok_or_else(|| invalid("retained receipt aggregate byte limit exceeded"))?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-    reserve(budget, HostWorkDimension::VerificationOperations, bytes)
+    Ok(())
 }
 
 pub(in crate::rust::util::rholang::costacc) fn encode_retained_records(
@@ -364,7 +336,6 @@ pub(in crate::rust::util::rholang::costacc) fn encode_retained_records(
     pre_state_root: [u8; 32],
     deploy_id: [u8; 32],
     limits: NativeRetainedRecordLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<NativeRetainedStackRecord>, CasperError> {
     let genesis_root = policy
         .genesis()
@@ -402,7 +373,7 @@ pub(in crate::rust::util::rholang::costacc) fn encode_retained_records(
                 .and_then(|m| n.checked_add(m))
         })
         .ok_or_else(|| invalid("retained receipt allocation size overflow"))?;
-    charge(budget, &mut remaining, bytes)?;
+    charge(&mut remaining, bytes)?;
     let mut positions = Vec::new();
     positions
         .try_reserve_exact(columns)
@@ -438,7 +409,7 @@ pub(in crate::rust::util::rholang::costacc) fn encode_retained_records(
         if !matches!(column.key(), PhloObligationKey::RetainedResource(_)) {
             continue;
         }
-        charge(budget, &mut remaining, column.encoded_key().len())?;
+        charge(&mut remaining, column.encoded_key().len())?;
         let mut input = PhloWireDecoder::new(column.encoded_key(), limits.cell.wire)
             .map_err(|error| invalid(&error.to_string()))?;
         if input.bytes().map_err(|error| invalid(&error.to_string()))? != PHLO_OBLIGATION_V1_DOMAIN
@@ -453,13 +424,10 @@ pub(in crate::rust::util::rholang::costacc) fn encode_retained_records(
             .finish()
             .map_err(|error| invalid(&error.to_string()))?;
         let split = column
-            .split_retained_cells(
-                RetainedCellBackingLimits {
-                    cells: limits.backing.cells,
-                    contributions: contributions_left,
-                },
-                budget,
-            )
+            .split_retained_cells(RetainedCellBackingLimits {
+                cells: limits.backing.cells,
+                contributions: contributions_left,
+            })
             .map_err(|error| invalid(&error.to_string()))?;
         if split.cells().len() != cells.len() {
             return Err(invalid(
@@ -476,7 +444,7 @@ pub(in crate::rust::util::rholang::costacc) fn encode_retained_records(
                 .checked_mul(size_of::<NativePrepaidContribution>())
                 .and_then(|n| n.checked_add(size))
                 .ok_or_else(|| invalid("retained receipt cell size overflow"))?;
-            charge(budget, &mut remaining, scratch)?;
+            charge(&mut remaining, scratch)?;
             let mut contributions = Vec::new();
             contributions
                 .try_reserve_exact(backing.len())
@@ -515,7 +483,7 @@ pub(in crate::rust::util::rholang::costacc) fn encode_retained_records(
                 total.checked_add(8)?.checked_add(cell.len())
             })
             .ok_or_else(|| invalid("retained receipt stack size overflow"))?;
-        charge(budget, &mut remaining, bytes)?;
+        charge(&mut remaining, bytes)?;
         let refs = cells.iter().map(Vec::as_slice).collect::<Vec<_>>();
         records.push(NativeRetainedStackRecord {
             stack_id: binding.birth.stack_id,

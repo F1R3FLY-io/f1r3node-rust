@@ -23,7 +23,7 @@ use crate::rust::interpreter::rho_runtime::test_accounting_observer;
 mod histories;
 mod joins;
 
-fn empty_trace(host: &HostWorkBudget) -> CheckedNativeOperationTrace {
+fn empty_trace() -> CheckedNativeOperationTrace {
     let recording = NativeBudgetRecording {
         session: [0; 32],
         attempts: Arc::from([]),
@@ -37,21 +37,16 @@ fn empty_trace(host: &HostWorkBudget) -> CheckedNativeOperationTrace {
             &recording,
             Arc::from([]),
             journal_limits(),
-            host,
         )
     })
     .expect("empty checked journal")
-    .bind_trace(
-        Arc::from([]),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        host,
-    )
+    .bind_trace(Arc::from([]), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .expect("empty checked trace")
 }
 
@@ -65,8 +60,7 @@ async fn replay_constructors_preserve_selected_source_epoch_and_legacy_defaults(
     ] {
         for installed in [false, true] {
             let epoch = selected.unwrap_or(EventCodecEpoch::Legacy);
-            let host = config(u64::MAX, [0, 1, 1, 0]).host_work;
-            let trace = empty_trace(&host);
+            let trace = empty_trace();
             let mut stores = InMemoryStoreManager::new();
             let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>> =
                 Arc::new(Box::new(Matcher));
@@ -78,16 +72,13 @@ async fn replay_constructors_preserve_selected_source_epoch_and_legacy_defaults(
             .expect("epoch-bound live space");
             let history = play.get_history_repository();
             let replay = match (selected, installed) {
-                (None, false) => trace.into_session(history, matcher, host),
-                (None, true) => {
-                    trace.into_installed_session(history, matcher, host, std::iter::empty())
-                }
-                (Some(epoch), false) => trace.into_session_for_epoch(epoch, history, matcher, host),
+                (None, false) => trace.into_session(history, matcher),
+                (None, true) => trace.into_installed_session(history, matcher, std::iter::empty()),
+                (Some(epoch), false) => trace.into_session_for_epoch(epoch, history, matcher),
                 (Some(epoch), true) => trace.into_installed_session_for_epoch(
                     epoch,
                     history,
                     matcher,
-                    host,
                     std::iter::empty(),
                 ),
             }
@@ -122,10 +113,10 @@ async fn replay_constructors_preserve_selected_source_epoch_and_legacy_defaults(
                 .produce_with_authority(channel, data, false, |source| {
                     assert_eq!(source, &producer);
                     producer_seen.set(true);
-                    Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                    Err::<IntroductionRecord, _>(authority_rejection())
                 })
                 .await;
-            assert_eq!(result, Err(RSpaceError::HostWorkRejected));
+            assert_eq!(result, Err(authority_rejection()));
             assert!(producer_seen.get());
             let consumer_seen = std::cell::Cell::new(false);
             let result = replay
@@ -139,11 +130,11 @@ async fn replay_constructors_preserve_selected_source_epoch_and_legacy_defaults(
                     |source| {
                         assert_eq!(source, &consumer);
                         consumer_seen.set(true);
-                        Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                        Err::<IntroductionRecord, _>(authority_rejection())
                     },
                 )
                 .await;
-            assert_eq!(result, Err(RSpaceError::HostWorkRejected));
+            assert_eq!(result, Err(authority_rejection()));
             assert!(consumer_seen.get());
             replay
                 .check_complete()
@@ -161,16 +152,19 @@ async fn runtime_replay_constructor_requires_the_exact_budget_execution_context(
         Some(EventCodecEpoch::CostV1),
         Some(EventCodecEpoch::CostV2),
     ] {
-        for requested_epoch in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+        for requested_epoch in [
+            EventCodecEpoch::Legacy,
+            EventCodecEpoch::CostV1,
+            EventCodecEpoch::CostV2,
+        ] {
             let settings = config(u64::MAX, [0, 1, 1, 0]);
-            let host = settings.host_work();
             let budget = RuntimeBudget::new(Cost::unsafe_max());
             if let Some(epoch) = context {
-                budget.reset_for_native_execution(
-                    settings.with_event_codec_epoch(epoch),
-                ).expect("valid native configuration");
+                budget
+                    .reset_for_native_execution(settings.with_event_codec_epoch(epoch))
+                    .expect("valid native configuration");
             }
-            let trace = empty_trace(&host);
+            let trace = empty_trace();
             let mut stores = InMemoryStoreManager::new();
             let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>> =
                 Arc::new(Box::new(Matcher));
@@ -179,87 +173,55 @@ async fn runtime_replay_constructor_requires_the_exact_budget_execution_context(
                 stores.r_space_stores().await.expect("in-memory stores"),
                 matcher.clone(),
             ).expect("epoch-bound live space");
-            let host_before: Vec<_> = HostWorkDimension::ALL.iter()
-                .map(|dimension| host.usage(*dimension)).collect();
             let result = trace.into_runtime_session(
-                play.get_history_repository(), matcher, host.clone(), std::iter::empty(),
-                budget.clone(), requested_epoch,
+                play.get_history_repository(),
+                matcher,
+                std::iter::empty(),
+                budget.clone(),
+                requested_epoch,
             );
             if let Some(expected) = context.filter(|epoch| *epoch == requested_epoch) {
                 let replay = result.expect("matching execution context");
                 assert_eq!(replay.inner.execution_context(), expected);
                 assert_eq!(budget.native_event_codec_epoch(), Some(expected));
                 let checkpoint = replay.checkpoint().await.expect("empty replay checkpoint");
-                replay.restore(checkpoint).await.expect("same-session restore");
+                replay
+                    .restore(checkpoint)
+                    .await
+                    .expect("same-session restore");
                 assert_eq!(replay.inner.execution_context(), expected);
                 assert_eq!(budget.native_event_codec_epoch(), Some(expected));
-                replay.check_complete().await.expect("empty trace is complete");
-                assert_eq!(replay.completed_usage().await.expect("empty replay usage"), 0);
+                replay
+                    .check_complete()
+                    .await
+                    .expect("empty trace is complete");
+                assert_eq!(
+                    replay.completed_usage().await.expect("empty replay usage"),
+                    0
+                );
             } else {
-                assert!(matches!(result, Err(RSpaceError::HostWorkRejected)));
+                assert!(matches!(result, Err(RSpaceError::InterpreterError(message))
+                    if message == "native replay codec epoch differs from bound runtime"));
                 assert_eq!(budget.native_event_codec_epoch(), context);
                 assert_eq!(budget.native_phlo_usage(), context.map(|_| 0));
                 assert!(budget.byte_observations().rows.is_empty());
-                let host_after: Vec<_> = HostWorkDimension::ALL.iter()
-                    .map(|dimension| host.usage(*dimension)).collect();
-                assert_eq!(host_after, host_before);
             }
         }
     }
 }
 
-#[tokio::test]
-async fn live_observer_preserves_host_rejection_without_mutating_tuples() {
-    for produce in [false, true] {
-        let mut stores = InMemoryStoreManager::new();
-        let (play, _) = RSpace::create_with_replay(
-            stores.r_space_stores().await.unwrap(),
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
-        let before = play.create_checkpoint().await.unwrap();
-        let config = config(u64::MAX, [0, 1, 1, 0]);
-        let host = config.host_work();
-        let budget = RuntimeBudget::new(Cost::unsafe_max());
-        budget.reset_for_native_execution(config).unwrap();
-        let _scope = budget.enter_comm_accounting_scope();
-        play.set_accounting_observer(Some(test_accounting_observer(budget.clone())));
-        assert!(host
-            .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
-            .is_err());
-        let rejected = operation_context::scope(
-            OperationOrder {
-                session: budget.deploy_id(),
-                path: vec![(0, 0)].into(),
-            },
-            async {
-                if produce {
-                    play.produce(Par::default(), ListParWithRandom::default(), false)
-                        .await
-                        .err()
-                } else {
-                    play.consume(
-                        vec![Par::default()],
-                        vec![BindPattern::default()],
-                        TaggedContinuation::default(),
-                        false,
-                        BTreeSet::new(),
-                    )
-                    .await
-                    .err()
-                }
-            },
-        )
-        .await
-        .expect("the host budget must reject the operation");
-        assert_eq!(
-            InterpreterError::from(rejected),
-            InterpreterError::HostWorkRejected
-        );
-        let after = play.create_checkpoint().await.unwrap();
-        assert_eq!(before.root, after.root);
-        assert!(after.log.is_empty());
+fn unmeasured(authority: &CostAuthority) -> IntroductionRecord {
+    IntroductionRecord {
+        authority: authority.clone(),
+        measurement: None,
     }
+}
+
+/// Changed by DR-131 S6: the error that a failing authority resolution
+/// returns. It was `RSpaceError::HostWorkRejected`, which is deleted. The
+/// replay returns the error of the resolution unchanged.
+fn authority_rejection() -> RSpaceError {
+    RSpaceError::BugFoundError("authority rejected".to_owned())
 }
 
 async fn exercise(
@@ -411,31 +373,21 @@ async fn exercise(
     );
     let recording = budget.native_budget_recording().unwrap().unwrap();
     let rows = budget.native_operation_recording().unwrap().unwrap();
-    let host = config(limit, [0, 1, 1, 0]).host_work;
     let trace = with_contract(limit, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     let replay = trace
-        .into_session_for_epoch(
-            play.codec_epoch(),
-            history,
-            Arc::new(Box::new(Matcher)),
-            host,
-        )
+        .into_session_for_epoch(play.codec_epoch(), history, Arc::new(Box::new(Matcher)))
         .unwrap();
     let mut checkpoint = Some(replay.checkpoint().await.unwrap());
     operation_context::scope(order(), async {
@@ -471,7 +423,7 @@ async fn exercise(
                 .inner
                 .produce_with_authority(channel.clone(), data.clone(), data_persistent, |source| {
                     assert_eq!(source.hash, producer.hash);
-                    Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                    Err::<IntroductionRecord, _>(authority_rejection())
                 })
                 .await
                 .map(|_| ())
@@ -486,7 +438,7 @@ async fn exercise(
                     BTreeSet::new(),
                     |source| {
                         assert_eq!(source, &consumer);
-                        Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                        Err::<IntroductionRecord, _>(authority_rejection())
                     },
                 )
                 .await
@@ -494,7 +446,7 @@ async fn exercise(
         }
     })
     .await;
-    assert!(matches!(rejected, Err(RSpaceError::HostWorkRejected)));
+    assert_eq!(rejected, Err(authority_rejection()));
     assert!(replay.check_complete().await.is_err());
     for round in 0..2 {
         let resolutions = std::cell::Cell::new(0);
@@ -512,7 +464,7 @@ async fn exercise(
                                 bincode::serialize(source).unwrap(),
                                 bincode::serialize(&producer).unwrap()
                             );
-                            Ok(auth.clone())
+                            Ok(unmeasured(&auth))
                         },
                     )
                     .await
@@ -529,7 +481,7 @@ async fn exercise(
                         |source| {
                             resolutions.set(resolutions.get() + 1);
                             assert_eq!(source, &consumer);
-                            Ok(auth.clone())
+                            Ok(unmeasured(&auth))
                         },
                     )
                     .await
@@ -623,23 +575,12 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for OverlappingMa
         Matcher.get(pattern, data)
     }
 
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        self.rendezvous();
-        Matcher.get_metered(pattern, data, meter)
-    }
-
-    fn check_commit_metered(
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        Matcher.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        Matcher.check_commit_by_reference(continuation, matched)
     }
 }
 
@@ -732,23 +673,18 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         if shared_channel { &[0][..] } else { &[][..] }
     );
     let log = play.create_soft_checkpoint().await.log;
-    let host = config(u64::MAX, [0, 1, 1, 0]).host_work;
     let trace = with_contract(u64::MAX, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     assert_eq!(trace.journal_index(0), Some(1));
     let overlapping = Arc::new(OverlappingMatcher {
@@ -762,7 +698,7 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
             Arc::new(Box::new(Matcher))
         };
     let replay = trace
-        .into_session_for_epoch(play.codec_epoch(), history, matcher, host)
+        .into_session_for_epoch(play.codec_epoch(), history, matcher)
         .unwrap();
     let root = replay.checkpoint().await.unwrap();
     if concurrent_matches {
@@ -890,22 +826,12 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for SharedMatcher
         self.0.get(pattern, data)
     }
 
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        self.0.get_metered(pattern, data, meter)
-    }
-
-    fn check_commit_metered(
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        self.0.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        self.0.check_commit_by_reference(continuation, matched)
     }
 }
 

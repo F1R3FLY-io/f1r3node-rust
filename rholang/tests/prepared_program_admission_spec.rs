@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{ENot, Expr, Par};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::rholang::protobuf_encoder;
 use proptest::prelude::*;
@@ -19,8 +18,8 @@ use rholang::rust::interpreter::accounting::byte_accounting::{
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-    NativePhloExecutionContract, NativePhloRegionLimits,
+    native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+    NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -33,7 +32,6 @@ use rholang::rust::interpreter::frontend::{
     prepare_program, PreparationError, PreparedProgram, ProgramFrontend, PREPARATION_BINDING_V1,
     PREPARED_PROGRAM_ABI_V1,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
@@ -135,20 +133,21 @@ fn native_config_for_epoch(epoch: EventCodecEpoch) -> NativeRuntimeConfig {
         1_000_000,
     )
     .expect("checked native controls");
-    let contract = NativePhloExecutionContract::new(controls, &binding)
-        .expect("checked native execution contract");
-    NativeRuntimeConfig::new(
-        contract,
-        NativeBudgetTraceLimits {
-            attempts: 100_000,
-            path_segments: 4096,
-            regions: NativePhloRegionLimits {
-                regions: 1000,
-                encoded_authority_bytes: 10_000_000,
-            },
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-27):
+    // DR-113's contract names the source of its bound.
+    // let contract = NativePhloExecutionContract::new(controls, &binding)
+    //     .expect("checked native execution contract");
+    let contract =
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .expect("checked native execution contract");
+    NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+        attempts: 100_000,
+        path_segments: 4096,
+        regions: NativePhloRegionLimits {
+            regions: 1000,
+            encoded_authority_bytes: 10_000_000,
         },
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000))),
-    )
+    })
     .with_event_codec_epoch(epoch)
 }
 
@@ -174,7 +173,6 @@ fn assert_recording_unchanged(expected: &NativeBudgetRecording, runtime: &RhoRun
         .expect("native history retained");
     assert_eq!(actual.session, expected.session);
     assert_eq!(actual.used, expected.used);
-    let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
     let attempts = |recording: &NativeBudgetRecording| {
         recording
             .attempts
@@ -184,7 +182,7 @@ fn assert_recording_unchanged(expected: &NativeBudgetRecording, runtime: &RhoRun
                     attempt.occurrence.session,
                     recording
                         .paths
-                        .suffix(attempt.occurrence.path, 0, &host)
+                        .suffix(attempt.occurrence.path, 0)
                         .expect("causal path"),
                     attempt.occurrence.stage,
                     attempt.observation.clone(),
@@ -202,7 +200,10 @@ fn assert_recording_unchanged(expected: &NativeBudgetRecording, runtime: &RhoRun
                     retry.occurrence.session,
                     recording
                         .paths
-                        .suffix(retry.occurrence.path, 0, &host)
+                        // Changed by the merge of feature/cost-accounted-rho:
+                        // DR-131 removed the host-work budget argument.
+                        // .suffix(retry.occurrence.path, 0, &host)
+                        .suffix(retry.occurrence.path, 0)
                         .expect("retry path"),
                     retry.occurrence.stage,
                     retry.observation.clone(),
@@ -244,7 +245,6 @@ async fn native_receive_introduction_retains_outer_authority_in_each_cost_epoch(
             let result = runtime
                 .evaluate_prepared_with_native_phlo(
                     prepared(SOURCE),
-                    SOURCE.len() as u64,
                     random(),
                     None,
                     native_config_for_epoch(epoch),
@@ -298,7 +298,6 @@ async fn native_stack_introduction_retains_continuation_authority_and_trace_iden
             let result = runtime
                 .evaluate_prepared_with_native_phlo(
                     prepared(SOURCE),
-                    SOURCE.len() as u64,
                     random(),
                     None,
                     native_config_for_epoch(epoch),
@@ -722,13 +721,7 @@ async fn bound_frontend_uses_the_existing_native_funding_path() {
         let program = prepare_program(&frontend, PROVIDER_SOURCE, environment())
             .expect("bound source admission");
         let result = runtime
-            .evaluate_prepared_with_native_phlo(
-                program,
-                PROVIDER_SOURCE.len() as u64,
-                random(),
-                None,
-                native_config(),
-            )
+            .evaluate_prepared_with_native_phlo(program, random(), None, native_config())
             .await
             .expect("bound frontend deployment");
         frontend.assert_calls(1, 1);
@@ -855,13 +848,7 @@ async fn explicit_frontend_does_not_reparse_source_and_uses_native_metering() {
         let program = prepare_program(&frontend, PROVIDER_SOURCE, environment())
             .expect("explicit source admission");
         let result = runtime
-            .evaluate_prepared_with_native_phlo(
-                program,
-                PROVIDER_SOURCE.len() as u64,
-                random(),
-                None,
-                native_config(),
-            )
+            .evaluate_prepared_with_native_phlo(program, random(), None, native_config())
             .await
             .expect("explicit frontend deployment");
         frontend.assert_calls(1, 1);

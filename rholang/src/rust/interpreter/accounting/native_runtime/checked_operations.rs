@@ -1,22 +1,18 @@
-use std::mem::size_of;
 use std::sync::Arc;
 
-use models::rust::host_work::HostWorkDimension;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 use thiserror::Error;
 
-use super::index::{IndexKey, NativeIndex};
-use super::operation_sources::allocate;
+use super::index::NativeIndex;
 use super::operations::sort;
 use super::path_trie::{NativePathTrie, PathId};
-use super::recording::work;
 use super::{
-    HostWorkBudget, InterpreterError, NativeBudgetRecording, NativeObservationLink,
-    NativeOperationRecord, NativeOperationSource,
+    InterpreterError, NativeBudgetRecording, NativeObservationLink, NativeOperationRecord,
+    NativeOperationSource,
 };
 use crate::rust::interpreter::accounting::native_phlo_rules::{
-    observation_comparison_bytes, CheckedNativeBudgetEvidence, NativeAttemptStage,
-    NativeBudgetTraceError, NativeBudgetTraceLimits, NativePhloExecutionContract,
+    CheckedNativeBudgetEvidence, NativeAttemptStage, NativeBudgetTraceError,
+    NativeBudgetTraceLimits, NativePhloExecutionContract,
 };
 
 mod trace;
@@ -44,7 +40,7 @@ pub enum NativeOperationJournalError {
     #[error(transparent)]
     Budget(#[from] NativeBudgetTraceError),
     #[error(transparent)]
-    Host(#[from] InterpreterError),
+    Interpreter(#[from] InterpreterError),
     #[error("native operation journal exceeds its structural limits")]
     Limit,
     #[error("native operation journal contains a different execution session")]
@@ -79,6 +75,13 @@ pub struct CheckedNativeOperationJournal {
 
 impl CheckedNativeOperationJournal {
     pub fn total(&self) -> u64 { self.budget.total() }
+
+    /// Added by DR-113: the bound source of the checked budget evidence.
+    pub fn bound_source(
+        &self,
+    ) -> crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource {
+        self.budget.bound_source()
+    }
     pub fn operation_count(&self) -> usize { self.operations.len() }
     pub fn attempt_count(&self) -> usize { self.recording.attempts.len() }
     pub fn retry_count(&self) -> usize { self.recording.retries.len() }
@@ -117,21 +120,6 @@ struct JournalKey<'a> {
     session: &'a [u8; 32],
     path: PathId,
     stage: Option<NativeAttemptStage>,
-}
-
-const JOURNAL_KEY_COMPARISON_BYTES: usize = 32 + size_of::<PathId>() + 2;
-
-impl IndexKey for JournalKey<'_> {
-    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
-        Ok((4, JOURNAL_KEY_COMPARISON_BYTES))
-    }
-}
-
-fn work_count(count: usize, scale: usize, extra: usize) -> Result<usize, InterpreterError> {
-    count
-        .checked_mul(scale)
-        .and_then(|total| total.checked_add(extra))
-        .ok_or(InterpreterError::HostWorkRejected)
 }
 
 fn add_count(
@@ -186,7 +174,6 @@ fn check_sizes(
     recording: &NativeBudgetRecording,
     operations: &[NativeOperationRecord],
     limits: NativeOperationJournalLimits,
-    host: &HostWorkBudget,
 ) -> Result<usize, NativeOperationJournalError> {
     let mut publications = recording.attempts.len();
     add_count(
@@ -200,19 +187,6 @@ fn check_sizes(
     if recording.session != *session {
         return Err(NativeOperationJournalError::Session);
     }
-    let count = publications
-        .checked_add(operations.len())
-        .ok_or(NativeOperationJournalError::Limit)?;
-    work(
-        host,
-        HostWorkDimension::VerificationOperations,
-        work_count(count, 32, 1)?,
-    )?;
-    work(
-        host,
-        HostWorkDimension::VerificationBytes,
-        work_count(count, 32, 0)?,
-    )?;
     if recording.paths.node_count() > limits.total_path_segments {
         return Err(NativeOperationJournalError::Limit);
     }
@@ -248,16 +222,6 @@ fn check_sizes(
         }
         if let Some(peeks) = &row.consume_peeks {
             add_count(&mut sources, peeks.len(), limits.source_entries)?;
-            work(
-                host,
-                HostWorkDimension::VerificationOperations,
-                work_count(peeks.len(), 4, 2)?,
-            )?;
-            work(
-                host,
-                HostWorkDimension::VerificationBytes,
-                work_count(peeks.len(), 8, 0)?,
-            )?;
         }
         if let Some(comm) = &row.comm {
             for count in [
@@ -276,11 +240,6 @@ fn check_sizes(
             row.footprint.len(),
             limits.footprint_entries,
         )?;
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            row.footprint.len(),
-        )?;
         for channel in row.footprint.iter() {
             add_count(&mut bytes, channel.len(), limits.footprint_bytes)?;
         }
@@ -291,12 +250,11 @@ fn check_sizes(
 fn insert_unique<'a>(
     index: &mut NativeIndex<JournalKey<'a>, ()>,
     key: JournalKey<'a>,
-    host: &HostWorkBudget,
 ) -> Result<(), NativeOperationJournalError> {
-    if index.get(&key, host)?.is_some() {
+    if index.get(&key).is_some() {
         return Err(NativeOperationJournalError::Duplicate);
     }
-    let prepared = index.prepare_insert(key, (), host)?;
+    let prepared = index.prepare_insert(key, ())?;
     index.commit(prepared);
     Ok(())
 }
@@ -313,7 +271,6 @@ fn check_link(
     stage: NativeAttemptStage,
     recording: &NativeBudgetRecording,
     owned: &mut [bool],
-    host: &HostWorkBudget,
 ) -> Result<LinkDecision, NativeOperationJournalError> {
     let (occurrence, start, end, granted, slot) = match link {
         NativeObservationLink::Attempt(index) => {
@@ -354,12 +311,6 @@ fn check_link(
     //     HostWorkDimension::VerificationBytes,
     //     work_count(occurrence.path.len(), 16, 32)?,
     // )?;
-    work(host, HostWorkDimension::VerificationOperations, 10)?;
-    work(
-        host,
-        HostWorkDimension::VerificationBytes,
-        32 + size_of::<PathId>(),
-    )?;
     if occurrence.session != row.occurrence.session || occurrence.path != row.occurrence.path {
         return Err(NativeOperationJournalError::Ownership);
     }
@@ -383,28 +334,9 @@ fn check_dependencies(
     position: usize,
     rows: &[NativeOperationRecord],
     last: &mut NativeIndex<Arc<[u8]>, usize>,
-    host: &HostWorkBudget,
 ) -> Result<(), NativeOperationJournalError> {
     let row = &rows[position];
-    work(
-        host,
-        HostWorkDimension::VerificationOperations,
-        row.footprint
-            .len()
-            .checked_add(row.predecessors.len())
-            .and_then(|count| count.checked_add(1))
-            .ok_or(InterpreterError::HostWorkRejected)?,
-    )?;
     for pair in row.footprint.windows(2) {
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            pair[0]
-                .len()
-                .min(pair[1].len())
-                .checked_add(1)
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )?;
         if pair[0] >= pair[1] {
             return Err(NativeOperationJournalError::Footprint);
         }
@@ -412,40 +344,27 @@ fn check_dependencies(
     if row.predecessors.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(NativeOperationJournalError::Dependency);
     }
-    let mut expected = allocate(row.footprint.len(), host)?;
+    let mut expected = Vec::with_capacity(row.footprint.len());
     for channel in row.footprint.iter() {
-        if let Some(prior) = last.get(channel, host)? {
+        if let Some(prior) = last.get(channel) {
             if rows[*prior].budget_end > row.budget_start {
                 return Err(NativeOperationJournalError::Dependency);
             }
             expected.push(*prior);
         }
     }
-    sort(&mut expected, |a, b| {
-        work(host, HostWorkDimension::VerificationOperations, 1)?;
-        Ok(a.cmp(b))
-    })?;
-    work(
-        host,
-        HostWorkDimension::VerificationOperations,
-        work_count(expected.len(), 2, 0)?,
-    )?;
-    work(
-        host,
-        HostWorkDimension::VerificationBytes,
-        work_count(expected.len(), size_of::<usize>(), 0)?,
-    )?;
+    sort(&mut expected, |a, b| Ok(a.cmp(b)))?;
     expected.dedup();
     if expected.as_slice() != row.predecessors.as_ref() {
         return Err(NativeOperationJournalError::Dependency);
     }
-    let mut updates = allocate(row.footprint.len(), host)?;
+    let mut updates = Vec::with_capacity(row.footprint.len());
     updates.extend(
         row.footprint
             .iter()
             .map(|channel| (Arc::clone(channel), position)),
     );
-    let prepared = last.prepare_batch(updates, host)?;
+    let prepared = last.prepare_batch(updates)?;
     last.commit_batch(prepared);
     Ok(())
 }
@@ -457,15 +376,10 @@ impl NativePhloExecutionContract<'_> {
         recording: &NativeBudgetRecording,
         operations: Arc<[NativeOperationRecord]>,
         limits: NativeOperationJournalLimits,
-        host: &HostWorkBudget,
     ) -> Result<CheckedNativeOperationJournal, NativeOperationJournalError> {
-        let publication_count = check_sizes(&session, recording, &operations, limits, host)?;
-        let budget = self.check_budget_evidence(
-            session,
-            Arc::clone(&recording.attempts),
-            limits.budget,
-            host,
-        )?;
+        let publication_count = check_sizes(&session, recording, &operations, limits)?;
+        let budget =
+            self.check_budget_evidence(session, Arc::clone(&recording.attempts), limits.budget)?;
         if recording.used != budget.total() {
             return Err(NativeOperationJournalError::Usage);
         }
@@ -476,18 +390,13 @@ impl NativePhloExecutionContract<'_> {
             .map(|row| &row.occurrence)
             .chain(recording.retries.iter().map(|row| &row.occurrence))
         {
-            insert_unique(
-                &mut occurrences,
-                JournalKey {
-                    session: &occurrence.session,
-                    path: occurrence.path,
-                    stage: Some(occurrence.stage),
-                },
-                host,
-            )?;
+            insert_unique(&mut occurrences, JournalKey {
+                session: &occurrence.session,
+                path: occurrence.path,
+                stage: Some(occurrence.stage),
+            })?;
         }
         for retry in recording.retries.iter() {
-            work(host, HostWorkDimension::VerificationOperations, 6)?;
             let accepted = recording
                 .attempts
                 .get(retry.accepted_attempt)
@@ -500,18 +409,13 @@ impl NativePhloExecutionContract<'_> {
             {
                 return Err(NativeOperationJournalError::Retry);
             }
-            self.prepare(Arc::clone(&retry.observation), limits.budget.regions, host)
+            self.prepare(Arc::clone(&retry.observation), limits.budget.regions)
                 .map_err(NativeBudgetTraceError::from)?;
-            let bytes = observation_comparison_bytes(&retry.observation, host)?
-                .checked_add(observation_comparison_bytes(&accepted.observation, host)?)
-                .ok_or(NativeOperationJournalError::Limit)?;
-            work(host, HostWorkDimension::VerificationBytes, bytes)?;
             if retry.observation != accepted.observation {
                 return Err(NativeOperationJournalError::Retry);
             }
         }
-        let mut owned = allocate(publication_count, host)?;
-        owned.resize(publication_count, false);
+        let mut owned = vec![false; publication_count];
         let mut operation_ids = NativeIndex::default();
         let mut last = NativeIndex::default();
         let mut previous_start = 0;
@@ -534,15 +438,11 @@ impl NativePhloExecutionContract<'_> {
                 }
                 _ => return Err(NativeOperationJournalError::Peeks),
             }
-            insert_unique(
-                &mut operation_ids,
-                JournalKey {
-                    session: &row.occurrence.session,
-                    path: row.occurrence.path,
-                    stage: None,
-                },
-                host,
-            )?;
+            insert_unique(&mut operation_ids, JournalKey {
+                session: &row.occurrence.session,
+                path: row.occurrence.path,
+                stage: None,
+            })?;
             if row.budget_start < previous_start
                 || row.budget_start > row.budget_end
                 || row.budget_end > recording.attempts.len()
@@ -557,7 +457,7 @@ impl NativePhloExecutionContract<'_> {
                     return Err(NativeOperationJournalError::Peeks)
                 }
             };
-            let intro = check_link(row, row.introduction, stage, recording, &mut owned, host)?;
+            let intro = check_link(row, row.introduction, stage, recording, &mut owned)?;
             let comm = row
                 .comm
                 .as_ref()
@@ -568,7 +468,6 @@ impl NativePhloExecutionContract<'_> {
                         NativeAttemptStage::Comm,
                         recording,
                         &mut owned,
-                        host,
                     )
                 })
                 .transpose()?;
@@ -589,13 +488,8 @@ impl NativePhloExecutionContract<'_> {
             if !valid {
                 return Err(NativeOperationJournalError::Lifecycle);
             }
-            check_dependencies(position, &operations, &mut last, host)?;
+            check_dependencies(position, &operations, &mut last)?;
         }
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            publication_count,
-        )?;
         if owned.iter().any(|owned| !owned) {
             return Err(NativeOperationJournalError::Ownership);
         }

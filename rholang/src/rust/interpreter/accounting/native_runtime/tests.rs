@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{CostAuthority, CostSignature};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use proptest::prelude::*;
 
@@ -44,11 +43,33 @@ pub(super) fn native_schedule(weights: [u64; 4], price: u64) -> PhloScheduleV1<'
     }
 }
 
+// Changed by DR-113: the fixtures keep a certified bound, so their exhaustion
+// stays a certificate failure. The DR-113 tests name the signed limit.
 pub(super) fn with_priced_contract<T>(
     limit: u64,
     weights: [u64; 4],
     price: u64,
     action: impl FnOnce(NativePhloExecutionContract<'_>) -> T,
+) -> T {
+    with_priced_contract_from(
+        limit,
+        limit,
+        weights,
+        price,
+        NativeBoundSource::Certificate,
+        |contract| action(contract.expect("a certified bound up to the limit is admissible")),
+    )
+}
+
+/// Added by DR-113: a contract with an explicit resource bound and bound
+/// source. The action receives the result of the guarded constructor.
+pub(super) fn with_priced_contract_from<T>(
+    limit: u64,
+    bound: u64,
+    weights: [u64; 4],
+    price: u64,
+    source: NativeBoundSource,
+    action: impl FnOnce(Result<NativePhloExecutionContract<'_>, NativePhloExecutionError>) -> T,
 ) -> T {
     let descriptor = native_schedule(weights, price);
     let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS).unwrap();
@@ -66,11 +87,13 @@ pub(super) fn with_priced_contract<T>(
             permitted_schedules: &schedules,
         },
         selected,
-        limit,
+        bound,
     )
     .unwrap();
-    let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
-    action(contract)
+    // Changed by DR-113: the contract names the source of its bound.
+    // let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+    // action(contract)
+    action(NativePhloExecutionContract::new(controls, &binding, source))
 }
 
 pub(super) fn config(limit: u64, weights: [u64; 4]) -> NativeRuntimeConfig {
@@ -78,20 +101,128 @@ pub(super) fn config(limit: u64, weights: [u64; 4]) -> NativeRuntimeConfig {
 }
 
 pub(super) fn priced_config(limit: u64, weights: [u64; 4], price: u64) -> NativeRuntimeConfig {
-    with_priced_contract(limit, weights, price, |contract| {
-        NativeRuntimeConfig::new(
-            contract,
-            NativeBudgetTraceLimits {
-                attempts: 100_000,
-                path_segments: 4096,
-                regions: NativePhloRegionLimits {
-                    regions: 1000,
-                    encoded_authority_bytes: 10_000_000,
-                },
+    priced_config_from(limit, weights, price, NativeBoundSource::Certificate)
+}
+
+/// Added by DR-113: a runtime configuration whose bound is the limit, with the
+/// given bound source.
+pub(super) fn priced_config_from(
+    limit: u64,
+    weights: [u64; 4],
+    price: u64,
+    source: NativeBoundSource,
+) -> NativeRuntimeConfig {
+    with_priced_contract_from(limit, limit, weights, price, source, |contract| {
+        let contract = contract.expect("a bound equal to the limit fits every source");
+        NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+            attempts: 100_000,
+            path_segments: 4096,
+            regions: NativePhloRegionLimits {
+                regions: 1000,
+                encoded_authority_bytes: 10_000_000,
             },
-            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000))),
-        )
+        })
     })
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-33): the codec
+/// epoch of the native harnesses of this module and of its submodules.
+/// F1R3Lang's `eval_send` and `eval_receive` open no cost region on a Legacy
+/// space, because the Legacy codec refuses a cost-bearing event leg.
+/// `evaluate_with_native_phlo` also enters no COMM accounting scope on a
+/// Legacy space. So on a Legacy space a funded play charges nothing, or its
+/// COMMs have no authority and its native recording is incomplete. Genesis
+/// gives protocol 6 the epoch `CostV1` (`genesis_resource_policy.rs:365`).
+pub(super) const NATIVE_EPOCH: EventCodecEpoch = EventCodecEpoch::CostV1;
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-33): `config`
+/// on the codec epoch of the native harnesses.
+pub(super) fn native_config(limit: u64, weights: [u64; 4]) -> NativeRuntimeConfig {
+    config(limit, weights).with_event_codec_epoch(NATIVE_EPOCH)
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-33): the play
+/// and replay runtimes of `create_runtimes`, on the codec epoch of the native
+/// harnesses.
+pub(super) async fn native_runtimes(
+    stores: rspace_plus_plus::rspace::rspace::RSpaceStore,
+) -> (
+    crate::rust::interpreter::rho_runtime::RhoRuntimeImpl,
+    crate::rust::interpreter::rho_runtime::RhoRuntimeImpl,
+) {
+    use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+    use rspace_plus_plus::rspace::rspace::RSpace;
+
+    use crate::rust::interpreter::external_services::ExternalServices;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
+    use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
+    use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, create_rho_runtime};
+
+    let (space, replay) =
+        RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay_for_epoch(
+            NATIVE_EPOCH,
+            stores,
+            Arc::new(Box::new(Matcher)),
+        )
+        .expect("the spaces of the native epoch open");
+    let play = create_rho_runtime(
+        space,
+        Arc::new(default_mergeable_tags()),
+        false,
+        &mut Vec::new(),
+        ExternalServices::noop(),
+    )
+    .await
+    .expect("the play runtime starts");
+    let replay = create_replay_rho_runtime(
+        replay,
+        Arc::new(default_mergeable_tags()),
+        false,
+        &mut Vec::new(),
+        ExternalServices::noop(),
+    )
+    .await
+    .expect("the replay runtime starts");
+    (play, replay)
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-33):
+/// `with_runtime` on the codec epoch of the native harnesses.
+pub(super) async fn with_native_runtime<F, Fut, R>(prefix: &str, f: F) -> R
+where
+    F: FnOnce(crate::rust::interpreter::rho_runtime::RhoRuntimeImpl) -> Fut,
+    Fut: std::future::Future<Output = R>,
+{
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::MB;
+    use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
+
+    use crate::rust::interpreter::external_services::ExternalServices;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
+    use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
+    use crate::rust::interpreter::rho_runtime::create_runtime_from_kv_store_for_epoch;
+
+    let temp_dir = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .expect("a temporary directory");
+    let mut store_manager = mk_rspace_store_manager(temp_dir.path().to_path_buf(), 100 * MB);
+    let stores = store_manager
+        .r_space_stores()
+        .await
+        .expect("the runtime stores");
+    let runtime = create_runtime_from_kv_store_for_epoch(
+        NATIVE_EPOCH,
+        stores,
+        Arc::new(default_mergeable_tags()),
+        false,
+        &mut Vec::new(),
+        Arc::new(Box::new(Matcher)),
+        ExternalServices::noop(),
+    )
+    .await
+    .expect("the runtime starts");
+    f(runtime).await
 }
 
 #[test]
@@ -122,11 +253,10 @@ fn native_runtime_preserves_each_selected_codec_epoch() {
 /// [(k, 0)] for k in 0..64, interned in order (C7b, DR-86).
 pub(super) fn fixture_paths() -> Arc<NativePathTrie> {
     static PATHS: std::sync::LazyLock<Arc<NativePathTrie>> = std::sync::LazyLock::new(|| {
-        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-        let mut paths = NativePathTrie::new(1_024, &host).expect("fixture trie fits");
+        let mut paths = NativePathTrie::new(1_024);
         for id in 0..64 {
             paths
-                .intern(PathId::ROOT, &[(id, 0)], &host)
+                .intern(PathId::ROOT, &[(id, 0)])
                 .expect("fixture path fits");
         }
         Arc::new(paths)
@@ -153,39 +283,73 @@ pub(super) fn journal_limits() -> NativeOperationJournalLimits {
     }
 }
 
+// Changed by DR-114: native funded execution runs stdout instead of banning it.
+// The replacement is `native_funded_runtime_runs_stdout_and_charges_the_call`.
+// #[tokio::test]
+// async fn native_funded_runtime_rejects_external_output_before_dispatch() {
+//     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+//     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+//
+//     use crate::rust::interpreter::test_utils::resources::create_runtimes;
+//
+//     let mut manager = InMemoryStoreManager::new();
+//     let stores = manager.r_space_stores().await.unwrap();
+//     let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+//     runtime
+//         .cost
+//         .set_deploy_signature_funded(b"native-external-guard", Sig::Ground(vec![9]));
+//     let result = runtime
+//         .evaluate_with_native_phlo(
+//             r#"new out(`rho:io:stdout`) in { out!("must not print") }"#,
+//             HashMap::new(),
+//             Blake2b512Random::create_from_bytes(b"native-external-guard"),
+//             None,
+//             config(1_000_000, [0; 4]),
+//         )
+//         .await;
+//     let error = match result {
+//         Ok(evaluation) => format!("{:?}", evaluation.errors),
+//         Err(error) => error.to_string(),
+//     };
+//     assert!(error.contains("native funded execution forbids external service calls"));
+// }
+
+/// DR-114: native funded execution prints in play and charges the call.
 #[tokio::test]
-async fn native_funded_runtime_rejects_external_output_before_dispatch() {
+async fn native_funded_runtime_runs_stdout_and_charges_the_call() {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-    use crate::rust::interpreter::test_utils::resources::create_runtimes;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-33): the
+    // runtime has the codec epoch of the native harnesses.
+    // use crate::rust::interpreter::test_utils::resources::create_runtimes;
 
     let mut manager = InMemoryStoreManager::new();
     let stores = manager.r_space_stores().await.unwrap();
-    let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+    // let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+    let (mut runtime, _) = native_runtimes(stores).await;
     runtime
         .cost
-        .set_deploy_signature_funded(b"native-external-guard", Sig::Ground(vec![9]));
-    let result = runtime
+        .set_deploy_signature_funded(b"native-external-print", Sig::Ground(vec![9]));
+    let evaluation = runtime
         .evaluate_with_native_phlo(
-            r#"new out(`rho:io:stdout`) in { out!("must not print") }"#,
+            r#"new out(`rho:io:stdout`) in { out!("printed in play") }"#,
             HashMap::new(),
-            Blake2b512Random::create_from_bytes(b"native-external-guard"),
+            Blake2b512Random::create_from_bytes(b"native-external-print"),
             None,
-            config(1_000_000, [0; 4]),
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+            // config(1_000_000, [1; 4]),
+            native_config(1_000_000, [1; 4]),
         )
-        .await;
-    let error = match result {
-        Ok(evaluation) => format!("{:?}", evaluation.errors),
-        Err(error) => error.to_string(),
-    };
-    assert!(error.contains("native funded execution forbids external service calls"));
+        .await
+        .expect("the native evaluation runs");
+    assert!(evaluation.errors.is_empty(), "{:?}", evaluation.errors);
+    assert!(evaluation.native_phlo_usage.is_some_and(|usage| usage > 0));
 }
 
 #[tokio::test]
 async fn prepared_native_runtime_preserves_source_charge_and_result() {
-    use models::rust::host_work::HostWorkDimension;
-
     use crate::rust::interpreter::compiler::compiler::Compiler;
     use crate::rust::interpreter::frontend::PreparedProgram;
     use crate::rust::interpreter::rho_runtime::RhoRuntime;
@@ -200,7 +364,6 @@ async fn prepared_native_runtime_preserves_source_charge_and_result() {
             .set_deploy_signature_funded(b"native-prepared-parity", Sig::Ground(vec![7]));
 
         let source_config = config(1_000_000, [2, 3, 5, 7]);
-        let source_host = source_config.host_work.clone();
         let source_result = runtime
             .evaluate_with_native_phlo(source, HashMap::new(), rand.clone(), None, source_config)
             .await
@@ -215,11 +378,13 @@ async fn prepared_native_runtime_preserves_source_charge_and_result() {
         runtime.reset(&original_root).await.unwrap();
         let prepared = PreparedProgram::from_normalized(Compiler::source_to_adt(source).unwrap());
         let prepared_config = config(1_000_000, [2, 3, 5, 7]);
-        let prepared_host = prepared_config.host_work.clone();
         let prepared_result = runtime
             .evaluate_prepared_with_native_phlo(
                 prepared,
-                u64::try_from(source.as_bytes().len()).unwrap(),
+                // Changed by the merge of feature/cost-accounted-rho (finding
+                // R1-13): DR-131 removed the source-byte argument with the
+                // source meter.
+                // u64::try_from(source.as_bytes().len()).unwrap(),
                 rand,
                 None,
                 prepared_config,
@@ -236,13 +401,6 @@ async fn prepared_native_runtime_preserves_source_charge_and_result() {
             source_result.native_phlo_usage
         );
         assert_eq!(runtime.get_root().await, source_root);
-        for dimension in HostWorkDimension::ALL {
-            assert_eq!(
-                prepared_host.usage(dimension),
-                source_host.usage(dimension),
-                "prepared path must reserve each host-work dimension exactly once: {dimension:?}"
-            );
-        }
     })
     .await;
 }
@@ -417,12 +575,16 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
     use crate::rust::interpreter::rho_runtime::RhoRuntime;
-    use crate::rust::interpreter::test_utils::resources::create_runtimes;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-33): the
+    // runtimes have the codec epoch of the native harnesses.
+    // use crate::rust::interpreter::test_utils::resources::create_runtimes;
 
     for (limit, weights) in [(0, [0; 4]), (1_000_000, [2, 3, 5, 7])] {
         let mut manager = InMemoryStoreManager::new();
         let stores = manager.r_space_stores().await.unwrap();
-        let (mut play, mut replay, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+        // let (mut play, mut replay, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+        let (mut play, mut replay) = native_runtimes(stores).await;
         for runtime in [&play, &replay] {
             runtime
                 .cost
@@ -437,7 +599,9 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
                 HashMap::new(),
                 rand.clone(),
                 None,
-                config(limit, weights),
+                // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+                // config(limit, weights),
+                native_config(limit, weights),
             )
             .await
             .unwrap();
@@ -455,8 +619,19 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
         let checkpoint = play.create_checkpoint().await;
         replay.reset(&root).await.unwrap();
         replay.rig(checkpoint.log).await.unwrap();
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+        // let replayed = replay
+        //     .evaluate_with_native_phlo(term, HashMap::new(), rand, None, config(limit, weights))
+        //     .await
+        //     .unwrap();
         let replayed = replay
-            .evaluate_with_native_phlo(term, HashMap::new(), rand, None, config(limit, weights))
+            .evaluate_with_native_phlo(
+                term,
+                HashMap::new(),
+                rand,
+                None,
+                native_config(limit, weights),
+            )
             .await
             .unwrap();
         assert!(replayed.errors.is_empty(), "{:?}", replayed.errors);
@@ -531,15 +706,12 @@ async fn native_runtime_real_comm_replays_native_usage_and_complete_measurements
         );
         for (rows, budget) in [(operations, recorded), (replay_operations, replay_recorded)] {
             with_contract(limit, weights, |contract| {
-                let host =
-                    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
                 let checked = contract
                     .check_operation_journal(
                         budget.session,
                         budget,
                         Arc::clone(rows),
                         journal_limits(),
-                        &host,
                     )
                     .unwrap();
                 assert_eq!(checked.total(), budget.used);
@@ -582,9 +754,13 @@ async fn native_runtime_ceiling_stops_comm_before_its_continuation_runs() {
     use models::rhoapi::{Expr, Par};
 
     use crate::rust::interpreter::rho_runtime::RhoRuntime;
-    use crate::rust::interpreter::test_utils::resources::with_runtime;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-33): the
+    // runtime has the codec epoch of the native harnesses.
+    // use crate::rust::interpreter::test_utils::resources::with_runtime;
 
-    with_runtime("native-limit-", |mut runtime| async move {
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+    // with_runtime("native-limit-", |mut runtime| async move {
+    with_native_runtime("native-limit-", |mut runtime| async move {
         runtime
             .cost
             .set_deploy_signature_funded(b"native-limit", Sig::Ground(vec![7]));
@@ -594,7 +770,9 @@ async fn native_runtime_ceiling_stops_comm_before_its_continuation_runs() {
                 HashMap::new(),
                 Blake2b512Random::create_from_bytes(b"native-limit"),
                 None,
-                config(0, [1, 0, 0, 0]),
+                // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+                // config(0, [1, 0, 0, 0]),
+                native_config(0, [1, 0, 0, 0]),
             )
             .await
             .unwrap();
@@ -611,9 +789,8 @@ async fn native_runtime_ceiling_stops_comm_before_its_continuation_runs() {
         assert_eq!(recording.used, 0);
         let operations = result.native_operation_recording.as_ref().unwrap();
         with_contract(0, [1, 0, 0, 0], |contract| {
-            let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
             let checked = contract.check_operation_journal(
-                recording.session, recording, Arc::clone(operations), journal_limits(), &host,
+                recording.session, recording, Arc::clone(operations), journal_limits(),
             ).unwrap();
             assert_eq!(checked.total(), 0);
         });
@@ -649,64 +826,6 @@ async fn native_runtime_ceiling_stops_comm_before_its_continuation_runs() {
     .await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_runtime_host_rejection_restores_state_and_excludes_economic_receipts() {
-    use std::collections::HashMap;
-
-    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-    use models::rust::host_work::HostWorkDimension;
-
-    use crate::rust::interpreter::rho_runtime::RhoRuntime;
-    use crate::rust::interpreter::test_utils::resources::with_runtime;
-
-    with_runtime("native-host-reject-", |mut runtime| async move {
-        runtime
-            .cost
-            .set_deploy_signature_funded(b"native-host-reject", Sig::Ground(vec![7]));
-        let root = runtime.get_root().await;
-        let source = r#"new x in { x!(0) | for (_ <- x) { @"changed"!(1 + 2) } }"#;
-        let rand = Blake2b512Random::create_from_bytes(b"native-host-reject");
-        let settings = config(1_000_000, [2, 3, 5, 7]);
-        let complete_host = settings.host_work.clone();
-        let complete = runtime
-            .evaluate_with_native_phlo(source, HashMap::new(), rand.clone(), None, settings)
-            .await
-            .unwrap();
-        assert!(complete.errors.is_empty(), "{:?}", complete.errors);
-        let calls = complete_host.usage(HostWorkDimension::PrimitiveCalls).get();
-        assert!(calls > 0);
-        let mut rejected_after_usage = false;
-        for allowed in 0..calls {
-            runtime.reset(&root).await.unwrap();
-            let before = runtime.get_hot_changes().await;
-            let _ = runtime.take_event_log().await;
-            let mut settings = config(1_000_000, [2, 3, 5, 7]);
-            let mut limits = settings.host_work.limits();
-            limits.set(
-                HostWorkDimension::PrimitiveCalls,
-                HostWorkLimit::new(allowed),
-            );
-            settings.host_work = HostWorkBudget::new(limits);
-            let host = settings.host_work.clone();
-            let result = runtime
-                .evaluate_with_native_phlo(source, HashMap::new(), rand.clone(), None, settings)
-                .await
-                .unwrap();
-            assert_eq!(result.errors, vec![InterpreterError::HostWorkRejected]);
-            assert!(host.is_rejected());
-            rejected_after_usage |= runtime.cost.native_phlo_usage().unwrap() > 0;
-            assert_eq!(result.native_phlo_usage, None);
-            assert!(result.native_budget_recording.is_none());
-            assert!(result.byte_observations.rows.is_empty());
-            assert!(!result.byte_observations.has_complete_measurements());
-            assert_eq!(runtime.get_hot_changes().await, before);
-            assert!(runtime.take_event_log().await.is_empty());
-        }
-        assert!(rejected_after_usage);
-    })
-    .await;
-}
-
 #[tokio::test]
 async fn native_runtime_reuse_isolates_parse_failure_and_legacy_evaluation() {
     use std::collections::HashMap;
@@ -714,9 +833,13 @@ async fn native_runtime_reuse_isolates_parse_failure_and_legacy_evaluation() {
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 
     use crate::rust::interpreter::rho_runtime::RhoRuntime;
-    use crate::rust::interpreter::test_utils::resources::with_runtime;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-33): the
+    // runtime has the codec epoch of the native harnesses.
+    // use crate::rust::interpreter::test_utils::resources::with_runtime;
 
-    with_runtime("native-reuse-", |mut runtime| async move {
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+    // with_runtime("native-reuse-", |mut runtime| async move {
+    with_native_runtime("native-reuse-", |mut runtime| async move {
         runtime
             .cost
             .set_deploy_signature_funded(b"native-reuse", Sig::Ground(vec![7]));
@@ -728,7 +851,9 @@ async fn native_runtime_reuse_isolates_parse_failure_and_legacy_evaluation() {
                 HashMap::new(),
                 rand.clone(),
                 None,
-                config(1_000_000, [2, 3, 5, 7]),
+                // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+                // config(1_000_000, [2, 3, 5, 7]),
+                native_config(1_000_000, [2, 3, 5, 7]),
             )
             .await
             .unwrap();
@@ -741,7 +866,9 @@ async fn native_runtime_reuse_isolates_parse_failure_and_legacy_evaluation() {
                 HashMap::new(),
                 rand.clone(),
                 None,
-                config(0, [1, 0, 0, 0]),
+                // Changed by the merge of feature/cost-accounted-rho (finding R1-33).
+                // config(0, [1, 0, 0, 0]),
+                native_config(0, [1, 0, 0, 0]),
             )
             .await
             .unwrap();
@@ -822,12 +949,11 @@ proptest! {
                     recording.session,
                     recording.attempts.clone(),
                     settings.limits,
-                    &settings.host_work,
                 ).unwrap();
                 assert_eq!(checked.total(), recording.used);
                 for attempt in recording.attempts.iter().rev() {
                     let decision = checked.consume(
-                        &attempt.occurrence, &attempt.observation, &settings.host_work,
+                        &attempt.occurrence, &attempt.observation,
                     ).unwrap();
                     assert_eq!(
                         matches!(decision, super::super::native_phlo_rules::NativeBudgetReplayDecision::Accepted { .. }),
@@ -857,3 +983,99 @@ mod history_decode_tests;
 
 #[path = "tests/store_keys.rs"]
 mod store_key_tests;
+
+// Added by DR-129 (M34): F4-F6 of the random-order restoration.
+#[path = "tests/random_candidate_order.rs"]
+mod random_candidate_order_tests;
+
+// Added for bugs 11451 to 11453 (DR-131): replay of a deploy that touches a
+// channel with many stored records.
+#[path = "tests/large_channel.rs"]
+mod large_channel_tests;
+
+/// DR-113: a native charge past a signed limit is the classified user failure
+/// `SignedLimitExhausted`, and its charge is retained. The same charge past a
+/// certified bound stays the certificate failure `OutOfPhlogistonsError`.
+#[test]
+fn signed_limit_exhaustion_is_a_classified_user_failure() {
+    use crate::rust::interpreter::accounting::economic_failure::classify_errors;
+    use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
+    for (source, class) in [
+        (NativeBoundSource::SignedLimit, PhloFailure::User),
+        (NativeBoundSource::Certificate, PhloFailure::Certificate),
+    ] {
+        let budget = RuntimeBudget::new(Cost::create(1, "native test"));
+        budget
+            .reset_for_native_execution(priced_config_from(u64::MAX, [0, 0, 1, 0], 0, source))
+            .unwrap();
+        let scope = budget.enter_comm_accounting_scope();
+        let auth = authority(1);
+        reserve(&budget, &auth, 0, 0, u64::MAX).unwrap();
+        let error = reserve(&budget, &auth, 1, 2, 1).expect_err("the charge exceeds the bound");
+        match source {
+            NativeBoundSource::SignedLimit => {
+                assert!(matches!(error, InterpreterError::SignedLimitExhausted))
+            }
+            NativeBoundSource::Certificate => {
+                assert!(matches!(error, InterpreterError::OutOfPhlogistonsError))
+            }
+        }
+        let summary = classify_errors(std::slice::from_ref(&error)).unwrap();
+        assert!(summary.contains(class));
+        assert_eq!(
+            summary.permits_retained_charge(),
+            class == PhloFailure::User
+        );
+        assert_eq!(budget.native_phlo_usage(), Some(u64::MAX));
+        drop(scope);
+    }
+}
+
+/// DR-113: a signed-limit contract requires its bound to equal the signed
+/// limit. A certified bound below the limit stays admissible.
+#[test]
+fn a_signed_limit_bound_is_the_signed_limit() {
+    with_priced_contract_from(
+        10,
+        9,
+        [1; 4],
+        0,
+        NativeBoundSource::SignedLimit,
+        |contract| {
+            assert!(matches!(
+                contract,
+                Err(NativePhloExecutionError::BoundSourceMismatch)
+            ));
+        },
+    );
+    with_priced_contract_from(
+        10,
+        9,
+        [1; 4],
+        0,
+        NativeBoundSource::Certificate,
+        |contract| {
+            assert_eq!(
+                contract
+                    .expect("a certified bound below the limit is admissible")
+                    .bound_source(),
+                NativeBoundSource::Certificate
+            );
+        },
+    );
+    with_priced_contract_from(
+        10,
+        10,
+        [1; 4],
+        0,
+        NativeBoundSource::SignedLimit,
+        |contract| {
+            assert_eq!(
+                contract
+                    .expect("the signed limit is admissible")
+                    .bound_source(),
+                NativeBoundSource::SignedLimit
+            );
+        },
+    );
+}

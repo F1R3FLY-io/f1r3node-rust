@@ -1620,6 +1620,10 @@ mod tests {
 
     #[test]
     fn shared_driver_does_not_decode_after_first_body_failure() {
+        // Changed by the merge of feature/cost-accounted-rho (lint fix): the
+        // sentinel uses prost's deprecated constructor, as the production
+        // conversions in this file do, so it carries the same allow.
+        #[allow(deprecated)]
         fn reject_body(_: &[u8]) -> Result<Par, prost::DecodeError> {
             Err(prost::DecodeError::new("sentinel body failure"))
         }

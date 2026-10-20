@@ -3,7 +3,8 @@
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::test_utils::resources::with_runtime;
+use rholang::rust::interpreter::test_utils::resources::{with_runtime, with_runtime_for_epoch};
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 
 /// Tests for the rho:execution:abort system process
 ///
@@ -13,7 +14,12 @@ use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn abort_should_terminate_execution_with_user_abort_error() {
-    with_runtime("abort-spec-", |mut runtime| async move {
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): this
+    // upstream test asserts the protocol-6 COMM charge, which F1R3Lang applies in
+    // the CostV1 epoch. A Legacy runtime opens no COMM accounting scope.
+    // with_runtime("abort-spec-", |mut runtime| async move {
+    let epoch = EventCodecEpoch::CostV1;
+    with_runtime_for_epoch(epoch, "abort-spec-", |mut runtime| async move {
         runtime.cost.set_deploy_signature_funded(
             b"abort-spec-deploy",
             Sig::Ground(b"abort-spec-payer".to_vec()),

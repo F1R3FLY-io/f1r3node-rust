@@ -1,13 +1,8 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits(n: usize, m: usize) -> FundingSearchLimits {
     FundingSearchLimits {
@@ -42,14 +37,9 @@ fn every_source_and_obligation_permutation_selects_identical_named_results() {
         obligations: &obligations,
         eligible: &eligible,
     };
-    let baseline = canonicalize_funding_problem(
-        original,
-        &source_keys,
-        &obligation_keys,
-        limits(3, 3),
-        &work(),
-    )
-    .unwrap();
+    let baseline =
+        canonicalize_funding_problem(original, &source_keys, &obligation_keys, limits(3, 3))
+            .unwrap();
     let mut orders = Vec::new();
     permutations(&mut [0, 1, 2], 0, &mut orders);
     for rows in &orders {
@@ -68,34 +58,22 @@ fn every_source_and_obligation_permutation_selects_identical_named_results() {
                 eligible: &edges,
             };
             let canonical =
-                canonicalize_funding_problem(problem, &sources, &targets, limits(3, 3), &work())
-                    .unwrap();
+                canonicalize_funding_problem(problem, &sources, &targets, limits(3, 3)).unwrap();
             assert_eq!(canonical.source_keys(), baseline.source_keys());
             assert_eq!(canonical.obligation_keys(), baseline.obligation_keys());
             for cursor in 0..3 {
-                let actual = canonical.select(cursor, limits(3, 3), &work()).unwrap();
-                assert_eq!(
-                    actual,
-                    baseline.select(cursor, limits(3, 3), &work()).unwrap()
-                );
+                let actual = canonical.select(cursor, limits(3, 3)).unwrap();
+                assert_eq!(actual, baseline.select(cursor, limits(3, 3)).unwrap());
                 let FundingPolicyResult::Selected(selection) = actual else {
                     panic!("the captured graph is feasible");
                 };
                 let restored = canonical
-                    .restore_assignment(selection.assignment(), &work())
+                    .restore_assignment(selection.assignment())
                     .unwrap();
                 assert!(canonical
-                    .verify_assignment(
-                        cursor,
-                        &restored,
-                        selection.next_cursor(),
-                        limits(3, 3),
-                        &work(),
-                    )
+                    .verify_assignment(cursor, &restored, selection.next_cursor(), limits(3, 3),)
                     .unwrap());
-                let checked = problem
-                    .check_assignment(&restored, limits(3, 3), &work())
-                    .unwrap();
+                let checked = problem.check_assignment(&restored, limits(3, 3)).unwrap();
                 for (i, identity) in sources.iter().enumerate() {
                     let selected = canonical
                         .source_keys()
@@ -121,11 +99,10 @@ fn repeated_obligations_retain_multiplicity_but_cannot_hide_different_terms() {
     };
     let keys: [&[u8]; 2] = [b"same-resource", b"same-resource"];
     let canonical =
-        canonicalize_funding_problem(problem, &[b"b", b"a"], &keys, limits(2, 2), &work()).unwrap();
+        canonicalize_funding_problem(problem, &[b"b", b"a"], &keys, limits(2, 2)).unwrap();
     assert_eq!(canonical.obligation_keys().len(), 2);
     assert_eq!(canonical.problem().obligations, &[1, 1]);
-    let FundingPolicyResult::Selected(selection) =
-        canonical.select(0, limits(2, 2), &work()).unwrap()
+    let FundingPolicyResult::Selected(selection) = canonical.select(0, limits(2, 2)).unwrap()
     else {
         panic!("two resource occurrences are funded");
     };
@@ -141,7 +118,7 @@ fn repeated_obligations_retain_multiplicity_but_cannot_hide_different_terms() {
         },
     ] {
         assert_eq!(
-            canonicalize_funding_problem(changed, &[b"a", b"b"], &keys, limits(2, 2), &work()),
+            canonicalize_funding_problem(changed, &[b"a", b"b"], &keys, limits(2, 2)),
             Err(FundingIdentityError::InconsistentObligation)
         );
     }
@@ -155,31 +132,19 @@ fn custody_aliases_must_be_resolved_before_canonical_allocation() {
         eligible: &[vec![true], vec![true]],
     };
     assert_eq!(
-        canonicalize_funding_problem(
-            problem,
-            &[b"same", b"same"],
-            &[b"resource"],
-            limits(2, 1),
-            &work()
-        ),
+        canonicalize_funding_problem(problem, &[b"same", b"same"], &[b"resource"], limits(2, 1)),
         Err(FundingIdentityError::DuplicateSource)
     );
     assert_eq!(
-        canonicalize_funding_problem(problem, &[b"a"], &[b"resource"], limits(2, 1), &work()),
+        canonicalize_funding_problem(problem, &[b"a"], &[b"resource"], limits(2, 1)),
         Err(FundingIdentityError::InvalidIdentityDimensions)
     );
     assert_eq!(
-        canonicalize_funding_problem(problem, &[b"", b"b"], &[b"resource"], limits(2, 1), &work()),
+        canonicalize_funding_problem(problem, &[b"", b"b"], &[b"resource"], limits(2, 1)),
         Err(FundingIdentityError::EmptyIdentity)
     );
     assert!(matches!(
-        canonicalize_funding_problem(
-            problem,
-            &[b"a", b"b"],
-            &[b"resource"],
-            limits(1, 1),
-            &work()
-        ),
+        canonicalize_funding_problem(problem, &[b"a", b"b"], &[b"resource"], limits(1, 1)),
         Err(FundingIdentityError::Search(
             FundingSearchError::InvalidProblem(FundingAssignmentError::TooManySources)
         ))
@@ -200,14 +165,12 @@ fn location_authority_and_provenance_bytes_remain_distinct() {
         eligible: &[vec![true; 4]],
     };
     let canonical =
-        canonicalize_funding_problem(problem, &[b"wallet"], &keys, limits(1, 4), &work()).unwrap();
+        canonicalize_funding_problem(problem, &[b"wallet"], &keys, limits(1, 4)).unwrap();
     let mut sorted = keys.to_vec();
     sorted.sort();
     assert_eq!(canonical.obligation_keys(), sorted);
     assert_eq!(
-        canonical
-            .restore_assignment(&[vec![7, 8, 9, 10]], &work())
-            .unwrap(),
+        canonical.restore_assignment(&[vec![7, 8, 9, 10]]).unwrap(),
         vec![keys
             .iter()
             .map(|key| 7 + sorted.iter().position(|value| value == key).unwrap() as u64)
@@ -231,7 +194,6 @@ fn empty_obligations_and_large_cohorts_preserve_source_identity() {
             &keys,
             &[],
             limits(count, 0),
-            &work(),
         )
         .unwrap();
         assert_eq!(canonical.source_keys().len(), count);
@@ -240,78 +202,21 @@ fn empty_obligations_and_large_cohorts_preserve_source_identity() {
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
         assert_eq!(
-            canonical
-                .restore_assignment(&vec![vec![]; count], &work())
-                .unwrap(),
+            canonical.restore_assignment(&vec![vec![]; count]).unwrap(),
             vec![Vec::<u64>::new(); count]
         );
-        let FundingPolicyResult::Selected(selection) = canonical
-            .select(count - 1, limits(count, 0), &work())
-            .unwrap()
+        let FundingPolicyResult::Selected(selection) =
+            canonical.select(count - 1, limits(count, 0)).unwrap()
         else {
             panic!("zero funding is feasible");
         };
         assert_eq!(selection.next_cursor(), None);
         assert!(canonical
-            .verify_assignment(
-                count - 1,
-                &vec![vec![]; count],
-                None,
-                limits(count, 0),
-                &work(),
-            )
+            .verify_assignment(count - 1, &vec![vec![]; count], None, limits(count, 0),)
             .unwrap());
         assert!(!canonical
-            .verify_assignment(
-                count - 1,
-                &vec![vec![]; count],
-                Some(0),
-                limits(count, 0),
-                &work(),
-            )
+            .verify_assignment(count - 1, &vec![vec![]; count], Some(0), limits(count, 0),)
             .unwrap());
-    }
-}
-
-#[test]
-fn every_sort_and_capture_budget_prefix_rejects_incomplete_results() {
-    let keys: [&[u8]; 3] = [b"source:c", b"source:a", b"source:b"];
-    let problem = FundingMinimaxProblem {
-        capacities: &[2, 1, 3],
-        obligations: &[1, 2],
-        eligible: &[vec![true; 2], vec![false, true], vec![true, false]],
-    };
-    let measured = work();
-    let expected =
-        canonicalize_funding_problem(problem, &keys, &[b"y", b"x"], limits(3, 2), &measured)
-            .unwrap();
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let full = measured.usage(dimension).get();
-        for prefix in 0..=full {
-            let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-            bounds.set(dimension, HostWorkLimit::new(prefix));
-            let result = canonicalize_funding_problem(
-                problem,
-                &keys,
-                &[b"y", b"x"],
-                limits(3, 2),
-                &HostWorkBudget::new(bounds),
-            );
-            if prefix == full {
-                assert_eq!(result, Ok(expected.clone()));
-            } else {
-                assert!(matches!(
-                    result,
-                    Err(FundingIdentityError::Search(FundingSearchError::HostWork(
-                        _
-                    )))
-                ));
-            }
-        }
     }
 }
 
@@ -326,43 +231,33 @@ fn presentation_rejects_feasible_unfair_and_wrong_tie_assignments() {
         &[b"a", b"b"],
         &[b"q"],
         limits(2, 1),
-        &work(),
     )
     .unwrap();
-    let FundingPolicyResult::Selected(selected) =
-        canonical.select(0, limits(2, 1), &work()).unwrap()
-    else {
+    let FundingPolicyResult::Selected(selected) = canonical.select(0, limits(2, 1)).unwrap() else {
         panic!("feasible fixture");
     };
     assert_eq!(selected.assignment(), &[vec![2], vec![1]]);
     for assignment in [vec![vec![3], vec![0]], vec![vec![1], vec![2]]] {
         canonical
             .problem()
-            .check_assignment(&assignment, limits(2, 1), &work())
+            .check_assignment(&assignment, limits(2, 1))
             .unwrap();
         assert!(!canonical
-            .verify_assignment(
-                0,
-                &assignment,
-                selected.next_cursor(),
-                limits(2, 1),
-                &work()
-            )
+            .verify_assignment(0, &assignment, selected.next_cursor(), limits(2, 1))
             .unwrap());
     }
     assert!(!canonical
-        .verify_assignment(0, selected.assignment(), None, limits(2, 1), &work())
+        .verify_assignment(0, selected.assignment(), None, limits(2, 1))
         .unwrap());
     assert!(!canonical
-        .verify_assignment(0, &[vec![2]], selected.next_cursor(), limits(2, 1), &work())
+        .verify_assignment(0, &[vec![2]], selected.next_cursor(), limits(2, 1))
         .unwrap());
     assert!(!canonical
         .verify_assignment(
             0,
             &[vec![2, 0], vec![1]],
             selected.next_cursor(),
-            limits(2, 1),
-            &work()
+            limits(2, 1)
         )
         .unwrap());
 
@@ -375,29 +270,21 @@ fn presentation_rejects_feasible_unfair_and_wrong_tie_assignments() {
         &[b"a", b"b"],
         &[b"x", b"y"],
         limits(2, 2),
-        &work(),
     )
     .unwrap();
-    let FundingPolicyResult::Selected(selected) = tied.select(0, limits(2, 2), &work()).unwrap()
-    else {
+    let FundingPolicyResult::Selected(selected) = tied.select(0, limits(2, 2)).unwrap() else {
         panic!("feasible fixture");
     };
     assert_eq!(selected.assignment(), &[vec![0, 1], vec![1, 0]]);
     let noncanonical = [vec![1, 0], vec![0, 1]];
     assert_eq!(
         tied.problem()
-            .check_assignment(&noncanonical, limits(2, 2), &work())
+            .check_assignment(&noncanonical, limits(2, 2))
             .unwrap(),
         *selected.totals()
     );
     assert!(!tied
-        .verify_assignment(
-            0,
-            &noncanonical,
-            selected.next_cursor(),
-            limits(2, 2),
-            &work()
-        )
+        .verify_assignment(0, &noncanonical, selected.next_cursor(), limits(2, 2))
         .unwrap());
 }
 
@@ -416,23 +303,23 @@ proptest! {
         let proposed = [candidate[..2].to_vec(), candidate[2..].to_vec()];
         let canonical = canonicalize_funding_problem(
             FundingMinimaxProblem { capacities: &capacities, obligations: &obligations, eligible: &eligible },
-            &[b"b", b"a"], &[b"y", b"x"], limits(2, 2), &work(),
+            &[b"b", b"a"], &[b"y", b"x"], limits(2, 2),
         ).unwrap();
-        let expected = match canonical.select(cursor, limits(2, 2), &work()).unwrap() {
+        let expected = match canonical.select(cursor, limits(2, 2)).unwrap() {
             FundingPolicyResult::Infeasible { .. } => false,
             FundingPolicyResult::Selected(selection) => {
-                let restored = canonical.restore_assignment(selection.assignment(), &work()).unwrap();
-                prop_assert!(canonical.verify_assignment(cursor, &restored, selection.next_cursor(), limits(2, 2), &work()).unwrap());
+                let restored = canonical.restore_assignment(selection.assignment()).unwrap();
+                prop_assert!(canonical.verify_assignment(cursor, &restored, selection.next_cursor(), limits(2, 2)).unwrap());
                 let agrees = (0..2).all(|i| (0..2).all(|j| proposed[1-i][1-j] == selection.assignment()[i][j]));
                 next == selection.next_cursor() && agrees
             }
         };
-        prop_assert_eq!(canonical.verify_assignment(cursor, &proposed, next, limits(2, 2), &work()).unwrap(), expected);
+        prop_assert_eq!(canonical.verify_assignment(cursor, &proposed, next, limits(2, 2)).unwrap(), expected);
     }
 }
 
 #[test]
-fn presentation_work_exhaustion_is_an_error_not_a_decision() {
+fn presentation_verification_accepts_the_selection_and_rejects_an_invalid_cursor() {
     let canonical = canonicalize_funding_problem(
         FundingMinimaxProblem {
             capacities: &[2],
@@ -442,53 +329,25 @@ fn presentation_work_exhaustion_is_an_error_not_a_decision() {
         &[b"a"],
         &[b"q"],
         limits(1, 1),
-        &work(),
     )
     .unwrap();
-    let FundingPolicyResult::Selected(selected) =
-        canonical.select(0, limits(1, 1), &work()).unwrap()
-    else {
+    let FundingPolicyResult::Selected(selected) = canonical.select(0, limits(1, 1)).unwrap() else {
         panic!("feasible fixture");
     };
-    let measured = work();
     assert!(canonical
         .verify_assignment(
             0,
             selected.assignment(),
             selected.next_cursor(),
             limits(1, 1),
-            &measured
         )
         .unwrap());
-    let full = measured
-        .usage(HostWorkDimension::VerificationOperations)
-        .get();
-    for prefix in 0..=full {
-        let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-        bounds.set(
-            HostWorkDimension::VerificationOperations,
-            HostWorkLimit::new(prefix),
-        );
-        let result = canonical.verify_assignment(
-            0,
-            selected.assignment(),
-            selected.next_cursor(),
-            limits(1, 1),
-            &HostWorkBudget::new(bounds),
-        );
-        if prefix == full {
-            assert!(result.unwrap());
-        } else {
-            assert!(matches!(result, Err(FundingSearchError::HostWork(_))));
-        }
-    }
     assert!(matches!(
         canonical.verify_assignment(
             1,
             selected.assignment(),
             selected.next_cursor(),
-            limits(1, 1),
-            &work()
+            limits(1, 1)
         ),
         Err(FundingSearchError::InvalidPriorityCursor)
     ));
@@ -501,7 +360,7 @@ proptest! {
         keys in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..32), 0..130),
     ) {
         let references: Vec<_> = keys.iter().map(Vec::as_slice).collect();
-        let order = key_order(&references, &work()).unwrap();
+        let order = key_order(&references).unwrap();
         let actual: Vec<_> = order.iter().map(|index| references[*index]).collect();
         let mut expected = references.clone(); expected.sort();
         prop_assert_eq!(actual, expected);

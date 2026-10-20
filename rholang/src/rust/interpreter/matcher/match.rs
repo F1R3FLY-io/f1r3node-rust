@@ -4,10 +4,12 @@ use models::rhoapi::expr::ExprInstance;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{new_elist_expr, FreeMap};
 use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
-use rspace_plus_plus::rspace::r#match::{Match, PreparedCommit};
-use shared::rust::clone_backing::{self, BackingError, BackingMeter};
+// Changed by compile blocker C4 (RT-01) of the cost-accounted-rho merge:
+// the `prepare_commit` override below is commented out, so these two names
+// have no use.
+// use rspace_plus_plus::rspace::errors::RSpaceError;
+// use rspace_plus_plus::rspace::r#match::{Match, PreparedCommit};
+use rspace_plus_plus::rspace::r#match::Match;
 
 // Changed by D-D1a (D-M2, DR-103): whole-tree backing is no longer charged here.
 // use shared::rust::collection_backing::tree_backing;
@@ -22,12 +24,14 @@ impl Matcher {
     fn get_with_context(
         pattern: &BindPattern,
         data: &ListParWithRandom,
-        spatial_matcher: &mut SpatialMatcherContext<'_>,
+        spatial_matcher: &mut SpatialMatcherContext,
     ) -> Option<ListParWithRandom> {
         if data.cost_stack.is_some() {
             return None;
         }
-        spatial_matcher.reserve_blocks_copy_and_cleanup(&pattern.remainder)?;
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // spatial_matcher.reserve_clone(&pattern.remainder)?;
         let caught_rem =
             spatial_matcher.fold_match(&data.pars, &pattern.patterns, pattern.remainder.clone())?;
         let mut free_map = std::mem::take(&mut spatial_matcher.free_map);
@@ -36,7 +40,6 @@ impl Matcher {
         }) = &pattern.remainder
         {
             let mut remainder = vector_par(Vec::new(), false);
-            spatial_matcher.reserve_vec(&mut remainder.exprs, 1)?;
             remainder
                 .exprs
                 .push(new_elist_expr(caught_rem, Vec::new(), false, None));
@@ -51,7 +54,6 @@ impl Matcher {
             //     return spatial_matcher.reject(RSpaceError::HostWorkRejected);
             // };
             // spatial_matcher.reserve(operations, bytes, bytes)?;
-            spatial_matcher.reserve_free_map_insert(free_map.len())?;
             free_map.insert(*level, remainder);
         }
         // Changed by D-M4 (DR-91): the owned free map is consumed in key order;
@@ -67,9 +69,11 @@ impl Matcher {
         //         bound_pars.push(Par::default());
         //     }
         // }
-        let bound_pars = Self::extract_bound_pars(free_map, pattern.free_count, spatial_matcher)?;
-        spatial_matcher.reserve_blocks_copy_and_cleanup(&data.random_state)?;
-        spatial_matcher.reserve_blocks_copy_and_cleanup(&data.cost_authority)?;
+        let bound_pars = Self::extract_bound_pars(free_map, pattern.free_count);
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // spatial_matcher.reserve_clone(&data.random_state)?;
+        // spatial_matcher.reserve_clone(&data.cost_authority)?;
         Some(ListParWithRandom {
             pars: bound_pars,
             random_state: data.random_state.clone(),
@@ -79,49 +83,24 @@ impl Matcher {
     }
 
     /// D-M4 (DR-91): the bound values of levels `0..free_count`, moved out of
-    /// the owned free map in key order. Each level skips the keys below it
-    /// (one operation each) and takes the key equal to it, if any (one
-    /// operation and the bytes of the moved slot); a missing level binds the
-    /// default `Par`, as the lookup did. The moved bindings are not copied, and
-    /// the bindings that are skipped or left over are dropped with the map, as
+    /// the owned free map in key order. Each level skips the keys below it and
+    /// takes the key equal to it, if any. A missing level binds the default
+    /// `Par`, as the lookup did. The moved bindings are not copied, and the
+    /// bindings that are skipped or left over are dropped with the map, as
     /// before (`FreeMapExtraction.extraction_by_move_equals_lookup`).
-    fn extract_bound_pars(
-        free_map: FreeMap,
-        free_count: i32,
-        spatial_matcher: &mut SpatialMatcherContext<'_>,
-    ) -> Option<Vec<Par>> {
-        let mut bound_pars = Vec::new();
-        spatial_matcher.reserve_vec(&mut bound_pars, free_count.max(0) as usize)?;
-        let slot = std::mem::size_of::<(i32, Par)>()
-            .checked_mul(2)
-            .expect("slot bytes fit in usize");
+    fn extract_bound_pars(free_map: FreeMap, free_count: i32) -> Vec<Par> {
+        let mut bound_pars = Vec::with_capacity(free_count.max(0) as usize);
         let mut bindings = free_map.into_iter().peekable();
         for level in 0..free_count {
             while bindings.peek().is_some_and(|(key, _)| *key < level) {
-                spatial_matcher.reserve(1, 0, 0)?;
                 bindings.next();
             }
-            spatial_matcher.reserve(1, slot, 0)?;
             match bindings.next_if(|(key, _)| *key == level) {
                 Some((_, par)) => bound_pars.push(par),
                 None => bound_pars.push(Par::default()),
             }
         }
-        Some(bound_pars)
-    }
-
-    pub fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        let mut context = SpatialMatcherContext::with_meter(meter)?;
-        let matched = Self::get_with_context(pattern, data, &mut context);
-        match context.take_error() {
-            Some(error) => Err(error),
-            None => Ok(matched),
-        }
+        bound_pars
     }
 }
 
@@ -142,15 +121,6 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
         let mut spatial_matcher = SpatialMatcherContext::new();
         Self::get_with_context(pattern, data, &mut spatial_matcher)
-    }
-
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        Matcher::get_metered(self, pattern, data, meter)
     }
 
     /// Cross-channel `where`-clause guard. Called by the matcher
@@ -175,49 +145,51 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         guard_passes(guard, &combined)
     }
 
-    // Changed by D-M6 (DR-88): the matched data are borrowed.
-    // matched: &[ListParWithRandom],
-    fn check_commit_metered(
-        &self,
-        k: &TaggedContinuation,
-        matched: &[&ListParWithRandom],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        let Some(guard) = k.guard.as_ref() else {
-            return Ok(true);
-        };
-        let failure = std::cell::RefCell::new(None);
-        let backing = |operations, scanned, bytes| match meter.reserve(operations, scanned, bytes) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                *failure.borrow_mut() = Some(error);
-                Err(BackingError::Rejected)
-            }
-        };
-        let result = (|| {
-            clone_backing::inspect_blocks(guard, &backing)?;
-            if is_empty_par(guard) {
-                Ok(true)
-            } else {
-                guard_passes_metered(guard, matched, &backing)
-            }
-        })();
-        if let Some(error) = failure.into_inner() {
-            return Err(error);
-        }
-        result.map_err(|_| RSpaceError::HostWorkRejected)
+    /// Added by DR-129 (E3-a): `check_commit` vetoes only through a guard
+    /// that is present and not empty, so exactly those continuations may
+    /// veto.
+    /// User decision 6 (2026-10-16) removed the Stored-check skip that read
+    /// this hook (complete guard search, defect D1), so no production code
+    /// calls it. It stays exact, so that the trait matches upstream.
+    fn commit_may_veto(&self, k: &TaggedContinuation) -> bool {
+        k.guard.as_ref().is_some_and(|guard| !is_empty_par(guard))
     }
 
-    fn prepare_commit_metered(
+    // Changed by D-M6 (DR-88): the matched data are borrowed.
+    // matched: &[ListParWithRandom],
+    /// Changed by DR-131 S6: the commit check of the native replay over the
+    /// matched data by reference (D-I). It decides as `check_commit` does,
+    /// without a copy of the data.
+    fn check_commit_by_reference(
         &self,
         k: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<PreparedCommit>, RSpaceError> {
-        self.check_commit_metered(k, matched, meter)
-            .map(|accepted| accepted.then(PreparedCommit::default))
+    ) -> bool {
+        let Some(guard) = k.guard.as_ref() else {
+            return true;
+        };
+        // Changed by D-O1 (DR-109): block accounting charges inline bytes
+        // once per enclosing block.
+        // clone_backing::inspect(guard, &backing)?;
+        if is_empty_par(guard) {
+            true
+        } else {
+            guard_passes_by_reference(guard, matched)
+        }
     }
+
+    // Disabled by compile blocker C4 (RT-01) of the cost-accounted-rho merge:
+    // the trait method returns `Option<PreparedCommit>`, so this override,
+    // which returns a `Result`, does not compile. Its body equals the trait
+    // default (`check_commit(..).then(PreparedCommit::default)`), so the
+    // default decides the same way.
+    // fn prepare_commit(
+    //     &self,
+    //     k: &TaggedContinuation,
+    //     matched: &[&ListParWithRandom],
+    // ) -> Result<Option<PreparedCommit>, RSpaceError> {
+    //     Ok(self.check_commit(k, matched).then(PreparedCommit::default))
+    // }
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }
@@ -254,30 +226,6 @@ impl SpatialMatch for SpatialMatcherOracle {
         spatial_matcher
             .spatial_match_result(target.clone(), pattern.clone())
             .is_some()
-    }
-
-    fn matches_metered(
-        &self,
-        target: &Par,
-        pattern: &Par,
-        meter: &dyn BackingMeter,
-    ) -> Result<bool, BackingError> {
-        let bridge = |operations, scanned, backing| {
-            meter
-                .reserve(operations, scanned, backing)
-                .map_err(|_| RSpaceError::HostWorkRejected)
-        };
-        let mut context =
-            SpatialMatcherContext::with_meter(&bridge).map_err(|_| BackingError::Rejected)?;
-        clone_backing::reserve_blocks_copy_and_cleanup(target, meter)?;
-        clone_backing::reserve_blocks_copy_and_cleanup(pattern, meter)?;
-        let matched = context
-            .spatial_match_result(target.clone(), pattern.clone())
-            .is_some();
-        match context.take_error() {
-            Some(_) => Err(BackingError::Rejected),
-            None => Ok(matched),
-        }
     }
 }
 
@@ -347,8 +295,10 @@ impl GuardDisposition {
 pub fn guard_disposition(condition: &Par, bound_pars: &[Par]) -> GuardDisposition {
     let mut env: PureEnv<Par> = PureEnv::new();
     for p in bound_pars.iter() {
-        if let Err(error) = env.push(p.clone()) {
-            return GuardDisposition::Failed(EvalError::HostWork(error));
+        if env.push(p.clone()).is_none() {
+            return GuardDisposition::Failed(EvalError::ArithmeticOverflow {
+                op: "guard environment",
+            });
         }
     }
     guard_disposition_in_env(condition, &env)
@@ -421,32 +371,32 @@ fn guard_passes(condition: &Par, bound_pars: &[Par]) -> bool {
     guard_disposition(condition, bound_pars).commits()
 }
 
+/// Changed by DR-131: the guard of `check_commit_by_reference`. It evaluates
+/// the guard over the borrowed matched data, as `guard_passes` does over
+/// owned data, and a failed push or evaluation fails the guard.
 // Changed by D-M6 (DR-88): the matched data are borrowed.
 // matched: &[ListParWithRandom],
-fn guard_passes_metered(
-    condition: &Par,
-    matched: &[&ListParWithRandom],
-    meter: &dyn BackingMeter,
-) -> Result<bool, BackingError> {
+fn guard_passes_by_reference(condition: &Par, matched: &[&ListParWithRandom]) -> bool {
     let mut env: PureEnv<Par> = PureEnv::new();
     for binding in matched {
-        meter.reserve(1, 0, 0)?;
         for par in &binding.pars {
-            clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
-            env.push_metered(par.clone(), meter)?;
+            // Changed by D-O1 (DR-109): block accounting charges inline bytes
+            // once per enclosing block.
+            // clone_backing::reserve_copy_and_cleanup(par, meter)?;
+            if env.push(par.clone()).is_none() {
+                return false;
+            }
         }
     }
-    match rho_pure_eval::eval_metered(condition, &env, meter) {
-        Ok(result) => {
-            // One walk extracts the verdict; a second pays the owned result's
-            // release after this arm.
-            clone_backing::inspect_blocks(&result, meter)?;
-            clone_backing::inspect_blocks(&result, meter)?;
-            Ok(extract_bool(&result) == Some(true))
-        }
-        Err(rho_pure_eval::EvalError::HostWork(error)) => Err(error),
-        Err(_) => Ok(false),
-    }
+    // Changed by the cost-accounted-rho merge: the guard decides through
+    // `guard_disposition_in_env`, with the spatial-match oracle, as
+    // `check_commit` does. So play and native replay decide each guard the
+    // same way, also a guard that matches a pattern.
+    // match rho_pure_eval::eval(condition, &env) {
+    //     Ok(result) => extract_bool(&result) == Some(true),
+    //     Err(_) => false,
+    // }
+    guard_disposition_in_env(condition, &env).commits()
 }
 
 fn extract_bool(par: &Par) -> Option<bool> {
@@ -643,18 +593,17 @@ mod tests {
 }
 
 #[cfg(test)]
-mod metered_tests {
-    use std::cell::{Cell, RefCell};
-    use std::sync::Mutex;
-
+mod commit_tests {
     use models::rhoapi::tagged_continuation::TaggedCont;
-    use models::rhoapi::var::VarInstance::FreeVar;
     use models::rhoapi::ParWithRandom;
 
     use super::*;
 
+    /// Changed by DR-131: the commit check no longer charges host work. The
+    /// test keeps its check that the commit check returns the value of the
+    /// guard.
     #[test]
-    fn metered_commit_guard_preserves_boolean_result_and_rejects_short_credit() {
+    fn commit_guard_preserves_boolean_result() {
         let matcher = Matcher;
         let continuation = TaggedContinuation {
             guard: Some(models::par_from_default! {
@@ -665,45 +614,7 @@ mod metered_tests {
             }),
             ..TaggedContinuation::default()
         };
-        let used = Mutex::new([0usize; 3]);
-        let full = |operations: usize, scanned: usize, backing: usize| {
-            let mut totals = used.lock().unwrap();
-            for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
-                *total += amount;
-            }
-            Ok(())
-        };
-        assert_eq!(
-            matcher.check_commit_metered(&continuation, &[], &full),
-            Ok(true)
-        );
-        let required = *used.lock().unwrap();
-        assert!(required.iter().all(|value| *value > 0));
-        for dimension in 0..3 {
-            let mut limit = required;
-            limit[dimension] -= 1;
-            let spent = Mutex::new([0usize; 3]);
-            let meter = |operations: usize, scanned: usize, backing: usize| {
-                let mut next = spent.lock().unwrap();
-                let amounts = [operations, scanned, backing];
-                if next
-                    .iter()
-                    .zip(amounts)
-                    .zip(limit)
-                    .any(|((used, add), max)| *used + add > max)
-                {
-                    return Err(RSpaceError::HostWorkRejected);
-                }
-                for (used, add) in next.iter_mut().zip(amounts) {
-                    *used += add;
-                }
-                Ok(())
-            };
-            assert_eq!(
-                matcher.check_commit_metered(&continuation, &[], &meter),
-                Err(RSpaceError::HostWorkRejected)
-            );
-        }
+        assert!(matcher.check_commit_by_reference(&continuation, &[]));
         let false_guard = TaggedContinuation {
             guard: Some(models::par_from_default! {
                 exprs: vec![Expr {
@@ -713,25 +624,7 @@ mod metered_tests {
             }),
             ..TaggedContinuation::default()
         };
-        assert_eq!(
-            matcher.check_commit_metered(&false_guard, &[], &full),
-            Ok(false)
-        );
-        assert!(matcher
-            .prepare_commit_metered(&continuation, &[], &full)
-            .unwrap()
-            .is_some());
-        assert!(matcher
-            .prepare_commit_metered(&false_guard, &[], &full)
-            .unwrap()
-            .is_none());
-        let refused = |_: usize, _: usize, _: usize| -> Result<(), RSpaceError> {
-            Err(RSpaceError::HostWorkRejected)
-        };
-        assert!(matches!(
-            matcher.prepare_commit_metered(&continuation, &[], &refused),
-            Err(RSpaceError::HostWorkRejected)
-        ));
+        assert!(!matcher.check_commit_by_reference(&false_guard, &[]));
     }
 
     fn bool_par(value: bool) -> Par {
@@ -769,106 +662,6 @@ mod metered_tests {
         }
     }
 
-    fn nested_send(depth: usize, leaf: i64) -> Par {
-        let mut par = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::GInt(leaf)),
-            }],
-            ..Par::default()
-        };
-        for _ in 0..depth {
-            par = models::par_from_default! {
-                sends: vec![models::rhoapi::Send {
-                    chan: Some(Par::default()),
-                    data: vec![par],
-                    ..Default::default()
-                }],
-                ..Par::default()
-            };
-        }
-        par
-    }
-
-    type Charge = (usize, usize, usize);
-
-    fn oracle_trace(target: &Par, pattern: &Par) -> (Result<bool, BackingError>, Vec<Charge>) {
-        let trace = RefCell::new(Vec::new());
-        let meter = |operations, scanned, backing| {
-            trace.borrow_mut().push((operations, scanned, backing));
-            Ok(())
-        };
-        let result = SpatialMatcherOracle.matches_metered(target, pattern, &meter);
-        (result, trace.into_inner())
-    }
-
-    fn oracle_copy_prefix(target: &Par, pattern: &Par) -> Vec<Charge> {
-        let trace = RefCell::new(vec![(
-            1,
-            0,
-            clone_backing::arc_allocation_bytes::<Mutex<Option<RSpaceError>>>()
-                .expect("matcher error slot size"),
-        )]);
-        let meter = |operations, scanned, backing| {
-            trace.borrow_mut().push((operations, scanned, backing));
-            Ok(())
-        };
-        clone_backing::reserve_blocks_copy_and_cleanup(target, &meter).expect("target copy charge");
-        clone_backing::reserve_blocks_copy_and_cleanup(pattern, &meter)
-            .expect("pattern copy charge");
-        trace.into_inner()
-    }
-
-    /// MeteredEMatchesOracle's reservation prefix is context, target copy,
-    /// pattern copy, then the existing PDA. The generated Par Clone is an
-    /// explicit-worklist traversal, so the deep path needs no recursive clone
-    /// fallback or invented depth rejection. Binder-depth+1 is unchanged:
-    /// this oracle receives the already-scoped target and pattern by borrow.
-    #[test]
-    fn metered_ematches_oracle_is_deep_stack_safe_and_charge_ordered() {
-        let oracle = SpatialMatcherOracle;
-        for depth in [0, 1, 4, 12] {
-            let target = nested_send(depth, 7);
-            for leaf in [7, 8] {
-                let pattern = nested_send(depth, leaf);
-                let (metered, trace) = oracle_trace(&target, &pattern);
-                assert_eq!(metered, Ok(oracle.matches(&target, &pattern)));
-                assert!(trace.starts_with(&oracle_copy_prefix(&target, &pattern)));
-            }
-        }
-
-        let target = nested_send(128, 7);
-        let pattern = nested_send(128, 7);
-        std::thread::Builder::new()
-            .stack_size(256 * 1024)
-            .spawn(move || {
-                let (result, trace) = oracle_trace(&target, &pattern);
-                assert_eq!(result, Ok(true));
-                let copy_prefix = oracle_copy_prefix(&target, &pattern);
-                assert!(trace.starts_with(&copy_prefix));
-                assert!(trace.len() > copy_prefix.len());
-
-                let cutoff = copy_prefix.len() / 2;
-                let accepted = RefCell::new(Vec::new());
-                let calls = Cell::new(0_usize);
-                let bounded = |operations, scanned, backing| {
-                    if calls.get() == cutoff {
-                        return Err(BackingError::Rejected);
-                    }
-                    calls.set(calls.get() + 1);
-                    accepted.borrow_mut().push((operations, scanned, backing));
-                    Ok(())
-                };
-                assert_eq!(
-                    SpatialMatcherOracle.matches_metered(&target, &pattern, &bounded),
-                    Err(BackingError::Rejected)
-                );
-                assert_eq!(accepted.borrow().as_slice(), &trace[..cutoff]);
-            })
-            .expect("spawn 256 KiB oracle thread")
-            .join()
-            .expect("metered EMatches oracle exhausted the 256 KiB stack");
-    }
-
     fn continuation_with(guard: Option<Par>, body_size: usize) -> TaggedContinuation {
         TaggedContinuation {
             guard,
@@ -887,25 +680,8 @@ mod metered_tests {
         }
     }
 
-    fn commit_charge(
-        continuation: &TaggedContinuation,
-        matched: &[&ListParWithRandom],
-    ) -> (Result<bool, RSpaceError>, [usize; 3]) {
-        let used = Mutex::new([0usize; 3]);
-        let meter = |operations: usize, scanned: usize, backing: usize| {
-            let mut totals = used.lock().expect("usage lock");
-            for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
-                *total += amount;
-            }
-            Ok(())
-        };
-        let result = Matcher.check_commit_metered(continuation, matched, &meter);
-        let totals = *used.lock().expect("usage lock");
-        (result, totals)
-    }
-
-    /// D-M6 (DR-88): the metered commit check over borrowed matched data
-    /// decides exactly like the unmetered check over owned data.
+    /// D-M6 (DR-88): the commit check over borrowed matched data decides
+    /// exactly like the check over owned data.
     #[test]
     fn commit_guard_by_reference_matches_owned_guard() {
         let cases = vec![
@@ -933,95 +709,18 @@ mod metered_tests {
         for (guard, owned) in cases {
             let continuation = continuation_with(guard.clone(), 3);
             let borrowed: Vec<&ListParWithRandom> = owned.iter().collect();
-            let (metered, _) = commit_charge(&continuation, &borrowed);
             assert_eq!(
-                metered,
-                Ok(Matcher.check_commit(&continuation, &borrowed)),
+                Matcher.check_commit_by_reference(&continuation, &borrowed),
+                Matcher.check_commit(&continuation, &borrowed),
                 "guard {guard:?}, matched {owned:?}"
             );
         }
-    }
-
-    /// D-M1 (DR-88): the metered commit check reads only the guard, so its
-    /// charge does not depend on the continuation body; without a guard it
-    /// reads none of the matched data either.
-    #[test]
-    fn commit_check_charge_is_independent_of_continuation_body() {
-        let small = binding(vec![bool_par(true)]);
-        let large = binding((0..512).map(|_| body_par(16)).collect());
-        for guard in [None, Some(bool_par(true)), Some(bound_var_par(0))] {
-            let (short_result, short) =
-                commit_charge(&continuation_with(guard.clone(), 1), &[&small]);
-            let (long_result, long) =
-                commit_charge(&continuation_with(guard.clone(), 4_096), &[&small]);
-            assert_eq!(short_result, long_result, "guard {guard:?}");
-            assert_eq!(short, long, "guard {guard:?}");
-        }
-        assert_eq!(
-            commit_charge(&continuation_with(None, 4_096), &[&large]),
-            (Ok(true), [1, 0, 0])
-        );
-        assert_eq!(
-            commit_charge(&continuation_with(None, 1), &[&small]),
-            (Ok(true), [1, 0, 0])
-        );
-    }
-
-    /// Negative control for D-M1 (DR-88): the legacy caller walked the whole
-    /// continuation before the commit check, so its charge grew with the
-    /// unread body although the check read only the guard.
-    #[test]
-    fn legacy_commit_charge_grew_with_unread_body() {
-        let legacy = |continuation: &TaggedContinuation| {
-            let used = Mutex::new([0usize; 3]);
-            let meter = |operations: usize, scanned: usize, backing: usize| {
-                let mut totals = used.lock().expect("usage lock");
-                for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
-                    *total += amount;
-                }
-                Ok(())
-            };
-            clone_backing::inspect(continuation, &meter).expect("legacy inspection");
-            let (_, check) = commit_charge(continuation, &[]);
-            let walk = *used.lock().expect("usage lock");
-            [walk[0] + check[0], walk[1] + check[1], walk[2] + check[2]]
-        };
-        let guard = Some(bool_par(true));
-        let (_, short_check) = commit_charge(&continuation_with(guard.clone(), 1), &[]);
-        let (_, long_check) = commit_charge(&continuation_with(guard.clone(), 4_096), &[]);
-        assert_eq!(short_check, long_check);
-        let short = legacy(&continuation_with(guard.clone(), 1));
-        let long = legacy(&continuation_with(guard, 4_096));
-        assert!(
-            long[0] > short[0] && long[1] > short[1] * 100,
-            "{short:?} vs {long:?}"
-        );
     }
 
     fn legacy_extraction(free_map: &FreeMap, free_count: i32) -> Vec<Par> {
         (0..free_count)
             .map(|level| free_map.get(&level).cloned().unwrap_or_default())
             .collect()
-    }
-
-    fn metered_extraction(free_map: FreeMap, free_count: i32) -> (Option<Vec<Par>>, [usize; 3]) {
-        let used = Mutex::new([0usize; 3]);
-        let meter = |operations: usize, scanned: usize, backing: usize| {
-            let mut totals = used.lock().expect("usage lock");
-            for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
-                *total += amount;
-            }
-            Ok(())
-        };
-        let mut context = SpatialMatcherContext::with_meter(&meter).expect("matcher context");
-        let before = *used.lock().expect("usage lock");
-        let extracted = Matcher::extract_bound_pars(free_map, free_count, &mut context);
-        let after = *used.lock().expect("usage lock");
-        (extracted, [
-            after[0] - before[0],
-            after[1] - before[1],
-            after[2] - before[2],
-        ])
     }
 
     proptest::proptest! {
@@ -1040,26 +739,9 @@ mod metered_tests {
                 .map(|(key, size)| (key, body_par(size + 1)))
                 .collect();
             let expected = legacy_extraction(&free_map, free_count);
-            let (moved, _) = metered_extraction(free_map, free_count);
-            proptest::prop_assert_eq!(moved, Some(expected));
+            let moved = Matcher::extract_bound_pars(free_map, free_count);
+            proptest::prop_assert_eq!(moved, expected);
         }
-    }
-
-    /// D-M4 (DR-91): the extraction charge does not depend on the sizes of
-    /// the bound values.
-    #[test]
-    fn extraction_charge_independent_of_binding_sizes() {
-        let map = |size: usize| -> FreeMap {
-            [-2, 0, 1, 3, 9]
-                .into_iter()
-                .map(|key| (key, body_par(size)))
-                .collect()
-        };
-        let (small, small_charge) = metered_extraction(map(1), 5);
-        let (large, large_charge) = metered_extraction(map(512), 5);
-        assert_eq!(small.map(|pars| pars.len()), Some(5));
-        assert_eq!(large.map(|pars| pars.len()), Some(5));
-        assert_eq!(small_charge, large_charge);
     }
 
     /// D-M4 (DR-91): the extraction allocates only the result vector; the
@@ -1071,10 +753,7 @@ mod metered_tests {
             .into_iter()
             .map(|key| (key, body_par(256)))
             .collect();
-        let meter = |_: usize, _: usize, _: usize| Ok(());
-        let mut context = SpatialMatcherContext::with_meter(&meter).expect("matcher context");
-        let (pars, allocated) = measured(|| Matcher::extract_bound_pars(free_map, 3, &mut context));
-        let pars = pars.expect("extracted bindings");
+        let (pars, allocated) = measured(|| Matcher::extract_bound_pars(free_map, 3));
         assert_eq!(pars.len(), 3);
         let vector = pars.capacity() * std::mem::size_of::<Par>();
         assert!(
@@ -1085,109 +764,43 @@ mod metered_tests {
         assert!(vector < 256 * std::mem::size_of::<Expr>());
     }
 
+    /// Added by DR-129 (E3-a, risk R2): `commit_may_veto` is false only for a
+    /// continuation whose commit cannot veto. A continuation with no guard or
+    /// an empty guard never vetoes. Every other guard may, even a guard that
+    /// is the literal `true`.
+    /// Changed by user decision 6 (2026-10-16): the Stored check of replay no
+    /// longer skips such a continuation (complete guard search, defect D1).
+    /// The hook stays exact, so that the trait matches upstream.
     #[test]
-    fn metered_match_preserves_remainder_binding_and_rejects_short_credit() {
-        let pattern = BindPattern {
-            patterns: Vec::new(),
-            remainder: Some(Var {
-                var_instance: Some(FreeVar(0)),
-            }),
-            free_count: 1,
-        };
-        let data = ListParWithRandom {
-            pars: vec![Par::default(); 2],
-            ..ListParWithRandom::default()
-        };
+    fn commit_may_veto_marks_every_continuation_whose_commit_can_veto() {
         let matcher = Matcher;
-        let expected = matcher.get(&pattern, &data);
-        assert!(expected.is_some());
-        let used = Mutex::new([0usize; 3]);
-        let unlimited = |operations: usize, scanned: usize, backing: usize| {
-            let mut totals = used.lock().unwrap();
-            for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
-                *total += amount;
-            }
-            Ok(())
-        };
-        assert_eq!(
-            matcher.get_metered(&pattern, &data, &unlimited).unwrap(),
-            expected
-        );
-        let required = *used.lock().unwrap();
-        let native: &dyn Match<BindPattern, ListParWithRandom, TaggedContinuation> = &matcher;
-        assert_eq!(
-            native.get_metered(&pattern, &data, &unlimited).unwrap(),
-            expected
-        );
-        assert!(required.iter().all(|value| *value > 0));
-        for dimension in 0..3 {
-            let mut limit = required;
-            limit[dimension] -= 1;
-            let spent = Mutex::new([0usize; 3]);
-            let meter = |operations: usize, scanned: usize, backing: usize| {
-                let mut next = spent.lock().unwrap();
-                let amounts = [operations, scanned, backing];
-                if next
-                    .iter()
-                    .zip(amounts)
-                    .zip(limit)
-                    .any(|((used, add), max)| *used + add > max)
-                {
-                    return Err(RSpaceError::HostWorkRejected);
-                }
-                for (used, add) in next.iter_mut().zip(amounts) {
-                    *used += add;
-                }
-                Ok(())
-            };
-            assert!(matches!(
-                matcher.get_metered(&pattern, &data, &meter),
-                Err(RSpaceError::HostWorkRejected)
-            ));
-        }
-    }
-
-    proptest::proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
-
-        #[test]
-        fn oracle_never_applies_a_match_without_reserved_credit(
-            size in 0_usize..7,
-            equal in proptest::bool::ANY,
-            budget_choice in 0_usize..64,
-        ) {
-            let target = body_par(size);
-            let pattern = body_par(size + usize::from(!equal));
-            let oracle = SpatialMatcherOracle;
-            let expected = oracle.matches(&target, &pattern);
-            let measured = Mutex::new(0usize);
-            let unlimited = |operations, _scanned, _backing| {
-                *measured.lock().unwrap() += operations;
-                Ok(())
-            };
-            proptest::prop_assert_eq!(
-                oracle.matches_metered(&target, &pattern, &unlimited),
-                Ok(expected)
+        let samples = [Vec::new(), vec![binding(vec![bool_par(true)])], vec![
+            binding(vec![bool_par(false)]),
+        ]];
+        let cases = [
+            (None, false),
+            (Some(Par::default()), false),
+            (Some(bool_par(true)), true),
+            (Some(bool_par(false)), true),
+            (Some(bound_var_par(0)), true),
+        ];
+        let mut vetoed = 0;
+        for (guard, may_veto) in cases {
+            let continuation = continuation_with(guard.clone(), 2);
+            assert_eq!(
+                matcher.commit_may_veto(&continuation),
+                may_veto,
+                "{guard:?}"
             );
-            let required = *measured.lock().unwrap();
-            proptest::prop_assert!(required > 0);
-            let limit = budget_choice % (required + 2);
-            let spent = Mutex::new(0usize);
-            let bounded = |operations, _scanned, _backing| {
-                let mut current = spent.lock().unwrap();
-                if *current + operations > limit {
-                    return Err(BackingError::Rejected);
+            for matched in &samples {
+                let committed =
+                    matcher.check_commit(&continuation, &matched.iter().collect::<Vec<_>>());
+                if !committed {
+                    vetoed += 1;
+                    assert!(may_veto, "{guard:?} vetoed {matched:?}");
                 }
-                *current += operations;
-                Ok(())
-            };
-            let result = oracle.matches_metered(&target, &pattern, &bounded);
-            if limit < required {
-                proptest::prop_assert_eq!(result, Err(BackingError::Rejected));
-            } else {
-                proptest::prop_assert_eq!(result, Ok(expected));
             }
-            proptest::prop_assert!(*spent.lock().unwrap() <= limit);
         }
+        assert!(vetoed >= 2, "the fixture must exercise a veto");
     }
 }

@@ -706,7 +706,10 @@ fn arbitrary_byte_strings_agree() {
     let _serial = malformed_family_guard();
     let mut rejections = 0usize;
     let mut cases = 0usize;
-    let mut seed: u64 = 0x2026_07_27;
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // hex digit groups must have equal sizes.
+    // let mut seed: u64 = 0x2026_07_27;
+    let mut seed: u64 = 0x2026_0727;
     for len in 0..80usize {
         for _ in 0..40 {
             // xorshift64* — deterministic, so a failure is reproducible.

@@ -1,5 +1,5 @@
 //! Per-signature demand analyzer `Δ_s` and supply closure `Σ_s`. This is the
-//! pure, linear-time structural proof producer for cost-accounted Rho
+//! pure structural proof producer for cost-accounted Rho
 //! (Definitions 17–19 and Theorem 20 of `cost-accounted-rho.tex`). Native
 //! `CostSignedTerm` regions survive normalization, substitution, storage, and
 //! replay, so the analysis maintains the complete stack of enclosing authority
@@ -54,11 +54,29 @@
 //!
 //! ## Purity
 //!
-//! This module is PURE and linear-time: it operates on `Par` + `Sig` + integer
-//! supply maps only — no RSpace, no async, no I/O. The native gate constructs
-//! each raw `Σ_s` from the signature's canonical SystemVault balance and
-//! available located stacks, then feeds the integer projection into this module
-//! as a `BTreeMap<SigKey, i64>`.
+//! This module is PURE: it operates on `Par` + `Sig` + integer supply maps
+//! only — no RSpace, no async, no I/O. Corrected by G1-4a (DR-122, arbitration
+//! H1): its work is not linear in the term. Each send or receive walks its whole
+//! chain of enclosing signed scopes, and each combine copies the lane map of a
+//! child and the supply of its parent, so the work grows with the term plus its
+//! region links and merged map entries.
+//! Corrected by dedup (task 11415, D10): no live gate feeds a supply map
+//! `BTreeMap<SigKey, i64>` into this module. The merge `1d325b996` removed the
+//! native gate that did. The check before execution of G1 (DR-123, DR-124)
+//! calls only `static_authority_plan`, through `estimate.rs`, and Casper's
+//! `gate.rs` compares the holds with the SystemVault balances.
+//!
+//! ## Stack safety (G1-1, DR-67)
+//!
+//! The walks `signed_demand_par`, `collect` and `has_bound_level` (inside
+//! [`static_authority_signatures`]) and `demand_by_sig_into` use explicit work
+//! stacks and value stacks, so their stack depth does not grow with the
+//! nesting depth of a deploy. A parent-linked scope arena (`ScopeLink`) holds
+//! the enclosing signed regions. The non-test code of these walks is a
+//! verbatim backport of merge `29b729551` on branch
+//! `integration/f1r3lang-cost-accounted-rho-20261005`, where the F1R3Lang
+//! integration wrote it. The recursive walks that it replaced stay at the end
+//! of this file as the `#[cfg(test)]` oracle `recursive_oracle`.
 
 use std::collections::BTreeMap;
 
@@ -180,8 +198,10 @@ impl DemandEntry {
 /// bound plus an `unknown` flag set when the structural proof cannot establish a
 /// finite bound (Theorem 20).
 ///
-/// Linear time in the size of the AST: a single structural pass, O(1) work per
-/// node, no normalization or fixpoint.
+/// A single structural pass with no normalization or fixpoint. Corrected by
+/// G1-4a (DR-122, arbitration H1): the pass is not linear in the AST. Each
+/// introduction walks its chain of enclosing signed scopes, and each combine
+/// copies maps, so the work grows with the region links and the merged entries.
 ///
 /// Counted nodes are `Send` and `Receive`; they are potential participants, not
 /// runtime `Comm` events. `New`, `Match`, and `If` are recursed but do not add a
@@ -311,6 +331,11 @@ fn add_scope_transfer(
 }
 
 fn signature_lane(signature: &CostSignature) -> Result<Option<SigKey>, UnprovableDemand> {
+    // Added by the G1-4a fix (review H-1): a signature that still holds a
+    // variable names another lane at run time.
+    if estimate::signature_holds_variable(signature) {
+        return Err(UnprovableDemand::DynamicAuthority);
+    }
     cost_signature_to_sig(signature)
         .map(|signature| (signature != Sig::Unit).then(|| signature.lane_hash()))
         .map_err(|error| match error {
@@ -2191,3 +2216,549 @@ mod kani_funding {
         assert!(!is_funded(&analysis, supply));
     }
 }
+
+// Disabled in production by G1-1 (DR-67 implementation note, 2026-10-09).
+// These are the recursive walks of HEAD `17e07307f`, unchanged except for
+// their visibility. The iterative walks above replaced them, because the
+// depth of this recursion grows with the nesting depth of an untrusted
+// deploy, and the pre-execution funding check runs the analyzer on every
+// incoming deploy. They stay as the reference oracle of the parity tests in
+// `delta_sigma/stack_safety_tests.rs`.
+#[cfg(test)]
+mod recursive_oracle {
+    use super::*;
+
+    fn add_scope_demand(result: &mut SignedDemand, deploy_key: SigKey, scopes: &[Option<SigKey>]) {
+        if scopes.is_empty() {
+            result.add_lane(deploy_key);
+        } else {
+            for lane in scopes.iter().flatten() {
+                result.add_lane(*lane);
+            }
+        }
+        result.has_introduction = true;
+    }
+
+    fn add_scope_transfer(
+        result: &mut SignedDemand,
+        deploy_key: SigKey,
+        scopes: &[Option<SigKey>],
+    ) {
+        if scopes.is_empty() {
+            bump_lane(
+                &mut result.transfer_lanes,
+                deploy_key,
+                DemandEntry::ZERO.plus_one(),
+            );
+        } else {
+            for lane in scopes.iter().flatten() {
+                bump_lane(
+                    &mut result.transfer_lanes,
+                    *lane,
+                    DemandEntry::ZERO.plus_one(),
+                );
+            }
+        }
+    }
+
+    /// Added by the merge of feature/cost-accounted-rho (finding R1-29): the
+    /// demand of one token stack tree, in the order of the work-stack walk:
+    /// the cells of `stack`, and then each parallel tail. `nested` is true
+    /// below the root. Only a root with no cell and no tail is rejected.
+    fn stack_demand(
+        result: &mut SignedDemand,
+        stack: &CostStack,
+        nested: bool,
+        deploy_key: SigKey,
+        scopes: &[Option<SigKey>],
+    ) {
+        if stack.cells.is_empty() && stack.parallel_tail.is_empty() && !nested {
+            result.reject(UnprovableDemand::UnsupportedSyntax);
+            return;
+        }
+        for cell in &stack.cells {
+            match signature_lane(cell) {
+                Ok(Some(lane)) => {
+                    add_scope_demand(result, deploy_key, scopes);
+                    add_scope_transfer(result, deploy_key, scopes);
+                    let amount = result.guaranteed_supply.get(&lane);
+                    match amount.checked_add(1) {
+                        Some(amount) => {
+                            result.guaranteed_supply.0.insert(lane, amount);
+                        }
+                        None => result.reject(UnprovableDemand::UnsupportedSyntax),
+                    }
+                }
+                Ok(None) => result.reject(UnprovableDemand::UnsupportedSyntax),
+                Err(UnprovableDemand::DynamicAuthority) => {
+                    add_scope_demand(result, deploy_key, scopes);
+                    add_scope_transfer(result, deploy_key, scopes);
+                }
+                Err(reason) => result.reject(reason),
+            }
+        }
+        for tail in &stack.parallel_tail {
+            stack_demand(result, tail, true, deploy_key, scopes);
+        }
+    }
+
+    pub(super) fn signed_demand_par(
+        par: &Par,
+        deploy_key: SigKey,
+        scopes: &[Option<SigKey>],
+        execution_position: bool,
+    ) -> SignedDemand {
+        let mut result = SignedDemand::default();
+
+        for term in &par.cost_signed_terms {
+            let scope = match term.signature.as_ref().map(signature_lane) {
+                Some(Ok(scope)) => Some(scope),
+                Some(Err(reason)) => {
+                    result.reject(reason);
+                    None
+                }
+                None => {
+                    result.reject(UnprovableDemand::UnsupportedSyntax);
+                    None
+                }
+            };
+            match term.body.as_ref() {
+                Some(body) => {
+                    if let Some(scope) = scope {
+                        let mut nested_scopes = scopes.to_vec();
+                        nested_scopes.push(scope);
+                        let mut body_demand =
+                            signed_demand_par(body, deploy_key, &nested_scopes, true);
+                        if !body_demand.has_introduction {
+                            if let Some(lane) = scope {
+                                body_demand.add_lane(lane);
+                            }
+                        }
+                        result = result.combine(body_demand);
+                    }
+                }
+                None => result.reject(UnprovableDemand::UnsupportedSyntax),
+            }
+        }
+
+        if execution_position {
+            // Changed by the merge of feature/cost-accounted-rho (finding
+            // R1-29): F1R3Lang's token stack is a tree. `stack_demand` visits
+            // the cells of each stack and then its parallel tails in order, as
+            // the work-stack walk does.
+            // for stack in &par.cost_stacks {
+            //     if stack.cells.is_empty() {
+            //         result.reject(UnprovableDemand::UnsupportedSyntax);
+            //         continue;
+            //     }
+            //     for cell in &stack.cells {
+            //         match signature_lane(cell) {
+            //             Ok(Some(lane)) => {
+            //                 add_scope_demand(&mut result, deploy_key, scopes);
+            //                 add_scope_transfer(&mut result, deploy_key, scopes);
+            //                 let amount = result.guaranteed_supply.get(&lane);
+            //                 match amount.checked_add(1) {
+            //                     Some(amount) => {
+            //                         result.guaranteed_supply.0.insert(lane, amount);
+            //                     }
+            //                     None => result.reject(UnprovableDemand::UnsupportedSyntax),
+            //                 }
+            //             }
+            //             Ok(None) => result.reject(UnprovableDemand::UnsupportedSyntax),
+            //             Err(UnprovableDemand::DynamicAuthority) => {
+            //                 add_scope_demand(&mut result, deploy_key, scopes);
+            //                 add_scope_transfer(&mut result, deploy_key, scopes);
+            //             }
+            //             Err(reason) => result.reject(reason),
+            //         }
+            //     }
+            // }
+            for stack in &par.cost_stacks {
+                stack_demand(&mut result, stack, false, deploy_key, scopes);
+            }
+        }
+
+        for send in &par.sends {
+            add_scope_demand(&mut result, deploy_key, scopes);
+            if send.persistent {
+                result.reject(UnprovableDemand::UnboundedControlFlow);
+            }
+            for datum in &send.data {
+                result = result.combine(signed_demand_par(datum, deploy_key, &[], false));
+            }
+        }
+
+        for receive in &par.receives {
+            let signed_binds = receive
+                .binds
+                .iter()
+                .filter(|bind| bind.cost_signature.is_some())
+                .count();
+            if !scopes.is_empty() {
+                add_scope_demand(&mut result, deploy_key, scopes);
+            }
+            if signed_binds == 0 {
+                if scopes.is_empty() {
+                    add_scope_demand(&mut result, deploy_key, scopes);
+                }
+            } else if signed_binds == receive.binds.len() {
+                for bind in &receive.binds {
+                    match bind.cost_signature.as_ref().map(signature_lane) {
+                        Some(Ok(Some(lane))) => result.add_lane(lane),
+                        Some(Ok(None)) => {}
+                        Some(Err(reason)) => result.reject(reason),
+                        None => result.reject(UnprovableDemand::UnsupportedSyntax),
+                    }
+                }
+            } else {
+                result.reject(UnprovableDemand::UnsupportedSyntax);
+            }
+            result.has_introduction = true;
+            if receive.persistent {
+                result.reject(UnprovableDemand::UnboundedControlFlow);
+            }
+            if let Some(body) = receive.body.as_ref() {
+                result = result.combine(signed_demand_par(body, deploy_key, &[], true));
+            }
+        }
+
+        for new in &par.news {
+            if let Some(body) = new.p.as_ref() {
+                result = result.combine(signed_demand_par(
+                    body,
+                    deploy_key,
+                    scopes,
+                    execution_position,
+                ));
+            }
+        }
+
+        for mat in &par.matches {
+            let mut cases = mat.cases.iter().filter_map(|case| case.source.as_ref());
+            let mut branches = cases
+                .next()
+                .map(|source| signed_demand_par(source, deploy_key, scopes, execution_position))
+                .unwrap_or_default();
+            for source in cases {
+                branches = branches.alternative(signed_demand_par(
+                    source,
+                    deploy_key,
+                    scopes,
+                    execution_position,
+                ));
+            }
+            result = result.combine(branches);
+        }
+
+        for conditional in &par.conditionals {
+            let if_true = conditional
+                .if_true
+                .as_ref()
+                .map(|branch| signed_demand_par(branch, deploy_key, scopes, execution_position))
+                .unwrap_or_default();
+            let if_false = conditional
+                .if_false
+                .as_ref()
+                .map(|branch| signed_demand_par(branch, deploy_key, scopes, execution_position))
+                .unwrap_or_default();
+            result = result.combine(if_true.alternative(if_false));
+        }
+
+        for bundle in &par.bundles {
+            if let Some(body) = bundle.body.as_ref() {
+                result = result.combine(signed_demand_par(
+                    body,
+                    deploy_key,
+                    scopes,
+                    execution_position,
+                ));
+            }
+        }
+
+        if execution_position {
+            for expr in &par.exprs {
+                if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+                    if let Some(var) = &evar.v {
+                        if matches!(
+                            var.var_instance,
+                            Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_))
+                        ) {
+                            result.reject(UnprovableDemand::RecursiveDequotation);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    pub(super) fn static_authority_signatures(
+        par: &Par,
+    ) -> Result<BTreeMap<SigKey, CostSignature>, AuthorityError> {
+        fn has_bound_level(signature: &CostSignature) -> Result<bool, AuthorityError> {
+            match signature.value.as_ref() {
+                Some(CostSignatureValue::BoundLevel(_)) => Ok(true),
+                Some(CostSignatureValue::Compound(compound)) if compound.elements.len() >= 2 => {
+                    let mut dynamic = false;
+                    for element in &compound.elements {
+                        dynamic |= has_bound_level(element)?;
+                    }
+                    Ok(dynamic)
+                }
+                Some(CostSignatureValue::Compound(_)) => Err(AuthorityError::MalformedCompound),
+                Some(CostSignatureValue::Unit(false)) => Err(AuthorityError::NonCanonicalSignature),
+                Some(_) => canonical_cost_signature(signature).map(|_| false),
+                None => Err(AuthorityError::MissingSignature),
+            }
+        }
+
+        fn insert(
+            signatures: &mut BTreeMap<SigKey, CostSignature>,
+            signature: &CostSignature,
+        ) -> Result<(), AuthorityError> {
+            if has_bound_level(signature)? {
+                if sort_signature(signature).term != *signature {
+                    return Err(AuthorityError::NonCanonicalSignature);
+                }
+                return Ok(());
+            }
+            let signature = canonical_cost_signature(signature)?;
+            let runtime_signature = cost_signature_to_sig(&signature)?;
+            if runtime_signature == Sig::Unit {
+                return Ok(());
+            }
+            let key = runtime_signature.lane_hash();
+            match signatures.get(&key) {
+                Some(existing) if existing != &signature => {
+                    Err(AuthorityError::EventSignatureConflict)
+                }
+                Some(_) => Ok(()),
+                None => {
+                    signatures.insert(key, signature);
+                    Ok(())
+                }
+            }
+        }
+
+        fn collect(
+            par: &Par,
+            signatures: &mut BTreeMap<SigKey, CostSignature>,
+        ) -> Result<(), AuthorityError> {
+            for term in &par.cost_signed_terms {
+                insert(
+                    signatures,
+                    term.signature
+                        .as_ref()
+                        .ok_or(AuthorityError::MissingSignature)?,
+                )?;
+                collect(
+                    term.body.as_ref().ok_or(AuthorityError::MissingAuthority)?,
+                    signatures,
+                )?;
+            }
+            // Changed by the merge of feature/cost-accounted-rho (finding
+            // R1-29): F1R3Lang's token stack is a tree. `collect_stack` visits
+            // the cells of each stack and then its parallel tails in order, as
+            // the work-stack walk does.
+            // for stack in &par.cost_stacks {
+            //     if stack.cells.is_empty() {
+            //         return Err(AuthorityError::MissingSignature);
+            //     }
+            //     for cell in &stack.cells {
+            //         insert(signatures, cell)?;
+            //     }
+            // }
+            for stack in &par.cost_stacks {
+                collect_stack(stack, false, signatures)?;
+            }
+            for send in &par.sends {
+                for datum in &send.data {
+                    collect(datum, signatures)?;
+                }
+            }
+            for receive in &par.receives {
+                for bind in &receive.binds {
+                    if let Some(signature) = &bind.cost_signature {
+                        insert(signatures, signature)?;
+                    }
+                }
+                if let Some(body) = &receive.body {
+                    collect(body, signatures)?;
+                }
+            }
+            for new in &par.news {
+                if let Some(body) = &new.p {
+                    collect(body, signatures)?;
+                }
+            }
+            for mat in &par.matches {
+                for case in &mat.cases {
+                    if let Some(source) = &case.source {
+                        collect(source, signatures)?;
+                    }
+                }
+            }
+            for conditional in &par.conditionals {
+                if let Some(branch) = &conditional.if_true {
+                    collect(branch, signatures)?;
+                }
+                if let Some(branch) = &conditional.if_false {
+                    collect(branch, signatures)?;
+                }
+            }
+            for bundle in &par.bundles {
+                if let Some(body) = &bundle.body {
+                    collect(body, signatures)?;
+                }
+            }
+            Ok(())
+        }
+
+        /// Added by the merge of feature/cost-accounted-rho (finding R1-29):
+        /// the signatures of one token stack tree, in the order of the
+        /// work-stack walk: the cells of `stack`, and then each parallel tail.
+        /// `nested` is true below the root. Only a root with no cell and no
+        /// tail is rejected.
+        fn collect_stack(
+            stack: &CostStack,
+            nested: bool,
+            signatures: &mut BTreeMap<SigKey, CostSignature>,
+        ) -> Result<(), AuthorityError> {
+            if stack.cells.is_empty() && stack.parallel_tail.is_empty() && !nested {
+                return Err(AuthorityError::MissingSignature);
+            }
+            for cell in &stack.cells {
+                insert(signatures, cell)?;
+            }
+            for tail in &stack.parallel_tail {
+                collect_stack(tail, true, signatures)?;
+            }
+            Ok(())
+        }
+
+        let mut signatures = BTreeMap::new();
+        collect(par, &mut signatures)?;
+        Ok(signatures)
+    }
+
+    pub(super) fn demand_by_sig(
+        desugared: &Par,
+        envelope_key: SigKey,
+        region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+    ) -> BTreeMap<SigKey, DemandEntry> {
+        let mut acc: BTreeMap<SigKey, DemandEntry> = BTreeMap::new();
+        demand_by_sig_into(desugared, envelope_key, region_sig, &mut acc);
+        acc
+    }
+
+    fn branch_demand_by_sig(
+        par: &Par,
+        envelope_key: SigKey,
+        region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+    ) -> BTreeMap<SigKey, DemandEntry> {
+        let mut branch = BTreeMap::new();
+        demand_by_sig_into(par, envelope_key, region_sig, &mut branch);
+        branch
+    }
+
+    /// The per-lane walk. Mirrors [`demand_par`] node-for-node (identical RECURSED vs
+    /// NOT-recursed discipline) so summing the lanes reproduces [`demand`]'s count;
+    /// the ONLY addition is the per-COMM lane attribution via `region_sig`.
+    fn demand_by_sig_into(
+        par: &Par,
+        envelope_key: SigKey,
+        region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+        acc: &mut BTreeMap<SigKey, DemandEntry>,
+    ) {
+        // Sends: one potential participant each, attributed by the send channel.
+        for send in &par.sends {
+            let lane = send
+                .chan
+                .as_ref()
+                .and_then(|channel| region_sig(channel))
+                .unwrap_or(envelope_key);
+            let mut entry = DemandEntry::ZERO.plus_one();
+            entry.unknown = send.persistent;
+            bump_lane(acc, lane, entry);
+        }
+        // Receives: one potential participant each, attributed by the first bind's
+        // source lane. A persistent receive makes that lane unprovable.
+        for receive in &par.receives {
+            let lane = receive
+                .binds
+                .first()
+                .and_then(|bind| bind.source.as_ref())
+                .and_then(|source| region_sig(source))
+                .unwrap_or(envelope_key);
+            let mut entry = DemandEntry::ZERO.plus_one();
+            entry.unknown = receive.persistent;
+            bump_lane(acc, lane, entry);
+            if let Some(body) = &receive.body {
+                demand_by_sig_into(body, envelope_key, region_sig, acc);
+            }
+        }
+        // new / match / if / bundle: process positions recursed, no COMM node (D3).
+        for new in &par.news {
+            if let Some(body) = &new.p {
+                demand_by_sig_into(body, envelope_key, region_sig, acc);
+            }
+        }
+        for mat in &par.matches {
+            let mut alternatives = BTreeMap::new();
+            for case in &mat.cases {
+                if let Some(source) = &case.source {
+                    merge_alternative_lanes(
+                        &mut alternatives,
+                        branch_demand_by_sig(source, envelope_key, region_sig),
+                    );
+                }
+            }
+            add_lane_demands(acc, alternatives);
+        }
+        for conditional in &par.conditionals {
+            let mut alternatives = BTreeMap::new();
+            if let Some(if_true) = &conditional.if_true {
+                merge_alternative_lanes(
+                    &mut alternatives,
+                    branch_demand_by_sig(if_true, envelope_key, region_sig),
+                );
+            }
+            if let Some(if_false) = &conditional.if_false {
+                merge_alternative_lanes(
+                    &mut alternatives,
+                    branch_demand_by_sig(if_false, envelope_key, region_sig),
+                );
+            }
+            add_lane_demands(acc, alternatives);
+        }
+        for bundle in &par.bundles {
+            if let Some(body) = &bundle.body {
+                demand_by_sig_into(body, envelope_key, region_sig, acc);
+            }
+        }
+        // Un-inlined `*x` dequotation in process position ⇒ the Thm 20 over-
+        // approximation (`unknown`), attributed to the envelope lane (it is not on a
+        // signer channel).
+        for expr in &par.exprs {
+            if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+                if let Some(var) = &evar.v {
+                    match &var.var_instance {
+                        Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_)) => {
+                            bump_lane(acc, envelope_key, DemandEntry {
+                                certified_upper_bound: 0,
+                                unknown: true,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stack_safety_tests;
+
+pub mod estimate;

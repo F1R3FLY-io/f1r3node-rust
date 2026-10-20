@@ -9,6 +9,14 @@
     its potential strictly decreases. It does not model the byte cost of an
     event, Rust ownership, or the spatial matcher; those require differential
     tests against the source implementation and the backing-walker model.
+
+    Changed by the merge of feature/cost-accounted-rho (DR-131, plan step
+    1.8): no meter runs at the [Emit] frames now, because DR-131 removes the
+    backing meter of the pure evaluator. The proofs stay unchanged, and they
+    keep their meaning: the explicit-stack driver gives the event stream of
+    the recursive specification in the same order, and the driver
+    terminates. The sentence above about the backing meter and the
+    backing-walker model describes the code before DR-131.
 *)
 From Stdlib Require Import List Arith Lia.
 Import ListNotations.

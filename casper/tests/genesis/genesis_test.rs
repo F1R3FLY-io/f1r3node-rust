@@ -40,6 +40,11 @@ use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::test_scratch;
+// Added by the merge of feature/cost-accounted-rho (finding R3-38): the upstream
+// wallets-file test below builds a scoped `TempDir`, which its own `Drop`
+// removes. F1R3Lang removed this import when it moved `genesis_path` to
+// `test_scratch`, so that test stopped compiling.
+use tempfile::TempDir;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::test_node::TestNode;

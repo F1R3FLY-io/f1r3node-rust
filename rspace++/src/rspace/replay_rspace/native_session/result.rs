@@ -1,9 +1,8 @@
-use std::mem::size_of;
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use shared::rust::fallible_sort::sort;
 
-use crate::rspace::errors::RSpaceError;
 use crate::rspace::internal::ConsumeCandidate;
 use crate::rspace::rspace_interface::RSpaceResult;
 
@@ -12,31 +11,14 @@ pub(super) struct PreparedData<C, A> {
     pub retirement: Vec<(usize, i32)>,
 }
 
-fn backing<C, A>(count: usize) -> Result<usize, RSpaceError> {
-    count
-        .checked_mul(size_of::<RSpaceResult<C, A>>())
-        .and_then(|results| {
-            count
-                .checked_mul(size_of::<(usize, i32)>())
-                .and_then(|retirement| results.checked_add(retirement))
-        })
-        .ok_or(RSpaceError::HostWorkRejected)
-}
-
-pub(super) fn prepare<C, A: Clone>(
-    candidates: Vec<ConsumeCandidate<C, A>>,
-    reserve: impl Fn(usize, usize) -> Result<(), RSpaceError>,
-) -> Result<PreparedData<C, A>, RSpaceError> {
+/// Changed by DR-131 S6: the results of a match and the retirement of their
+/// stored, non-persistent data, with no host-work reservation. The
+/// retirement is in descending datum index, then ascending position; the
+/// sort is the heap sort of `fallible_sort` (D-F).
+pub(super) fn prepare<C, A: Clone>(candidates: Vec<ConsumeCandidate<C, A>>) -> PreparedData<C, A> {
     let count = candidates.len();
-    let operations = count.checked_mul(3).ok_or(RSpaceError::HostWorkRejected)?;
-    reserve(operations, backing::<C, A>(count)?)?;
-    let mut data = Vec::new();
-    let mut retirement = Vec::new();
-    data.try_reserve_exact(count)
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
-    retirement
-        .try_reserve_exact(count)
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
+    let mut data = Vec::with_capacity(count);
+    let mut retirement = Vec::with_capacity(count);
     for (position, candidate) in candidates.into_iter().enumerate() {
         if candidate.datum_index >= 0 && !candidate.datum.persist {
             retirement.push((position, candidate.datum_index));
@@ -48,11 +30,10 @@ pub(super) fn prepare<C, A: Clone>(
             persistent: candidate.datum.persist,
         });
     }
-    sort(&mut retirement, |a, b| -> Result<_, RSpaceError> {
-        reserve(1, 0)?;
-        Ok(b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)))
-    })?;
-    Ok(PreparedData { data, retirement })
+    let Ok(()) = sort(&mut retirement, |a, b| {
+        Ok::<_, Infallible>(b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)))
+    });
+    PreparedData { data, retirement }
 }
 
 #[cfg(test)]

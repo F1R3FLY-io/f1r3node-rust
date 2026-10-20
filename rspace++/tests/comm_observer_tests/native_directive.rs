@@ -466,39 +466,13 @@ struct OrderedMatch(Vec<String>);
 
 impl Match<Any, String, String> for OrderedMatch {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
-    fn get_metered(
-        &self,
-        _: &Any,
-        datum: &String,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<String>, RSpaceError> {
-        metered_any_get(datum, meter)
-    }
     fn check_commit(&self, _: &String, data: &[&String]) -> bool {
-        data.len() == self.0.len() && data.iter().zip(&self.0).all(|(a, b)| **a == *b)
+        data.iter().copied().eq(self.0.iter())
     }
 
-    fn check_commit_metered(
-        &self,
-        continuation: &String,
-        data: &[&String],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        let steps = data
-            .len()
-            .checked_add(self.0.len())
-            .and_then(|count| count.checked_add(1))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(steps, 0, 0)?;
-        let scanned = data
-            .iter()
-            .map(|value| value.len())
-            .chain(self.0.iter().map(String::len))
-            .try_fold(0usize, |total, length| total.checked_add(length))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(1, scanned, 0)?;
-        Ok(self.check_commit(continuation, data))
-    }
+    /// Added by DR-129 (E3-a): every commit compares the matched data with a
+    /// fixed list, so any continuation may veto.
+    fn commit_may_veto(&self, _: &String) -> bool { true }
 }
 
 #[tokio::test]
@@ -507,9 +481,14 @@ async fn repeated_channel_bindings_follow_play_order_not_insertion_order() {
     use rspace_plus_plus::rspace::internal::Datum;
     let channel = "channel".to_string();
     let mut values = vec!["first".to_string(), "second".to_string()];
-    // I1 (DR-75): play orders candidates by (source hash, digest, index), not
-    // by digest alone, so the fixture predicts the play order with that
-    // key. values.sort_by_key(|value| {
+    // Changed by DR-129 (E1): play shuffles the data of a channel at random
+    // (dev's order), but a join that names one channel more than once gets one
+    // stable order by source hash, with the incoming datum first. The two
+    // values have distinct source hashes, so the (source hash, digest) key of
+    // DR-75 below gives that order.
+    // I1 (DR-75): play orders candidates by (source hash, digest, index), not by
+    // digest alone, so the fixture predicts the play order with that key.
+    // values.sort_by_key(|value| {
     //     Blake2b256Hash::new(
     //         &bincode::serialize(&Datum::create(&channel, value.clone(),
     // false)).unwrap(),     )
@@ -631,25 +610,7 @@ struct GuardRejects;
 
 impl Match<Any, String, String> for GuardRejects {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
-    fn get_metered(
-        &self,
-        _: &Any,
-        datum: &String,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<String>, RSpaceError> {
-        metered_any_get(datum, meter)
-    }
     fn check_commit(&self, _: &String, _: &[&String]) -> bool { false }
-
-    fn check_commit_metered(
-        &self,
-        _: &String,
-        _: &[&String],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        Ok(false)
-    }
 }
 
 #[tokio::test]
@@ -729,14 +690,232 @@ async fn store_preserves_future_bindings_and_counts_introduction_once() {
     }
 }
 
+// Changed by DR-129: restored dev's randomized candidate order (user decision
+// 2026-10-12). Play may try either datum first, so it either stores the
+// consume after the veto or fires on the approved datum. The new test below
+// runs the case many times. It replays the Store directive when play stores
+// and the AcceptedComm directive when play fires, and it requires both
+// outcomes.
+// #[tokio::test]
+// async fn store_consumes_greedy_guard_veto_without_exhaustive_search() {
+//     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+//     use rspace_plus_plus::rspace::internal::Datum;
+//     let channel = "channel".to_string();
+//     let mut values = vec!["one".to_string(), "two".to_string()];
+//     // I1 (DR-75): play orders candidates by (source hash, digest, index),
+// not by     // digest alone, so the fixture predicts the play order with that
+// key.     // values.sort_by_key(|value| {
+//     //     Blake2b256Hash::new(
+//     //         &bincode::serialize(&Datum::create(&channel, value.clone(),
+//     // false)).unwrap(),     )
+//     // });
+//     values.sort_by_key(|value| {
+//         let datum = Datum::create(&channel, value.clone(), false);
+//         let digest =
+// Blake2b256Hash::new(&bincode::serialize(&datum).expect("datum serializes"));
+//         (datum.source.hash, digest)
+//     });
+//     let mut stores = InMemoryStoreManager::new();
+//     let (play, replay) = TestSpace::create_with_replay(
+//         stores.r_space_stores().await.unwrap(),
+//         Arc::new(Box::new(OrderedMatch(vec![values[1].clone()]))),
+//     )
+//     .unwrap();
+//     for value in &values {
+//         play.produce(channel.clone(), value.clone(), false)
+//             .await
+//             .unwrap();
+//     }
+//     let before = play.create_checkpoint().await.unwrap();
+//     assert!(
+//         play.consume(vec![channel.clone()], vec![Any], "body".into(), false,
+// BTreeSet::new())             .await
+//             .unwrap()
+//             .is_none()
+//     );
+//     let expected = play.to_map().await;
+//     replay
+//         .rig_and_reset(before.root,
+// play.create_checkpoint().await.unwrap().log)         .await
+//         .unwrap();
+//     replay.set_accounting_observer(Some(store_observer()));
+//     assert!(
+//         replay
+//             .consume(vec![channel.clone()], vec![Any], "body".into(), false,
+// BTreeSet::new())             .await
+//             .unwrap()
+//             .is_none()
+//     );
+//     assert_eq!(replay.to_map().await, expected);
+//     assert_eq!(replay.get_data(&channel).await.unwrap().len(), 2);
+// }
+
+// Disabled by user decision 4 (2026-10-16, complete guard search, defect
+// D1): play no longer stores the consume after a guard veto of its first
+// candidate, because the complete search backtracks to the admissible datum.
+// User decision 6 removed the E3-a skip of the Stored check that the test
+// below needs. The test
+// `play_fires_on_the_admissible_datum_and_replay_follows_the_recorded_comm`
+// replaces it.
+// ```text
+// /// DR-129: a guard veto of the first greedy candidate stores the consume
+// /// without an exhaustive search, as on dev. Play tries the data in random
+// /// order, so it stores in some runs and fires in others. Replay follows the
+// /// directive of each run. The Store directive skips the Stored check of a
+// /// continuation whose commit can veto (E3-a), and the AcceptedComm directive
+// /// follows the recorded COMM.
+// #[tokio::test]
+// async fn store_consumes_greedy_guard_veto_without_exhaustive_search() {
+//     const RUNS: usize = 64;
+//     let channel = "channel".to_string();
+//     let values = ["one".to_string(), "two".to_string()];
+//     let (mut stored, mut fired) = (0, 0);
+//     for _ in 0..RUNS {
+//         let mut stores = InMemoryStoreManager::new();
+//         let (play, replay) = TestSpace::create_with_replay(
+//             stores.r_space_stores().await.unwrap(),
+//             Arc::new(Box::new(OrderedMatch(vec![values[1].clone()]))),
+//         )
+//         .unwrap();
+//         for value in &values {
+//             play.produce(channel.clone(), value.clone(), false)
+//                 .await
+//                 .unwrap();
+//         }
+//         let before = play.create_checkpoint().await.unwrap();
+//         let play_observer = Arc::new(Observer::new(false));
+//         play.set_accounting_observer(Some(play_observer.clone()));
+//         let played = play
+//             .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
+//             .await
+//             .unwrap();
+//         let directive = match &played {
+//             None => {
+//                 stored += 1;
+//                 ReplayOperationDirective::Store
+//             }
+//             Some(_) => {
+//                 fired += 1;
+//                 let comm = play_observer.observed.lock().unwrap()[0].clone();
+//                 ReplayOperationDirective::AcceptedComm(Arc::new(comm))
+//             }
+//         };
+//         let after = play.create_checkpoint().await.unwrap();
+//         replay.rig_and_reset(before.root, after.log).await.unwrap();
+//         replay.set_accounting_observer(Some(Arc::new(DirectedObserver {
+//             inner: Observer::new(false),
+//             directive,
+//             introduction: Response::Grant,
+//             comm: Response::Grant,
+//         })));
+//         let replayed = replay
+//             .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
+//             .await
+//             .unwrap();
+//         assert_eq!(replayed.is_some(), played.is_some());
+//         let remaining = if played.is_some() { 1 } else { 2 };
+//         assert_eq!(replay.get_data(&channel).await.unwrap().len(), remaining);
+//         // The hot-store view holds only the channels that an operation read,
+//         // and the Stored check of a continuation that may veto reads no
+//         // datum, so the test compares the checkpoint roots.
+//         assert_eq!(replay.create_checkpoint().await.unwrap().root, after.root);
+//     }
+//     assert!(stored > 0 && fired > 0, "play stored {stored} and fired {fired} of {RUNS} runs");
+// }
+// ```
+
+/// Defect D1 fixtures: admits a commit only when the matched data equal
+/// `admitted`, in bind order, and counts the commit checks.
+struct CountingOrderedMatch {
+    admitted: Vec<String>,
+    checks: Arc<AtomicUsize>,
+}
+
+impl Match<Any, String, String> for CountingOrderedMatch {
+    fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
+    fn check_commit(&self, _: &String, data: &[&String]) -> bool {
+        self.checks.fetch_add(1, Ordering::Relaxed);
+        data.iter().copied().eq(self.admitted.iter())
+    }
+}
+
+/// Replaces `store_consumes_greedy_guard_veto_without_exhaustive_search`
+/// (complete guard search, user decision 4 of 2026-10-16, defect D1). The
+/// guard admits only `two`. Play tries the data in random order (DR-129), and
+/// the complete search backtracks past `one`, so play fires on `two` in every
+/// run. Replay follows the AcceptedComm directive of each run to the same
+/// state. Play puts `one` first in about half of the runs, so the guard
+/// rejects it first in some run with probability `1 - 2^-64`.
+#[tokio::test]
+async fn play_fires_on_the_admissible_datum_and_replay_follows_the_recorded_comm() {
+    const RUNS: usize = 64;
+    let channel = "channel".to_string();
+    let values = ["one".to_string(), "two".to_string()];
+    let mut backtracked = 0;
+    for _ in 0..RUNS {
+        let checks = Arc::new(AtomicUsize::new(0));
+        let mut stores = InMemoryStoreManager::new();
+        let (play, replay) = TestSpace::create_with_replay(
+            stores.r_space_stores().await.expect("in-memory stores"),
+            Arc::new(Box::new(CountingOrderedMatch {
+                admitted: vec![values[1].clone()],
+                checks: checks.clone(),
+            })),
+        )
+        .expect("play and replay spaces");
+        for value in &values {
+            play.produce(channel.clone(), value.clone(), false)
+                .await
+                .expect("the produce runs");
+        }
+        let before = play.create_checkpoint().await.expect("a checkpoint");
+        let play_observer = Arc::new(Observer::new(false));
+        play.set_accounting_observer(Some(play_observer.clone()));
+        let (_, selected) = play
+            .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
+            .await
+            .expect("the consume runs")
+            .expect("the complete search fires on the admissible datum");
+        assert_eq!(selected[0].matched_datum, values[1]);
+        if checks.load(Ordering::Relaxed) > 1 {
+            backtracked += 1;
+        }
+        let comm = play_observer.observed.lock().expect("observed COMMs")[0].clone();
+        let after = play.create_checkpoint().await.expect("a checkpoint");
+        replay
+            .rig_and_reset(before.root, after.log)
+            .await
+            .expect("the replay is rigged");
+        replay.set_accounting_observer(Some(Arc::new(DirectedObserver {
+            inner: Observer::new(false),
+            directive: ReplayOperationDirective::AcceptedComm(Arc::new(comm)),
+            introduction: Response::Grant,
+            comm: Response::Grant,
+        })));
+        let (_, replayed) = replay
+            .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
+            .await
+            .expect("the replayed consume runs")
+            .expect("replay follows the recorded COMM");
+        assert_eq!(replayed[0].matched_datum, values[1]);
+        assert_eq!(replay.get_data(&channel).await.expect("data read").len(), 1);
+        assert_eq!(replay.create_checkpoint().await.expect("a checkpoint").root, after.root);
+    }
+    assert!(backtracked > 0, "the guard rejected `one` first in none of {RUNS} runs");
+}
+
+/// Restored from HEAD (complete guard search, defect D1, and user decision 6
+/// of 2026-10-16). Play fires on the second datum after the guard vetoes the
+/// first one. A replay that receives the Store directive must not accept it:
+/// its Stored check searches every assignment, as play does, and finds the
+/// admissible one. The fixture sorts the data in the canonical order, so the
+/// Stored check meets the vetoed datum first and must backtrack.
 #[tokio::test]
 async fn store_directive_cannot_suppress_a_guard_backtrack_match() {
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use rspace_plus_plus::rspace::internal::Datum;
     let channel = "channel".to_string();
     let mut values = vec!["one".to_string(), "two".to_string()];
-    // Play orders candidates by (source hash, digest, index). The guard vetoes
-    // the first datum, so the complete search must select the second.
     values.sort_by_key(|value| {
         let datum = Datum::create(&channel, value.clone(), false);
         let digest = Blake2b256Hash::new(&datum.candidate_ordering_bytes());
@@ -744,27 +923,27 @@ async fn store_directive_cannot_suppress_a_guard_backtrack_match() {
     });
     let mut stores = InMemoryStoreManager::new();
     let (play, replay) = TestSpace::create_with_replay(
-        stores.r_space_stores().await.unwrap(),
+        stores.r_space_stores().await.expect("in-memory stores"),
         Arc::new(Box::new(OrderedMatch(vec![values[1].clone()]))),
     )
-    .unwrap();
+    .expect("play and replay spaces");
     for value in &values {
         play.produce(channel.clone(), value.clone(), false)
             .await
-            .unwrap();
+            .expect("the produce runs");
     }
-    let before = play.create_checkpoint().await.unwrap();
+    let before = play.create_checkpoint().await.expect("a checkpoint");
     let (_, selected) = play
         .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
         .await
-        .unwrap()
+        .expect("the consume runs")
         .expect("guard backtracking finds the second datum");
     assert_eq!(selected[0].matched_datum, values[1]);
-    let recorded = play.create_checkpoint().await.unwrap();
+    let recorded = play.create_checkpoint().await.expect("a checkpoint");
     replay
         .rig_and_reset(before.root, recorded.log)
         .await
-        .unwrap();
+        .expect("the replay is rigged");
     replay.set_accounting_observer(Some(store_observer()));
     let replay_result = replay
         .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
@@ -776,6 +955,58 @@ async fn store_directive_cannot_suppress_a_guard_backtrack_match() {
     assert_eq!(replay.get_data(&channel).await.expect("data read").len(), 2);
 }
 
+/// The produce version of
+/// `store_directive_cannot_suppress_a_guard_backtrack_match` (complete guard
+/// search, defect D1, and user decision 6 of 2026-10-16). A join names the
+/// channel twice, `one` rests, and the produce of `two` arrives. The incoming
+/// datum comes first, so the first assignment is `[two, one]`, and the guard
+/// admits only `[one, two]`. Play backtracks and fires. A replay that receives
+/// the Store directive must refuse it and keep its state.
+#[tokio::test]
+async fn store_directive_cannot_suppress_a_guard_backtrack_match_of_a_produce() {
+    let channel = "channel".to_string();
+    let mut stores = InMemoryStoreManager::new();
+    let (play, replay) = TestSpace::create_with_replay(
+        stores.r_space_stores().await.expect("in-memory stores"),
+        Arc::new(Box::new(OrderedMatch(vec!["one".to_string(), "two".to_string()]))),
+    )
+    .expect("play and replay spaces");
+    play.produce(channel.clone(), "one".to_string(), false)
+        .await
+        .expect("the produce runs");
+    let waiting = play
+        .consume(vec![channel.clone(); 2], vec![Any; 2], "body".into(), false, BTreeSet::new())
+        .await
+        .expect("the consume runs");
+    assert!(waiting.is_none(), "one datum cannot satisfy two patterns");
+    let before = play.create_checkpoint().await.expect("a checkpoint");
+    let (_, selected, _) = play
+        .produce(channel.clone(), "two".to_string(), false)
+        .await
+        .expect("the produce runs")
+        .expect("guard backtracking finds the admissible assignment");
+    let bound: Vec<&String> = selected
+        .iter()
+        .map(|result| &result.matched_datum)
+        .collect();
+    assert_eq!(bound, ["one", "two"]);
+    let recorded = play.create_checkpoint().await.expect("a checkpoint");
+    replay
+        .rig_and_reset(before.root, recorded.log)
+        .await
+        .expect("the replay is rigged");
+    let snapshot = fingerprint(&replay).await;
+    replay.set_accounting_observer(Some(store_observer()));
+    let replay_result = replay
+        .produce(channel.clone(), "two".to_string(), false)
+        .await;
+    assert!(matches!(
+        replay_result,
+        Err(RSpaceError::InterpreterError(message)) if message == "Native replay directive does not match execution"
+    ));
+    assert_eq!(fingerprint(&replay).await, snapshot);
+}
+
 struct NamedGuard {
     rejected: String,
     reject_all: bool,
@@ -783,33 +1014,21 @@ struct NamedGuard {
 
 impl Match<Any, String, String> for NamedGuard {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
-    fn get_metered(
-        &self,
-        _: &Any,
-        datum: &String,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<String>, RSpaceError> {
-        metered_any_get(datum, meter)
-    }
     fn check_commit(&self, continuation: &String, _: &[&String]) -> bool {
         !self.reject_all && continuation != &self.rejected
     }
 
-    fn check_commit_metered(
-        &self,
-        continuation: &String,
-        matched: &[&String],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        let scanned = continuation
-            .len()
-            .checked_add(self.rejected.len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(2, scanned, 0)?;
-        Ok(self.check_commit(continuation, matched))
+    /// Added by DR-129 (E3-a): exactly the continuations that `check_commit`
+    /// can reject.
+    fn commit_may_veto(&self, continuation: &String) -> bool {
+        self.reject_all || continuation == &self.rejected
     }
 }
 
+// DR-129: play tries the waiting continuations in random order (dev's order).
+// The vetoed continuation never fires, and the other one fires whenever it is
+// tried, so the outcome does not depend on the order. The fixture order below
+// only names the rejected continuation.
 #[tokio::test]
 async fn store_produce_uses_the_same_guard_veto_loop_as_play() {
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;

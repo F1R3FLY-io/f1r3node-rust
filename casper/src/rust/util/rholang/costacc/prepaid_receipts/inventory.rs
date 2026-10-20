@@ -1,18 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem::size_of;
 
 use models::rhoapi::CostSignature;
-use models::rust::host_work::HostWorkDimension;
 use rholang::rust::interpreter::accounting::authority::{
-    allocate_physical_settlement_with_host_work, cost_signature_to_sig_metered,
-    stack_branches_metered, AuthorityEvent, AuthorityPhysicalEventDraw, AuthorityPhysicalInventory,
+    allocate_physical_settlement, cost_signature_to_sig, stack_branches, AuthorityEvent,
+    AuthorityPhysicalEventDraw, AuthorityPhysicalInventory,
 };
 use rholang::rust::interpreter::accounting::phlo_execution::{
     PhloExecutionLimits, PhloResource, RestoredPhloResource,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
-use super::snapshot::reserve;
 use super::{
     invalid, CapturedPrepaidStacks, CasperError, NativePrepaidCell, NativePrepaidCellLimits,
     OrderedPrepaidCells, PrepaidCellLimits, PrepaidStackPop,
@@ -71,7 +67,6 @@ impl CheckedPrepaidPhysicalTrace<'_> {
         &self,
         live_root: [u8; 32],
         stacks: &'a [PurseStack],
-        budget: &HostWorkBudget,
     ) -> Result<VerifiedPurseStackPops<'a>, CasperError> {
         verify_purse_stack_pops(
             live_root,
@@ -80,7 +75,6 @@ impl CheckedPrepaidPhysicalTrace<'_> {
             &self.signatures,
             &self.inventory,
             &self.draws,
-            budget,
         )
     }
 }
@@ -104,7 +98,6 @@ impl<'p> CapturedPrepaidStacks<'p> {
     pub fn resource_inventory<'s>(
         &'s self,
         limits: NativePrepaidInventoryLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativePrepaidInventory<'s, 'p>, CasperError> {
         let mut sources = BTreeMap::new();
         let mut cells_left = limits.cells.cells.min(limits.execution.resource_entries);
@@ -112,22 +105,12 @@ impl<'p> CapturedPrepaidStacks<'p> {
         let mut keys_left = limits.execution.key_bytes;
         let mut nodes_left = limits.execution.authority_nodes;
         for stack in self.stacks() {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             if sources.contains_key(&stack.source_hash) {
                 continue;
             }
             let bucket = self
                 .records_for_stack(&self.root(), &stack.instance_id)?
                 .ok_or_else(|| invalid("inventory stack has no rooted receipt bucket"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                bucket
-                    .receipts()
-                    .len()
-                    .checked_mul(size_of::<Vec<NativePrepaidResource<'_>>>())
-                    .ok_or_else(|| invalid("inventory receipt size overflow"))?,
-            )?;
             let mut records = Vec::new();
             records
                 .try_reserve_exact(bucket.receipts().len())
@@ -136,33 +119,10 @@ impl<'p> CapturedPrepaidStacks<'p> {
                 bytes_left = bytes_left
                     .checked_sub(record.len())
                     .ok_or_else(|| invalid("inventory aggregate record byte limit exceeded"))?;
-                let allocation = record
-                    .len()
-                    .checked_mul(
-                        size_of::<super::NativePrepaidContribution>()
-                            + size_of::<models::rust::phlo_resource::PhloAuthorityNode<'_>>()
-                            + 2 * size_of::<&[u8]>(),
-                    )
-                    .ok_or_else(|| invalid("inventory decode allocation overflow"))?;
-                reserve(budget, HostWorkDimension::SearchStateBytes, allocation)?;
-                reserve(
-                    budget,
-                    HostWorkDimension::VerificationOperations,
-                    record.len(),
-                )?;
                 let ordered = OrderedPrepaidCells::decode(record, limits.cells)?;
                 cells_left = cells_left
                     .checked_sub(ordered.cells().len())
                     .ok_or_else(|| invalid("inventory aggregate cell limit exceeded"))?;
-                reserve(
-                    budget,
-                    HostWorkDimension::SearchStateBytes,
-                    ordered
-                        .cells()
-                        .len()
-                        .checked_mul(size_of::<NativePrepaidResource<'_>>())
-                        .ok_or_else(|| invalid("inventory cell allocation overflow"))?,
-                )?;
                 let mut cells = Vec::new();
                 cells
                     .try_reserve_exact(ordered.cells().len())
@@ -179,7 +139,6 @@ impl<'p> CapturedPrepaidStacks<'p> {
                             key_bytes: receipt.resource_bytes().len(),
                             ..limits.execution
                         },
-                        budget,
                     )
                     .map_err(|error| invalid(&error.to_string()))?;
                     nodes_left = nodes_left
@@ -203,12 +162,7 @@ impl NativePrepaidInventory<'_, '_> {
 
     pub fn captured(&self) -> &CapturedPrepaidStacks<'_> { self.captured }
 
-    pub fn has_branched_stacks(&self, budget: &HostWorkBudget) -> Result<bool, CasperError> {
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            self.captured.stacks().len(),
-        )?;
+    pub fn has_branched_stacks(&self) -> Result<bool, CasperError> {
         Ok(self
             .captured
             .stacks()
@@ -216,49 +170,17 @@ impl NativePrepaidInventory<'_, '_> {
             .any(|stack| !stack.stack.parallel_tail.is_empty()))
     }
 
-    pub fn clone_captured_stacks(
-        &self,
-        budget: &HostWorkBudget,
-    ) -> Result<Vec<PurseStack>, CasperError> {
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-01): the
+    // merge spliced `clone_captured_stacks` and `checked_physical_trace` into
+    // one function. Both are restored from HEAD without the host-work meter
+    // (DR-131).
+    pub fn clone_captured_stacks(&self) -> Result<Vec<PurseStack>, CasperError> {
         let count = self.captured.stacks().len();
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_mul(size_of::<PurseStack>())
-                .ok_or_else(|| invalid("physical capture clone size overflow"))?,
-        )?;
         let mut owned = Vec::new();
         owned
             .try_reserve_exact(count)
             .map_err(|_| invalid("physical capture clone allocation failed"))?;
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                reserve(budget, dimension, amount)
-                    .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
-            }
-            Ok(())
-        };
         for stack in self.captured.stacks() {
-            shared::rust::clone_backing::reserve_copy_and_cleanup(&stack.channel, &backing)
-                .and_then(|_| {
-                    shared::rust::clone_backing::reserve_copy_and_cleanup(&stack.stack, &backing)
-                })
-                .map_err(|_| invalid("physical stack clone host work rejected"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                stack.random_state.len(),
-            )?;
-            reserve(
-                budget,
-                HostWorkDimension::VerificationBytes,
-                stack.random_state.len(),
-            )?;
             owned.push((**stack).clone());
         }
         Ok(owned)
@@ -268,28 +190,15 @@ impl NativePrepaidInventory<'_, '_> {
         &self,
         wallets: &DirectWalletSnapshot<'_, A>,
         events: &'e [AuthorityEvent<[u8; 32]>],
-        budget: &HostWorkBudget,
     ) -> Result<CheckedPrepaidPhysicalTrace<'e>, CasperError> {
         if wallets.pre_state_root() != self.root() {
             return Err(invalid(
                 "physical trace wallet and prepaid captures have different roots",
             ));
         }
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                reserve(budget, dimension, amount)
-                    .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
-            }
-            Ok(())
-        };
         let mut inventory = AuthorityPhysicalInventory::default();
         let mut signatures = BTreeMap::new();
         for source in wallets.sources() {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             let custody: [u8; 32] = source
                 .source()
                 .custody
@@ -300,21 +209,14 @@ impl NativePrepaidInventory<'_, '_> {
                 .payers()
                 .get(&custody)
                 .ok_or_else(|| invalid("physical wallet source has no authenticated payer"))?;
-            let lane = cost_signature_to_sig_metered(&payer.signature, &backing)
+            let lane = cost_signature_to_sig(&payer.signature)
                 .map_err(|error| invalid(&error.to_string()))?
                 .lane_hash();
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                4096 + size_of::<([u8; 32], CostSignature)>() + size_of::<([u8; 32], [u8; 32])>(),
-            )?;
             if let Some(existing) = signatures.get(&lane) {
                 if existing != &payer.signature {
                     return Err(invalid("physical wallet lane has conflicting signatures"));
                 }
             } else {
-                shared::rust::clone_backing::reserve_copy_and_cleanup(&payer.signature, &backing)
-                    .map_err(|_| invalid("physical signature clone host work rejected"))?;
                 signatures.insert(lane, payer.signature.clone());
             }
             inventory
@@ -322,22 +224,6 @@ impl NativePrepaidInventory<'_, '_> {
                 .map_err(|error| invalid(&error.to_string()))?;
         }
         for stack in self.captured.stacks() {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                4096 + size_of::<([u8; 32], Vec<CostSignature>)>()
-                    + if stack.stack.parallel_tail.is_empty() {
-                        0
-                    } else {
-                        size_of::<([u8; 32], models::rhoapi::CostStack)>()
-                    },
-            )?;
-            shared::rust::clone_backing::reserve_slice_copy_and_cleanup(
-                &stack.stack.cells,
-                &backing,
-            )
-            .map_err(|_| invalid("physical root prefix clone host work rejected"))?;
             if inventory
                 .stacks
                 .insert(stack.instance_id, stack.stack.cells.clone())
@@ -346,20 +232,13 @@ impl NativePrepaidInventory<'_, '_> {
                 return Err(invalid("physical capture repeats a rooted stack identity"));
             }
             if !stack.stack.parallel_tail.is_empty() {
-                shared::rust::clone_backing::reserve_copy_and_cleanup(&stack.stack, &backing)
-                    .map_err(|_| invalid("physical tree clone host work rejected"))?;
                 inventory
                     .stack_trees
                     .insert(stack.instance_id, stack.stack.clone());
             }
         }
-        let settlement = allocate_physical_settlement_with_host_work(
-            events,
-            &signatures,
-            &inventory,
-            Some(budget),
-        )
-        .map_err(|error| invalid(&error.to_string()))?;
+        let settlement = allocate_physical_settlement(events, &signatures, &inventory)
+            .map_err(|error| invalid(&error.to_string()))?;
         Ok(CheckedPrepaidPhysicalTrace {
             pre_state_root: self.root(),
             events,
@@ -387,19 +266,10 @@ impl NativePrepaidInventory<'_, '_> {
         &self,
         draws: &[PrepaidStackPop],
         maximum_draws: usize,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<NativePrepaidPrefix<'_>>, CasperError> {
         if draws.len() > maximum_draws {
             return Err(invalid("inventory selection draw limit exceeded"));
         }
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            draws
-                .len()
-                .checked_mul(size_of::<NativePrepaidPrefix<'_>>() + 128)
-                .ok_or_else(|| invalid("inventory selection allocation overflow"))?,
-        )?;
         let mut selected = BTreeSet::new();
         let mut occurrences = BTreeSet::new();
         let mut prefixes = Vec::new();
@@ -407,7 +277,6 @@ impl NativePrepaidInventory<'_, '_> {
             .try_reserve_exact(draws.len())
             .map_err(|_| invalid("inventory selection allocation failed"))?;
         for draw in draws {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             if !selected.insert(draw.stack_id) {
                 return Err(invalid("inventory selection repeats a physical stack"));
             }
@@ -448,7 +317,6 @@ impl NativePrepaidInventory<'_, '_> {
         draws: &[PrepaidStackPop],
         verified: &VerifiedPurseStackPops<'_>,
         maximum_draws: usize,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<NativePrepaidPrefix<'_>>, CasperError> {
         if self.root() != verified.live_root()
             || draws.len() > maximum_draws
@@ -458,18 +326,6 @@ impl NativePrepaidInventory<'_, '_> {
                 "verified inventory selection has another root or exceeds its draw limit",
             ));
         }
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            draws
-                .len()
-                .checked_mul(
-                    size_of::<NativePrepaidPrefix<'_>>()
-                        + size_of::<[u8; 32]>()
-                        + size_of::<([u8; 32], [u8; 32], usize)>(),
-                )
-                .ok_or_else(|| invalid("verified inventory selection allocation overflow"))?,
-        )?;
         let mut selected = Vec::new();
         selected
             .try_reserve_exact(draws.len())
@@ -483,8 +339,6 @@ impl NativePrepaidInventory<'_, '_> {
             .try_reserve_exact(draws.len())
             .map_err(|_| invalid("verified inventory selection allocation failed"))?;
         for draw in draws {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
-            reserve(budget, HostWorkDimension::SearchCandidates, selected.len())?;
             if selected.contains(&draw.stack_id) {
                 return Err(invalid("verified inventory selection repeats a branch"));
             }
@@ -505,38 +359,18 @@ impl NativePrepaidInventory<'_, '_> {
                 .binary_search_by_key(&root_id, |stack| stack.instance_id)
                 .map_err(|_| invalid("verified inventory root is absent from capture"))?;
             let stack = self.captured.stacks()[root_index];
-            reserve(
-                budget,
-                HostWorkDimension::SearchCandidates,
-                verified.stacks().len(),
-            )?;
             let witnessed = verified
                 .stacks()
                 .iter()
                 .find(|candidate| candidate.instance_id == root_id)
                 .ok_or_else(|| invalid("verified inventory root is absent from witness"))?;
-            let backing = |operations: usize, scanned: usize, bytes: usize| {
-                for (dimension, amount) in [
-                    (HostWorkDimension::VerificationOperations, operations),
-                    (HostWorkDimension::VerificationBytes, scanned),
-                    (HostWorkDimension::SearchStateBytes, bytes),
-                ] {
-                    reserve(budget, dimension, amount)
-                        .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
-                }
-                Ok(())
-            };
-            shared::rust::clone_backing::inspect(&stack.stack, &backing)
-                .and_then(|_| shared::rust::clone_backing::inspect(&witnessed.stack, &backing))
-                .map_err(|_| invalid("verified inventory comparison host work rejected"))?;
             if stack.source_hash != witnessed.source_hash || stack.stack != witnessed.stack {
                 return Err(invalid(
                     "verified inventory root differs from the captured stack",
                 ));
             }
-            let branches = stack_branches_metered(root_id, &stack.stack, &backing)
+            let branches = stack_branches(root_id, &stack.stack)
                 .map_err(|error| invalid(&error.to_string()))?;
-            reserve(budget, HostWorkDimension::SearchCandidates, branches.len())?;
             let branch = branches
                 .iter()
                 .find(|branch| branch.stack_id == draw.stack_id)
@@ -548,11 +382,6 @@ impl NativePrepaidInventory<'_, '_> {
                     "verified inventory branch count exceeds its prefix",
                 ));
             }
-            reserve(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                branches.len(),
-            )?;
             let total = branches.iter().try_fold(0_usize, |sum, branch| {
                 sum.checked_add(branch.stack.cells.len())
                     .ok_or_else(|| invalid("verified inventory transfer length overflow"))
@@ -571,11 +400,6 @@ impl NativePrepaidInventory<'_, '_> {
                 .transfer_offset
                 .checked_add(count)
                 .ok_or_else(|| invalid("verified inventory branch offset overflow"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchCandidates,
-                occurrences.len(),
-            )?;
             if let Some((_, source, receipt_index)) = occurrences
                 .iter()
                 .find(|(candidate, _, _)| *candidate == root_id)

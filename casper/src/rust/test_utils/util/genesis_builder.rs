@@ -322,8 +322,12 @@ impl GenesisBuilder {
         // `block_hash`) and will not agree in the genesis ceremony. `wallets.txt` is part of
         // the shard's agreed configuration, byte-for-byte, line order included.
         let mut bond_vaults: Vec<Vault> = bonds
-            .iter()
-            .map(|(pk, _)| {
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // the closure reads only the keys of the map.
+            // .iter()
+            // .map(|(pk, _)| {
+            .keys()
+            .map(|pk| {
                 // Initial validator vaults contain 0 Rev
                 VaultAddress::from_public_key(pk)
                     .map(|vault_address| Vault {
@@ -372,7 +376,10 @@ impl GenesisBuilder {
         // ⚠ This is the SIBLING of the identical sort in `casper/tests/util/genesis_builder.rs`;
         // the two copies must not drift.
         let mut validators: Vec<Validator> = bonds
-            .into_iter()
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // `into_iter` on a borrowed map is `iter`.
+            // .into_iter()
+            .iter()
             .map(|(pk, stake)| Validator {
                 pk: pk.clone(),
                 stake: *stake,
@@ -485,13 +492,19 @@ impl GenesisBuilder {
         let genesis = {
             // Create genesis with rspace_scope_id so TestNodes can share the same RSpace stores
             let mut kvs_manager = mk_test_rnode_store_manager_shared(rspace_scope_id.clone());
-            let r_store = (&mut *kvs_manager)
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // method calls borrow the receiver automatically.
+            // let r_store = (&mut *kvs_manager)
+            let r_store = kvs_manager
                 .r_space_stores()
                 .await
                 .expect("Failed to create RSpaceStore");
 
             let m_store = mergeable_store_from_dyn(&mut *kvs_manager).await?;
-            let mut runtime_manager = RuntimeManager::create_with_store(
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // the callee takes a shared reference.
+            // let mut runtime_manager = RuntimeManager::create_with_store(
+            let runtime_manager = RuntimeManager::create_with_store(
                 r_store,
                 m_store,
                 std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -499,7 +512,10 @@ impl GenesisBuilder {
             );
 
             let genesis =
-                Genesis::create_genesis_block(&mut runtime_manager, &genesis_parameters).await?;
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // the callee takes a shared reference.
+                // Genesis::create_genesis_block(&mut runtime_manager, &genesis_parameters).await?;
+                Genesis::create_genesis_block(&runtime_manager, &genesis_parameters).await?;
             let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvs_manager).await?;
             block_store.put(genesis.block_hash.clone(), &genesis)?;
 

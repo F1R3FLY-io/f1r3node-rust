@@ -104,27 +104,29 @@ pub(crate) fn descend_sig<'ast>(
                 Err(InterpreterError::NormalizerError(TRANSFER_ERR.to_string()))
             }
         },
-        SigInput::Own(sig) => match sig {
-            Signature::Ground(name) => ground!(name),
-            Signature::Hash(proc) => Ok(Step::Descend {
-                kont: NormKont::SigHash,
-                work: NormWork::CanonQuote { proc },
-            }),
-            Signature::Compound(left, right) => Ok(Step::Descend {
-                kont: NormKont::SigCompound {
-                    right: Some(SigInput::Own(*right)),
-                    bound_map_chain: bound_map_chain.clone(),
-                    left: None,
-                },
-                work: NormWork::Sig {
-                    sig: SigInput::Own(*left),
-                    bound_map_chain,
-                },
-            }),
-            Signature::Transfer(_, _) => {
-                Err(InterpreterError::NormalizerError(TRANSFER_ERR.to_string()))
-            }
-        },
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): no
+        // code constructs `SigInput::Own` (see `SigInput` in `normalize_drive.rs`).
+        // SigInput::Own(sig) => match sig {
+        //     Signature::Ground(name) => ground!(name),
+        //     Signature::Hash(proc) => Ok(Step::Descend {
+        //         kont: NormKont::SigHash,
+        //         work: NormWork::CanonQuote { proc },
+        //     }),
+        //     Signature::Compound(left, right) => Ok(Step::Descend {
+        //         kont: NormKont::SigCompound {
+        //             right: Some(SigInput::Own(*right)),
+        //             bound_map_chain: bound_map_chain.clone(),
+        //             left: None,
+        //         },
+        //         work: NormWork::Sig {
+        //             sig: SigInput::Own(*left),
+        //             bound_map_chain,
+        //         },
+        //     }),
+        //     Signature::Transfer(_, _) => {
+        //         Err(InterpreterError::NormalizerError(TRANSFER_ERR.to_string()))
+        //     }
+        // },
     }
 }
 
@@ -401,36 +403,38 @@ pub(crate) fn descend_wire_sig<'ast>(
                     .to_string(),
             )),
         },
-        SigInput::Own(signature) => match signature {
-            Signature::Ground(name) => ground(name, free_map),
-            Signature::Hash(proc) => Ok(Step::Descend {
-                kont: NormKont::WireSigHash,
-                work: NormWork::Proc {
-                    proc,
-                    input: ProcVisitInputs {
-                        par: Par::default(),
-                        bound_map_chain,
-                        free_map,
-                    },
-                },
-            }),
-            Signature::Compound(left, right) => Ok(Step::Descend {
-                kont: NormKont::WireSigCompound {
-                    right: Some(SigInput::Own(*right)),
-                    bound_map_chain: bound_map_chain.clone(),
-                    left: None,
-                },
-                work: NormWork::WireSig {
-                    sig: SigInput::Own(*left),
-                    bound_map_chain,
-                    free_map,
-                },
-            }),
-            Signature::Transfer(_, _) => Err(InterpreterError::NormalizerError(
-                "cost-accounting: a lollipop `-o` cannot appear in a fundable signature"
-                    .to_string(),
-            )),
-        },
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): no
+        // code constructs `SigInput::Own` (see `SigInput` in `normalize_drive.rs`).
+        // SigInput::Own(signature) => match signature {
+        //     Signature::Ground(name) => ground(name, free_map),
+        //     Signature::Hash(proc) => Ok(Step::Descend {
+        //         kont: NormKont::WireSigHash,
+        //         work: NormWork::Proc {
+        //             proc,
+        //             input: ProcVisitInputs {
+        //                 par: Par::default(),
+        //                 bound_map_chain,
+        //                 free_map,
+        //             },
+        //         },
+        //     }),
+        //     Signature::Compound(left, right) => Ok(Step::Descend {
+        //         kont: NormKont::WireSigCompound {
+        //             right: Some(SigInput::Own(*right)),
+        //             bound_map_chain: bound_map_chain.clone(),
+        //             left: None,
+        //         },
+        //         work: NormWork::WireSig {
+        //             sig: SigInput::Own(*left),
+        //             bound_map_chain,
+        //             free_map,
+        //         },
+        //     }),
+        //     Signature::Transfer(_, _) => Err(InterpreterError::NormalizerError(
+        //         "cost-accounting: a lollipop `-o` cannot appear in a fundable signature"
+        //             .to_string(),
+        //     )),
+        // },
     }
 }
 

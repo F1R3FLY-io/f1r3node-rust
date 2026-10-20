@@ -262,6 +262,9 @@ fn drive_counts(root: &Par) -> (Counts, Par) {
         CloneVal::CostSignature(_) => {
             panic!("a Par-rooted clone walk produced a CostSignature root")
         }
+        CloneVal::CostStack(_) => {
+            panic!("a Par-rooted clone walk produced a CostStack root")
+        }
     };
     (counts, out)
 }
@@ -284,7 +287,10 @@ fn reachable_count(root: &Par) -> usize {
 
 /// The `Par` descendants of `p` at cut-set depth exactly `d` (`d ≥ 1`), over the
 /// same hand-written relation.
-fn descendants_at<'a>(p: &'a Par, d: usize) -> Vec<&'a Par> {
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// lifetimes follow from the elision rules.
+// fn descendants_at<'a>(p: &'a Par, d: usize) -> Vec<&'a Par> {
+fn descendants_at(p: &Par, d: usize) -> Vec<&Par> {
     let mut frontier: Vec<&Par> = vec![p];
     for _ in 0..d {
         let mut next: Vec<&Par> = Vec::with_capacity(frontier.len() * 2);
@@ -333,6 +339,10 @@ const RECURSIVE_ORACLE_MAX_LEVELS: usize = 16;
 /// statement that the constant was *chosen*, and it is here because the failure
 /// mode is a silent revert, not a compile error.
 #[test]
+// Added by the merge of feature/cost-accounted-rho (clippy gate): the
+// models library allows `assertions_on_constants` crate-wide. This test
+// checks the generated constants at run time on purpose.
+#[allow(clippy::assertions_on_constants)]
 fn the_budget_is_not_zero() {
     assert!(
         CLONE_DESCEND_BUDGET >= 1,
@@ -553,6 +563,10 @@ fn the_counted_walk_reproduces_the_oracle() {
 /// prefix is a family of free functions, which measures **7,021**. A ratio of a
 /// resolution floor to the wrong slope is not a depth budget.
 #[test]
+// Added by the merge of feature/cost-accounted-rho (clippy gate): the
+// models library allows `assertions_on_constants` crate-wide. This test
+// checks the generated constants at run time on purpose.
+#[allow(clippy::assertions_on_constants)]
 fn the_prefix_is_a_constant_and_that_is_why_depth_stays_unbounded() {
     assert!(
         CLONE_RESIDUAL_HEIGHT > 0 && CLONE_RESIDUAL_HEIGHT < 16,

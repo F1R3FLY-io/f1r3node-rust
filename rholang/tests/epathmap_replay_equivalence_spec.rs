@@ -27,7 +27,11 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+// runtimes below select the CostV1 epoch.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rholang::rust::interpreter::test_utils::resources::create_runtimes_for_epoch;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::Event;
@@ -58,8 +62,19 @@ async fn epathmap_heavy_record_then_replay_reproduces_the_log() {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.expect("in-memory rspace store");
     let mut additional_system_processes = Vec::new();
-    let (mut runtime, mut replay_runtime, _history) =
-        create_runtimes(store, false, &mut additional_system_processes).await;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): play
+    // and replay charges are compared below. Since the checkpoint merge
+    // aed9f4427, a Legacy runtime opens no COMM accounting scope, so both
+    // charges were 0. Both roles now run in CostV1, the protocol-6 cost epoch.
+    // let (mut runtime, mut replay_runtime, _history) =
+    //     create_runtimes(store, false, &mut additional_system_processes).await;
+    let (mut runtime, mut replay_runtime, _history) = create_runtimes_for_epoch(
+        EventCodecEpoch::CostV1,
+        store,
+        false,
+        &mut additional_system_processes,
+    )
+    .await;
 
     let initial_phlo = Cost::create(i64::MAX, "epathmap replay equivalence".to_string());
     let rand = Blake2b512Random::create_from_bytes(&[0x51; 32]);
@@ -117,6 +132,9 @@ async fn epathmap_heavy_record_then_replay_reproduces_the_log() {
         .expect("replay must consume the ENTIRE recorded log (event-hash equality)");
 
     // Same results (play vs replay charge the same total too).
+    // Added by the merge of feature/cost-accounted-rho (finding R1-39): the
+    // comparison is evidence only when play charges something.
+    assert!(play_result.cost.value > 0, "play must charge the COMMs");
     assert_eq!(
         play_result.cost, replay_result.cost,
         "play and replay must charge identically"

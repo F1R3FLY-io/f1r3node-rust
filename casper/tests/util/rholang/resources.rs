@@ -451,10 +451,13 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-    use crypto::rust::signatures::signed::Signed;
-    use models::rust::casper::protocol::casper_message::DeployData;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use shared::rust::ByteString;
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-12): the
+    // buffer has a private checked store, so this helper builds it with
+    // `KeyValueRejectedDeployBuffer::from_stores` and needs no typed store.
+    // use crypto::rust::signatures::signed::Signed;
+    // use models::rust::casper::protocol::casper_message::DeployData;
+    // use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    // use shared::rust::ByteString;
 
     let buffer_kv_store = kvm
         .store("rejected_deploy_buffer".to_string())
@@ -465,10 +468,37 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
                 e
             ))
         })?;
-    let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-        KeyValueTypedStoreImpl::new(buffer_kv_store);
+    // let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
+    //     KeyValueTypedStoreImpl::new(buffer_kv_store);
 
-    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+    let checked_kv_store = kvm
+        .store("rejected_deploy_buffer_checked_v1".to_string())
+        .await
+        .map_err(|e| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get rejected_deploy_buffer_checked_v1 store: {:?}",
+                e
+            ))
+        })?;
+
+    let envelope_kv_store = kvm
+        .store("rejected_envelope_buffer".to_string())
+        .await
+        .map_err(|e| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get rejected_envelope_buffer store: {:?}",
+                e
+            ))
+        })?;
+    // Ok(KeyValueRejectedDeployBuffer {
+    //     store: buffer_db,
+    //     envelope_store: KeyValueTypedStoreImpl::new(envelope_kv_store),
+    // })
+    Ok(KeyValueRejectedDeployBuffer::from_stores(
+        buffer_kv_store,
+        checked_kv_store,
+        envelope_kv_store,
+    ))
 }
 
 pub async fn casper_buffer_storage_from_dyn(

@@ -124,6 +124,11 @@ fn datum_of(par: Par) -> ListParWithRandom {
     ListParWithRandom {
         pars: vec![par],
         random_state: vec![0xAB; 32],
+        // Added by the merge of feature/cost-accounted-rho (finding R3-37): the
+        // datum message gained two optional cost fields. The probe measures the
+        // legacy-shaped legs, so both stay absent.
+        cost_authority: None,
+        cost_stack: None,
     }
 }
 
@@ -138,6 +143,10 @@ fn pattern_of(par: Par) -> BindPattern {
 fn continuation_of(par: Par) -> TaggedContinuation {
     TaggedContinuation {
         guard: None,
+        // Added by the merge of feature/cost-accounted-rho (finding R3-37): the
+        // continuation message gained an optional cost authority. The probe
+        // measures the legacy-shaped leg, so it stays absent.
+        cost_authority: None,
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(par),
             random_state: vec![0xCD; 32],
@@ -145,6 +154,10 @@ fn continuation_of(par: Par) -> TaggedContinuation {
     }
 }
 
+// Added by the merge of feature/cost-accounted-rho (clippy gate): the
+// casper library allows `large_enum_variant` crate-wide, and this test
+// crate keeps the same policy for its fixture enum.
+#[allow(clippy::large_enum_variant)]
 enum Fixture {
     Datum(ListParWithRandom),
     Pattern(BindPattern),

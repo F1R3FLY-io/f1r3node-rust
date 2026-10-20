@@ -1,18 +1,14 @@
-use std::mem::size_of;
 use std::sync::atomic::AtomicBool;
 
-use shared::rust::clone_backing::CloneBacking;
 use tokio::sync::RwLock;
 
 use super::native_epoch::{NativeReplayBoundary, NativeReplayEpoch, NativeReplayRestore};
 use super::*;
 use crate::rspace::hashing::native_source::{GroupKeys, StoreKey, channel_key_for_epoch};
 use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
-use crate::rspace::hot_store::HotStoreState;
 use crate::rspace::hot_store::native_store::{NativeHotStore, NativeStoreState};
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
-#[cfg(test)]
-mod backing;
 mod publication;
 mod operations;
 mod result;
@@ -79,25 +75,6 @@ fn foreign_checkpoint() -> RSpaceError {
     RSpaceError::InterpreterError("native replay checkpoint belongs to another session".to_owned())
 }
 
-fn backing<T>(count: usize) -> Result<usize, RSpaceError> {
-    count.checked_mul(size_of::<T>()).ok_or_else(|| {
-        RSpaceError::InterpreterError("native replay checkpoint size overflow".to_owned())
-    })
-}
-
-fn reserve_checkpoint_metadata<E: NativeReplayEpoch>(
-    epoch: &E,
-    log: &Log,
-    counters: &BTreeMap<Produce, i32>,
-) -> Result<(), RSpaceError> {
-    let meter = |operations, scanned, backing| {
-        epoch.reserve_comparison(operations, scanned)?;
-        epoch.reserve_work(0, backing)
-    };
-    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(log, &meter)?;
-    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(counters, &meter)
-}
-
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
 where
     C: Clone
@@ -105,9 +82,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -119,9 +95,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -130,9 +105,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -141,9 +115,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -153,80 +126,19 @@ where
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         epoch: E,
-    ) -> Result<Self, RSpaceError>
-    where
-        C: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-        P: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-        A: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-        K: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-    {
-        let meter = |operations, scanned, backing| {
-            epoch.reserve_comparison(operations, scanned)?;
-            epoch.reserve_work(0, backing)
-        };
-        let reader =
-            history.get_current_history_reader_native_for_epoch(epoch.codec_epoch(), &meter)?;
-        meter(1, 0, 32)?;
-        let root = reader
-            .root()
-            .0
-            .try_into()
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        let base = reader.base_metered(&meter)?;
-        let cache_shards =
-            HotStoreInstances::native_cache_shards().ok_or(RSpaceError::HostWorkRejected)?;
-        let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
-        let (store_operations, store_bytes) =
-            HotStoreInstances::native_constructor_layout::<C, P, A, K>(cache_shards)
-                .ok_or(RSpaceError::HostWorkRejected)?;
-        let (lock_operations, lock_bytes) =
-            crate::rspace::striped_locks::native::constructor_layout()
-                .ok_or(RSpaceError::HostWorkRejected)?;
-        let (replay_operations, replay_bytes) =
-            ReplayRSpace::<C, P, A, K>::native_constructor_layout(cache_shards)
-                .ok_or(RSpaceError::HostWorkRejected)?;
-        let (native_store_operations, native_store_bytes) =
-            NativeHotStore::<C, P, A, K>::constructor_layout()
-                .ok_or(RSpaceError::HostWorkRejected)?;
-        // Changed by D-C2c (D-S1, DR-96): the session also builds its
-        // digest-keyed store.
-        // let fixed_operations = store_operations
-        //     .checked_add(lock_operations)
-        //     .and_then(|value| value.checked_add(replay_operations))
-        //     .and_then(|value| value.checked_add(2))
-        //     .ok_or(RSpaceError::HostWorkRejected)?;
-        let fixed_operations = store_operations
-            .checked_add(lock_operations)
-            .and_then(|value| value.checked_add(replay_operations))
-            .and_then(|value| value.checked_add(native_store_operations))
-            .and_then(|value| value.checked_add(2))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let operations = shards
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(fixed_operations.checked_mul(2)?))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let wrapper_bytes =
-            crate::rspace::native_backing::arc_allocation_bytes::<Box<dyn HotStore<C, P, A, K>>>()
-                .and_then(|value| {
-                    value.checked_add(crate::rspace::native_backing::arc_allocation_bytes::<()>()?)
-                })
-                .ok_or(RSpaceError::HostWorkRejected)?;
-        let bytes = bytes
-            .checked_add(store_bytes)
-            .and_then(|value| value.checked_add(lock_bytes))
-            .and_then(|value| value.checked_add(replay_bytes))
-            .and_then(|value| value.checked_add(wrapper_bytes))
-            .and_then(|value| value.checked_add(native_store_bytes))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        epoch.reserve_work(operations, bytes)?;
-        let store = HotStoreInstances::create_from_hr_native(base, cache_shards);
+    ) -> Result<Self, RSpaceError> {
+        let reader = history.get_current_history_reader_native_for_epoch(epoch.codec_epoch());
+        let root = reader.root().0.try_into().map_err(|_| {
+            RSpaceError::BugFoundError("the native replay root is not 32 bytes".to_owned())
+        })?;
+        let base = reader.base();
+        let store = HotStoreInstances::create_from_hr(base);
         Ok(Self {
-            space: ReplayRSpace::apply_native(
+            space: ReplayRSpace::apply_for_epoch(
                 epoch.codec_epoch(),
                 history,
                 Arc::new(store),
                 matcher,
-                cache_shards,
             ),
             store: Arc::new(NativeHotStore::new()),
             root,
@@ -242,13 +154,7 @@ where
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         epoch: E,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
-    ) -> Result<Self, RSpaceError>
-    where
-        C: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-        P: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-        A: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-        K: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
-    {
+    ) -> Result<Self, RSpaceError> {
         let session = Self::new(history, matcher, epoch)?;
         for (channels, install) in installations {
             session.install(channels, install)?;
@@ -264,20 +170,10 @@ where
         }
     }
 
-    fn produce_source(&self, channel: &C, data: &A, persist: bool) -> Result<Produce, RSpaceError>
-    where E: super::native_epoch::NativeOperationEpoch<C, P, A, K> {
+    /// Changed by DR-131 S6: the produce source of dev, `Produce::create`.
+    fn produce_source(&self, channel: &C, data: &A, persist: bool) -> Result<Produce, RSpaceError> {
         self.ensure_open()?;
-        self.epoch.prepare_produce_source(channel, data)?;
-        crate::rspace::hashing::native_source::produce_for_epoch(
-            self.epoch.codec_epoch(),
-            channel,
-            data,
-            persist,
-            &|operations, scanned, backing| {
-                self.epoch.reserve_comparison(operations, scanned)?;
-                self.epoch.reserve_work(0, backing)
-            },
-        )
+        Produce::create_for_epoch(self.epoch.codec_epoch(), channel, data, persist)
     }
 
     /// The consume source and the store keys of its channels, in channel
@@ -288,13 +184,8 @@ where
         patterns: &[P],
         continuation: &K,
         persist: bool,
-    ) -> Result<(Consume, Vec<StoreKey>), RSpaceError>
-    where
-        E: super::native_epoch::NativeOperationEpoch<C, P, A, K>,
-    {
+    ) -> Result<(Consume, Vec<StoreKey>), RSpaceError> {
         self.ensure_open()?;
-        self.epoch
-            .prepare_consume_source(channels, patterns, continuation)?;
         // Changed by D-C2c (D-S1, DR-96): the source also returns the keys of
         // its channels.
         // crate::rspace::hashing::native_source::consume(
@@ -304,10 +195,6 @@ where
             patterns,
             continuation,
             persist,
-            &|operations, scanned, backing| {
-                self.epoch.reserve_comparison(operations, scanned)?;
-                self.epoch.reserve_work(0, backing)
-            },
         )
     }
 
@@ -318,19 +205,12 @@ where
         // Changed by D-C2c (D-S1, DR-96): the native session uses its
         // digest-keyed store.
         // let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
-        let (shards, bytes) = NativeHotStore::<C, P, A, K>::snapshot_layout();
-        let operations = shards
-            .checked_mul(2)
-            .and_then(|count| count.checked_add(16))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        self.epoch.reserve_work(operations, bytes)?;
         let log = self.space.event_log.lock().expect("native replay log");
         let counters = self
             .space
             .produce_counter
             .lock()
             .expect("native replay counters");
-        reserve_checkpoint_metadata(&self.epoch, &log, &counters)?;
         Ok(NativeSessionCheckpoint {
             identity: Arc::clone(&self.identity),
             epoch: boundary.checkpoint(),
@@ -414,7 +294,6 @@ where
         let boundary = self.epoch.begin_boundary()?;
         boundary.check_complete()?;
         let evidence = boundary.completed_evidence()?;
-        self.epoch.reserve_work(1, 0)?;
         let preparation =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
         let prepared_result = (|| {
@@ -436,21 +315,15 @@ where
             //     .prepare_native_checkpoint(changes, &|operations, scanned,
             // backing| {         self.history_reserve(operations,
             // scanned, backing)     })?;
-            let reserve =
-                |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
-            let dirty = self.store.dirty_entries(&reserve)?;
-            let changes = dirty.actions(&reserve)?;
+            let dirty = self.store.dirty_entries();
+            let changes = dirty.actions();
             let history = self.space.get_history_repository();
-            let prepared = history.prepare_native_checkpoint_borrowed_for_epoch(
-                self.epoch.codec_epoch(),
-                &changes,
-                &reserve,
-            )?;
+            let prepared = history
+                .prepare_native_checkpoint_borrowed_for_epoch(self.epoch.codec_epoch(), &changes)?;
             let root = prepared
                 .root
                 .as_ref()
                 .map_or(self.root.as_slice(), |root| root.0.as_slice());
-            self.history_reserve(1, root.len(), root.len())?;
             let export_root = Blake2b256Hash::from_bytes(root.to_vec());
             Ok::<_, RSpaceError>((history, prepared, export_root))
         })();
@@ -473,11 +346,7 @@ where
     ) -> Result<(), RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
-        let meter = |operations, scanned, backing| {
-            self.epoch.reserve_comparison(operations, scanned)?;
-            self.epoch.reserve_work(0, backing)
-        };
-        if super::native_directive::metered_exact_produce(original, updated, &meter)? {
+        if super::native_directive::exact_produce(original, updated) {
             Ok(())
         } else {
             Err(RSpaceError::InterpreterError(
@@ -496,71 +365,37 @@ where
     }
 
     pub async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
-        self.get_data_prepared(channel, |operations, scanned, backing| {
-            self.history_reserve(operations, scanned, backing)
-        })
-        .await
-    }
-
-    pub async fn get_data_with_budget(
-        &self,
-        channel: &C,
-        reserve: impl Fn(usize, usize) -> Result<(), RSpaceError> + Send + Sync,
-    ) -> Result<Vec<Datum<A>>, RSpaceError> {
-        self.get_data_prepared(channel, |operations, scanned: usize, backing| {
-            reserve(
-                operations,
-                scanned
-                    .checked_add(backing)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-            )
-        })
-        .await
-    }
-
-    async fn get_data_prepared(
-        &self,
-        channel: &C,
-        reserve: impl Fn(usize, usize, usize) -> Result<(), RSpaceError> + Send + Sync,
-    ) -> Result<Vec<Datum<A>>, RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
-        reserve(1, 0, 0)?;
-        crate::rspace::native_backing::inspect_blocks(channel, &reserve)?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // crate::rspace::native_backing::inspect(channel, &reserve)?;
         let hashes = [striped_locks::channel_hash(channel)];
-        let _channels = self
-            .consume_lock_with(&hashes, |operations, bytes| reserve(operations, 0, bytes))
-            .await?;
+        let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
         // self.read_data_with(channel, &reserve)
-        // The lock hash and the epoch-bound store key each traverse the
-        // channel. A block inspection prepays one traversal only.
-        crate::rspace::native_backing::inspect_blocks(channel, &reserve)?;
-        let key = channel_key_for_epoch(self.epoch.codec_epoch(), channel, &reserve)?;
-        self.read_data_with(channel, key, &reserve)
+        let key = channel_key_for_epoch(self.epoch.codec_epoch(), channel)?;
+        self.read_data_with(channel, key)
     }
 
     pub async fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
-        self.epoch.reserve_work(1, 0)?;
-        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
-            self.history_reserve(operations, scanned, backing)
-        })?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // crate::rspace::native_backing::inspect(
+        //     channel,
+        //     &|operations, scanned, backing| {
+        //         self.history_reserve(operations, scanned, backing)
+        //     },
+        // )?;
         let hashes = [striped_locks::channel_hash(channel)];
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
         // self.read_joins(channel)
-        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
-            self.history_reserve(operations, scanned, backing)
-        })?;
-        let key = channel_key_for_epoch(
-            self.epoch.codec_epoch(),
-            channel,
-            &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
-        )?;
+        let key = channel_key_for_epoch(self.epoch.codec_epoch(), channel)?;
         self.read_joins(channel, key)
     }
 
@@ -570,20 +405,12 @@ where
     ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
-        let hashes = self.channel_hashes(channels, channels.len())?;
+        let hashes = self.channel_hashes(channels, channels.len());
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
-        crate::rspace::native_backing::inspect_blocks_slice(
-            channels,
-            &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
-        )?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the group keys.
         // self.read_continuations(channels)
-        let keys = GroupKeys::build_for_epoch(
-            self.epoch.codec_epoch(),
-            channels,
-            &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
-        )?;
+        let keys = GroupKeys::build_for_epoch(self.epoch.codec_epoch(), channels)?;
         self.read_continuations(channels, &keys)
     }
 }

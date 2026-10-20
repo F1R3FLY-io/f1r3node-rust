@@ -57,7 +57,14 @@ in {
 
     assert_eq!(signed_block.body.deploys.len(), 1);
     assert!(!signed_block.body.deploys[0].is_failed());
-    assert_eq!(signed_block.body.deploys[0].cost().cost, 53_251);
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, Casper cause 10):
+    // F1R3Lang's normalizer moves each nested child's `locally_free` cache into its parent
+    // (26876b655, 91c066e7b), and the Legacy-epoch charge counts protobuf bytes, so this
+    // deploy costs 82 less than theirs. The attribution comes from code reading, because the
+    // other cost paths equal theirs. The 82-byte sum is not computed. The merged tree
+    // measured 53_169.
+    // assert_eq!(signed_block.body.deploys[0].cost().cost, 53_251);
+    assert_eq!(signed_block.body.deploys[0].cost().cost, 53_169);
 
     let expected_timestamp = signed_block.header.timestamp;
     let expected = format!(

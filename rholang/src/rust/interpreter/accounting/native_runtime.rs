@@ -1,18 +1,16 @@
 use std::sync::Arc;
 
-use models::rust::host_work::{HostWorkDimension, HostWorkLimits};
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::operation_context;
 
 use super::byte_accounting::{ByteCharge, BYTE_COST_SCHEDULE_V1};
 use super::byte_receipts::ByteObservation;
 use super::native_phlo_rules::{
-    NativeBudgetTraceLimits, NativePhloExecutionContract, NativePhloExecutionError,
-    NativePhloReservation, PreparedNativePhloCharge,
+    NativeBoundSource, NativeBudgetTraceLimits, NativePhloExecutionContract,
+    NativePhloExecutionError, NativePhloReservation, PreparedNativePhloCharge,
 };
 use super::{AuthorityRuntimeState, BillableKind, RuntimeBudget, Token};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 mod recording;
 mod operation_sources;
@@ -22,7 +20,6 @@ mod path_trie;
 mod checked_operations;
 mod replay_authority;
 mod wire;
-pub(crate) mod clone_backing;
 pub use checked_operations::{
     CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeOperationJournalError,
     NativeOperationJournalLimits, NativeOperationReplay, NativeOperationTraceError,
@@ -40,7 +37,7 @@ pub use operations::{
     NativeOperationRecordV3, NativeRestingRecordV3,
 };
 pub use path_trie::{NativePathTrie, PathId};
-use recording::{recording_error, work, NativeBudgetRecorder, NativeObservationPreparation};
+use recording::{recording_error, NativeBudgetRecorder, NativeObservationPreparation};
 pub use recording::{NativeBudgetRecording, NativeBudgetRetry};
 pub(crate) use replay_authority::NativeAuthorityCheckpoint;
 pub use wire::{
@@ -55,16 +52,19 @@ pub struct NativeRuntimeConfig {
     replay_bound: bool,
     reservation: NativePhloReservation,
     limits: NativeBudgetTraceLimits,
-    host_work: HostWorkBudget,
     session: [u8; 32],
     generation: Arc<()>,
     recording: NativeBudgetRecorder,
     operations: operations::NativeOperationRecorder,
+    /// Added by DR-114: the bytes of external-service replies that play may
+    /// record. The default is 0, so a configuration without a room records
+    /// no successful reply (fail closed).
+    record_room: u64,
+    /// Added by DR-114: the reply bytes recorded so far.
+    record_used: u64,
 }
 
 impl NativeRuntimeConfig {
-    pub(crate) fn host_work(&self) -> HostWorkBudget { self.host_work.clone() }
-
     /// The caller must obtain this epoch from its authenticated host policy.
     /// Guest terms, event bytes, and cost grades are not epoch selectors.
     pub fn with_event_codec_epoch(mut self, epoch: EventCodecEpoch) -> Self {
@@ -74,22 +74,25 @@ impl NativeRuntimeConfig {
 
     pub fn event_codec_epoch(&self) -> EventCodecEpoch { self.event_codec_epoch }
 
-    pub fn new(
-        contract: NativePhloExecutionContract<'_>,
-        limits: NativeBudgetTraceLimits,
-        host_work: HostWorkBudget,
-    ) -> Self {
+    pub fn new(contract: NativePhloExecutionContract<'_>, limits: NativeBudgetTraceLimits) -> Self {
         Self {
             event_codec_epoch: EventCodecEpoch::Legacy,
             replay_bound: false,
             reservation: contract.reservation(),
             limits,
-            host_work,
             session: [0; 32],
             generation: Arc::new(()),
             recording: NativeBudgetRecorder::default(),
             operations: operations::NativeOperationRecorder::default(),
+            record_room: 0,
+            record_used: 0,
         }
+    }
+
+    /// Added by DR-114: the room for recorded external-service replies.
+    pub fn with_record_room(mut self, room: u64) -> Self {
+        self.record_room = room;
+        self
     }
 }
 
@@ -97,30 +100,25 @@ impl RuntimeBudget {
     /// Grant one explicitly local, non-replay CostV2 lookahead budget the
     /// ability to account RestingCOMM. Only trusted host construction may call
     /// this; source syntax and event bytes are not authority selectors.
-    pub fn enable_standalone_resting_comm(
-        &self,
-        limits: HostWorkLimits,
-    ) -> Result<(), InterpreterError> {
+    pub fn enable_standalone_resting_comm(&self) -> Result<(), InterpreterError> {
         if self.is_unmetered() || self.is_legacy() || self.has_comm_accounting_scope() {
-            return Err(InterpreterError::HostWorkRejected);
-        }
-        if HostWorkDimension::ALL.iter().any(|dimension| {
-            let cap = limits.get(*dimension).get();
-            cap == 0 || cap == u64::MAX
-        }) {
-            return Err(InterpreterError::HostWorkRejected);
+            return Err(InterpreterError::ReduceError(
+                "Standalone RestingCOMM requires a local accounting scope".to_string(),
+            ));
         }
         let mut state = self.authority_state.lock().expect("authority state");
         if state.native.is_some() {
-            return Err(InterpreterError::HostWorkRejected);
+            return Err(InterpreterError::ReduceError(
+                "Standalone RestingCOMM cannot replace a native session".to_string(),
+            ));
         }
-        state.standalone_resting_comm = Some(limits);
+        state.standalone_resting_comm = true;
         Ok(())
     }
 
     pub fn standalone_resting_comm_enabled(&self) -> bool {
         let state = self.authority_state.lock().expect("authority state");
-        state.standalone_resting_comm.is_some()
+        state.standalone_resting_comm
     }
 
     pub fn native_event_codec_epoch(&self) -> Option<EventCodecEpoch> {
@@ -140,14 +138,20 @@ impl RuntimeBudget {
             .is_some()
     }
 
-    pub(crate) fn native_host_work(&self) -> Option<HostWorkBudget> {
-        self.authority_state
-            .lock()
-            .expect("authority state")
-            .native
-            .as_ref()
-            .filter(|native| !native.replay_bound)
-            .map(NativeRuntimeConfig::host_work)
+    /// Added by DR-114: takes `bytes` of the record room for one recorded
+    /// reply in play. Replay and an exhausted room take nothing.
+    pub(crate) fn take_native_record_room(&self, bytes: u64) -> bool {
+        let mut state = self.authority_state.lock().expect("authority state");
+        let Some(native) = state.native.as_mut().filter(|native| !native.replay_bound) else {
+            return false;
+        };
+        match native.record_used.checked_add(bytes) {
+            Some(used) if used <= native.record_room => {
+                native.record_used = used;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn reset_for_native_execution(
@@ -161,9 +165,6 @@ impl RuntimeBudget {
             return Err(InterpreterError::ReduceError(
                 "native execution requires an idle metered budget".to_owned(),
             ));
-        }
-        if config.host_work.is_rejected() {
-            return Err(InterpreterError::HostWorkRejected);
         }
         self.reset_from_token(&Token::coalesced(self.signature(), 0));
         config.session = self.deploy_id();
@@ -228,7 +229,6 @@ impl RuntimeBudget {
                     Ok::<_, InterpreterError>((
                         native.reservation.preparer(),
                         native.limits,
-                        native.host_work.clone(),
                         Arc::clone(&native.generation),
                         native.session,
                         native.recording.prepare(native.limits.attempts)?,
@@ -236,7 +236,7 @@ impl RuntimeBudget {
                 })
                 .transpose()?
         };
-        let Some((preparer, limits, host_work, generation, session, ticket)) = captured else {
+        let Some((preparer, limits, generation, session, ticket)) = captured else {
             return Ok(None);
         };
         let prepare = || {
@@ -247,24 +247,6 @@ impl RuntimeBudget {
                     "native charge operation session or path is invalid",
                 ));
             }
-            work(
-                &host_work,
-                HostWorkDimension::VerificationOperations,
-                order
-                    .path
-                    .len()
-                    .checked_add(34)
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            )?;
-            work(
-                &host_work,
-                HostWorkDimension::SearchStateBytes,
-                order
-                    .path
-                    .len()
-                    .checked_mul(std::mem::size_of::<(u64, u64)>())
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            )?;
             // Changed by C7b (DR-86): the producer records a copied path; the
             // captured evidence names its trie node.
             // let occurrence = NativeBudgetOccurrence {
@@ -280,20 +262,10 @@ impl RuntimeBudget {
                 last: order.path.last_segment(),
                 stage: observation.kind.into(),
             };
-            let comparison_bytes =
-                super::native_phlo_rules::observation_comparison_bytes(observation, &host_work)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-            let charge = match preparer.prepare(Arc::clone(observation), limits.regions, &host_work)
-            {
+            let charge = match preparer.prepare(Arc::clone(observation), limits.regions) {
                 Ok(charge) => Some(charge),
-                Err(NativePhloExecutionError::Overflow) if !host_work.is_rejected() => None,
-                Err(error) => {
-                    return Err(if host_work.is_rejected() {
-                        InterpreterError::HostWorkRejected
-                    } else {
-                        native_error(error)
-                    })
-                }
+                Err(NativePhloExecutionError::Overflow) => None,
+                Err(error) => return Err(native_error(error, preparer.bound_source())),
             };
             Ok(Some(NativeObservationPreparation {
                 generation: Arc::clone(&generation),
@@ -301,7 +273,6 @@ impl RuntimeBudget {
                 occurrence_key,
                 observation: Arc::clone(observation),
                 charge,
-                comparison_bytes,
                 ticket,
             }))
         };
@@ -343,12 +314,30 @@ impl RuntimeBudget {
     }
 }
 
-fn native_error(error: NativePhloExecutionError) -> InterpreterError {
+// Changed by DR-113: exhaustion takes the class of the bound source.
+// fn native_error(error: NativePhloExecutionError) -> InterpreterError {
+//     match error {
+//         NativePhloExecutionError::BoundExceeded | NativePhloExecutionError::Overflow => {
+//             InterpreterError::OutOfPhlogistonsError
+//         }
+//         other => InterpreterError::ReduceError(other.to_string()),
+//     }
+// }
+fn native_error(error: NativePhloExecutionError, source: NativeBoundSource) -> InterpreterError {
     match error {
         NativePhloExecutionError::BoundExceeded | NativePhloExecutionError::Overflow => {
-            InterpreterError::OutOfPhlogistonsError
+            exhaustion_error(source)
         }
         other => InterpreterError::ReduceError(other.to_string()),
+    }
+}
+
+/// Added by DR-113: the error of an exhausted bound. A signed limit gives a
+/// classified user failure, and a certified bound gives a certificate failure.
+pub(crate) fn exhaustion_error(source: NativeBoundSource) -> InterpreterError {
+    match source {
+        NativeBoundSource::SignedLimit => InterpreterError::SignedLimitExhausted,
+        NativeBoundSource::Certificate => InterpreterError::OutOfPhlogistonsError,
     }
 }
 

@@ -242,7 +242,10 @@ impl Blake2b512Random {
             "remainder: {:?}",
             &self.hash_array[rot_position as usize..64]
         );
-        println!("hash_array: {:?}", &self.hash_array);
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // the format arguments are borrowed already.
+        // println!("hash_array: {:?}", &self.hash_array);
+        println!("hash_array: {:?}", self.hash_array);
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -409,6 +412,12 @@ impl<'de> serde::Deserialize<'de> for Blake2b512Random {
         Ok(Blake2b512Random::create_from_bytes(&[1]))
     }
 }
+
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the test below that requires a panic.
+#[cfg(test)]
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
 
 #[cfg(test)]
 mod tests {
@@ -599,8 +608,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at least 2 inputs")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "at least 2 inputs")]
     fn blake2b512_random_merge_should_reject_single_child() {
+        let child = super::panic_child::PanicChild::new(
+            module_path!(),
+            "blake2b512_random_merge_should_reject_single_child",
+        );
+        if !child.is_child() {
+            child.expect_panic("at least 2 inputs");
+            return;
+        }
+        child.subject_reached();
         Blake2b512Random::merge(vec![Blake2b512Random::create_from_bytes(&[])]);
     }
 

@@ -51,6 +51,18 @@ lazy_static! {
     std::array::from_fn(|i| DEFAULT_VALIDATOR_KEY_PAIRS[i].1.clone())
   };
 
+  // Added by the merge of feature/cost-accounted-rho (finding R3-28): tests of
+  // both sides read this table. Base dd03e0f0c and theirs 75de2dc39 fill it
+  // with random keys. F1R3Lang funds the extra genesis vaults with the
+  // deterministic fixture keys (`build_genesis_parameters` below), so entry
+  // `index` is the key that `build_genesis_parameters` funds as extra vault
+  // `index`.
+  pub static ref EXTRA_GENESIS_VAULT_KEY_PAIRS: [(PrivateKey, PublicKey); 4] = {
+    std::array::from_fn(|index| {
+      deterministic_genesis_fixture_key_pair(GenesisFixtureKeyCohort::FundedVault, index)
+    })
+  };
+
   pub static ref DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS: [String; 3] = [
       "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
       "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -168,9 +180,16 @@ fn record_cache_miss() -> (u64, u64) {
     (misses, CACHE_ACCESSES_TOTAL.load(Ordering::SeqCst))
 }
 
+/// Added by step F0 of gap G1 (user decision C1): the balance of each funded
+/// vault of an offered genesis. It covers the hold of an offer that holds its
+/// whole signed limit, the limit times the price plus the fee.
+pub const OFFERED_TEST_VAULT_BALANCE: u64 = 1_000_000_000_000;
+
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
     resource_policy: Option<PhloGenesisPolicy>,
+    /// Added by DR-116 (gap G6): build a protocol-6 offered-funded genesis.
+    offered_v6: bool,
 }
 
 impl GenesisBuilder {
@@ -178,6 +197,19 @@ impl GenesisBuilder {
         Self {
             vaults: None,
             resource_policy: None,
+            offered_v6: false,
+        }
+    }
+
+    /// Added by DR-116 (gap G6): a builder for a genesis with the offered-funded
+    /// v6 resource policy, header version 6 and minimum phlo price 1. Every
+    /// deploy on such a chain is an offered envelope. Step F0 of gap G1 gives
+    /// each funded vault `OFFERED_TEST_VAULT_BALANCE`.
+    pub fn offered_v6() -> Self {
+        Self {
+            vaults: None,
+            resource_policy: Some(crate::helper::offered_deploy::offered_v6_policy()),
+            offered_v6: true,
         }
     }
 
@@ -328,8 +360,12 @@ impl GenesisBuilder {
         // `block_hash`) and will not agree in the genesis ceremony. `wallets.txt` is part of
         // the shard's agreed configuration, byte-for-byte, line order included.
         let mut bond_vaults: Vec<Vault> = bonds
-            .iter()
-            .map(|(pk, _)| {
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // the closure reads only the keys of the map.
+            // .iter()
+            // .map(|(pk, _)| {
+            .keys()
+            .map(|pk| {
                 // Initial validator vaults contain 0 Rev
                 VaultAddress::from_public_key(pk)
                     .map(|vault_address| Vault {
@@ -378,7 +414,10 @@ impl GenesisBuilder {
         // and `validator_order_is_stable_and_agrees_with_the_downstream_sorts` in
         // `casper/tests/genesis/genesis_vaults_order_determinism.rs`.
         let mut validators: Vec<Validator> = bonds
-            .into_iter()
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // `into_iter` on a borrowed map is `iter`.
+            // .into_iter()
+            .iter()
             .map(|(pk, stake)| Validator {
                 pk: pk.clone(),
                 stake: *stake,
@@ -428,8 +467,17 @@ impl GenesisBuilder {
         &mut self,
         parameters: Option<GenesisParameters>,
     ) -> Result<GenesisContext, CasperError> {
-        let parameters =
+        let mut parameters =
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
+        if self.offered_v6 {
+            parameters.2.version = 6;
+            parameters.2.proof_of_stake.min_phlo_price = 1;
+            for vault in parameters.2.vaults.iter_mut() {
+                if vault.initial_balance > 0 {
+                    vault.initial_balance = OFFERED_TEST_VAULT_BALANCE;
+                }
+            }
+        }
         record_cache_access();
 
         let key = (parameters.clone(), self.resource_policy.clone());
@@ -567,5 +615,55 @@ impl GenesisContext {
             .iter()
             .map(|(_, pk)| pk.clone())
             .collect()
+    }
+}
+
+/// Added by step F0 of gap G1: the funded vaults of an offered genesis.
+#[cfg(test)]
+mod offered_vault_tests {
+    use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
+    use rholang::rust::interpreter::rho_type::RhoNumber;
+
+    use super::*;
+    use crate::helper::test_node::TestNode;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn offered_genesis_funds_genesis_vaults_and_keeps_validator_vaults_empty() {
+        let genesis = GenesisBuilder::offered_v6()
+            .build_genesis_with_parameters(None)
+            .await
+            .expect("offered v6 genesis builds");
+        let node = TestNode::standalone(genesis.clone())
+            .await
+            .expect("a standalone node starts on the offered genesis");
+        let root = genesis.genesis_block.body.state.post_state_hash.clone();
+        let offered_balance =
+            i64::try_from(OFFERED_TEST_VAULT_BALANCE).expect("the offered balance fits in i64");
+        let funded = genesis
+            .genesis_vaults
+            .iter()
+            .map(|(_, public)| (public, offered_balance));
+        let validators = genesis
+            .validator_key_pairs
+            .iter()
+            .map(|(_, public)| (public, 0));
+        for (public, expected) in funded.chain(validators) {
+            let address =
+                VaultAddress::from_public_key(public).expect("a genesis key forms a vault address");
+            let (observed, _) = node
+                .runtime_manager
+                .play_exploratory_deploy(balance_query_source(&address), &root, None)
+                .await
+                .expect("the balance query runs on the genesis root");
+            let [balance] = observed.as_slice() else {
+                panic!("the balance query returns one value, got {observed:?}");
+            };
+            assert_eq!(
+                RhoNumber::unapply(balance),
+                Some(expected),
+                "vault {} at genesis",
+                address.to_base58()
+            );
+        }
     }
 }

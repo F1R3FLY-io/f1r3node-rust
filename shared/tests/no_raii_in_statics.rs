@@ -136,6 +136,47 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "Never-dropped tokio Runtime in a test binary; same bounded, process-lifetime \
          rationale as block-storage's.",
     ),
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, source-policy
+    // tests): the six statics below came with the cost-accounting Casper tests through
+    // the checkpoint merge aed9f4427. Each one is a proptest's shared runtime, because a
+    // proptest `#[test]` cannot be `#[tokio::test]`.
+    (
+        "casper/src/rust/finality/floor.rs",
+        "FLOOR_RUNTIME",
+        "Never-dropped tokio Runtime inside `#[cfg(test)] mod frontier_determinism_tests`, \
+         so only casper's library test binary contains it. Same bounded, process-lifetime \
+         rationale as block-storage's: one runtime per process, no filesystem state.",
+    ),
+    (
+        "casper/tests/fork_choice/heaviest_subtree_descent.rs",
+        "RUNTIME",
+        "Never-dropped tokio Runtime in a test binary, shared by the file's proptests; same \
+         bounded, process-lifetime rationale as block-storage's.",
+    ),
+    (
+        "casper/tests/fork_choice/prop_bound.rs",
+        "RUNTIME",
+        "Never-dropped tokio Runtime in a test binary, shared by the file's proptests; same \
+         bounded, process-lifetime rationale as block-storage's.",
+    ),
+    (
+        "casper/tests/fork_choice/prop_estimator_determinism.rs",
+        "RUNTIME",
+        "Never-dropped tokio Runtime in a test binary, shared by the file's proptests; same \
+         bounded, process-lifetime rationale as block-storage's.",
+    ),
+    (
+        "casper/tests/fork_choice/prop_ghost_argmax.rs",
+        "RUNTIME",
+        "Never-dropped tokio Runtime in a test binary, shared by the file's proptests; same \
+         bounded, process-lifetime rationale as block-storage's.",
+    ),
+    (
+        "casper/tests/fork_choice/prop_lca.rs",
+        "RUNTIME",
+        "Never-dropped tokio Runtime in a test binary, shared by the file's proptests; same \
+         bounded, process-lifetime rationale as block-storage's.",
+    ),
 ];
 
 /// Methods that DISARM an RAII guard: they consume the guard and hand back the raw resource,

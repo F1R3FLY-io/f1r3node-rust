@@ -929,6 +929,7 @@ fn deeply_nested_cost_signature_decodes_and_tears_down_on_small_stack() {
         bytes.push(1);
         bytes.extend_from_slice(&5u32.to_le_bytes());
         bytes.push(1);
+        bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes
     }
 

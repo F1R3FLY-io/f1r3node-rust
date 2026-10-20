@@ -1,18 +1,13 @@
-use std::io::Write;
-use std::mem::size_of;
 use std::sync::Arc;
 
-use models::rust::host_work::HostWorkDimension;
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::NativeCandidateIdentity;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce, RestingCOMM, COMM};
 use serde::Serialize;
 
-use super::recording::{recording_error, work};
-use super::{HostWorkBudget, InterpreterError};
+use super::recording::recording_error;
+use super::InterpreterError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeProduceSource {
@@ -58,46 +53,6 @@ fn hash(bytes: &[u8]) -> Result<[u8; 32], InterpreterError> {
         .map_err(|_| recording_error("native operation source hash has invalid length"))
 }
 
-fn checked_add(left: usize, right: usize) -> Result<usize, InterpreterError> {
-    left.checked_add(right)
-        .ok_or(InterpreterError::HostWorkRejected)
-}
-
-fn checked_mul(left: usize, right: usize) -> Result<usize, InterpreterError> {
-    left.checked_mul(right)
-        .ok_or(InterpreterError::HostWorkRejected)
-}
-
-fn metered_bytes(left: &[u8], right: &[u8], meter: &dyn SourceMeter) -> Result<bool, RSpaceError> {
-    let bytes = left
-        .len()
-        .checked_add(right.len())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(1, bytes, 0)?;
-    Ok(left == right)
-}
-
-pub(super) fn allocate<T>(
-    count: usize,
-    budget: &HostWorkBudget,
-) -> Result<Vec<T>, InterpreterError> {
-    work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        checked_add(count, 1)?,
-    )?;
-    work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        checked_mul(checked_mul(count, size_of::<T>())?, 2)?,
-    )?;
-    let mut result = Vec::new();
-    result
-        .try_reserve_exact(count)
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    Ok(result)
-}
-
 impl NativeProduceSource {
     fn capture(source: &Produce) -> Result<Self, InterpreterError> {
         Ok(Self {
@@ -112,26 +67,11 @@ impl NativeProduceSource {
             && self.hash.as_slice() == source.hash.0
             && self.persistent == source.persistent
     }
-
-    fn metered_matches(
-        &self,
-        source: &Produce,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        if !metered_bytes(&self.channel, &source.channel_hash.0, meter)? {
-            return Ok(false);
-        }
-        if !metered_bytes(&self.hash, &source.hash.0, meter)? {
-            return Ok(false);
-        }
-        meter.reserve(1, 2, 0)?;
-        Ok(self.persistent == source.persistent)
-    }
 }
 
 impl NativeConsumeSource {
-    fn capture(source: &Consume, budget: &HostWorkBudget) -> Result<Self, InterpreterError> {
-        let mut channels = allocate(source.channel_hashes.len(), budget)?;
+    fn capture(source: &Consume) -> Result<Self, InterpreterError> {
+        let mut channels = Vec::with_capacity(source.channel_hashes.len());
         for channel in &source.channel_hashes {
             channels.push(hash(&channel.0)?);
         }
@@ -152,34 +92,10 @@ impl NativeConsumeSource {
                 .zip(&source.channel_hashes)
                 .all(|(a, b)| a.as_slice() == b.0)
     }
-
-    fn metered_matches(
-        &self,
-        source: &Consume,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        if !metered_bytes(&self.hash, &source.hash.0, meter)? {
-            return Ok(false);
-        }
-        meter.reserve(1, 2, 0)?;
-        if self.persistent != source.persistent {
-            return Ok(false);
-        }
-        meter.reserve(1, size_of::<usize>() * 2, 0)?;
-        if self.channels.len() != source.channel_hashes.len() {
-            return Ok(false);
-        }
-        for (expected, actual) in self.channels.iter().zip(&source.channel_hashes) {
-            if !metered_bytes(expected, &actual.0, meter)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
 }
 
 impl NativeRestingSource {
-    fn capture(source: &RestingCOMM, budget: &HostWorkBudget) -> Result<Self, InterpreterError> {
+    fn capture(source: &RestingCOMM) -> Result<Self, InterpreterError> {
         let count = source.ordered_produces.len();
         if source.consume.channel_hashes.len() != count
             || source.ordered_data_indices.len() != count
@@ -194,15 +110,14 @@ impl NativeRestingSource {
                 "resting source has invalid ordered address",
             ));
         }
-        let consume = NativeConsumeSource::capture(&source.consume, budget)?;
-        let mut produces = allocate(count, budget)?;
+        let consume = NativeConsumeSource::capture(&source.consume)?;
+        let mut produces = Vec::with_capacity(count);
         for (channel, produce) in source
             .consume
             .channel_hashes
             .iter()
             .zip(&source.ordered_produces)
         {
-            work(budget, HostWorkDimension::VerificationBytes, 64)?;
             if channel.0.as_slice() != produce.channel_hash.0.as_slice() {
                 return Err(recording_error(
                     "resting source ordered channel differs from waiter",
@@ -210,9 +125,9 @@ impl NativeRestingSource {
             }
             produces.push(NativeProduceSource::capture(produce)?);
         }
-        let mut indices = allocate(count, budget)?;
+        let mut indices = Vec::with_capacity(count);
         indices.extend_from_slice(&source.ordered_data_indices);
-        let mut peeks = allocate(source.peeks.len(), budget)?;
+        let mut peeks = Vec::with_capacity(source.peeks.len());
         peeks.extend(source.peeks.iter().copied());
         Ok(Self {
             consume,
@@ -223,23 +138,18 @@ impl NativeRestingSource {
         })
     }
 
-    fn metered_matches(
-        &self,
-        actual: &RestingCOMM,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        meter.reserve(1, 16, 0)?;
+    fn matches(&self, actual: &RestingCOMM) -> bool {
         if self.continuation_index != actual.continuation_index
             || self.ordered_produces.len() != actual.ordered_produces.len()
             || self.ordered_data_indices.len() != actual.ordered_data_indices.len()
             || self.peeks.len() != actual.peeks.len()
-            || !self.consume.metered_matches(&actual.consume, meter)?
+            || !self.consume.matches(&actual.consume)
         {
-            return Ok(false);
+            return false;
         }
         for (expected, actual) in self.ordered_produces.iter().zip(&actual.ordered_produces) {
-            if !expected.metered_matches(actual, meter)? {
-                return Ok(false);
+            if !expected.matches(actual) {
+                return false;
             }
         }
         for (expected, actual) in self
@@ -247,73 +157,59 @@ impl NativeRestingSource {
             .iter()
             .zip(&actual.ordered_data_indices)
         {
-            meter.reserve(1, std::mem::size_of::<i32>() * 2, 0)?;
             if expected != actual {
-                return Ok(false);
+                return false;
             }
         }
         for (expected, actual) in self.peeks.iter().zip(&actual.peeks) {
-            meter.reserve(1, std::mem::size_of::<i32>() * 2, 0)?;
             if expected != actual {
-                return Ok(false);
+                return false;
             }
         }
-        Ok(true)
+        true
     }
 }
 
 impl NativeOperationSource {
-    pub(super) fn capture(
-        source: RSpaceOperationSource<'_>,
-        budget: &HostWorkBudget,
-    ) -> Result<Self, InterpreterError> {
-        Self::capture_for_epoch(source, EventCodecEpoch::Legacy, budget)
+    // Added by the merge of feature/cost-accounted-rho (clippy gate): only the
+    // tests call this Legacy wrapper. Production calls `capture_for_epoch`.
+    #[cfg(test)]
+    pub(super) fn capture(source: RSpaceOperationSource<'_>) -> Result<Self, InterpreterError> {
+        Self::capture_for_epoch(source, EventCodecEpoch::Legacy)
     }
 
     pub(super) fn capture_for_epoch(
         source: RSpaceOperationSource<'_>,
         epoch: EventCodecEpoch,
-        budget: &HostWorkBudget,
     ) -> Result<Self, InterpreterError> {
-        work(budget, HostWorkDimension::VerificationBytes, 128)?;
         match source {
             RSpaceOperationSource::Produce(source) => {
                 Ok(Self::Produce(NativeProduceSource::capture(source)?))
             }
             RSpaceOperationSource::Consume(source) => {
-                work(
-                    budget,
-                    HostWorkDimension::VerificationBytes,
-                    checked_mul(source.channel_hashes.len(), 64)?,
-                )?;
-                Ok(Self::Consume(NativeConsumeSource::capture(source, budget)?))
+                Ok(Self::Consume(NativeConsumeSource::capture(source)?))
             }
             RSpaceOperationSource::Resting(source) if epoch == EventCodecEpoch::CostV2 => {
-                Ok(Self::Resting(NativeRestingSource::capture(source, budget)?))
+                Ok(Self::Resting(NativeRestingSource::capture(source)?))
             }
-            RSpaceOperationSource::Resting(_) => Err(InterpreterError::HostWorkRejected),
+            RSpaceOperationSource::Resting(_) => {
+                Err(recording_error("Resting source requires CostV2"))
+            }
         }
     }
 
-    pub(super) fn metered_matches(
-        &self,
-        source: RSpaceOperationSource<'_>,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
+    pub(super) fn matches(&self, source: RSpaceOperationSource<'_>) -> bool {
         match (self, source) {
             (Self::Produce(expected), RSpaceOperationSource::Produce(actual)) => {
-                expected.metered_matches(actual, meter)
+                expected.matches(actual)
             }
             (Self::Consume(expected), RSpaceOperationSource::Consume(actual)) => {
-                expected.metered_matches(actual, meter)
+                expected.matches(actual)
             }
             (Self::Resting(expected), RSpaceOperationSource::Resting(actual)) => {
-                expected.metered_matches(actual, meter)
+                expected.matches(actual)
             }
-            _ => {
-                meter.reserve(1, 0, 0)?;
-                Ok(false)
-            }
+            _ => false,
         }
     }
 }
@@ -337,73 +233,19 @@ impl NativeCommSource {
                 .all(|((a, n), (b, m))| n == m && a.matches(b))
     }
 
-    pub(super) fn metered_matches(
-        &self,
-        source: &COMM,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        if !self.consume.metered_matches(&source.consume, meter)? {
-            return Ok(false);
-        }
-        meter.reserve(1, size_of::<usize>() * 2, 0)?;
-        if self.produces.len() != source.produces.len() {
-            return Ok(false);
-        }
-        for (expected, actual) in self.produces.iter().zip(&source.produces) {
-            if !expected.metered_matches(actual, meter)? {
-                return Ok(false);
-            }
-        }
-        meter.reserve(1, size_of::<usize>() * 2, 0)?;
-        if self.peeks.len() != source.peeks.len() {
-            return Ok(false);
-        }
-        for (expected, actual) in self.peeks.iter().zip(&source.peeks) {
-            meter.reserve(1, size_of::<i32>() * 2, 0)?;
-            if expected != actual {
-                return Ok(false);
-            }
-        }
-        meter.reserve(1, size_of::<usize>() * 2, 0)?;
-        if self.repetitions.len() != source.times_repeated.len() {
-            return Ok(false);
-        }
-        for ((expected, count), (actual, actual_count)) in
-            self.repetitions.iter().zip(&source.times_repeated)
-        {
-            meter.reserve(1, size_of::<i32>() * 2, 0)?;
-            if count != actual_count || !expected.metered_matches(actual, meter)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    pub(super) fn capture(
-        source: &COMM,
-        budget: &HostWorkBudget,
-    ) -> Result<Self, InterpreterError> {
-        let count = checked_add(source.produces.len(), source.times_repeated.len())?;
-        work(
-            budget,
-            HostWorkDimension::VerificationBytes,
-            checked_add(
-                checked_mul(count, 65)?,
-                checked_mul(source.consume.channel_hashes.len(), 32)?,
-            )?,
-        )?;
-        let mut produces = allocate(source.produces.len(), budget)?;
+    pub(super) fn capture(source: &COMM) -> Result<Self, InterpreterError> {
+        let mut produces = Vec::with_capacity(source.produces.len());
         for produce in &source.produces {
             produces.push(NativeProduceSource::capture(produce)?);
         }
-        let mut peeks = allocate(source.peeks.len(), budget)?;
+        let mut peeks = Vec::with_capacity(source.peeks.len());
         peeks.extend(source.peeks.iter().copied());
-        let mut repetitions = allocate(source.times_repeated.len(), budget)?;
+        let mut repetitions = Vec::with_capacity(source.times_repeated.len());
         for (produce, count) in &source.times_repeated {
             repetitions.push((NativeProduceSource::capture(produce)?, *count));
         }
         Ok(Self {
-            consume: NativeConsumeSource::capture(&source.consume, budget)?,
+            consume: NativeConsumeSource::capture(&source.consume)?,
             produces: produces.into(),
             peeks: peeks.into(),
             repetitions: repetitions.into(),
@@ -427,98 +269,10 @@ impl NativeCandidateIdentity for NativeCommSource {
     }
 
     fn matches_comm(&self, source: &COMM) -> bool { self.matches(source) }
-
-    fn metered_matches_consume(
-        &self,
-        source: &Consume,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        self.consume.metered_matches(source, meter)
-    }
-
-    fn metered_matches_produce(
-        &self,
-        source: &Produce,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        for expected in self.produces.iter() {
-            if expected.metered_matches(source, meter)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    fn metered_repetition(
-        &self,
-        source: &Produce,
-        meter: &dyn SourceMeter,
-    ) -> Result<Option<i32>, RSpaceError> {
-        for (expected, count) in self.repetitions.iter() {
-            if expected.metered_matches(source, meter)? {
-                return Ok(Some(*count));
-            }
-        }
-        Ok(None)
-    }
-
-    fn metered_matches_comm(
-        &self,
-        source: &COMM,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError> {
-        self.metered_matches(source, meter)
-    }
 }
 
-struct ChannelWriter<'a> {
-    bytes: Vec<u8>,
-    budget: &'a HostWorkBudget,
-}
-
-impl Write for ChannelWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let reserve = || -> Result<(), InterpreterError> {
-            work(self.budget, HostWorkDimension::VerificationOperations, 1)?;
-            work(
-                self.budget,
-                HostWorkDimension::VerificationBytes,
-                bytes.len(),
-            )?;
-            work(
-                self.budget,
-                HostWorkDimension::SearchStateBytes,
-                checked_add(checked_mul(bytes.len(), 4)?, 16)?,
-            )?;
-            if checked_add(self.bytes.len(), bytes.len())? > self.bytes.capacity() {
-                work(
-                    self.budget,
-                    HostWorkDimension::VerificationBytes,
-                    self.bytes.len(),
-                )?;
-            }
-            Ok(())
-        };
-        reserve().map_err(std::io::Error::other)?;
-        self.bytes
-            .try_reserve(bytes.len())
-            .map_err(std::io::Error::other)?;
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
-
-pub(super) fn channel_bytes(
-    channel: &impl Serialize,
-    budget: &HostWorkBudget,
-) -> Result<Arc<[u8]>, InterpreterError> {
-    let mut writer = ChannelWriter {
-        bytes: Vec::new(),
-        budget,
-    };
-    bincode::serialize_into(&mut writer, channel)
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    Ok(writer.bytes.into())
+pub(super) fn channel_bytes(channel: &impl Serialize) -> Result<Arc<[u8]>, InterpreterError> {
+    bincode::serialize(channel)
+        .map(Arc::from)
+        .map_err(|_| recording_error("native operation channel does not serialize"))
 }

@@ -99,8 +99,8 @@ use models::rhoapi::var::{VarInstance, WildcardMsg};
 use models::rhoapi::{
     ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
-    ESet, ETuple, EVar, EZipper, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrivate,
-    GSysAuthToken, Par, ParWithRandom, VarRef,
+    ESet, ETuple, EVar, EZipper, GAuthorityId, GBigRational, GDeployId, GDeployerId, GFixedPoint,
+    GPrincipalId, GPrivate, GSysAuthToken, Par, ParWithRandom, VarRef,
 };
 use models::rust::rholang::bincode_schema_tables::{
     CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
@@ -235,6 +235,16 @@ fn expr_instance_values() -> Vec<(&'static str, ExprInstance)> {
             "GFixedPoint",
             ExprInstance::GFixedPoint(GFixedPoint::default()),
         ),
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9): the
+        // checkpoint merge e5102e945 brought dev's six sized numeric variants
+        // into the schema. `GFloat32` carries an IEEE-754 bit pattern as `u32`,
+        // for the reason given at `GDouble`.
+        ("GFloat32", ExprInstance::GFloat32(0x4049_0fdb)),
+        ("GUint64", ExprInstance::GUint64(7)),
+        ("GInt32", ExprInstance::GInt32(-7)),
+        ("GUint32", ExprInstance::GUint32(7)),
+        ("GUint16", ExprInstance::GUint16(7)),
+        ("GUint8", ExprInstance::GUint8(7)),
     ]
 }
 
@@ -283,6 +293,17 @@ fn unf_instance_values() -> Vec<(&'static str, UnfInstance)> {
         (
             "GSysAuthTokenBody",
             UnfInstance::GSysAuthTokenBody(GSysAuthToken::default()),
+        ),
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9): the
+        // checkpoint merge e5102e945 brought the two principal identifiers
+        // into the `GUnforgeable` oneof.
+        (
+            "GAuthorityIdBody",
+            UnfInstance::GAuthorityIdBody(GAuthorityId::default()),
+        ),
+        (
+            "GPrincipalIdBody",
+            UnfInstance::GPrincipalIdBody(GPrincipalId::default()),
         ),
     ]
 }
@@ -1229,18 +1250,35 @@ fn the_missing_arm_gate_can_go_red() {
          it, so `every_oneof_variant_has_a_same_variant_eq_arm_and_a_hash_arm` is certifying \
          nothing."
     );
-    // …and the CONTROL within the mutation: the other three variants, and the
+    // …and the CONTROL within the mutation: the other variants, and the
     // `hash` arms, must be untouched. A parser that lost the whole impl would
     // also report zero and would pass the assertion above.
+    //
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // checkpoint merge e5102e945 grew `UnfInstance` from four variants to six
+    // (`GAuthorityIdBody`, `GPrincipalIdBody`). The expected counts now come
+    // from the generated table, so they follow the schema.
+    // assert_eq!(
+    //     eq_arms.len(),
+    //     3,
+    //     "★ the mutation removed more than the one arm it names; the gate's red would not be \
+    //      attributable"
+    // );
+    // assert_eq!(
+    //     hash_arms.len(),
+    //     4,
+    //     "★ the `hash` arms moved under a mutation that only touched `eq`"
+    // );
+    let unf_variants = names_of(UNF_INSTANCE_VARIANTS).len();
     assert_eq!(
         eq_arms.len(),
-        3,
+        unf_variants - 1,
         "★ the mutation removed more than the one arm it names; the gate's red would not be \
          attributable"
     );
     assert_eq!(
         hash_arms.len(),
-        4,
+        unf_variants,
         "★ the `hash` arms moved under a mutation that only touched `eq`"
     );
 }

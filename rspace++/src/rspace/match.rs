@@ -22,7 +22,6 @@
 use std::sync::Arc;
 
 use super::errors::RSpaceError;
-use super::hashing::native_source::SourceMeter;
 use super::rspace_interface::{ProduceCommitGuard, commit_produce};
 
 /// Fresh candidate evidence retained from selection until the actual mutation.
@@ -58,20 +57,19 @@ impl PreparedCommit {
 }
 
 pub trait Match<P, A, K>: Send + Sync {
+    /// True when `check_commit` can refuse a commit for `k`. DR-129 (E3-a)
+    /// added it for replay's Stored check. User decision 6 (2026-10-16)
+    /// removed that check's skip on this branch, because play and replay
+    /// both search every assignment (defect D1), so no production code calls
+    /// this hook. It stays, so that the trait matches upstream.
+    fn commit_may_veto(&self, _k: &K) -> bool { false }
+
+    fn check_commit_by_reference(&self, k: &K, matched: &[&A]) -> bool {
+        self.check_commit(k, matched)
+    }
+
     // Probe by reference; only the matched result is allocated on success.
     fn get(&self, p: &P, a: &A) -> Option<A>;
-
-    /// Metered `get`. D-M1 (DR-88): an implementation reserves every read of
-    /// the pattern and the datum on `meter` before it performs the read, so
-    /// a caller does not inspect either value first.
-    fn get_metered(
-        &self,
-        _p: &P,
-        _a: &A,
-        _meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<A>, RSpaceError> {
-        Err(RSpaceError::HostWorkRejected)
-    }
 
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is
@@ -84,32 +82,5 @@ pub trait Match<P, A, K>: Send + Sync {
     /// this instead of turning check_commit's Boolean into a lease.
     fn prepare_commit(&self, k: &K, matched: &[&A]) -> Option<PreparedCommit> {
         self.check_commit(k, matched).then(PreparedCommit::default)
-    }
-
-    /// A resting rendezvous must revalidate its guard under an explicit host
-    /// budget before any store mutation. Stateful authority matchers override
-    /// this with a metered lease; the default refuses rather than silently
-    /// falling back to the unmetered guard path.
-    fn prepare_commit_metered(
-        &self,
-        _k: &K,
-        _matched: &[&A],
-        _meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<PreparedCommit>, RSpaceError> {
-        Err(RSpaceError::HostWorkRejected)
-    }
-
-    /// Metered `check_commit`. D-M1 (DR-88): an implementation reserves every
-    /// read of the continuation (in practice its guard) and of the matched
-    /// data on `meter` before it performs the read, so a caller does not
-    /// inspect the continuation first. D-M6 (DR-88): the matched data are
-    /// passed by reference, so a caller does not copy them.
-    fn check_commit_metered(
-        &self,
-        _k: &K,
-        _matched: &[&A],
-        _meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        Err(RSpaceError::HostWorkRejected)
     }
 }

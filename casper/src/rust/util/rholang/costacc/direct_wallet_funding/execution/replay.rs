@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::mem::size_of;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use models::rhoapi::Par;
@@ -7,41 +6,57 @@ use models::rust::casper::protocol::casper_message::Event as CasperEvent;
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
-use models::rust::native_cost_evidence::{NativeCostEvidenceV1, NativeCostFailureClass};
+use models::rust::native_cost_evidence::NativeCostFailureClass;
 use models::rust::native_wallet_receipt::NativeWalletReceiptLimits;
 use models::rust::phlo_grant_creation::VerifiedGrantCreationV1;
 use models::rust::phlo_intent::PhloConversionCompositionV2;
 use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
-use rholang::rust::interpreter::accounting::authority::AuthorityStackBirth;
+// Changed by dedup (task 11415, D5): the halves of the settlement pipeline
+// name these types.
+// use rholang::rust::interpreter::accounting::authority::AuthorityStackBirth;
+use rholang::rust::interpreter::accounting::authority::{
+    AuthorityBornStack, AuthorityByteEvent, AuthorityEvent, AuthorityStackBirth,
+};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::economic_failure::classify_errors;
+use rholang::rust::interpreter::accounting::native_phlo_rules::NativePhloAcquisitionDemand;
 use rholang::rust::interpreter::accounting::phlo_controls::{
-    check_offered_phlo_controls, PhloControlsBinding, PhloFundingTerms, PhloOffer,
-    PhloScheduleBinding,
+    check_offered_phlo_controls, CheckedPhloControls, PhloControlsBinding, PhloFundingTerms,
+    PhloOffer, PhloScheduleBinding,
 };
+// Changed by dedup (task 11415, D5): the halves of the settlement pipeline
+// name these types.
+// use rholang::rust::interpreter::accounting::phlo_execution::{
+//     check_counted_phlo_execution, check_phlo_funding_family, project_phlo_obligations, PhloFailure,
+//     PhloFundingCase, PhloFundingIntentBinding, PhloOutcome, RetainedBirthFunding,
+// };
 use rholang::rust::interpreter::accounting::phlo_execution::{
-    check_counted_phlo_execution, check_phlo_funding_family, project_phlo_obligations, PhloFailure,
-    PhloFundingCase, PhloFundingIntentBinding, PhloOutcome, RetainedBirthFunding,
+    check_counted_phlo_execution, check_phlo_funding_family, project_phlo_obligations,
+    CheckedPhloExecution, CheckedPhloFundingFamily, CheckedPhloObligations, PhloFailure,
+    PhloFundingCase, PhloFundingIntentBinding, PhloFundingIntentView, PhloOutcome,
+    PhloResourceAmount, RestoredPhloResource, RetainedBirthFunding,
 };
 use rholang::rust::interpreter::accounting::{
     funding_sig, NativeBudgetRecording, NativeOperationJournalLimits, NativeOperationRecord,
     NativeOperationTraceLimits, NativeRecordingWireLimits, NativeRuntimeConfig, RuntimeBudget,
 };
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
-use rholang::rust::interpreter::interpreter::InterpreterImpl;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::rho_runtime::{create_native_replay_env, RhoRuntime};
 use rholang::rust::interpreter::system_processes::DeployData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
-use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
+// Moved by DR-115 with native_user_event_count to offered_evidence.rs.
+// use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 use rspace_plus_plus::rspace::trace::event::Event;
 use tokio::sync::RwLock;
 
+// Added by dedup (task 11415, D5): the funding half of the settlement
+// pipeline names the rooted selection.
+use super::family_selection::NativeRootedFamilySelection;
+use super::held_capacity::{capture_debits, GuardMember, GuardRole};
 use super::producer::{
     check_birth_positions, check_retained_origin, derive_birth_positions, derive_live_born_stacks,
     derive_retained_amounts, restore_retained_permissions,
@@ -51,9 +66,17 @@ use super::settlement::{
     NativeCapturedSettlement, NativeFundedSettlement, NativeGrantIssuanceInput,
     NativeGrantSettlementInput,
 };
+// Changed by dedup (task 11415, D5): the funding half of the settlement
+// pipeline names the family limits.
+// use super::{
+//     select_rooted_native_family, CheckedDirectWalletPolicy, NativeFundedAttempt,
+//     NativeFundedExecutionContext, NativeOfferedAttempt, NativeOfferedProductionLimits,
+//     OfferedGateInput,
+// };
 use super::{
     select_rooted_native_family, CheckedDirectWalletPolicy, NativeFundedAttempt,
-    NativeFundedExecutionContext, NativeOfferedAttempt, NativeOfferedProductionLimits,
+    NativeFundedExecutionContext, NativeOfferedAttempt, NativeOfferedFamilyLimits,
+    NativeOfferedProductionLimits, OfferedGateInput,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::{prepare_offered_source, RuntimeOps};
@@ -62,22 +85,41 @@ use crate::rust::util::rholang::acceptance::{
     prepare_offered_candidate, CandidateReplayPermit, OfferedCandidateLimits,
     PreparedOfferedCandidate,
 };
-use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
+// Changed by dedup (task 11415, D5): the funding half of the settlement
+// pipeline returns the captured settlement.
+// use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::{
+    CheckedDirectWalletSettlement, DirectWalletPolicySnapshot,
+};
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::{OfferedCheckRole, OfferedUsageKind};
 use crate::rust::util::rholang::costacc::offered_context::OfferedSettlementContext;
 use crate::rust::util::rholang::costacc::offered_evidence::{
-    decode_committed_runtime_recording, encode_measured_funding_case, encode_measured_prepaid_delta,
+    decode_committed_runtime_recording, encode_measured_funding_case,
+    encode_measured_prepaid_delta, native_user_event_count,
 };
 use crate::rust::util::rholang::costacc::offered_grants::{
     grant_issue_definition, offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
+// Changed by dedup (task 11415, D5): the measured half of the settlement
+// pipeline names the selection and the binding.
+// use crate::rust::util::rholang::costacc::prepaid_receipts::{
+//     NativePrepaidConsumption, NativePrepaidDemandInput, NativePrepaidInventory,
+//     NativePrepaidInventoryLimits, NativeRetainedReceiptRecords, NativeRetainedSettlementLimits,
+//     PrepaidReceiptBucket, PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
+//     PreparedNativeRetainedReceipts,
+// };
 use crate::rust::util::rholang::costacc::prepaid_receipts::{
-    NativePrepaidConsumption, NativePrepaidDemandInput, NativePrepaidInventoryLimits,
-    NativeRetainedReceiptRecords, NativeRetainedSettlementLimits, PrepaidReceiptBucket,
-    PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
+    CanonicalPrepaidSelection, CheckedPrepaidPhysicalTrace, NativePrepaidConsumption,
+    NativePrepaidDemandBinding, NativePrepaidDemandInput, NativePrepaidInventory,
+    NativePrepaidInventoryLimits, NativeRetainedReceiptRecords, NativeRetainedSettlementLimits,
+    PrepaidReceiptBucket, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
     PreparedNativeRetainedReceipts,
 };
-use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_replay_limits;
+use crate::rust::util::rholang::costacc::production_limits::{
+    offered_funded_v6_production_limits, offered_funded_v6_replay_limits,
+};
 use crate::rust::util::rholang::costacc::supply::PurseStack;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
@@ -125,7 +167,6 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         production: NativeOfferedProductionLimits,
         inventory_limits: NativePrepaidInventoryLimits,
         receipt_limits: PrepaidReceiptLimits,
-        budget: &rholang::rust::interpreter::host_work::HostWorkBudget,
     ) -> Result<NativeReplayedSettlementResult, CasperError> {
         let limits = production.family;
         let funding_root = self.preflight.funding_root;
@@ -171,11 +212,18 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             },
             signed_view.terms(),
             schedule.schedule(),
-            self.preflight.phlo_limit,
+            // Changed by G1-6 (DR-124): the bound is the resource bound of the
+            // check that the witness replay ran.
+            // self.preflight.phlo_limit,
+            self.gate.resource_bound(),
         )
         .map_err(invalid)?;
         let controls = offered_controls.controls();
-        adopted.bind_execution_contract(controls, &schedule)?;
+        // Changed by G1-6 (DR-124): the rebind takes the bound source of the
+        // check (DR-124 amends DR-113 item 6).
+        // // DR-113: the bound of an offer is its signed limit.
+        // adopted.bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+        adopted.bind_execution_contract(controls, &schedule, self.gate.bound_source())?;
         let measured = adopted
             .native_rules()
             .measure(
@@ -184,17 +232,16 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             )
             .map_err(invalid)?;
         let regions = measured
-            .region_demands(limits.measured.regions, budget)
+            .region_demands(limits.measured.regions)
             .map_err(invalid)?;
         let located = regions
-            .locate_purses(limits.measured.purses, budget)
+            .locate_purses(limits.measured.purses)
             .map_err(invalid)?;
         let demand = located
             .prepare_acquisition_demand(
                 &schedule,
                 selected_terms.bytes(),
                 limits.measured.acquisition,
-                budget,
             )
             .map_err(invalid)?;
         let original_stacks = manager.read_measured_prepaid_stacks(
@@ -202,106 +249,145 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             &demand,
             &adopted,
             production.stack_capture,
-            budget,
         )?;
         let captured_stacks = manager.capture_prepaid_stacks(
             funding_root,
             &original_stacks,
             &adopted,
             production.stack_capture,
-            budget,
         )?;
-        let inventory = captured_stacks.resource_inventory(inventory_limits, budget)?;
-        let post_stacks = manager.read_measured_prepaid_stacks_with_births(
-            settlement_root,
-            &demand,
-            &self.evaluation.authority_stack_births,
-            &adopted,
-            production.stack_capture,
-            budget,
+        let inventory = captured_stacks.resource_inventory(inventory_limits)?;
+        // Added by G1-7 (DR-65 item 5, arbitration M2): a claimed guard
+        // failure. The success path is recomputed at the root after the run,
+        // with the births of the run, and the balances are read at that root,
+        // as play reads them. The claim stands only if the guard fails. The
+        // rolled-back run then has no births, and it settles from the
+        // execution root.
+        if self.guard_claimed {
+            let post_run_root = self
+                .post_run_root
+                .ok_or_else(|| invalid("a claimed guard failure has no root after the run"))?;
+            let debits = self
+                .success_path_debits(
+                    manager,
+                    snapshot,
+                    SuccessPathInput {
+                        adopted: &adopted,
+                        schedule: &schedule,
+                        terms: selected_terms.bytes(),
+                        controls,
+                        inventory: &inventory,
+                        demand: &demand,
+                        post_run_root,
+                    },
+                    production,
+                )
+                .await?;
+            let balances = manager
+                .purse_balances_at(
+                    snapshot,
+                    post_run_root,
+                    &debits,
+                    adopted.event_codec_epoch(),
+                )
+                .await?;
+            let member = GuardMember {
+                deploy_id: &self.preflight.envelope_identity,
+                funding_root: &funding_root,
+                role: GuardRole::Replay,
+            };
+            if manager
+                .held_capacity_guard_outcome(member, &balances, &debits)
+                .is_ok()
+            {
+                return Err(invalid(
+                    "offered replay: the block commits a guard failure, but the held-capacity guard holds",
+                ));
+            }
+            self.evaluation.authority_stack_births.clear();
+        }
+        // Moved by dedup (task 11415) to `measure_replayed_settlement` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs`.
+        // let post_stacks = manager.read_measured_prepaid_stacks_with_births(
+        //     settlement_root,
+        //     &demand,
+        //     &self.evaluation.authority_stack_births,
+        //     production.stack_capture,
+        //     budget,
+        // )?;
+        // let born = derive_live_born_stacks(
+        //     &self.evaluation.authority_stack_births,
+        //     &post_stacks,
+        //     limits.retained.funding.births,
+        //     budget,
+        // )?;
+        // let permissions = restore_retained_permissions(
+        //     &snapshot.wallets().authorization().record().sources,
+        //     selected_terms.bytes(),
+        //     schedule.descriptor().classes.len(),
+        //     limits.measured.settlement.matching.execution,
+        //     budget,
+        // )?;
+        // let retained = derive_retained_amounts(
+        //     &permissions,
+        //     selected_terms.bytes(),
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // check_retained_origin(
+        //     &permissions,
+        //     selected_terms.bytes(),
+        //     &retained,
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // let selection =
+        //     inventory.select_measured_demand(&demand, limits.measured.demand, budget)?;
+        // let binding = inventory.bind_measured_demand(
+        //     NativePrepaidDemandInput {
+        //         expected_root: funding_root,
+        //         controls,
+        //         demand: &demand,
+        //         draws: selection.draws(),
+        //         demand_positions: selection.demand_positions(),
+        //     },
+        //     limits.measured.demand,
+        //     budget,
+        // )?;
+        // let observed = check_counted_phlo_execution(
+        //     controls,
+        //     binding.witness(),
+        //     limits.measured.settlement.matching.execution,
+        // )
+        // .map_err(invalid)?
+        // .with_retained_acquisitions(&retained, budget)
+        // .map_err(invalid)?;
+        let mut measured_slots = MeasuredSettlementSlots::default();
+        let MeasuredSettlement {
+            born,
+            selection,
+            observed,
+            physical_trace,
+        } = measure_replayed_settlement(
+            manager,
+            &mut measured_slots,
+            MeasuredSettlementInput {
+                root: settlement_root,
+                funding_root,
+                births: &self.evaluation.authority_stack_births,
+                events: &self.evaluation.authority_events,
+                adopted: &adopted,
+                snapshot,
+                schedule: &schedule,
+                terms: selected_terms.bytes(),
+                controls,
+                inventory: &inventory,
+                demand: &demand,
+            },
+            production,
         )?;
-        let born = derive_live_born_stacks(
-            &self.evaluation.authority_stack_births,
-            &post_stacks,
-            limits.retained.funding.births,
-            budget,
-        )?;
-        let permissions = restore_retained_permissions(
-            &snapshot.wallets().authorization().record().sources,
-            selected_terms.bytes(),
-            schedule.descriptor().classes.len(),
-            limits.measured.settlement.matching.execution,
-            budget,
-        )?;
-        let retained = derive_retained_amounts(
-            &permissions,
-            selected_terms.bytes(),
-            &born,
-            limits.retained.funding.cells,
-            budget,
-        )?;
-        check_retained_origin(
-            &permissions,
-            selected_terms.bytes(),
-            &retained,
-            &born,
-            limits.retained.funding.cells,
-            budget,
-        )?;
-        let branched = inventory.has_branched_stacks(budget)?;
-        let physical_trace = if branched {
-            Some(inventory.checked_physical_trace(
-                snapshot.wallets(),
-                &self.evaluation.authority_events,
-                budget,
-            )?)
-        } else {
-            None
-        };
-        let captured_for_trace = if branched {
-            Some(inventory.clone_captured_stacks(budget)?)
-        } else {
-            None
-        };
-        let verified_pre_state = match (&physical_trace, &captured_for_trace) {
-            (Some(trace), Some(stacks)) => Some(trace.verify_live(funding_root, stacks, budget)?),
-            _ => None,
-        };
-        let selection = if let Some(verified) = verified_pre_state.as_ref() {
-            inventory.select_verified_measured_demand(
-                verified,
-                &demand,
-                limits.measured.demand,
-                budget,
-            )?
-        } else {
-            inventory.select_measured_demand(&demand, limits.measured.demand, budget)?
-        };
-        let demand_input = NativePrepaidDemandInput {
-            expected_root: funding_root,
-            controls,
-            demand: &demand,
-            draws: selection.draws(),
-            demand_positions: selection.demand_positions(),
-        };
-        let binding = if let Some(verified) = verified_pre_state.as_ref() {
-            inventory.bind_measured_demand_verified(
-                demand_input,
-                verified,
-                limits.measured.demand,
-                budget,
-            )?
-        } else {
-            inventory.bind_measured_demand(demand_input, limits.measured.demand, budget)?
-        };
-        let observed = check_counted_phlo_execution(
-            controls,
-            binding.witness(),
-            limits.measured.settlement.matching.execution,
-        )
-        .map_err(invalid)?
-        .with_retained_acquisitions(&retained, budget)
-        .map_err(invalid)?;
         check_metered_usage(
             self.evaluation
                 .byte_observations
@@ -323,27 +409,28 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         let failures = self
             .evaluation
             .economic_failures
-            .union(classify_errors(&self.evaluation.errors, Some(budget)).map_err(invalid)?);
+            .union(classify_errors(&self.evaluation.errors).map_err(invalid)?);
         if !failures.permits_retained_charge() {
             return Err(invalid("offered replay has a non-user economic failure"));
         }
         let user_failure = failures.contains(PhloFailure::User);
-        if user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure) {
+        // Changed by G1-7 (arbitration M2): one flag, "user failure or guard
+        // failure". The guard of a claimed guard failure failed above.
+        // if user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure) {
+        //     return Err(invalid("offered replay failure differs from commitment"));
+        // }
+        // let user_failures = [PhloFailure::User];
+        // let outcome = PhloOutcome::Accepted(if user_failure { &user_failures } else { &[] });
+        let rolled_back = user_failure || self.guard_claimed;
+        if rolled_back != (evidence.failure_class == NativeCostFailureClass::UserFailure) {
             return Err(invalid("offered replay failure differs from commitment"));
         }
         let user_failures = [PhloFailure::User];
-        let outcome = PhloOutcome::Accepted(if user_failure { &user_failures } else { &[] });
+        let outcome = PhloOutcome::Accepted(if rolled_back { &user_failures } else { &[] });
         let obligations =
             project_phlo_obligations(observed, outcome, limits.policy.funding.obligations)
                 .map_err(invalid)?;
-        let positions = derive_birth_positions(&obligations, &born, budget)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            born.len()
-                .checked_mul(size_of::<RetainedBirthFunding<'_>>())
-                .ok_or_else(|| invalid("offered replay birth claim allocation overflows"))?,
-        )?;
+        let positions = derive_birth_positions(&obligations, &born)?;
         let mut derived_claims = Vec::new();
         derived_claims
             .try_reserve_exact(born.len())
@@ -354,96 +441,102 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                 obligation_positions: row,
             });
         }
-        check_birth_positions(&obligations, &derived_claims, budget)?;
-        let family_selection = select_rooted_native_family(
-            snapshot,
-            &obligations,
-            &self.evaluation.authority_events,
-            &self.evaluation.authority_byte_events,
-            limits,
-            budget,
-        )?;
-        let cases = [PhloFundingCase {
-            obligations: &obligations,
-            eligible: &family_selection.eligible,
-            assignment: &family_selection.selected.assignments()[0],
-        }];
-        let family = check_phlo_funding_family(
-            &family_selection.sources,
-            &cases,
-            family_selection.total_exposure_limit,
-            limits.policy.funding,
-        )
-        .map_err(invalid)?;
-        let intent = PhloFundingIntentBinding::new(
-            snapshot.wallets().authorization().record(),
-            limits.signed.intent,
-        )
-        .map_err(invalid)?;
-        let view = intent.view().map_err(invalid)?;
-        let terms = PhloFundingTerms {
-            required_owner_ceilings: controls.terms().required_owner_ceilings,
-            asset: controls.schedule().environment.asset,
-            schedule_commitment: controls.schedule().commitment,
-        };
-        let policy = snapshot
-            .bind_native_family_in_context(
-                &view,
-                &family,
-                terms,
-                limits.signed,
-                limits.policy,
-                &adopted,
-                budget,
-            )
-            .map_err(invalid)?
-            .ok_or_else(|| invalid("replayed funding family has no valid cursor policy"))?;
-        let checked = policy
-            .capture_settlement(
+        check_birth_positions(&obligations, &derived_claims)?;
+        // Moved by dedup (task 11415) to `capture_replayed_funding` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs`.
+        // let family_selection = select_rooted_native_family(
+        //     snapshot,
+        //     &obligations,
+        //     &self.evaluation.authority_events,
+        //     &self.evaluation.authority_byte_events,
+        //     limits,
+        //     budget,
+        // )?;
+        // let cases = [PhloFundingCase {
+        //     obligations: &obligations,
+        //     eligible: &family_selection.eligible,
+        //     assignment: &family_selection.selected.assignments()[0],
+        // }];
+        // let family = check_phlo_funding_family(
+        //     &family_selection.sources,
+        //     &cases,
+        //     family_selection.total_exposure_limit,
+        //     limits.policy.funding,
+        // )
+        // .map_err(invalid)?;
+        // let intent = PhloFundingIntentBinding::new(
+        //     snapshot.wallets().authorization().record(),
+        //     limits.signed.intent,
+        // )
+        // .map_err(invalid)?;
+        // let view = intent.view().map_err(invalid)?;
+        // let terms = PhloFundingTerms {
+        //     required_owner_ceilings: controls.terms().required_owner_ceilings,
+        //     asset: controls.schedule().environment.asset,
+        //     schedule_commitment: controls.schedule().commitment,
+        // };
+        // let policy = snapshot
+        //     .bind_native_family_in_context(
+        //         &view,
+        //         &family,
+        //         terms,
+        //         limits.signed,
+        //         limits.policy,
+        //         &adopted,
+        //         budget,
+        //     )
+        //     .map_err(invalid)?
+        //     .ok_or_else(|| invalid("replayed funding family has no valid cursor policy"))?;
+        // let checked = policy
+        //     .capture_settlement(
+        //         observed,
+        //         outcome,
+        //         limits.measured.settlement.matching,
+        //         limits.measured.settlement.capture,
+        //         budget,
+        //     )
+        //     .map(|checked| checked.bind_execution_root(settlement_root))
+        //     .map_err(invalid)?;
+        let mut capture_slots = FundingCaptureSlots::default();
+        let FundingCapture {
+            family_selection,
+            checked,
+        } = capture_replayed_funding(
+            &mut capture_slots,
+            FundingCaptureInput {
+                snapshot,
+                obligations: &obligations,
                 observed,
                 outcome,
-                limits.measured.settlement.matching,
-                limits.measured.settlement.capture,
-                budget,
-            )
-            .map(|checked| checked.bind_execution_root(settlement_root))
-            .map_err(invalid)?;
+                root: settlement_root,
+                controls,
+                adopted: &adopted,
+                authority_events: &self.evaluation.authority_events,
+                authority_byte_events: &self.evaluation.authority_byte_events,
+                no_case: "replayed funding family has no case",
+                no_policy: "replayed funding family has no valid cursor policy",
+            },
+            limits,
+        )?;
         let births = self
             .runtime
-            .capture_retained_births(&checked, &adopted, &derived_claims, limits.retained, budget)
+            .capture_retained_births(&checked, &adopted, &derived_claims, limits.retained)
             .await?;
-        let records = births.prepare_cell_records(production.retained_record, budget)?;
+        let records = births.prepare_cell_records(production.retained_record)?;
         let receipt_count = original_stacks
             .len()
             .checked_add(self.evaluation.authority_stack_births.len())
             .ok_or_else(|| invalid("offered replay receipt key count overflows"))?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            receipt_count
-                .checked_mul(size_of::<[u8; 32]>())
-                .ok_or_else(|| invalid("offered replay receipt key allocation overflows"))?,
-        )?;
         let mut receipt_ids = Vec::new();
         receipt_ids
             .try_reserve_exact(receipt_count)
             .map_err(|_| invalid("offered replay receipt key allocation failed"))?;
         for stack in &original_stacks {
-            reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
             receipt_ids.push(PrepaidReceiptBucket::key_for_source(&stack.source_hash));
         }
         for birth in &self.evaluation.authority_stack_births {
-            reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
             receipt_ids.push(PrepaidReceiptBucket::key_for_source(&birth.produce_hash));
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            receipt_ids
-                .len()
-                .checked_mul(1 + receipt_ids.len().checked_ilog2().unwrap_or(0) as usize)
-                .ok_or_else(|| invalid("offered replay receipt sorting work overflows"))?,
-        )?;
         receipt_ids.sort_unstable();
         receipt_ids.dedup();
         let receipt_snapshot = manager.capture_prepaid_receipts(
@@ -451,13 +544,11 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             self.adopted.event_codec_epoch(),
             &receipt_ids,
             receipt_limits,
-            budget,
         )?;
         let prepared_receipts = records.prepare_insertions(
             &receipt_snapshot,
             production.receipt_bucket,
             production.retained_settlement.receipts,
-            budget,
         )?;
         let permit = CandidateReplayPermit::authorize(
             processed,
@@ -469,7 +560,6 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             checked.capture().scoped().capture(),
             &family_selection.selected.cursor_transitions()[0],
             offered_funded_v6_limits().funding_case,
-            budget,
         )?;
         permit.verify_funding_case(&funding_case)?;
         let (wallet_events, receipt_events) = permit.committed_settlement_segments()?;
@@ -479,14 +569,12 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             self.adopted.event_codec_epoch(),
             trace_limits,
             offered_funded_v6_limits().deploy_log_bytes,
-            budget,
         )?;
         let receipt_events = checked_replay_events(
             receipt_events,
             self.adopted.event_codec_epoch(),
             trace_limits,
             offered_funded_v6_limits().deploy_log_bytes,
-            budget,
         )?;
         let mut wallet_log = Vec::new();
         wallet_log
@@ -497,7 +585,6 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             .spawn_offered_replay_runtime(
                 self.adopted.event_codec_epoch(),
                 offered_grant_issue_call_limits(),
-                budget.clone(),
             )
             .await?;
         replay_runtime.set_block_data(self.block_data.clone()).await;
@@ -538,7 +625,6 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                 wallet_receipt_limits,
                 grants,
                 issuances,
-                budget,
             )
             .await?;
         let rigged: Result<(), CasperError> = async {
@@ -585,17 +671,9 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                     funding_root,
                     wallet_root,
                     production.retained_settlement,
-                    budget,
                 )
                 .await?;
             let count = receipts.prepaid_changes.len();
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                count
-                    .checked_mul(size_of::<PrepaidReceiptChange<'_>>())
-                    .ok_or_else(|| invalid("offered replay prepaid evidence size overflows"))?,
-            )?;
             let mut changes = Vec::new();
             changes
                 .try_reserve_exact(count)
@@ -607,11 +685,13 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                     .map(|change| change.as_change()),
             );
             let prepaid_delta = encode_measured_prepaid_delta(
-                &selection,
+                // Changed by dedup (task 11415, D5): `measure_replayed_settlement`
+                // returns the selection as a reference.
+                // &selection,
+                selection,
                 records.records(),
                 &changes,
                 offered_funded_v6_limits().prepaid_delta,
-                budget,
             )?;
             permit.verify_prepaid_delta(&prepaid_delta)?;
             self.runtime.runtime.check_replay_data().await?;
@@ -629,15 +709,6 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                 &wallet.wallet_receipt,
                 wallet.resource_rev,
                 wallet.fee_rev,
-            )?;
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                receipts
-                    .log
-                    .len()
-                    .checked_mul(size_of::<CasperEvent>())
-                    .ok_or_else(|| invalid("offered replay receipt log size overflows"))?,
             )?;
             wallet
                 .settlement_log
@@ -658,20 +729,15 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         }
         let final_root = completion?;
         let mergeable = (|| {
-            let mut mergeable = if user_failure {
+            // Changed by G1-7 (arbitration M2): a rolled-back run, by a user
+            // failure or by a guard failure, keeps no mergeable map of its own.
+            // let mut mergeable = if user_failure {
+            let mut mergeable = if rolled_back {
                 HashMap::new()
             } else {
                 std::mem::take(&mut self.evaluation.mergeable)
             };
             let wallet_mergeable = std::mem::take(&mut wallet.mergeable);
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                wallet_mergeable
-                    .len()
-                    .checked_mul(size_of::<(Par, MergeType)>() + 64)
-                    .ok_or_else(|| invalid("offered replay mergeable map size overflows"))?,
-            )?;
             mergeable
                 .try_reserve(wallet_mergeable.len())
                 .map_err(|_| invalid("offered replay mergeable map allocation failed"))?;
@@ -698,6 +764,488 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
     }
 }
 
+/// Added by dedup (task 11415, D5): the inputs of the measured half of the
+/// replayed settlement pipeline. The root is a parameter:
+/// `settle_replayed_candidate` passes the settlement root, and
+/// `success_path_debits` passes the root after the run.
+#[derive(Clone, Copy)]
+struct MeasuredSettlementInput<'r, 's, 'p> {
+    root: [u8; 32],
+    funding_root: [u8; 32],
+    births: &'r [AuthorityStackBirth],
+    events: &'r [AuthorityEvent<[u8; 32]>],
+    adopted: &'r AdoptedResourcePolicy,
+    snapshot: &'r DirectWalletPolicySnapshot<'r, OfferedFundedDeploy>,
+    schedule: &'r PhloScheduleBinding<'r>,
+    terms: &'r [u8],
+    controls: CheckedPhloControls<'r>,
+    inventory: &'r NativePrepaidInventory<'s, 'p>,
+    demand: &'r NativePhloAcquisitionDemand<'r>,
+}
+
+/// Added by dedup (task 11415, D5): the values of the measured half that the
+/// observed execution borrows. The caller owns them, so the observed
+/// execution outlives the call.
+#[derive(Default)]
+struct MeasuredSettlementSlots<'r> {
+    permissions: Option<Vec<RestoredPhloResource<'r>>>,
+    retained: Option<Vec<PhloResourceAmount<'r>>>,
+    selection: Option<CanonicalPrepaidSelection>,
+    binding: Option<NativePrepaidDemandBinding<'r>>,
+}
+
+/// Added by dedup (task 11415, D5): the result of the measured half. It holds
+/// the live born stacks, the prepaid selection and the observed execution
+/// with its retained acquisitions.
+struct MeasuredSettlement<'r> {
+    physical_trace: Option<CheckedPrepaidPhysicalTrace<'r>>,
+    born: Vec<AuthorityBornStack>,
+    selection: &'r CanonicalPrepaidSelection,
+    observed: CheckedPhloExecution<'r>,
+}
+
+/// Added by dedup (task 11415, D5): the measured half of the replayed
+/// settlement pipeline, from the stacks at the root to the observed execution.
+/// The steps and their errors are those that `settle_replayed_candidate` and
+/// `success_path_debits` ran, in the same order.
+fn measure_replayed_settlement<'r>(
+    manager: &RuntimeManager,
+    slots: &'r mut MeasuredSettlementSlots<'r>,
+    input: MeasuredSettlementInput<'r, '_, '_>,
+    production: NativeOfferedProductionLimits,
+) -> Result<MeasuredSettlement<'r>, CasperError> {
+    let limits = production.family;
+    let MeasuredSettlementSlots {
+        permissions: permission_slot,
+        retained: retained_slot,
+        selection: selection_slot,
+        binding: binding_slot,
+    } = slots;
+    let post_stacks = manager.read_measured_prepaid_stacks_with_births(
+        input.root,
+        input.demand,
+        input.births,
+        input.adopted,
+        production.stack_capture,
+    )?;
+    let born = derive_live_born_stacks(input.births, &post_stacks, limits.retained.funding.births)?;
+    let permissions: &'r [RestoredPhloResource<'r>] =
+        permission_slot.insert(restore_retained_permissions(
+            &input.snapshot.wallets().authorization().record().sources,
+            input.terms,
+            input.schedule.descriptor().classes.len(),
+            limits.measured.settlement.matching.execution,
+        )?);
+    let retained: &'r [PhloResourceAmount<'r>] = retained_slot.insert(derive_retained_amounts(
+        permissions,
+        input.terms,
+        &born,
+        limits.retained.funding.cells,
+    )?);
+    check_retained_origin(
+        permissions,
+        input.terms,
+        retained,
+        &born,
+        limits.retained.funding.cells,
+    )?;
+    let branched = input.inventory.has_branched_stacks()?;
+    let physical_trace = if branched {
+        Some(
+            input
+                .inventory
+                .checked_physical_trace(input.snapshot.wallets(), input.events)?,
+        )
+    } else {
+        None
+    };
+    let captured_for_trace = if branched {
+        Some(input.inventory.clone_captured_stacks()?)
+    } else {
+        None
+    };
+    let verified_pre_state = match (&physical_trace, &captured_for_trace) {
+        (Some(trace), Some(stacks)) => Some(trace.verify_live(input.funding_root, stacks)?),
+        _ => None,
+    };
+    let selection: &'r CanonicalPrepaidSelection =
+        selection_slot.insert(if let Some(verified) = verified_pre_state.as_ref() {
+            input.inventory.select_verified_measured_demand(
+                verified,
+                input.demand,
+                limits.measured.demand,
+            )?
+        } else {
+            input
+                .inventory
+                .select_measured_demand(input.demand, limits.measured.demand)?
+        });
+    let demand_input = NativePrepaidDemandInput {
+        expected_root: input.funding_root,
+        controls: input.controls,
+        demand: input.demand,
+        draws: selection.draws(),
+        demand_positions: selection.demand_positions(),
+    };
+    let binding: &'r NativePrepaidDemandBinding<'r> =
+        binding_slot.insert(if let Some(verified) = verified_pre_state.as_ref() {
+            input.inventory.bind_measured_demand_verified(
+                demand_input,
+                verified,
+                limits.measured.demand,
+            )?
+        } else {
+            input
+                .inventory
+                .bind_measured_demand(demand_input, limits.measured.demand)?
+        });
+    let observed = check_counted_phlo_execution(
+        input.controls,
+        binding.witness(),
+        limits.measured.settlement.matching.execution,
+    )
+    .map_err(invalid)?
+    .with_retained_acquisitions(retained)
+    .map_err(invalid)?;
+    Ok(MeasuredSettlement {
+        physical_trace,
+        born,
+        selection,
+        observed,
+    })
+}
+
+/// Added by dedup (task 11415, D5): the inputs of the funding half of the
+/// replayed settlement pipeline. The outcome and the root are parameters.
+/// Each caller passes its own message for a family without a case and its own
+/// message for a family without a cursor policy.
+#[derive(Clone, Copy)]
+struct FundingCaptureInput<'r> {
+    snapshot: &'r DirectWalletPolicySnapshot<'r, OfferedFundedDeploy>,
+    obligations: &'r CheckedPhloObligations<'r>,
+    observed: CheckedPhloExecution<'r>,
+    outcome: PhloOutcome<'r>,
+    root: [u8; 32],
+    controls: CheckedPhloControls<'r>,
+    adopted: &'r AdoptedResourcePolicy,
+    authority_events: &'r [AuthorityEvent<[u8; 32]>],
+    authority_byte_events: &'r [AuthorityByteEvent],
+    no_case: &'static str,
+    no_policy: &'static str,
+}
+
+/// Added by dedup (task 11415, D5): the values of the funding half that the
+/// captured settlement borrows. The caller owns them, so the captured
+/// settlement outlives the call.
+#[derive(Default)]
+struct FundingCaptureSlots<'r> {
+    family_selection: Option<NativeRootedFamilySelection<'r>>,
+    cases: Option<[PhloFundingCase<'r>; 1]>,
+    family: Option<CheckedPhloFundingFamily<'r>>,
+    intent: Option<PhloFundingIntentBinding<'r>>,
+    view: Option<PhloFundingIntentView<'r>>,
+}
+
+/// Added by dedup (task 11415, D5): the result of the funding half: the
+/// rooted family selection and the captured settlement, bound to the root.
+struct FundingCapture<'r> {
+    family_selection: &'r NativeRootedFamilySelection<'r>,
+    checked: CheckedDirectWalletSettlement<'r, OfferedFundedDeploy>,
+}
+
+/// Added by dedup (task 11415, D5): the funding half of the replayed
+/// settlement pipeline, from the rooted family selection to the captured
+/// settlement. The steps and their errors are those that
+/// `settle_replayed_candidate` and `success_path_debits` ran, in the same
+/// order. `select_phlo_funding_family` returns one assignment for
+/// each outcome (`family_policy.rs`), so the one requirement always has its
+/// case.
+fn capture_replayed_funding<'r>(
+    slots: &'r mut FundingCaptureSlots<'r>,
+    input: FundingCaptureInput<'r>,
+    limits: NativeOfferedFamilyLimits,
+) -> Result<FundingCapture<'r>, CasperError> {
+    let FundingCaptureSlots {
+        family_selection: selection_slot,
+        cases: case_slot,
+        family: family_slot,
+        intent: intent_slot,
+        view: view_slot,
+    } = slots;
+    let family_selection: &'r NativeRootedFamilySelection<'r> =
+        selection_slot.insert(select_rooted_native_family(
+            input.snapshot,
+            input.obligations,
+            input.authority_events,
+            input.authority_byte_events,
+            limits,
+        )?);
+    let assignment = family_selection
+        .selected
+        .assignments()
+        .first()
+        .ok_or_else(|| invalid(input.no_case))?;
+    let cases: &'r [PhloFundingCase<'r>] = case_slot.insert([PhloFundingCase {
+        obligations: input.obligations,
+        eligible: &family_selection.eligible,
+        assignment,
+    }]);
+    let family: &'r CheckedPhloFundingFamily<'r> = family_slot.insert(
+        check_phlo_funding_family(
+            &family_selection.sources,
+            cases,
+            family_selection.total_exposure_limit,
+            limits.policy.funding,
+        )
+        .map_err(invalid)?,
+    );
+    let intent: &'r PhloFundingIntentBinding<'r> = intent_slot.insert(
+        PhloFundingIntentBinding::new(
+            input.snapshot.wallets().authorization().record(),
+            limits.signed.intent,
+        )
+        .map_err(invalid)?,
+    );
+    let view: &'r PhloFundingIntentView<'r> = view_slot.insert(intent.view().map_err(invalid)?);
+    let terms = PhloFundingTerms {
+        required_owner_ceilings: input.controls.terms().required_owner_ceilings,
+        asset: input.controls.schedule().environment.asset,
+        schedule_commitment: input.controls.schedule().commitment,
+    };
+    let policy = input
+        .snapshot
+        .bind_native_family_in_context(
+            view,
+            family,
+            terms,
+            limits.signed,
+            limits.policy,
+            input.adopted,
+        )
+        .map_err(invalid)?
+        .ok_or_else(|| invalid(input.no_policy))?;
+    let checked = policy
+        .capture_settlement(
+            input.observed,
+            input.outcome,
+            limits.measured.settlement.matching,
+            limits.measured.settlement.capture,
+        )
+        .map(|checked| checked.bind_execution_root(input.root))
+        .map_err(invalid)?;
+    Ok(FundingCapture {
+        family_selection,
+        checked,
+    })
+}
+
+/// Added by G1-7 (DR-65 item 5, arbitration M2): the inputs of the success
+/// path that `settle_replayed_candidate` already holds.
+struct SuccessPathInput<'r, 's, 'p> {
+    adopted: &'r AdoptedResourcePolicy,
+    schedule: &'r PhloScheduleBinding<'r>,
+    terms: &'r [u8],
+    controls: CheckedPhloControls<'r>,
+    inventory: &'r NativePrepaidInventory<'s, 'p>,
+    demand: &'r NativePhloAcquisitionDemand<'r>,
+    post_run_root: [u8; 32],
+}
+
+impl NativeOfferedAttempt<'_, '_> {
+    /// Added by G1-7 (DR-65 item 5, arbitration M2): the debits of the success
+    /// path of a run that the block commits as a guard failure. The function
+    /// runs the measured settlement of `settle_replayed_candidate` at the
+    /// root after the run, with the births of the run and no failure, up to
+    /// the capture that settlement would charge. Play computes the same
+    /// capture before its own guard.
+    // Changed by dedup (task 11415, D5): the function calls the two halves of
+    // the settlement pipeline, `measure_replayed_settlement` and
+    // `capture_replayed_funding`. It passes the root after the run and the
+    // outcome without failures.
+    async fn success_path_debits(
+        &self,
+        manager: &RuntimeManager,
+        snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+        input: SuccessPathInput<'_, '_, '_>,
+        production: NativeOfferedProductionLimits,
+    ) -> Result<BTreeMap<[u8; 32], u128>, CasperError> {
+        let limits = production.family;
+        // Moved by dedup (task 11415) to `measure_replayed_settlement` and
+        // `capture_replayed_funding` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs`.
+        // let post_stacks = manager.read_measured_prepaid_stacks_with_births(
+        //     input.post_run_root,
+        //     input.demand,
+        //     &self.evaluation.authority_stack_births,
+        //     production.stack_capture,
+        //     budget,
+        // )?;
+        // let born = derive_live_born_stacks(
+        //     &self.evaluation.authority_stack_births,
+        //     &post_stacks,
+        //     limits.retained.funding.births,
+        //     budget,
+        // )?;
+        // let permissions = restore_retained_permissions(
+        //     &snapshot.wallets().authorization().record().sources,
+        //     input.terms,
+        //     input.schedule.descriptor().classes.len(),
+        //     limits.measured.settlement.matching.execution,
+        //     budget,
+        // )?;
+        // let retained = derive_retained_amounts(
+        //     &permissions,
+        //     input.terms,
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // check_retained_origin(
+        //     &permissions,
+        //     input.terms,
+        //     &retained,
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // let selection =
+        //     input
+        //         .inventory
+        //         .select_measured_demand(input.demand, limits.measured.demand, budget)?;
+        // let binding = input.inventory.bind_measured_demand(
+        //     NativePrepaidDemandInput {
+        //         expected_root: self.preflight.funding_root,
+        //         controls: input.controls,
+        //         demand: input.demand,
+        //         draws: selection.draws(),
+        //         demand_positions: selection.demand_positions(),
+        //     },
+        //     limits.measured.demand,
+        //     budget,
+        // )?;
+        // let observed = check_counted_phlo_execution(
+        //     input.controls,
+        //     binding.witness(),
+        //     limits.measured.settlement.matching.execution,
+        // )
+        // .map_err(invalid)?
+        // .with_retained_acquisitions(&retained, budget)
+        // .map_err(invalid)?;
+        // let obligations = project_phlo_obligations(
+        //     observed,
+        //     PhloOutcome::Accepted(&[]),
+        //     limits.policy.funding.obligations,
+        // )
+        // .map_err(invalid)?;
+        // let family_selection = select_rooted_native_family(
+        //     snapshot,
+        //     &obligations,
+        //     &self.evaluation.authority_events,
+        //     &self.evaluation.authority_byte_events,
+        //     limits,
+        //     budget,
+        // )?;
+        // let assignment = family_selection
+        //     .selected
+        //     .assignments()
+        //     .first()
+        //     .ok_or_else(|| invalid("the success path of a claimed guard failure has no case"))?;
+        // let cases = [PhloFundingCase {
+        //     obligations: &obligations,
+        //     eligible: &family_selection.eligible,
+        //     assignment,
+        // }];
+        // let family = check_phlo_funding_family(
+        //     &family_selection.sources,
+        //     &cases,
+        //     family_selection.total_exposure_limit,
+        //     limits.policy.funding,
+        // )
+        // .map_err(invalid)?;
+        // let intent = PhloFundingIntentBinding::new(
+        //     snapshot.wallets().authorization().record(),
+        //     limits.signed.intent,
+        // )
+        // .map_err(invalid)?;
+        // let view = intent.view().map_err(invalid)?;
+        // let terms = PhloFundingTerms {
+        //     required_owner_ceilings: input.controls.terms().required_owner_ceilings,
+        //     asset: input.controls.schedule().environment.asset,
+        //     schedule_commitment: input.controls.schedule().commitment,
+        // };
+        // let policy = snapshot
+        //     .bind_native_family_in_context(
+        //         &view,
+        //         &family,
+        //         terms,
+        //         limits.signed,
+        //         limits.policy,
+        //         input.adopted,
+        //         budget,
+        //     )
+        //     .map_err(invalid)?
+        //     .ok_or_else(|| invalid("the success path of a claimed guard failure has no policy"))?;
+        // let checked = policy
+        //     .capture_settlement(
+        //         observed,
+        //         PhloOutcome::Accepted(&[]),
+        //         limits.measured.settlement.matching,
+        //         limits.measured.settlement.capture,
+        //         budget,
+        //     )
+        //     .map(|checked| checked.bind_execution_root(input.post_run_root))
+        //     .map_err(invalid)?;
+        // capture_debits(checked.capture().amounts(), budget)
+        let mut measured_slots = MeasuredSettlementSlots::default();
+        let measured = measure_replayed_settlement(
+            manager,
+            &mut measured_slots,
+            MeasuredSettlementInput {
+                root: input.post_run_root,
+                funding_root: self.preflight.funding_root,
+                births: &self.evaluation.authority_stack_births,
+                // Added by the merge of feature/cost-accounted-rho (finding
+                // R3-02): F1R3Lang's measured settlement reads both fields.
+                events: &self.evaluation.authority_events,
+                adopted: input.adopted,
+                snapshot,
+                schedule: input.schedule,
+                terms: input.terms,
+                controls: input.controls,
+                inventory: input.inventory,
+                demand: input.demand,
+            },
+            production,
+        )?;
+        let outcome = PhloOutcome::Accepted(&[]);
+        let obligations = project_phlo_obligations(
+            measured.observed,
+            outcome,
+            limits.policy.funding.obligations,
+        )
+        .map_err(invalid)?;
+        let mut capture_slots = FundingCaptureSlots::default();
+        let capture = capture_replayed_funding(
+            &mut capture_slots,
+            FundingCaptureInput {
+                snapshot,
+                obligations: &obligations,
+                observed: measured.observed,
+                outcome,
+                root: input.post_run_root,
+                controls: input.controls,
+                adopted: input.adopted,
+                authority_events: &self.evaluation.authority_events,
+                authority_byte_events: &self.evaluation.authority_byte_events,
+                no_case: "the success path of a claimed guard failure has no case",
+                no_policy: "the success path of a claimed guard failure has no policy",
+            },
+            limits,
+        )?;
+        capture_debits(capture.checked.capture().amounts())
+    }
+}
+
 impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
     pub fn user_event_count(&self) -> usize { self.user_event_count }
 
@@ -717,10 +1265,8 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
         &self,
         input: NativeAttemptSettlementInput<'_, '_, '_>,
         limits: NativeAttemptSettlementLimits,
-        budget: &rholang::rust::interpreter::host_work::HostWorkBudget,
     ) -> Result<NativeCapturedSettlement<'a>, CasperError> {
-        self.attempt
-            .capture_measured_settlement(input, limits, budget)
+        self.attempt.capture_measured_settlement(input, limits)
     }
 
     pub async fn read_measured_prepaid_stacks(
@@ -730,7 +1276,6 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
         terms: &[u8],
         limits: NativeAttemptSettlementLimits,
         capture: PrepaidStackCaptureLimits,
-        budget: &rholang::rust::interpreter::host_work::HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
         if self.attempt.runtime.runtime.get_root().await.bytes()
             != self.expected_settlement_runtime_root
@@ -749,21 +1294,16 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
                 limits.observations,
             )
             .map_err(invalid)?;
-        let regions = measured
-            .region_demands(limits.regions, budget)
-            .map_err(invalid)?;
-        let located = regions
-            .locate_purses(limits.purses, budget)
-            .map_err(invalid)?;
+        let regions = measured.region_demands(limits.regions).map_err(invalid)?;
+        let located = regions.locate_purses(limits.purses).map_err(invalid)?;
         let demand = located
-            .prepare_acquisition_demand(schedule, terms, limits.acquisition, budget)
+            .prepare_acquisition_demand(schedule, terms, limits.acquisition)
             .map_err(invalid)?;
         manager.read_measured_prepaid_stacks(
             self.attempt.policy.snapshot().wallets().pre_state_root(),
             &demand,
             &self.attempt.adopted,
             capture,
-            budget,
         )
     }
 
@@ -775,7 +1315,6 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
         block_data: &rholang::rust::interpreter::system_processes::BlockData,
         receipt_limits: NativeWalletReceiptLimits,
         grants: Option<NativeGrantSettlementInput<'_>>,
-        budget: &rholang::rust::interpreter::host_work::HostWorkBudget,
     ) -> Result<PendingReplayedNativeSettlement<'processed, 'policy, 'a>, CasperError> {
         let independently_reached_root: [u8; 32] = self
             .attempt
@@ -807,7 +1346,6 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
             captured.checked().capture().scoped().capture(),
             captured.cursor_transition(),
             offered_funded_v6_limits().funding_case,
-            budget,
         )?;
         permit.verify_funding_case(&recomputed_funding)?;
         let settlement_context =
@@ -830,7 +1368,6 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
                 receipt_limits,
                 grants,
                 issuances,
-                budget,
             )
             .await?;
         Ok(PendingReplayedNativeSettlement {
@@ -849,7 +1386,6 @@ impl<'processed, 'policy, 'a> PendingReplayedNativeSettlement<'processed, 'polic
         records: &NativeRetainedReceiptRecords<'_, '_, '_, '_, A>,
         consumption: NativePrepaidConsumption<'_, '_>,
         limits: NativeRetainedSettlementLimits,
-        budget: &rholang::rust::interpreter::host_work::HostWorkBudget,
     ) -> Result<(NativeFundedAttempt<'policy, 'a>, NativeFundedSettlement), CasperError> {
         let result: Result<(), CasperError> = async {
             if !std::ptr::eq(prepared.births(), records.births())
@@ -882,22 +1418,9 @@ impl<'processed, 'policy, 'a> PendingReplayedNativeSettlement<'processed, 'polic
                     funding_root,
                     wallet_root,
                     limits,
-                    budget,
                 )
                 .await?;
             let count = receipts.prepaid_changes.len();
-            let bytes = count
-                .checked_mul(size_of::<PrepaidReceiptChange<'_>>())
-                .ok_or_else(|| invalid("replayed prepaid evidence size overflows"))?;
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(
-                        u64::try_from(bytes)
-                            .map_err(|_| invalid("replayed prepaid evidence work overflows"))?,
-                    ),
-                )
-                .map_err(invalid)?;
             let mut changes = Vec::new();
             changes
                 .try_reserve_exact(count)
@@ -913,7 +1436,6 @@ impl<'processed, 'policy, 'a> PendingReplayedNativeSettlement<'processed, 'polic
                 records.records(),
                 &changes,
                 offered_funded_v6_limits().prepaid_delta,
-                budget,
             )?;
             self.permit.verify_prepaid_delta(&prepaid_delta)?;
             self.attempt.runtime.runtime.check_replay_data().await?;
@@ -931,20 +1453,6 @@ impl<'processed, 'policy, 'a> PendingReplayedNativeSettlement<'processed, 'polic
                 self.wallet.resource_rev,
                 self.wallet.fee_rev,
             )?;
-            let bytes = receipts
-                .log
-                .len()
-                .checked_mul(size_of::<CasperEvent>())
-                .ok_or_else(|| invalid("offered replay settlement log allocation overflows"))?;
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(
-                        u64::try_from(bytes)
-                            .map_err(|_| invalid("offered replay settlement log work overflows"))?,
-                    ),
-                )
-                .map_err(invalid)?;
             self.wallet
                 .settlement_log
                 .try_reserve_exact(receipts.log.len())
@@ -970,50 +1478,6 @@ impl<'processed, 'policy, 'a> PendingReplayedNativeSettlement<'processed, 'polic
 
 fn invalid(error: impl std::fmt::Display) -> CasperError {
     CasperError::RuntimeError(error.to_string())
-}
-
-fn reserve_work(
-    budget: &rholang::rust::interpreter::host_work::HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), CasperError> {
-    budget
-        .reserve(
-            dimension,
-            HostWorkUnits::new(
-                u64::try_from(amount).map_err(|_| invalid("offered replay work overflows"))?,
-            ),
-        )
-        .map(|_| ())
-        .map_err(invalid)
-}
-
-fn reserve_offered_evidence_decode(
-    processed: &OfferedProcessedDeploy,
-    limits: PhloWireLimits,
-    budget: &HostWorkBudget,
-) -> Result<(), CasperError> {
-    let bytes = processed.native_cost_evidence_bytes();
-    reserve_work(budget, HostWorkDimension::VerificationBytes, bytes.len())?;
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        bytes.len(),
-    )?;
-    let evidence = NativeCostEvidenceV1::decode(bytes, limits).map_err(invalid)?;
-    let owned_sections = evidence
-        .funding_case
-        .len()
-        .checked_add(evidence.prepaid_delta.len())
-        .and_then(|n| n.checked_add(evidence.wallet_settlement.len()))
-        .ok_or_else(|| invalid("committed native evidence section size overflows"))?;
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        owned_sections
-            .checked_mul(16)
-            .ok_or_else(|| invalid("committed native evidence allocation overflows"))?,
-    )
 }
 
 fn event_bytes(event: &CasperEvent) -> Result<usize, CasperError> {
@@ -1153,7 +1617,6 @@ fn checked_replay_events(
     epoch: rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch,
     limits: NativeOperationTraceLimits,
     bytes_cap: usize,
-    host: &rholang::rust::interpreter::host_work::HostWorkBudget,
 ) -> Result<Arc<[Event]>, CasperError> {
     if events.len() > limits.events {
         return Err(invalid("offered replay event count exceeds protocol limit"));
@@ -1163,14 +1626,6 @@ fn checked_replay_events(
         .checked_add(limits.telemetry_items)
         .and_then(|count| count.checked_add(limits.events))
         .ok_or_else(|| invalid("offered replay event item limit overflows"))?;
-    host.reserve(
-        HostWorkDimension::VerificationOperations,
-        HostWorkUnits::new(
-            u64::try_from(events.len())
-                .map_err(|_| invalid("offered replay event work overflows"))?,
-        ),
-    )
-    .map_err(invalid)?;
     let top_items = events.iter().try_fold(0usize, |count, event| {
         count
             .checked_add(
@@ -1182,13 +1637,6 @@ fn checked_replay_events(
     if top_items > item_cap {
         return Err(invalid("offered replay event items exceed protocol limit"));
     }
-    host.reserve(
-        HostWorkDimension::VerificationOperations,
-        HostWorkUnits::new(
-            u64::try_from(top_items).map_err(|_| invalid("offered replay event work overflows"))?,
-        ),
-    )
-    .map_err(invalid)?;
     let items = events.iter().try_fold(0usize, |count, event| {
         count
             .checked_add(
@@ -1200,37 +1648,12 @@ fn checked_replay_events(
     if items > item_cap {
         return Err(invalid("offered replay event items exceed protocol limit"));
     }
-    host.reserve(
-        HostWorkDimension::VerificationOperations,
-        HostWorkUnits::new(
-            u64::try_from(items - top_items)
-                .map_err(|_| invalid("offered replay event work overflows"))?,
-        ),
-    )
-    .map_err(invalid)?;
     let bytes = events.iter().try_fold(0usize, |sum, event| {
         sum.checked_add(event_bytes(event)?)
             .ok_or_else(|| invalid("offered replay event byte size overflows"))
     })?;
     if bytes > bytes_cap {
         return Err(invalid("offered replay events exceed protocol byte limit"));
-    }
-    let allocation = bytes
-        .checked_mul(4)
-        .and_then(|bytes| bytes.checked_add(events.len().checked_mul(size_of::<Event>() * 4)?))
-        .ok_or_else(|| invalid("offered replay event allocation size overflows"))?;
-    for (dimension, amount) in [
-        (HostWorkDimension::SearchStateBytes, allocation),
-        (HostWorkDimension::VerificationBytes, bytes),
-    ] {
-        host.reserve(
-            dimension,
-            HostWorkUnits::new(
-                u64::try_from(amount)
-                    .map_err(|_| invalid("offered replay event work overflows"))?,
-            ),
-        )
-        .map_err(invalid)?;
     }
     let mut replayed = Vec::new();
     replayed
@@ -1242,31 +1665,33 @@ fn checked_replay_events(
     Ok(replayed.into())
 }
 
-fn native_user_event_count(
-    operations: &[NativeOperationRecord],
-    maximum: usize,
-    host: &rholang::rust::interpreter::host_work::HostWorkBudget,
-) -> Result<usize, CasperError> {
-    host.reserve(
-        HostWorkDimension::VerificationOperations,
-        HostWorkUnits::new(
-            u64::try_from(operations.len())
-                .map_err(|_| invalid("native user event count overflows"))?,
-        ),
-    )
-    .map_err(invalid)?;
-    operations.iter().try_fold(0usize, |count, operation| {
-        let width = match operation.completion {
-            RSpaceOperationCompletion::Rejected => 0,
-            RSpaceOperationCompletion::Stored => 1,
-            RSpaceOperationCompletion::Matched => 2,
-        };
-        count
-            .checked_add(width)
-            .filter(|count| *count <= maximum)
-            .ok_or_else(|| invalid("native user event count exceeds replay limit"))
-    })
-}
+// Moved by DR-115 to offered_evidence.rs, unchanged: the merge index uses the
+// same user-event boundary as replay.
+// fn native_user_event_count(
+//     operations: &[NativeOperationRecord],
+//     maximum: usize,
+//     host: &rholang::rust::interpreter::host_work::HostWorkBudget,
+// ) -> Result<usize, CasperError> {
+//     host.reserve(
+//         HostWorkDimension::VerificationOperations,
+//         HostWorkUnits::new(
+//             u64::try_from(operations.len())
+//                 .map_err(|_| invalid("native user event count overflows"))?,
+//         ),
+//     )
+//     .map_err(invalid)?;
+//     operations.iter().try_fold(0usize, |count, operation| {
+//         let width = match operation.completion {
+//             RSpaceOperationCompletion::Rejected => 0,
+//             RSpaceOperationCompletion::Stored => 1,
+//             RSpaceOperationCompletion::Matched => 2,
+//         };
+//         count
+//             .checked_add(width)
+//             .filter(|count| *count <= maximum)
+//             .ok_or_else(|| invalid("native user event count exceeds replay limit"))
+//     })
+// }
 
 fn settlement_root<T>(before: T, after: T, failed: bool) -> T {
     if failed {
@@ -1306,12 +1731,10 @@ impl RuntimeManager {
         recording_limits: NativeRecordingWireLimits,
         replay_limits: NativeFundedReplayLimits,
     ) -> Result<ReplayedNativeFundedUser<'policy, 'a>, CasperError> {
-        let host = context.host_work.clone();
         let evidence_bytes = processed.native_cost_evidence_bytes().len();
         if evidence_bytes > wire_limits.total_bytes {
             return Err(invalid("committed native evidence exceeds protocol limit"));
         }
-        reserve_offered_evidence_decode(processed, wire_limits, &host)?;
         processed
             .validate_for_epoch(wire_limits, adopted.event_codec_epoch())
             .map_err(invalid)?;
@@ -1330,8 +1753,8 @@ impl RuntimeManager {
             ));
         }
         let (recording, operations) =
-            decode_committed_runtime_recording(&evidence, recording_limits, &host)?;
-        let user_events = native_user_event_count(&operations, replay_limits.trace.events, &host)?;
+            decode_committed_runtime_recording(&evidence, recording_limits)?;
+        let user_events = native_user_event_count(&operations, replay_limits.trace.events)?;
         let event_prefix = processed
             .deploy_log()
             .get(..user_events)
@@ -1341,7 +1764,6 @@ impl RuntimeManager {
             adopted.event_codec_epoch(),
             replay_limits.trace,
             wire_limits.total_bytes,
-            &host,
         )?;
         let mut attempt = self
             .replay_native_funded(
@@ -1361,7 +1783,7 @@ impl RuntimeManager {
         let failures = attempt
             .evaluation
             .economic_failures
-            .union(classify_errors(&attempt.evaluation.errors, Some(&host)).map_err(invalid)?);
+            .union(classify_errors(&attempt.evaluation.errors).map_err(invalid)?);
         if !failures.permits_retained_charge() {
             return Err(invalid(
                 "independent native replay has a non-user economic failure",
@@ -1385,7 +1807,6 @@ impl RuntimeManager {
                     schedule.schedule().environment.shard,
                     offered_grant_issue_call_limits(),
                     offered_grant_transition_limits(),
-                    &host,
                 )
                 .await?
         } else {
@@ -1404,7 +1825,6 @@ impl RuntimeManager {
             adopted.event_codec_epoch(),
             replay_limits.trace,
             wire_limits.total_bytes,
-            &host,
         )?;
         if expected_grant_log.as_ref() != grant_log.as_slice() {
             return Err(invalid(
@@ -1432,18 +1852,19 @@ impl RuntimeManager {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn replay_native_offered_witness<'preflight, 'a>(
         &self,
         prepared: &'preflight PreparedOfferedCandidate<'a>,
         processed: &OfferedProcessedDeploy,
         adopted: &AdoptedResourcePolicy,
         schedule: &PhloScheduleBinding<'_>,
+        snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
         context: NativeFundedExecutionContext,
         candidate_limits: OfferedCandidateLimits,
         recording_limits: NativeRecordingWireLimits,
         replay_limits: NativeFundedReplayLimits,
     ) -> Result<NativeOfferedAttempt<'preflight, 'a>, CasperError> {
-        let host = context.host_work.clone();
         let protocol = offered_funded_v6_limits();
         let wire_limits = protocol.evidence;
         let evidence_bytes = processed.native_cost_evidence_bytes().len();
@@ -1451,8 +1872,6 @@ impl RuntimeManager {
         if evidence_bytes > wire_limits.total_bytes || log_events > protocol.deploy_log_events {
             return Err(invalid("committed native evidence exceeds protocol limit"));
         }
-        reserve_offered_evidence_decode(processed, wire_limits, &host)?;
-        reserve_work(&host, HostWorkDimension::VerificationOperations, log_events)?;
         processed.validate(wire_limits).map_err(invalid)?;
         let evidence = processed.evidence(wire_limits).map_err(invalid)?;
         let DeployEnvelopeRef::OfferedFunded(signed) = processed.envelope().view() else {
@@ -1500,6 +1919,36 @@ impl RuntimeManager {
             &prepared.envelope_identity,
             processed.envelope().identity().as_bytes(),
         )?;
+        // Changed by G1-6 (DR-124, map gap fill G-8): the offered runtime is
+        // spawned before the controls, so the check reads its URN map. Nothing
+        // reads the runtime before the grant collection below, and the replay
+        // environment keeps its own budget and merge tracker.
+        let mut runtime = RuntimeOps::new(
+            self.spawn_offered_runtime(
+                adopted.event_codec_epoch(),
+                offered_grant_issue_call_limits(),
+            )
+            .await?,
+        );
+        let gate = self.check_offered_before_execution(OfferedGateInput {
+            frontend: self.required_program_frontend()?,
+            envelope: processed.envelope(),
+            prepared,
+            selected_terms: selected.bytes(),
+            schedule,
+            minimum_price: adopted.genesis().minimum_price(),
+            snapshot,
+            evaluator: &runtime.runtime.reducer,
+            limits: offered_funded_v6_production_limits().family,
+        });
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_check(
+            OfferedCheckRole::Replay,
+            processed.envelope(),
+            &prepared.funding_root,
+            gate.as_ref().ok(),
+        );
+        let gate = gate?;
         let signed_controls = PhloControlsBinding::new(
             &prepared.intent.base.controls,
             candidate_limits.funding.base.controls(),
@@ -1516,15 +1965,23 @@ impl RuntimeManager {
             },
             view.terms(),
             schedule.schedule(),
-            prepared.phlo_limit,
+            // Changed by G1-6 (DR-124): the bound is the resource bound of the
+            // check.
+            // prepared.phlo_limit,
+            gate.resource_bound(),
         )
         .map_err(invalid)?;
-        let contract = adopted.bind_execution_contract(checked.controls(), schedule)?;
-        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work.clone())
+        // Changed by G1-6 (DR-124): the replay runtime configuration binds the
+        // bound source of the check (DR-124 amends DR-113 item 6).
+        // // DR-113: the bound of an offer is its signed limit.
+        // let contract = adopted.bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+        let contract =
+            adopted.bind_execution_contract(checked.controls(), schedule, gate.bound_source())?;
+        let config = NativeRuntimeConfig::new(contract, context.trace)
             .with_event_codec_epoch(adopted.event_codec_epoch());
         let (recording, operations) =
-            decode_committed_runtime_recording(&evidence, recording_limits, &host)?;
-        let user_events = native_user_event_count(&operations, replay_limits.trace.events, &host)?;
+            decode_committed_runtime_recording(&evidence, recording_limits)?;
+        let user_events = native_user_event_count(&operations, replay_limits.trace.events)?;
         let user_prefix = processed
             .deploy_log()
             .get(..user_events)
@@ -1534,24 +1991,21 @@ impl RuntimeManager {
             adopted.event_codec_epoch(),
             replay_limits.trace,
             wire_limits.total_bytes,
-            &host,
         )?;
         let identity = prepared.envelope_identity;
+        // DR-113: replay classifies a denial with the source that play uses.
+        // Changed by G1-6 (DR-124): the replay evidence binds the bound source
+        // of the check, which play also binds.
+        // let trace = adopted
+        //     .bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?
         let trace = adopted
-            .bind_execution_contract(checked.controls(), schedule)?
-            .check_operation_journal(
-                identity,
-                &recording,
-                operations,
-                replay_limits.journal,
-                &host,
-            )
+            .bind_execution_contract(checked.controls(), schedule, gate.bound_source())?
+            .check_operation_journal(identity, &recording, operations, replay_limits.journal)
             .map_err(invalid)?
-            .bind_trace(events.clone(), replay_limits.trace, &host)
+            .bind_trace(events.clone(), replay_limits.trace)
             .map_err(invalid)?;
-        let (prepared_source, source_bytes) =
+        let prepared_source =
             prepare_offered_source(self.required_program_frontend()?, processed.envelope())?;
-        InterpreterImpl::reserve_prepared_structure(prepared_source.as_par(), source_bytes, &host)?;
         let parsed = prepared_source.into_par();
         let cost = RuntimeBudget::new(Cost::unsafe_max());
         cost.set_deploy_id_funded(identity, funding_sig(signed))
@@ -1560,16 +2014,13 @@ impl RuntimeManager {
         let before = Blake2b256Hash::from_bytes(prepared.execution_root.to_vec());
         let history = Arc::new(self.history_repo.reset(&before).map_err(invalid)?);
         super::check_execution_root(&before.bytes(), &history.root().bytes())?;
-        let mut offered_definitions = vec![grant_issue_definition(
-            offered_grant_issue_call_limits(),
-            host.clone(),
-        )];
+        let mut offered_definitions =
+            vec![grant_issue_definition(offered_grant_issue_call_limits())];
         let mut replay = create_native_replay_env(
             adopted.event_codec_epoch(),
             trace,
             history,
             Arc::new(Box::new(Matcher)),
-            host.clone(),
             Arc::new(RwLock::new(HashMap::new())),
             self.mergeable_tags.clone(),
             &mut offered_definitions,
@@ -1577,40 +2028,79 @@ impl RuntimeManager {
             ExternalServices::noop(),
         )
         .await?;
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_budget_usage(
+            OfferedUsageKind::ReplayUrnMap {
+                matches_check: replay.urn_map() == runtime.runtime.reducer.urn_map.as_ref(),
+            },
+            processed.identity_bytes(),
+            &prepared.funding_root,
+        );
         *replay.block_data.write().await = context.block_data.clone();
         replay
             .set_invalid_blocks(context.invalid_blocks.clone())
             .await;
         *replay.deploy_data.write().await = DeployData::from_envelope(processed.envelope());
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_budget_usage(
+            OfferedUsageKind::ReplayRuntimeEntry,
+            processed.identity_bytes(),
+            &prepared.funding_root,
+        );
         let evaluation = replay
             .evaluate(parsed, Tools::user_envelope_rng(processed.envelope()))
             .await?;
         let failures = evaluation
             .economic_failures
-            .union(classify_errors(&evaluation.errors, Some(&host)).map_err(invalid)?);
+            .union(classify_errors(&evaluation.errors).map_err(invalid)?);
         if !failures.permits_retained_charge() {
             return Err(invalid(
                 "native offered witness has a non-user economic failure",
             ));
         }
         let user_failure = failures.contains(PhloFailure::User);
-        if evaluation.native_phlo_usage != Some(evidence.phlo_used)
-            || user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure)
-        {
-            return Err(invalid(
-                "native offered witness differs from committed usage or failure",
-            ));
-        }
+        // Changed by G1-7 (DR-65 item 5, arbitration M2): one flag, "user
+        // failure or guard failure". A committed UserFailure for a run without
+        // a user failure claims a failed held-capacity guard.
+        // `settle_replayed_candidate` recomputes the guard and accepts the
+        // claim only if the guard fails. A run with a user failure that the
+        // block commits as a success still rejects.
+        // if evaluation.native_phlo_usage != Some(evidence.phlo_used)
+        //     || user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure)
+        // {
+        //     return Err(invalid(
+        //         "native offered witness differs from committed usage or failure",
+        //     ));
+        // }
+        let committed_failure = evidence.failure_class == NativeCostFailureClass::UserFailure;
+        let rolled_back = match (
+            evaluation.native_phlo_usage == Some(evidence.phlo_used),
+            user_failure,
+            committed_failure,
+        ) {
+            (false, _, _) | (true, true, false) => {
+                return Err(invalid(
+                    "native offered witness differs from committed usage or failure",
+                ));
+            }
+            (true, user, committed) => user || committed,
+        };
+        let guard_claimed = rolled_back && !user_failure;
         let exported = replay.export().await?;
-        let root = settlement_root(before, exported.root().clone(), user_failure);
-        let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(
-                adopted.event_codec_epoch(),
-                offered_grant_issue_call_limits(),
-                host.clone(),
-            )
-            .await?,
-        );
+        let post_run_root: [u8; 32] = exported
+            .root()
+            .bytes()
+            .try_into()
+            .map_err(|_| invalid("native offered witness export root must be 32 bytes"))?;
+        // Changed by G1-7: the settlement root follows the combined flag.
+        // let root = settlement_root(before, exported.root().clone(), user_failure);
+        let root = settlement_root(before, exported.root().clone(), rolled_back);
+        // Changed by G1-6 (DR-124): the replay reuses the runtime that it
+        // spawned before the check.
+        // let mut runtime = RuntimeOps::new(
+        //     self.spawn_offered_runtime(offered_grant_issue_call_limits(), host.clone())
+        //         .await?,
+        // );
         runtime
             .runtime
             .set_block_data(context.block_data.clone())
@@ -1625,7 +2115,10 @@ impl RuntimeManager {
             .await;
         runtime.runtime.reset(&root).await?;
         super::check_execution_root(&root.bytes(), &runtime.runtime.get_root().await.bytes())?;
-        let grant_issuances = if user_failure {
+        // Changed by G1-7 (arbitration M2): a rolled-back run, by a user
+        // failure or by a guard failure, issues no grants.
+        // let grant_issuances = if user_failure {
+        let grant_issuances = if rolled_back {
             Vec::new()
         } else {
             runtime
@@ -1636,7 +2129,6 @@ impl RuntimeManager {
                     schedule.schedule().environment.shard,
                     offered_grant_issue_call_limits(),
                     offered_grant_transition_limits(),
-                    &host,
                 )
                 .await?
         };
@@ -1644,23 +2136,6 @@ impl RuntimeManager {
         let grant_end = user_events
             .checked_add(grant_log.len())
             .ok_or_else(|| invalid("offered witness grant boundary overflows"))?;
-        let grant_bytes = grant_log
-            .len()
-            .checked_mul(size_of::<CasperEvent>())
-            .ok_or_else(|| invalid("offered witness grant log allocation overflows"))?;
-        for (dimension, amount) in [
-            (HostWorkDimension::SearchStateBytes, grant_bytes),
-            (HostWorkDimension::VerificationOperations, grant_log.len()),
-        ] {
-            host.reserve(
-                dimension,
-                HostWorkUnits::new(
-                    u64::try_from(amount)
-                        .map_err(|_| invalid("offered witness grant log work overflows"))?,
-                ),
-            )
-            .map_err(invalid)?;
-        }
         let mut grant_casper = Vec::new();
         grant_casper
             .try_reserve_exact(grant_log.len())
@@ -1691,6 +2166,11 @@ impl RuntimeManager {
             replay_log: events,
             grant_issuances,
             grant_issue_log: Arc::from(grant_log),
+            gate,
+            // Added by G1-7 (arbitration M2): the guard of a claimed guard
+            // failure reads the root after the run.
+            post_run_root: Some(post_run_root),
+            guard_claimed,
         })
     }
 
@@ -1704,14 +2184,7 @@ impl RuntimeManager {
         input: NativeFundedReplayInput<'_>,
         limits: NativeFundedReplayLimits,
     ) -> Result<NativeFundedAttempt<'policy, 'a>, CasperError> {
-        let host = context.host_work.clone();
-        let config = policy.prepare_execution(
-            envelope,
-            adopted,
-            schedule,
-            context.trace,
-            context.host_work,
-        )?;
+        let config = policy.prepare_execution(envelope, adopted, schedule, context.trace)?;
         let controls = policy
             .policy()
             .policy()
@@ -1725,24 +2198,23 @@ impl RuntimeManager {
             .execution()
             .controls();
         let identity = envelope.identity().as_bytes().try_into().map_err(invalid)?;
+        // DR-113: this family path has no caller. It keeps the measured family
+        // bound, unbilled as before.
         let trace = adopted
-            .bind_execution_contract(controls, schedule)?
+            .bind_execution_contract(controls, schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate)?
             .check_operation_journal(
                 identity,
                 input.recording,
                 input.operations.clone(),
                 limits.journal,
-                &host,
             )
             .map_err(invalid)?
-            .bind_trace(input.events.clone(), limits.trace, &host)
+            .bind_trace(input.events.clone(), limits.trace)
             .map_err(invalid)?;
         let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
             return Err(invalid("native replay requires an offered funded envelope"));
         };
-        let (prepared_source, source_bytes) =
-            prepare_offered_source(self.required_program_frontend()?, envelope)?;
-        InterpreterImpl::reserve_prepared_structure(prepared_source.as_par(), source_bytes, &host)?;
+        let prepared_source = prepare_offered_source(self.required_program_frontend()?, envelope)?;
         let parsed = prepared_source.into_par();
         let cost = RuntimeBudget::new(Cost::unsafe_max());
         cost.set_deploy_id_funded(identity, funding_sig(signed))
@@ -1752,17 +2224,13 @@ impl RuntimeManager {
             Blake2b256Hash::from_bytes(policy.snapshot().wallets().pre_state_root().to_vec());
         let history = Arc::new(self.history_repo.reset(&before).map_err(invalid)?);
         super::check_execution_root(&before.bytes(), &history.root().bytes())?;
-        let mut offered_definitions = vec![grant_issue_definition(
-            offered_grant_issue_call_limits(),
-            host.clone(),
-        )];
-        let settlement_host = host.clone();
+        let mut offered_definitions =
+            vec![grant_issue_definition(offered_grant_issue_call_limits())];
         let mut replay = create_native_replay_env(
             adopted.event_codec_epoch(),
             trace,
             history,
             Arc::new(Box::new(Matcher)),
-            host,
             Arc::new(RwLock::new(HashMap::new())),
             self.mergeable_tags.clone(),
             &mut offered_definitions,
@@ -1788,7 +2256,6 @@ impl RuntimeManager {
             self.spawn_offered_runtime(
                 adopted.event_codec_epoch(),
                 offered_grant_issue_call_limits(),
-                settlement_host,
             )
             .await?,
         );
@@ -1821,15 +2288,14 @@ impl RuntimeManager {
 #[cfg(test)]
 mod tests {
     use models::rust::casper::protocol::casper_message::ProduceEvent;
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use proptest::prelude::*;
-    use rholang::rust::interpreter::host_work::HostWorkBudget;
 
     use super::*;
 
+    /// Changed by DR-131: the check that the rejection reserved no payload
+    /// copy went with host work. The test keeps its check of the item limit.
     #[test]
-    fn replay_event_item_exhaustion_rejects_before_payload_copy() {
-        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+    fn replay_event_item_limit_rejects_the_events() {
         let events = [CasperEvent::Produce(ProduceEvent {
             channels_hash: Default::default(),
             hash: Default::default(),
@@ -1851,10 +2317,8 @@ mod tests {
             rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy,
             limits,
             100,
-            &host,
         )
         .is_err());
-        assert_eq!(host.usage(HostWorkDimension::SearchStateBytes).get(), 0);
     }
 
     proptest! {

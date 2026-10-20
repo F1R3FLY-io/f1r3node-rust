@@ -8,7 +8,6 @@ use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::{BindPattern, CostSignature, ListParWithRandom, Par};
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::phlo_grant_creation::{
     PhloGrantCreationLimits, PhloGrantCreationV1, VerifiedGrantCreationV1,
 };
@@ -17,7 +16,6 @@ use models::rust::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireLimits};
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use models::rust::utils::{new_freevar_par, new_gsys_auth_token_par};
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::rho_type::{RhoByteArray, RhoList};
 use rholang::rust::interpreter::system_processes::{byte_name, Definition};
@@ -48,9 +46,7 @@ pub fn grant_issue_journal_channel() -> Par { byte_name(GRANT_ISSUE_JOURNAL_CHAN
 pub fn count_grant_issue_requests(
     log: &[Event],
     limits: OfferedGrantLimits,
-    budget: &HostWorkBudget,
 ) -> Result<usize, CasperError> {
-    reserve(budget, HostWorkDimension::VerificationOperations, log.len())?;
     let hash = stable_hash_provider::hash(&grant_issue_journal_channel());
     let mut count = 0usize;
     for event in log {
@@ -77,17 +73,15 @@ pub fn count_grant_issue_requests(
     Ok(count)
 }
 
-pub fn grant_issue_definition(limits: GrantIssueCallLimits, budget: HostWorkBudget) -> Definition {
+pub fn grant_issue_definition(limits: GrantIssueCallLimits) -> Definition {
     Definition {
         urn: "rho:cost:grant:issue:v1".to_owned(),
         fixed_channel: byte_name(GRANT_ISSUE_BODY_REF as u8),
         arity: 1,
         body_ref: GRANT_ISSUE_BODY_REF,
         handler: Box::new(move |context| {
-            let budget = budget.clone();
             Box::new(move |arguments| {
                 let context = context.clone();
-                let budget = budget.clone();
                 Box::pin(async move {
                     if !context.cost.native_execution_active() {
                         return Err(InterpreterError::ReduceError(
@@ -108,23 +102,22 @@ pub fn grant_issue_definition(limits: GrantIssueCallLimits, budget: HostWorkBudg
                         expr_instance: Some(models::rhoapi::expr::ExprInstance::GByteArray(call)),
                     }] = payload.exprs.as_slice()
                     else {
-                        return Err(InterpreterError::ReduceError(
+                        // Changed by DR-128 (bug 11414): a payload that is not one byte
+                        // array is an illegal argument. Native execution makes it the
+                        // user failure `SystemProcessShapeError` (DR-114).
+                        // return Err(InterpreterError::ReduceError(
+                        return Err(InterpreterError::IllegalArgumentError(
                             "grant issue expects canonical bytes".to_owned(),
                         ));
                     };
                     if call.len() > limits.wire.total_bytes {
-                        return Err(InterpreterError::ReduceError(
+                        // Changed by DR-128 (bug 11414): a payload over the wire limit is
+                        // an illegal argument too.
+                        // return Err(InterpreterError::ReduceError(
+                        return Err(InterpreterError::IllegalArgumentError(
                             "grant issue exceeds syntax limit".to_owned(),
                         ));
                     }
-                    reserve(&budget, HostWorkDimension::SearchStateBytes, call.len())
-                        .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                    reserve(
-                        &budget,
-                        HostWorkDimension::VerificationOperations,
-                        call.len(),
-                    )
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
                     if *payload != RhoByteArray::create_par(call.clone()) {
                         return Err(InterpreterError::ReduceError(
                             "grant issue payload is noncanonical".to_owned(),
@@ -211,17 +204,10 @@ pub fn decode_verified_grant_issue_call(
     expected_network: &[u8],
     expected_shard: &[u8],
     limits: GrantIssueCallLimits,
-    budget: &HostWorkBudget,
 ) -> Result<VerifiedGrantCreationV1, CasperError> {
     if call.len() > limits.wire.total_bytes {
         return Err(invalid("grant issue call exceeds syntax limit"));
     }
-    reserve(budget, HostWorkDimension::SearchStateBytes, call.len())?;
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        call.len().saturating_add(128),
-    )?;
     let mut decoder = PhloWireDecoder::new(call, limits.wire)
         .map_err(|error| invalid(&format!("invalid grant issue call: {error}")))?;
     if decoder
@@ -390,22 +376,12 @@ fn invalid(reason: &str) -> CasperError {
 
 fn signed_grant_intent<'a>(
     offer: &'a Cosigned<OfferedFundedDeploy>,
-    budget: &HostWorkBudget,
 ) -> Result<models::rust::phlo_intent::PhloFundingIntentV2<'a>, CasperError> {
     let protocol = offered_funded_v6_limits();
     let bytes = offer.data.funding_intent();
     if bytes.len() > protocol.envelope.payload.funding.wire.total_bytes {
         return Err(invalid("signed grant intent exceeds protocol syntax limit"));
     }
-    reserve(budget, HostWorkDimension::SearchStateBytes, bytes.len())?;
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        bytes
-            .len()
-            .checked_add(offer.signers().len().saturating_mul(128))
-            .ok_or_else(|| invalid("signed grant verification work overflow"))?,
-    )?;
     offer
         .validate_envelope()
         .map_err(|error| invalid(&format!("invalid offered signature: {error}")))?;
@@ -425,20 +401,6 @@ fn signed_grant_intent<'a>(
     }
 }
 
-fn reserve(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), CasperError> {
-    budget
-        .reserve(
-            dimension,
-            HostWorkUnits::new(u64::try_from(amount).map_err(|_| invalid("work overflow"))?),
-        )
-        .map(|_| ())
-        .map_err(|error| invalid(&error.to_string()))
-}
-
 fn check_id(id: &[u8], limits: OfferedGrantLimits) -> Result<(), CasperError> {
     if id.is_empty() || id.len() > limits.grant_id_bytes {
         return Err(invalid("invalid grant identity length"));
@@ -451,14 +413,8 @@ fn slot(
     id: &[u8],
     operation: Option<&[u8; 32]>,
     limits: OfferedGrantLimits,
-    budget: &HostWorkBudget,
 ) -> Result<GrantSlot, CasperError> {
     check_id(id, limits)?;
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        id.len().saturating_add(64),
-    )?;
     let domain = match kind {
         GrantValueKind::Allowance => ALLOWANCE_KEY_DOMAIN,
         GrantValueKind::Nonce => NONCE_KEY_DOMAIN,
@@ -477,21 +433,16 @@ fn slot(
     })
 }
 
-fn allowance_slot(
-    id: &[u8],
-    limits: OfferedGrantLimits,
-    budget: &HostWorkBudget,
-) -> Result<GrantSlot, CasperError> {
-    slot(GrantValueKind::Allowance, id, None, limits, budget)
+fn allowance_slot(id: &[u8], limits: OfferedGrantLimits) -> Result<GrantSlot, CasperError> {
+    slot(GrantValueKind::Allowance, id, None, limits)
 }
 
 fn nonce_slot(
     id: &[u8],
     operation: &[u8; 32],
     limits: OfferedGrantLimits,
-    budget: &HostWorkBudget,
 ) -> Result<GrantSlot, CasperError> {
-    slot(GrantValueKind::Nonce, id, Some(operation), limits, budget)
+    slot(GrantValueKind::Nonce, id, Some(operation), limits)
 }
 
 fn channel(slot: GrantSlot) -> Par {
@@ -552,17 +503,8 @@ fn decode_endpoint(bytes: &[u8]) -> Result<Option<u64>, CasperError> {
 }
 
 impl OfferedGrantRecord {
-    pub fn from_verified_creation(
-        verified: &VerifiedGrantCreationV1,
-        budget: &HostWorkBudget,
-    ) -> Result<Self, CasperError> {
+    pub fn from_verified_creation(verified: &VerifiedGrantCreationV1) -> Result<Self, CasperError> {
         let creation = verified.creation();
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            creation.encoded().len().saturating_add(65),
-        )?;
-        reserve(budget, HostWorkDimension::SearchStateBytes, RECORD_BYTES)?;
         let principal = rholang::rust::interpreter::accounting::principal_ground_v61(
             creation.issuer_public_key(),
         );
@@ -679,12 +621,11 @@ impl OfferedGrantSnapshot {
         offer: &Cosigned<OfferedFundedDeploy>,
         authenticated_time: u64,
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<VerifiedOfferedGrantSources, CasperError> {
         if expected_root != self.root {
             return Err(invalid("stale grant state root"));
         }
-        let intent = signed_grant_intent(offer, budget)?;
+        let intent = signed_grant_intent(offer)?;
         if intent.grant_uses.len() > limits.uses {
             return Err(invalid("grant-use count exceeds limit"));
         }
@@ -698,11 +639,6 @@ impl OfferedGrantSnapshot {
         let policy = offered_funded_v6_limits().envelope.payload.funding;
         let mut matched_context = None;
         for schedule in &intent.base.controls.permitted_schedules {
-            reserve(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                policy.controls.wire.field_bytes,
-            )?;
             let digest = schedule
                 .digest(policy.controls.schedule(policy.controls.total_classes))
                 .map_err(|error| invalid(&format!("invalid grant schedule: {error}")))?;
@@ -726,20 +662,14 @@ impl OfferedGrantSnapshot {
                 .sources
                 .get(use_record.source_index as usize)
                 .ok_or_else(|| invalid("grant source index is absent"))?;
-            let allowance = allowance_slot(use_record.grant_id, limits, budget)?;
-            let nonce = nonce_slot(
-                use_record.grant_id,
-                &use_record.operation_id,
-                limits,
-                budget,
-            )?;
+            let allowance = allowance_slot(use_record.grant_id, limits)?;
+            let nonce = nonce_slot(use_record.grant_id, &use_record.operation_id, limits)?;
             if self.value(nonce)?.is_some() {
                 return Err(invalid("grant operation ID was already used"));
             }
             let encoded = self
                 .value(allowance)?
                 .ok_or_else(|| invalid("grant allowance is absent"))?;
-            reserve(budget, HostWorkDimension::SearchStateBytes, encoded.len())?;
             let record = OfferedGrantRecord::decode(encoded)?;
             if record.delegate_public_key.as_slice() != delegate
                 || record.custody.as_slice() != source.custody()
@@ -762,7 +692,6 @@ impl OfferedGrantSnapshot {
                     return Err(invalid("grant is not valid at authenticated time"));
                 }
             }
-            reserve(budget, HostWorkDimension::VerificationOperations, 65)?;
             let principal = rholang::rust::interpreter::accounting::principal_ground_v61(
                 &record.issuer_public_key,
             );
@@ -773,14 +702,6 @@ impl OfferedGrantSnapshot {
             if payer.custody_key != record.custody {
                 return Err(invalid("rooted grant custody differs from issuer"));
             }
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                use_record
-                    .grant_id
-                    .len()
-                    .saturating_add(size_of::<VerifiedGrantSource>()),
-            )?;
             let entry = VerifiedGrantSource {
                 payer,
                 record,
@@ -815,20 +736,12 @@ impl OfferedGrantSnapshot {
         authenticated_time: u64,
         measured_debits: &[(u32, u128)],
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedOfferedGrants, CasperError> {
         if verified.root != self.root || measured_debits.len() > verified.sources.len() {
             return Err(invalid("stale or incomplete measured grant sources"));
         }
         let mut used = BTreeSet::new();
         let mut draws = Vec::new();
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            measured_debits
-                .len()
-                .saturating_mul(size_of::<OfferedGrantDraw>()),
-        )?;
         for &(index, debit) in measured_debits {
             if !used.insert(index) {
                 return Err(invalid("duplicate measured grant source"));
@@ -860,7 +773,7 @@ impl OfferedGrantSnapshot {
         if verified.sources.keys().any(|index| !used.contains(index)) {
             return Err(invalid("measured grant source is missing"));
         }
-        self.prepare_draws(self.root, authenticated_time, &draws, limits, budget)
+        self.prepare_draws(self.root, authenticated_time, &draws, limits)
     }
 
     fn value(&self, slot: GrantSlot) -> Result<Option<&[u8]>, CasperError> {
@@ -875,14 +788,8 @@ impl OfferedGrantSnapshot {
         expected_root: [u8; 32],
         verified: &VerifiedGrantCreationV1,
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedOfferedGrants, CasperError> {
-        self.prepare_issuances(
-            expected_root,
-            std::slice::from_ref(verified),
-            limits,
-            budget,
-        )
+        self.prepare_issuances(expected_root, std::slice::from_ref(verified), limits)
     }
 
     pub fn prepare_issuances(
@@ -890,7 +797,6 @@ impl OfferedGrantSnapshot {
         expected_root: [u8; 32],
         verified: &[VerifiedGrantCreationV1],
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedOfferedGrants, CasperError> {
         if expected_root != self.root || verified.len() > limits.uses {
             return Err(invalid(
@@ -903,19 +809,14 @@ impl OfferedGrantSnapshot {
             .map_err(|_| invalid("grant issuance allocation failed"))?;
         for authority in verified {
             let creation = authority.creation();
-            let allowance = allowance_slot(creation.grant_id(), limits, budget)?;
-            let nonce = nonce_slot(
-                creation.grant_id(),
-                &creation.operation_id(),
-                limits,
-                budget,
-            )?;
+            let allowance = allowance_slot(creation.grant_id(), limits)?;
+            let nonce = nonce_slot(creation.grant_id(), &creation.operation_id(), limits)?;
             if self.value(allowance)?.is_some() || self.value(nonce)?.is_some() {
                 return Err(invalid(
                     "grant identity or issuance operation was already used",
                 ));
             }
-            let record = OfferedGrantRecord::from_verified_creation(authority, budget)?;
+            let record = OfferedGrantRecord::from_verified_creation(authority)?;
             changes.push(OfferedGrantChange {
                 slot: allowance,
                 expected: None,
@@ -943,7 +844,6 @@ impl OfferedGrantSnapshot {
         if bytes > limits.batch_bytes {
             return Err(invalid("grant issuance byte limit exceeded"));
         }
-        reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
         Ok(PreparedOfferedGrants {
             root: self.root,
             changes,
@@ -956,7 +856,6 @@ impl OfferedGrantSnapshot {
         authenticated_time: u64,
         draws: &[OfferedGrantDraw<'_>],
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedOfferedGrants, CasperError> {
         if expected_root != self.root {
             return Err(invalid("stale grant state root"));
@@ -964,16 +863,11 @@ impl OfferedGrantSnapshot {
         if draws.len() > limits.uses {
             return Err(invalid("grant-use count exceeds limit"));
         }
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            draws.len().saturating_mul(2),
-        )?;
         let mut allowances: BTreeMap<GrantSlot, (Vec<u8>, OfferedGrantRecord)> = BTreeMap::new();
         let mut used_nonces = BTreeSet::new();
         for draw in draws {
-            let allowance = allowance_slot(draw.grant_id, limits, budget)?;
-            let nonce = nonce_slot(draw.grant_id, &draw.operation_id, limits, budget)?;
+            let allowance = allowance_slot(draw.grant_id, limits)?;
+            let nonce = nonce_slot(draw.grant_id, &draw.operation_id, limits)?;
             if !used_nonces.insert(nonce) || self.value(nonce)?.is_some() {
                 return Err(invalid("grant operation ID was already used"));
             }
@@ -981,7 +875,6 @@ impl OfferedGrantSnapshot {
                 let old = self
                     .value(allowance)?
                     .ok_or_else(|| invalid("grant allowance is absent"))?;
-                reserve(budget, HostWorkDimension::SearchStateBytes, old.len())?;
                 allowances.insert(allowance, (old.to_vec(), OfferedGrantRecord::decode(old)?));
             }
             let (_, record) = allowances.get_mut(&allowance).unwrap();
@@ -1055,7 +948,6 @@ impl OfferedGrantSnapshot {
         if bytes > limits.batch_bytes {
             return Err(invalid("grant transition byte limit exceeded"));
         }
-        reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
         Ok(PreparedOfferedGrants {
             root: self.root,
             changes,
@@ -1069,9 +961,8 @@ impl RuntimeManager {
         pre_state_root: [u8; 32],
         offer: &Cosigned<OfferedFundedDeploy>,
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<OfferedGrantSnapshot, CasperError> {
-        let intent = signed_grant_intent(offer, budget)?;
+        let intent = signed_grant_intent(offer)?;
         if intent.grant_uses.len() > limits.uses {
             return Err(invalid("grant-use count exceeds limit"));
         }
@@ -1088,21 +979,19 @@ impl RuntimeManager {
         if bytes > limits.batch_bytes {
             return Err(invalid("grant snapshot byte limit exceeded"));
         }
-        reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(slots_len)
             .map_err(|_| invalid("grant snapshot allocation failed"))?;
         for use_record in &intent.grant_uses {
-            slots.push(allowance_slot(use_record.grant_id, limits, budget)?);
+            slots.push(allowance_slot(use_record.grant_id, limits)?);
             slots.push(nonce_slot(
                 use_record.grant_id,
                 &use_record.operation_id,
                 limits,
-                budget,
             )?);
         }
-        self.capture_offered_slots(pre_state_root, slots, budget)
+        self.capture_offered_slots(pre_state_root, slots)
     }
 
     pub fn capture_offered_grants(
@@ -1110,7 +999,6 @@ impl RuntimeManager {
         pre_state_root: [u8; 32],
         draws: &[OfferedGrantDraw<'_>],
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<OfferedGrantSnapshot, CasperError> {
         if draws.len() > limits.uses {
             return Err(invalid("grant-use count exceeds limit"));
@@ -1127,21 +1015,15 @@ impl RuntimeManager {
         if bytes > limits.batch_bytes {
             return Err(invalid("grant snapshot byte limit exceeded"));
         }
-        reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(slots_len)
             .map_err(|_| invalid("grant snapshot allocation failed"))?;
         for draw in draws {
-            slots.push(allowance_slot(draw.grant_id, limits, budget)?);
-            slots.push(nonce_slot(
-                draw.grant_id,
-                &draw.operation_id,
-                limits,
-                budget,
-            )?);
+            slots.push(allowance_slot(draw.grant_id, limits)?);
+            slots.push(nonce_slot(draw.grant_id, &draw.operation_id, limits)?);
         }
-        self.capture_offered_slots(pre_state_root, slots, budget)
+        self.capture_offered_slots(pre_state_root, slots)
     }
 
     pub fn capture_offered_grant_issuance(
@@ -1149,14 +1031,8 @@ impl RuntimeManager {
         pre_state_root: [u8; 32],
         verified: &VerifiedGrantCreationV1,
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<OfferedGrantSnapshot, CasperError> {
-        self.capture_offered_grant_issuances(
-            pre_state_root,
-            std::slice::from_ref(verified),
-            limits,
-            budget,
-        )
+        self.capture_offered_grant_issuances(pre_state_root, std::slice::from_ref(verified), limits)
     }
 
     pub fn capture_offered_grant_issuances(
@@ -1164,7 +1040,6 @@ impl RuntimeManager {
         pre_state_root: [u8; 32],
         verified: &[VerifiedGrantCreationV1],
         limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<OfferedGrantSnapshot, CasperError> {
         if verified.len() > limits.uses {
             return Err(invalid("grant issuance count exceeds limit"));
@@ -1181,36 +1056,27 @@ impl RuntimeManager {
         if bytes > limits.batch_bytes {
             return Err(invalid("grant snapshot byte limit exceeded"));
         }
-        reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(slots_len)
             .map_err(|_| invalid("grant snapshot allocation failed"))?;
         for authority in verified {
             let creation = authority.creation();
-            slots.push(allowance_slot(creation.grant_id(), limits, budget)?);
+            slots.push(allowance_slot(creation.grant_id(), limits)?);
             slots.push(nonce_slot(
                 creation.grant_id(),
                 &creation.operation_id(),
                 limits,
-                budget,
             )?);
         }
-        self.capture_offered_slots(pre_state_root, slots, budget)
+        self.capture_offered_slots(pre_state_root, slots)
     }
 
     fn capture_offered_slots(
         &self,
         pre_state_root: [u8; 32],
         mut slots: Vec<GrantSlot>,
-        budget: &HostWorkBudget,
     ) -> Result<OfferedGrantSnapshot, CasperError> {
-        let slots_len = slots.len();
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            slots_len.saturating_mul(1 + slots_len.checked_ilog2().unwrap_or(0) as usize),
-        )?;
         slots.sort_unstable();
         slots.dedup();
         let root = Blake2b256Hash::from_bytes(pre_state_root.to_vec());
@@ -1233,19 +1099,10 @@ impl RuntimeManager {
             .try_reserve_exact(slots.len())
             .map_err(|_| invalid("grant entry allocation failed"))?;
         for slot in slots {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             let data = reader
                 .get_data(&stable_hash_provider::hash(&channel(slot)))
                 .map_err(|error| invalid(&format!("grant snapshot read failed: {error}")))?;
             let value = decode_data(&data, slot.kind)?;
-            if let Some(value) = value {
-                reserve(budget, HostWorkDimension::SearchStateBytes, value.len())?;
-                reserve(
-                    budget,
-                    HostWorkDimension::VerificationOperations,
-                    value.len(),
-                )?;
-            }
             entries.push((slot, value.map(<[u8]>::to_vec)));
         }
         if reader.root() != root {
@@ -1287,19 +1144,17 @@ impl RuntimeOps {
         expected_shard: &[u8],
         call_limits: GrantIssueCallLimits,
         grant_limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<VerifiedGrantCreationV1>, CasperError> {
         if !evaluation_succeeded {
             return Err(invalid("failed user execution cannot issue a grant"));
         }
-        let observed_count = count_grant_issue_requests(execution_log, grant_limits, budget)?;
+        let observed_count = count_grant_issue_requests(execution_log, grant_limits)?;
         self.drain_grant_issue_requests(
             observed_count,
             expected_network,
             expected_shard,
             call_limits,
             grant_limits,
-            budget,
         )
         .await
     }
@@ -1311,7 +1166,6 @@ impl RuntimeOps {
         expected_shard: &[u8],
         call_limits: GrantIssueCallLimits,
         grant_limits: OfferedGrantLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<VerifiedGrantCreationV1>, CasperError> {
         if observed_count > grant_limits.uses {
             return Err(invalid("grant issue request count exceeds limit"));
@@ -1321,11 +1175,6 @@ impl RuntimeOps {
             .try_reserve_exact(observed_count)
             .map_err(|_| invalid("grant issue request allocation failed"))?;
         for _ in 0..observed_count {
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                call_limits.wire.total_bytes,
-            )?;
             let (_, values) = self
                 .consume_result(grant_issue_journal_channel(), BindPattern {
                     patterns: vec![new_freevar_par(0, Vec::new())],
@@ -1354,14 +1203,8 @@ impl RuntimeOps {
                 expected_network,
                 expected_shard,
                 call_limits,
-                budget,
             )?);
         }
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            observed_count.saturating_mul(1 + observed_count.checked_ilog2().unwrap_or(0) as usize),
-        )?;
         verified.sort_by(|a, b| {
             a.creation()
                 .grant_id()
@@ -1480,7 +1323,6 @@ mod tests {
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use models::rust::phlo_grant_creation::PhloGrantCreationTerms;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rspace_plus_plus::rspace::rspace::RSpaceStore;
@@ -1494,10 +1336,6 @@ mod tests {
         grant_id_bytes: 64,
         batch_bytes: 8192,
     };
-
-    fn budget() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)))
-    }
 
     fn key(byte: u8) -> [u8; 65] {
         Secp256k1
@@ -1562,21 +1400,15 @@ mod tests {
     fn signed_grant_issue_call_is_canonical_and_owner_authenticated() {
         let envelope = signed_creation();
         let encoded = encode_grant_issue_call(&envelope, creation_limits()).unwrap();
-        let verified = decode_verified_grant_issue_call(
-            &encoded,
-            b"network",
-            b"shard",
-            creation_limits(),
-            &budget(),
-        )
-        .unwrap();
+        let verified =
+            decode_verified_grant_issue_call(&encoded, b"network", b"shard", creation_limits())
+                .unwrap();
         assert_eq!(verified.creation(), &envelope.data);
         assert!(decode_verified_grant_issue_call(
             &encoded,
             b"another-network",
             b"shard",
             creation_limits(),
-            &budget(),
         )
         .is_err());
         let mut trailing = encoded.clone();
@@ -1586,7 +1418,6 @@ mod tests {
             b"network",
             b"shard",
             creation_limits(),
-            &budget(),
         )
         .is_err());
         let mut tampered = encoded;
@@ -1596,7 +1427,6 @@ mod tests {
             b"network",
             b"shard",
             creation_limits(),
-            &budget(),
         )
         .is_err());
     }
@@ -1650,7 +1480,7 @@ mod tests {
 
     async fn seeded() -> (RuntimeManager, RuntimeOps, [u8; 32]) {
         let (manager, mut runtime) = fixture().await;
-        let allowance = allowance_slot(b"grant", LIMITS, &budget()).unwrap();
+        let allowance = allowance_slot(b"grant", LIMITS).unwrap();
         assert!(runtime
             .runtime
             .reducer
@@ -1679,10 +1509,10 @@ mod tests {
         let (manager, mut runtime, funding_root) = seeded().await;
         let use_record = draw(b"grant", [8; 32]);
         let snapshot = manager
-            .capture_offered_grants(funding_root, &[use_record], LIMITS, &budget())
+            .capture_offered_grants(funding_root, &[use_record], LIMITS)
             .unwrap();
         let prepared = snapshot
-            .prepare_draws(funding_root, 15, &[use_record], LIMITS, &budget())
+            .prepare_draws(funding_root, 15, &[use_record], LIMITS)
             .unwrap();
         assert!(runtime
             .runtime
@@ -1740,17 +1570,14 @@ mod tests {
             b"network",
             b"shard",
             creation_limits(),
-            &budget(),
         )
         .unwrap();
         let snapshot = manager
-            .capture_offered_grant_issuance(root, &verified, LIMITS, &budget())
+            .capture_offered_grant_issuance(root, &verified, LIMITS)
             .unwrap();
-        let prepared = snapshot
-            .prepare_issuance(root, &verified, LIMITS, &budget())
-            .unwrap();
+        let prepared = snapshot.prepare_issuance(root, &verified, LIMITS).unwrap();
         assert!(snapshot
-            .prepare_issuance([0; 32], &verified, LIMITS, &budget())
+            .prepare_issuance([0; 32], &verified, LIMITS)
             .is_err());
         let outer = runtime.runtime.create_soft_checkpoint().await;
         runtime
@@ -1772,9 +1599,9 @@ mod tests {
             .unwrap();
         assert_eq!(reverted, root);
         assert!(manager
-            .capture_offered_grant_issuance(reverted, &verified, LIMITS, &budget())
+            .capture_offered_grant_issuance(reverted, &verified, LIMITS)
             .unwrap()
-            .prepare_issuance(reverted, &verified, LIMITS, &budget())
+            .prepare_issuance(reverted, &verified, LIMITS)
             .is_ok());
     }
 
@@ -1792,7 +1619,7 @@ mod tests {
             .is_none());
         let execution_log = runtime.runtime.take_event_log().await;
         assert_eq!(
-            count_grant_issue_requests(&execution_log, LIMITS, &budget()).unwrap(),
+            count_grant_issue_requests(&execution_log, LIMITS).unwrap(),
             1
         );
         assert!(runtime
@@ -1803,7 +1630,6 @@ mod tests {
                 b"shard",
                 creation_limits(),
                 LIMITS,
-                &budget(),
             )
             .await
             .is_err());
@@ -1826,7 +1652,6 @@ mod tests {
                 b"shard",
                 creation_limits(),
                 LIMITS,
-                &budget(),
             )
             .await
             .unwrap();
@@ -1862,37 +1687,35 @@ mod tests {
         let (manager, mut runtime, root) = seeded().await;
         let use_one = draw(b"grant", [1; 32]);
         let snapshot = manager
-            .capture_offered_grants(root, &[use_one], LIMITS, &budget())
+            .capture_offered_grants(root, &[use_one], LIMITS)
             .unwrap();
         assert!(snapshot
-            .prepare_draws([0; 32], 10, &[use_one], LIMITS, &budget())
+            .prepare_draws([0; 32], 10, &[use_one], LIMITS)
             .is_err());
+        assert!(snapshot.prepare_draws(root, 9, &[use_one], LIMITS).is_err());
         assert!(snapshot
-            .prepare_draws(root, 9, &[use_one], LIMITS, &budget())
-            .is_err());
-        assert!(snapshot
-            .prepare_draws(root, 21, &[use_one], LIMITS, &budget())
+            .prepare_draws(root, 21, &[use_one], LIMITS)
             .is_err());
         let mut stale_version = use_one;
         stale_version.authority_version = 6;
         assert!(snapshot
-            .prepare_draws(root, 15, &[stale_version], LIMITS, &budget())
+            .prepare_draws(root, 15, &[stale_version], LIMITS)
             .is_err());
         let mut excessive = use_one;
         excessive.draw = 10;
         assert!(snapshot
-            .prepare_draws(root, 15, &[excessive], LIMITS, &budget())
+            .prepare_draws(root, 15, &[excessive], LIMITS)
             .is_err());
         let mut ceiling = use_one;
         ceiling.cumulative_ceiling = 20;
         assert!(snapshot
-            .prepare_draws(root, 15, &[ceiling], LIMITS, &budget())
+            .prepare_draws(root, 15, &[ceiling], LIMITS)
             .is_err());
         assert!(snapshot
-            .prepare_draws(root, 15, &[use_one, use_one], LIMITS, &budget())
+            .prepare_draws(root, 15, &[use_one, use_one], LIMITS)
             .is_err());
         let prepared = snapshot
-            .prepare_draws(root, 10, &[use_one], LIMITS, &budget())
+            .prepare_draws(root, 10, &[use_one], LIMITS)
             .unwrap();
         assert_eq!(prepared.root(), root);
         assert_eq!(prepared.changes().len(), 2);
@@ -1929,10 +1752,10 @@ mod tests {
             .await
             .is_err());
         let replayed = manager
-            .capture_offered_grants(after, &[use_one], LIMITS, &budget())
+            .capture_offered_grants(after, &[use_one], LIMITS)
             .unwrap();
         assert!(replayed
-            .prepare_draws(after, 15, &[use_one], LIMITS, &budget())
+            .prepare_draws(after, 15, &[use_one], LIMITS)
             .is_err());
     }
 
@@ -1942,14 +1765,10 @@ mod tests {
         let first = draw(b"grant", [1; 32]);
         let second = draw(b"grant", [2; 32]);
         let snapshot = manager
-            .capture_offered_grants(root, &[first, second], LIMITS, &budget())
+            .capture_offered_grants(root, &[first, second], LIMITS)
             .unwrap();
-        let accepted = snapshot
-            .prepare_draws(root, 15, &[first], LIMITS, &budget())
-            .unwrap();
-        let stale = snapshot
-            .prepare_draws(root, 15, &[second], LIMITS, &budget())
-            .unwrap();
+        let accepted = snapshot.prepare_draws(root, 15, &[first], LIMITS).unwrap();
+        let stale = snapshot.prepare_draws(root, 15, &[second], LIMITS).unwrap();
         runtime
             .apply_offered_grant_transitions(&accepted, root, LIMITS)
             .await

@@ -2,21 +2,11 @@ use std::collections::HashSet;
 
 use models::rhoapi::Par;
 use models::rust::utils::FreeMap;
-use shared::rust::clone_backing::{BackingError, CloneBacking, Walker};
 
 #[derive(Clone, Debug)]
 pub enum Pattern<T: Clone> {
     Term(T),
     Remainder(i32),
-}
-
-impl<T: Clone + CloneBacking> CloneBacking for Pattern<T> {
-    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
-        match self {
-            Pattern::Term(term) => walker.push(term),
-            Pattern::Remainder(level) => walker.push(level),
-        }
-    }
 }
 
 pub trait ListMatch<T: Clone> {
@@ -157,14 +147,24 @@ macro_rules! oracle_list_match {
 
                 // println!("\ncurrent free_map: {:?}", self.free_map);
 
-                let matches = maximum_bipartite_match.find_matches(all_patterns, targets.clone())?;
+                // Changed by the merge of feature/cost-accounted-rho: the
+                // checkpoint merge e5102e945 copied this oracle from a version
+                // older than CBR-052 (406506646). The oracle again keeps each
+                // target's position, as production `list_match.rs` and the PDA do.
+                // let matches = maximum_bipartite_match.find_matches(all_patterns, targets.clone())?;
+                let matches = maximum_bipartite_match
+                    .find_indexed_matches(all_patterns, targets.clone())?;
 
                 // println!("\nfree_map after MBM: {:?}", self.free_map);
                 // println!("\nmatches: {:?}", matches);
 
+                // let free_maps: Vec<FreeMap> = matches
+                //     .iter()
+                //     .map(|(_, _, free_map)| free_map.clone())
+                //     .collect();
                 let free_maps: Vec<FreeMap> = matches
                     .iter()
-                    .map(|(_, _, free_map)| free_map.clone())
+                    .map(|(_, _, _, free_map)| free_map.clone())
                     .collect();
 
                 let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps)?;
@@ -172,17 +172,34 @@ macro_rules! oracle_list_match {
                 self.free_map = updated_free_map;
                 // println!("\nnew free_map: {:?}", self.free_map);
 
-                let remainder_targets: Vec<$type> = matches
-                    .iter()
-                    .filter_map(|(target, pattern, _)| match pattern {
-                        Pattern::Remainder(_) => Some(target.clone()),
-                        _ => None,
-                    })
-                    .collect();
+                // Changed by the merge of feature/cost-accounted-rho (CBR-052):
+                // a value test gave the remainder every target equal to a
+                // selected one. A position mask keeps exactly the selected targets.
+                // let remainder_targets: Vec<$type> = matches
+                //     .iter()
+                //     .filter_map(|(target, pattern, _)| match pattern {
+                //         Pattern::Remainder(_) => Some(target.clone()),
+                //         _ => None,
+                //     })
+                //     .collect();
+                //
+                // let remainder_targets_sorted: Vec<$type> = targets
+                //     .iter()
+                //     .filter(|target| remainder_targets.contains(target))
+                //     .cloned()
+                //     .collect();
+                let mut remainder_target_indices = vec![false; targets.len()];
+                for (target_index, _, pattern, _) in &matches {
+                    if matches!(pattern, Pattern::Remainder(_)) {
+                        remainder_target_indices[*target_index] = true;
+                    }
+                }
 
                 let remainder_targets_sorted: Vec<$type> = targets
                     .iter()
-                    .filter(|target| remainder_targets.contains(target))
+                    .enumerate()
+                    .filter(|(target_index, _)| remainder_target_indices[*target_index])
+                    .map(|(_, target)| target)
                     .cloned()
                     .collect();
 

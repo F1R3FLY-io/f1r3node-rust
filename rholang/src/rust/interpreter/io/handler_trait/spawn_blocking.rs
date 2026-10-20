@@ -100,6 +100,9 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::io::errors::JOIN_ERR_ABORT_PREFIX;
     use crate::rust::interpreter::io::response;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the test that requires a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
 
     /// LOAD-BEARING (DD-FailClosedOnInvariantBreak):
     /// `spawn_blocking_par` MUST panic (deploy abort) when the
@@ -114,33 +117,57 @@ mod tests {
     /// syscall bugs — same failure mode this test guards.
     #[tokio::test]
     async fn spawn_blocking_par_panics_on_join_err() {
-        let result = std::panic::AssertUnwindSafe(async {
-            spawn_blocking_par(|| -> Par { panic!("simulated task panic") }).await
-        });
-        let outcome = futures::FutureExt::catch_unwind(result).await;
-        let payload = outcome.expect_err(
-            "spawn_blocking_par MUST panic on JoinError (deploy abort), not \
-             produce an FSERR_IO reply",
-        );
-        let msg = payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| {
-                payload
-                    .downcast_ref::<&'static str>()
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_default();
-        assert!(
-            msg.starts_with(JOIN_ERR_ABORT_PREFIX),
-            "JoinError abort must panic with `JOIN_ERR_ABORT_PREFIX` for \
-             log-scan alerting; got: {msg:?}"
-        );
-        assert!(
-            msg.contains("simulated task panic"),
-            "the underlying panic payload must be preserved in the abort \
-             banner for operator triage; got: {msg:?}"
-        );
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+        // policy test): a child process runs the panicking task, and this process checks the
+        // message of the panic of the child.
+        let child = PanicChild::new(module_path!(), "spawn_blocking_par_panics_on_join_err");
+        if !child.is_child() {
+            let report = child.expect_panic(JOIN_ERR_ABORT_PREFIX);
+            let msg = report.message();
+            assert!(
+                msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+                "JoinError abort must panic with `JOIN_ERR_ABORT_PREFIX` for \
+                 log-scan alerting; got: {msg:?}"
+            );
+            assert!(
+                msg.contains("simulated task panic"),
+                "the underlying panic payload must be preserved in the abort \
+                 banner for operator triage; got: {msg:?}"
+            );
+            return;
+        }
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): the task ran behind an unwind interceptor. The two
+        // message checks moved to the parent branch above.
+        // let result = std::panic::AssertUnwindSafe(async {
+        //     spawn_blocking_par(|| -> Par { panic!("simulated task panic") }).await
+        // });
+        // let outcome = futures::FutureExt::catch_unwind(result).await;
+        // let payload = outcome.expect_err(
+        //     "spawn_blocking_par MUST panic on JoinError (deploy abort), not \
+        //      produce an FSERR_IO reply",
+        // );
+        // let msg = payload
+        //     .downcast_ref::<String>()
+        //     .cloned()
+        //     .or_else(|| {
+        //         payload
+        //             .downcast_ref::<&'static str>()
+        //             .map(|s| s.to_string())
+        //     })
+        //     .unwrap_or_default();
+        // assert!(
+        //     msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+        //     "JoinError abort must panic with `JOIN_ERR_ABORT_PREFIX` for \
+        //      log-scan alerting; got: {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("simulated task panic"),
+        //     "the underlying panic payload must be preserved in the abort \
+        //      banner for operator triage; got: {msg:?}"
+        // );
+        child.subject_reached();
+        let _ = spawn_blocking_par(|| -> Par { panic!("simulated task panic") }).await;
     }
 
     /// Happy path: the closure's returned `Par` is forwarded through

@@ -462,14 +462,13 @@ async fn installed_addresses(
     (entry_address, slot_address)
 }
 
-/// DR-102: the installer block and the gateway funding block each charge the
-/// same replay usage on the producer and on every validator, and each role
-/// charges its own acceptance work to a separate budget. The funding block
-/// needs the Phase D caps.
+/// DR-102: the installer block and the gateway funding block each replay on
+/// the producer and on every validator. Changed by DR-131: the test no longer
+/// compares host-work usage, which went with host work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn offered_replay_usage_is_identical_across_roles() {
+async fn offered_block_replays_on_every_role() {
     let (genesis, mut nodes) = gateway_network().await;
-    let installed = crate::helper::offered_replay_usage::propose_offer_with_identical_replay_usage(
+    let installed = crate::helper::offered_replay_usage::propose_offer_replayed_by_every_role(
         &mut nodes,
         installer_offer(&genesis),
         "installer",
@@ -477,7 +476,7 @@ async fn offered_replay_usage_is_identical_across_roles() {
     .await;
     let (entry_address, slot_address) =
         installed_addresses(&nodes, &installed.body.state.post_state_hash).await;
-    let funded = crate::helper::offered_replay_usage::propose_offer_with_identical_replay_usage(
+    let funded = crate::helper::offered_replay_usage::propose_offer_replayed_by_every_role(
         &mut nodes,
         funding_offer(&genesis, &entry_address, &slot_address),
         "funding",

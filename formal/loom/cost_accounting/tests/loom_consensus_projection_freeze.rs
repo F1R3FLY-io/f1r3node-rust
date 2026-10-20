@@ -2,6 +2,13 @@ use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::sync::{Arc, Mutex};
 use loom::thread;
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the negative controls below.
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
+use panic_child::PanicChild;
+
 #[derive(Clone, Copy)]
 struct DagConsensusView {
     floor: usize,
@@ -242,8 +249,21 @@ fn proposer_capture_is_coherent_during_parallel_finalization() {
 }
 
 #[test]
-#[should_panic]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child. The attribute named no
+// message, so the two checks of the reader below now carry one.
+// #[should_panic]
 fn single_head_read_allows_a_torn_floor_certificate_snapshot() {
+    let child = PanicChild::new(
+        module_path!(),
+        "single_head_read_allows_a_torn_floor_certificate_snapshot",
+    );
+    if !child.is_child() {
+        child.expect_panic("negative control: a single head read observed a torn snapshot");
+        return;
+    }
+    child.subject_reached();
     loom::model(|| {
         let head = Arc::new(Mutex::new(DurableHead {
             revision: 0,
@@ -275,8 +295,19 @@ fn single_head_read_allows_a_torn_floor_certificate_snapshot() {
         let reader = thread::spawn(move || {
             let captured_head = *reader_head.lock().unwrap();
             let captured_dag = *reader_dag.lock().unwrap();
-            assert_eq!(captured_head.revision, captured_dag.revision);
-            assert_eq!(captured_head.floor, captured_dag.floor);
+            // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+            // panic-expectation policy test): each check names the torn snapshot, so the
+            // parent of the test can tell it from any other panic.
+            // assert_eq!(captured_head.revision, captured_dag.revision);
+            // assert_eq!(captured_head.floor, captured_dag.floor);
+            assert_eq!(
+                captured_head.revision, captured_dag.revision,
+                "negative control: a single head read observed a torn snapshot (revision)"
+            );
+            assert_eq!(
+                captured_head.floor, captured_dag.floor,
+                "negative control: a single head read observed a torn snapshot (floor)"
+            );
         });
         writer.join().unwrap();
         reader.join().unwrap();

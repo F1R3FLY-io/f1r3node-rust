@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use models::rhoapi::Par;
 use models::rust::rholang::protobuf_encoder;
 
-use super::compiler::compiler::Compiler;
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): only
+// the disabled `LegacyCompilerFrontend` below used this import.
+// use super::compiler::compiler::Compiler;
 
 pub const PREPARED_PROGRAM_ABI_V1: u16 = 1;
 pub const PREPARATION_BINDING_V1: u16 = 1;
@@ -136,18 +138,23 @@ pub fn prepare_program(
     Ok(prepared)
 }
 
-pub(crate) struct LegacyCompilerFrontend;
-
-impl ProgramFrontend for LegacyCompilerFrontend {
-    fn abi_version(&self) -> u16 { PREPARED_PROGRAM_ABI_V1 }
-
-    fn prepare(
-        &self,
-        source: &str,
-        environment: HashMap<String, Par>,
-    ) -> Result<PreparedProgram, PreparationError> {
-        Compiler::source_to_adt_with_normalizer_env(source, environment)
-            .map(PreparedProgram::from_normalized)
-            .map_err(|error| PreparationError::new(error.to_string()))
-    }
-}
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): no code
+// constructs this frontend since the checkpoint merge e5102e945. That merge
+// moved `inj_attempt` to `ProgramInput::Source`, which parses through
+// `Compiler::source_to_adt_with_normalizer_env` and maps a failure to the
+// same `ParserError` text.
+// pub(crate) struct LegacyCompilerFrontend;
+//
+// impl ProgramFrontend for LegacyCompilerFrontend {
+//     fn abi_version(&self) -> u16 { PREPARED_PROGRAM_ABI_V1 }
+//
+//     fn prepare(
+//         &self,
+//         source: &str,
+//         environment: HashMap<String, Par>,
+//     ) -> Result<PreparedProgram, PreparationError> {
+//         Compiler::source_to_adt_with_normalizer_env(source, environment)
+//             .map(PreparedProgram::from_normalized)
+//             .map_err(|error| PreparationError::new(error.to_string()))
+//     }
+// }

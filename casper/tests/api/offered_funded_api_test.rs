@@ -32,7 +32,9 @@ use models::rust::phlo_intent::{
     PhloConversionCompositionV2, PhloFundingIntentV1, PhloFundingIntentV2,
     PhloFundingIntentV2Limits,
 };
-use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
+use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
@@ -40,17 +42,22 @@ use node::rust::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
 use node::rust::api::web_api::{WebApi, WebApiImpl};
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
-use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativePhloDimension,
-};
+// Changed by DR-116 (gap G6): unused after the port to offered envelopes.
+// use rholang::rust::interpreter::accounting::native_phlo_rules::{
+//     native_resource_compatibility_rule, NativePhloDimension,
+// };
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
 use rholang::rust::interpreter::rho_type::RhoNumber;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
 use crate::helper::block_util::resign_block;
+// Added by DR-116 (gap G6): the offer builder and the schedule moved to the
+// shared offered test module.
+use crate::helper::offered_deploy::{owner_direct_offer, selected_schedule};
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -131,25 +138,6 @@ fn offered_web_api(node: &TestNode) -> WebApiImpl {
         0,
         Arc::new(AtomicBool::new(true)),
     )
-}
-
-fn selected_schedule() -> PhloScheduleV1<'static> {
-    let identities: [&[u8]; 4] = [b"compute", b"introduction", b"transfer", b"trace"];
-    PhloScheduleV1 {
-        protocol_version: 6,
-        network: b"test",
-        shard: b"root",
-        settlement_asset: b"REV",
-        settlement_unit: b"atomic-REV",
-        decimal_scale: 8,
-        classes: NativePhloDimension::ALL
-            .into_iter()
-            .zip(identities)
-            .map(|(dimension, identity)| dimension.resource_class(identity, 1))
-            .collect(),
-        actual_price: 2,
-        compatibility_rule: native_resource_compatibility_rule(),
-    }
 }
 
 fn signed_offer(
@@ -241,16 +229,23 @@ fn signed_offer_at(
 }
 
 async fn offered_v6_genesis(validators: usize) -> crate::util::genesis_builder::GenesisContext {
-    let mut parameters =
-        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
-    parameters.2.version = 6;
-    parameters.2.proof_of_stake.min_phlo_price = 1;
-    let policy = PhloGenesisPolicy::from_schedule(&selected_schedule())
-        .expect("selected schedule forms a genesis policy")
-        .with_offered_funded_active();
-    GenesisBuilder::new()
-        .with_resource_policy(policy)
-        .build_genesis_with_parameters(Some(parameters))
+    // Changed by DR-116 (gap G6): the shared offered genesis builder.
+    // let mut parameters =
+    //     GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
+    // parameters.2.version = 6;
+    // parameters.2.proof_of_stake.min_phlo_price = 1;
+    // let policy = PhloGenesisPolicy::from_schedule(&selected_schedule())
+    //     .expect("selected schedule forms a genesis policy")
+    //     .with_offered_funded_active();
+    // GenesisBuilder::new()
+    //     .with_resource_policy(policy)
+    //     .build_genesis_with_parameters(Some(parameters))
+    //     .await
+    //     .expect("offered v6 genesis builds")
+    GenesisBuilder::offered_v6()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators)),
+        ))
         .await
         .expect("offered v6 genesis builds")
 }
@@ -878,11 +873,20 @@ fn registry_insert_signature(
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{ETuple, Expr, Par};
 
-    let ground = |instance: ExprInstance| Par {
-        exprs: vec![Expr {
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-33): F1R3Lang
+    // gives `Par` an iterative `Drop`, so a struct-update literal cannot move the
+    // other fields out of `Default::default()` (E0509). The builder makes the
+    // same `Par`. The old closure was:
+    // let ground = |instance: ExprInstance| Par {
+    //     exprs: vec![Expr {
+    //         expr_instance: Some(instance),
+    //     }],
+    //     ..Default::default()
+    // };
+    let ground = |instance: ExprInstance| {
+        Par::default().with_exprs(vec![Expr {
             expr_instance: Some(instance),
-        }],
-        ..Default::default()
+        }])
     };
     let signed = ground(ExprInstance::ETupleBody(ETuple {
         ps: vec![
@@ -938,94 +942,6 @@ fn registry_insert(
         hex::encode(&environment_public),
         hex::encode(&signature)
     )
-}
-
-/// An owner-direct offer that funds only its signer's own principal resources.
-fn owner_direct_offer(
-    owner: &(
-        crypto::rust::private_key::PrivateKey,
-        crypto::rust::public_key::PublicKey,
-    ),
-    time_stamp: i64,
-    term: String,
-) -> models::casper::DeployDataProto {
-    let (owner_secret, owner_public) = owner;
-    let limits = offered_funded_v6_limits().envelope.payload;
-    let signature = CostSignature {
-        value: Some(Value::Ground(principal_ground_v61(&owner_public.bytes))),
-    };
-    let payer = vault_payer(&signature).unwrap();
-    let schedule = selected_schedule();
-    let acquisition_terms = schedule.encode(PhloGenesisPolicy::LIMITS).unwrap();
-    let authority = cost_signature_to_sig(&signature).unwrap();
-    let location = SignatureChannel::from_sig(&authority).par.encode_to_vec();
-    let permissions = (0..schedule.classes.len())
-        .map(|class| {
-            PhloResource {
-                location: &location,
-                class,
-                acquisition_terms: &acquisition_terms,
-                authority: &authority,
-            }
-            .wire_key(PhloExecutionLimits {
-                resource_entries: 1,
-                authority_nodes: limits.funding.authority_nodes,
-                key_bytes: limits.funding.wire.field_bytes,
-            })
-            .unwrap()
-        })
-        .collect();
-    let cap = 400_000_000;
-    let source = PhloSourcePolicyV1::new(
-        &payer.custody_key,
-        cap,
-        cap,
-        true,
-        permissions,
-        PhloSourceLimits {
-            wire: limits.funding.wire,
-            resource_permissions: schedule.classes.len(),
-            authority_nodes: limits.funding.authority_nodes,
-        },
-    )
-    .unwrap();
-    let funding = PhloFundingIntentV2 {
-        base: PhloFundingIntentV1 {
-            controls: PhloControlsV1 {
-                limit: 100_000_000,
-                price_ceiling: 2,
-                required_owner_ceilings: vec![2],
-                permitted_schedules: vec![schedule.clone()],
-            },
-            schedule_commitment: schedule.digest(PhloGenesisPolicy::LIMITS).unwrap(),
-            total_exposure: u128::from(cap),
-            sources: vec![source],
-        },
-        grant_uses: Vec::new(),
-        conversion: PhloConversionCompositionV2::NoConversion,
-    }
-    .encode(PhloFundingIntentV2Limits {
-        wire: limits.funding.wire,
-        base: limits.funding,
-        grant_uses: limits.funding.wire.total_bytes / 8,
-        grant_id_bytes: limits.funding.wire.field_bytes,
-        quote_evidence_bytes: limits.funding.wire.field_bytes,
-    })
-    .unwrap();
-    let body = DeployData {
-        term,
-        language: "rholang".to_string(),
-        time_stamp,
-        valid_after_block_number: 0,
-        shard_id: "root".to_string(),
-        expiration_timestamp: None,
-        authority_presentations: Vec::new(),
-    };
-    let payload = OfferedFundedDeploy::new(body, funding, 100_000_000, 2, limits).unwrap();
-    let signed =
-        Cosigned::create_single_envelope(payload, Box::new(Secp256k1), owner_secret.clone())
-            .unwrap();
-    OfferedFundedDeploy::to_proto(&signed).unwrap()
 }
 
 /// Proposes one owner-direct offer on node 0. Every other node replays the
@@ -1375,15 +1291,32 @@ async fn another_signer_inserts_a_version_after_a_version_insert() {
 /// recovery requires an envelope buffer", before funding runs. The test
 /// fails for that reason with and without DR-101.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs gap G6 (offered recovery for a multi-parent merge); see DR-101"]
+// Re-enabled by DR-116: gap G6 lands offered recovery for a multi-parent merge.
+// #[ignore = "needs gap G6 (offered recovery for a multi-parent merge); see DR-101"]
 async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() {
-    let genesis = offered_v6_genesis(4).await;
+    // Changed by DR-119 (bug 11004): the two siblings are the first uses of two
+    // cohorts, so their creation buckets must differ. The extra vault keys are
+    // random per run, and two of them share a bucket in about 1.6% of runs.
+    // DEFAULT_SEC2 is the Registry's system key, so the API refuses its offers.
+    // The first writer is DEFAULT_SEC. The second writer is a searched key with
+    // a genesis vault, and its buckets differ from those of DEFAULT_SEC.
+    // let genesis = offered_v6_genesis(4).await;
+    let default_buckets = owner_cursor_buckets(&casper::rust::util::construct_deploy::DEFAULT_PUB);
+    let searched_writer = searched_signer("dr-119-version-writer", |buckets| {
+        buckets
+            .iter()
+            .all(|bucket| !default_buckets.contains(bucket))
+    });
+    let genesis = offered_v6_genesis_with_signers(4, std::slice::from_ref(&searched_writer)).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
-    let first = genesis.genesis_vaults[2].clone();
-    let second = genesis.genesis_vaults[3].clone();
-    let third = genesis.genesis_vaults[0].clone();
+    // let first = genesis.genesis_vaults[2].clone();
+    // let second = genesis.genesis_vaults[3].clone();
+    // let third = genesis.genesis_vaults[0].clone();
+    let first = genesis.genesis_vaults[0].clone();
+    let second = searched_writer;
+    let third = genesis.genesis_vaults[2].clone();
     let mut siblings = Vec::with_capacity(2);
     for (index, (writer, term)) in [
         (&first, version_insert("first")),
@@ -1421,6 +1354,25 @@ async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() 
     .await
     .expect("the third insert is funded by its own signer");
     assert_eq!(merged.header.parents_hash_list.len(), 2);
+    // Added by DR-119 (bug 11004): before DR-119 the global cost-cursor lock made
+    // the two siblings conflict, and the merge rejected one of them.
+    assert!(
+        merged.body.rejected_deploys.is_empty(),
+        "both siblings survive the merge"
+    );
+    let main_parent = &merged.header.parents_hash_list[0];
+    for block in &siblings {
+        let id = block.body.deploys[0].identity_bytes();
+        assert!(
+            block.block_hash == *main_parent
+                || merged
+                    .body
+                    .applied_from_scope
+                    .iter()
+                    .any(|sig| sig.as_ref() == id),
+            "the merge keeps each sibling's deploy, in the main parent or from the scope"
+        );
+    }
     let published = nodes[0]
         .runtime_manager
         .get_data(
@@ -1440,20 +1392,2257 @@ async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() 
     );
 }
 
-/// DR-102: on a small offered block, the producer's self-replay and every
-/// validator replay charge the same usage, and each role charges its own
-/// acceptance work to a separate budget. The block fits the committed caps.
+/// DR-102: a small offered block replays on the producer and on every
+/// validator. Changed by DR-131: the test no longer compares host-work usage,
+/// which went with host work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn offered_replay_usage_is_identical_across_roles_on_a_small_block() {
+async fn offered_block_replays_on_every_role_on_a_small_block() {
     let genesis = offered_v6_genesis(3).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
     let signer = genesis.genesis_vaults[0].clone();
-    crate::helper::offered_replay_usage::propose_offer_with_identical_replay_usage(
+    crate::helper::offered_replay_usage::propose_offer_replayed_by_every_role(
         &mut nodes,
         owner_direct_offer(&signer, 1, "new x in { x!(0) }".to_string()),
         "small block",
     )
     .await;
 }
+
+/// A term that completes one COMM and then fails with a classified user
+/// error (OperatorExpectedError), so the native run rolls back its user
+/// events and publishes the deploy as a charged user failure.
+const FAILING_AFTER_A_COMM: &str = "new ack in { ack!(0) | for (_ <- ack) { ack!(1 + \"a\") } }";
+
+/// Admits `offer` on `nodes[creator]` and creates its block. No node has
+/// processed the block yet, so a sibling can still be created first.
+async fn offered_block(
+    nodes: &mut [TestNode],
+    creator: usize,
+    offer: models::casper::DeployDataProto,
+) -> (
+    models::rust::casper::protocol::casper_message::BlockMessage,
+    Vec<u8>,
+) {
+    BlockAPI::deploy_offered(
+        &nodes[creator].engine_cell,
+        offer.clone(),
+        &None,
+        false,
+        "root",
+    )
+    .await
+    .expect("a well-formed offer is admitted");
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    let block = match nodes[creator].create_block_unsafe(&[]).await {
+        Ok(block) => block,
+        Err(error) => {
+            let storage = nodes[creator].deploy_storage.lock();
+            panic!(
+                "the offer's block is not created ({error:?}); recorded rejection: {:?}",
+                storage
+                    .envelope_rejection(&id)
+                    .map(|rejection| rejection.reason)
+            );
+        }
+    };
+    assert_eq!(block.body.deploys.len(), 1);
+    assert!(block.body.deploys[0].as_offered().is_some());
+    (block, offer.deploy_id.to_vec())
+}
+
+/// The user event index of `deploy_id`'s merge chain in `block`, and the index
+/// that `events` alone give with the deploy's stored mergeable map.
+fn merge_chain_index(
+    node: &TestNode,
+    block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    deploy_id: &[u8],
+    events: &[models::rust::casper::protocol::casper_message::Event],
+) -> (
+    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+) {
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+    let runtime_manager = &node.runtime_manager;
+    // Added by the merge of feature/cost-accounted-rho (finding R3-34): F1R3Lang
+    // indexes an event log under the codec epoch that the shard adopted. The
+    // consensus paths take it from `adopted.event_codec_epoch()`. This genesis
+    // activates protocol 6, so the epoch is CostV1.
+    let epoch = node
+        .casper
+        .adopted_resource_policy()
+        .expect("the offered genesis adopts a resource policy")
+        .event_codec_epoch();
+    let pre_state = Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash);
+    let post_state = Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash);
+    let mergeable = runtime_manager
+        .load_mergeable_channels(
+            &block.body.state.post_state_hash,
+            block.sender.clone(),
+            block.seq_num,
+        )
+        .expect("the block's mergeable channels are stored");
+    let index = casper::rust::merging::block_index::new(
+        &block.block_hash,
+        block.body.state.block_number,
+        // Added by the merge of feature/cost-accounted-rho (finding R3-34).
+        epoch,
+        &block.body.deploys,
+        &block.body.system_deploys,
+        &pre_state,
+        &post_state,
+        &runtime_manager.history_repo,
+        &mergeable,
+    )
+    .expect("the block indexes");
+    let chain = index
+        .deploy_chains
+        .iter()
+        .find(|chain| {
+            chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .any(|deploy| deploy.deploy_id.as_ref() == deploy_id)
+        })
+        .expect("the deploy has a merge chain");
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-34): the
+    // F1R3Lang index takes the epoch and refuses an event that the epoch does
+    // not admit. The old call was:
+    // let expected = casper::rust::merging::block_index::create_event_log_index(
+    //     events,
+    //     runtime_manager.history_repo.clone(),
+    //     &pre_state,
+    //     mergeable[0].clone(),
+    // );
+    let expected = casper::rust::merging::block_index::create_event_log_index(
+        events,
+        epoch,
+        runtime_manager.history_repo.clone(),
+        &pre_state,
+        mergeable[0].clone(),
+    )
+    .expect("the committed events index under the adopted epoch");
+    (
+        chain.user_event_log_index.clone(),
+        EventLogIndex::combine(&EventLogIndex::empty(), &expected)
+            .expect("an index combines with the empty index"),
+    )
+}
+
+/// The channels that `events` produce on, directly or inside a COMM.
+// Changed by the merge of feature/cost-accounted-rho (finding R3-34): F1R3Lang
+// converts an event under the codec epoch of the shard, the converter is
+// fallible, and the F1R3Lang event set has the resting COMM. The old head of
+// this function was:
+// fn produced_channels(
+//     events: &[models::rust::casper::protocol::casper_message::Event],
+// ) -> Vec<rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash> {
+//     use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+//     let mut channels = Vec::with_capacity(events.len());
+//     for event in events {
+//         match casper::rust::util::event_converter::to_rspace_event(event) {
+//             Event::IoEvent(IOEvent::Produce(produce)) => channels.push(produce.channel_hash),
+//             Event::IoEvent(IOEvent::Consume(_)) => {}
+//             Event::Comm(comm) => channels.extend(comm.produces.into_iter().map(|p| p.channel_hash)),
+//         }
+//     }
+fn produced_channels(
+    events: &[models::rust::casper::protocol::casper_message::Event],
+    epoch: rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch,
+) -> Vec<rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash> {
+    use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+    let mut channels = Vec::with_capacity(events.len());
+    for event in events {
+        match casper::rust::util::event_converter::to_rspace_event_for_epoch(event, epoch)
+            .expect("a committed event converts under the adopted epoch")
+        {
+            Event::IoEvent(IOEvent::Produce(produce)) => channels.push(produce.channel_hash),
+            Event::IoEvent(IOEvent::Consume(_)) => {}
+            Event::Comm(comm) => channels.extend(comm.produces.into_iter().map(|p| p.channel_hash)),
+            // A resting COMM consumes data that rest on their channels, as the
+            // produces of a COMM do. The F1R3Lang event-log index reads both
+            // the same way (`rspace++/src/rspace/merger/event_log_index.rs`).
+            Event::RestingComm(resting) => channels.extend(
+                resting
+                    .ordered_produces
+                    .iter()
+                    .map(|p| p.channel_hash.clone()),
+            ),
+        }
+    }
+    channels.sort();
+    channels.dedup();
+    channels
+}
+
+/// DR-115 (bug 10986): block A holds a failed offered deploy, and block B is
+/// an empty sibling with more stake. The merge block M takes B as its base
+/// and merges A from scope. M's pre-state must keep A's payer debit and fee.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_branch() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    nodes[1].allow_empty_blocks = true;
+    nodes[2].allow_empty_blocks = true;
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let fee_vault = VaultAddress::from_public_key(&genesis.validator_key_pairs[0].1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    assert_eq!(vault_balance(&nodes, &genesis_root, &fee_vault).await, 0);
+
+    let (failed, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    assert_eq!(failed.sender, genesis.validator_key_pairs[0].1.bytes);
+    let sibling = nodes[1]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 1 creates an empty sibling");
+    assert!(sibling.body.deploys.is_empty());
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+
+    // The merge index holds exactly the committed suffix: everything after the
+    // three user events of the term (one stored and one matched operation),
+    // with the wallet map.
+    let offered = failed.body.deploys[0]
+        .as_offered()
+        .expect("block A holds an offered deploy");
+    let evidence = offered
+        .evidence(offered_funded_v6_limits().evidence)
+        .expect("the committed evidence decodes");
+    let user_events =
+        casper::rust::util::rholang::costacc::offered_evidence::committed_user_event_count(
+            &evidence,
+        )
+        .expect("the committed journal decodes");
+    assert_eq!(user_events, 3);
+    let suffix =
+        casper::rust::util::rholang::costacc::offered_evidence::failed_offered_committed_suffix(
+            offered,
+        )
+        .expect("the committed suffix decodes");
+    assert_eq!(suffix, &offered.deploy_log()[user_events..]);
+    assert!(!suffix.is_empty());
+    // A journal that does not decode fails closed: the index neither skips the
+    // deploy nor takes its whole log.
+    let corrupted_evidence = models::rust::native_cost_evidence::NativeCostEvidenceV1 {
+        operation_journal: &[0xff, 0xff],
+        ..evidence.clone()
+    };
+    let corrupted =
+        models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy::new(
+            offered.envelope().clone(),
+            *offered.cost(),
+            offered.deploy_log().to_vec(),
+            true,
+            casper::rust::util::rholang::costacc::offered_evidence::encode_committed_native_evidence(
+                &corrupted_evidence,
+                offered_funded_v6_limits().evidence,
+            )
+            .expect("the corrupted evidence encodes"),
+            offered_funded_v6_limits().evidence,
+        )
+        .expect("the envelope checks do not decode the journal");
+    assert!(
+        casper::rust::util::rholang::costacc::offered_evidence::failed_offered_committed_suffix(
+            &corrupted
+        )
+        .is_err()
+    );
+    let (indexed, expected) = merge_chain_index(&nodes[2], &failed, &id, suffix);
+    assert_eq!(
+        indexed, expected,
+        "the merge index holds exactly the committed suffix"
+    );
+
+    let merge = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates the merge block");
+    assert_eq!(merge.header.parents_hash_list, vec![
+        sibling.block_hash.clone(),
+        failed.block_hash.clone()
+    ]);
+    for node in nodes.iter_mut() {
+        assert!(matches!(
+            node.process_block(merge.clone()).await.unwrap(),
+            Either::Right(_)
+        ));
+    }
+    assert!(merge.body.rejected_deploys.is_empty());
+
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .unwrap()
+        .expect("the failed deploy carries a settlement receipt");
+    assert!(receipt.rev_spent > 0);
+    let merged_root = merge.body.state.pre_state_hash.clone();
+    let charged = vault_balance(&nodes, &merged_root, &payer_vault).await;
+    assert_eq!(
+        u128::from(charged) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state keeps the payer debit"
+    );
+    assert_eq!(charged, receipt.purses[0].post_balance);
+    let fee = vault_balance(&nodes, &merged_root, &fee_vault).await;
+    assert_eq!(
+        u128::from(fee),
+        receipt.fee_rev,
+        "the merged state keeps the fee"
+    );
+    assert_eq!(
+        fee,
+        vault_balance(&nodes, &failed.body.state.post_state_hash, &fee_vault).await
+    );
+    assert!(merge
+        .body
+        .applied_from_scope
+        .iter()
+        .any(|sig| sig.as_ref() == id.as_slice()));
+
+    // M's pre-state agrees with A's post-state on every channel that A's
+    // committed suffix produces on: the balances, the fee vault, the payer's
+    // settlement cursor and the receipts.
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-34): the
+    // helper takes the adopted epoch of the node whose states the test reads.
+    // let channels = produced_channels(suffix);
+    let channels = produced_channels(
+        suffix,
+        nodes[2]
+            .casper
+            .adopted_resource_policy()
+            .expect("the offered genesis adopts a resource policy")
+            .event_codec_epoch(),
+    );
+    assert!(!channels.is_empty());
+    let history = &nodes[2].runtime_manager.history_repo;
+    let after_failed = history
+        .get_history_reader(&Blake2b256Hash::from_bytes_prost(
+            &failed.body.state.post_state_hash,
+        ))
+        .expect("A's post-state is readable");
+    let merged = history
+        .get_history_reader(&Blake2b256Hash::from_bytes_prost(
+            &merge.body.state.pre_state_hash,
+        ))
+        .expect("M's pre-state is readable");
+    for channel in &channels {
+        let committed = after_failed
+            .get_data(channel)
+            .expect("A's post-state data reads");
+        let carried = merged.get_data(channel).expect("M's pre-state data reads");
+        assert_eq!(committed.len(), carried.len(), "channel {channel:?}");
+        assert!(
+            committed.iter().all(|datum| carried.contains(datum)),
+            "channel {channel:?}"
+        );
+    }
+}
+
+/// DR-115 (bug 10986): the base sibling settles an offered deploy of the same
+/// payer. A failed offered deploy of the merged branch is then charged in the
+/// merged state or rejected with a record. It is never dropped.
+///
+/// Changed by DR-119 (bug 11004): before DR-119 the sibling paid for another
+/// payer, and the global cost-cursor lock made the two settlements conflict.
+/// Now the two settlements of one cohort conflict on its cost cursor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+
+    let (failed, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    // Changed by DR-119 (bug 11004): the sibling pays for the same cohort.
+    // let (sibling, sibling_id) = offered_block(
+    //     &mut nodes,
+    //     1,
+    //     owner_direct_offer(
+    //         &genesis.genesis_vaults[0],
+    //         2,
+    //         "new x in { x!(0) }".to_string(),
+    //     ),
+    // )
+    // .await;
+    let (sibling, sibling_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&payer, 2, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    assert!(!sibling.body.deploys[0].is_failed());
+    let (sibling_indexed, sibling_expected) = merge_chain_index(
+        &nodes[1],
+        &sibling,
+        &sibling_id,
+        sibling.body.deploys[0].deploy_log(),
+    );
+    assert_eq!(
+        sibling_indexed, sibling_expected,
+        "a successful offered deploy keeps its whole log in the index"
+    );
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+
+    let snapshot = nodes[2]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("node 2 takes a snapshot");
+    assert_eq!(snapshot.parents.len(), 2);
+    assert_eq!(snapshot.parents[0].block_hash, sibling.block_hash);
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect();
+    let runtime_manager = nodes[2].runtime_manager.clone();
+    let merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[2].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the merge over both siblings computes");
+
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .unwrap()
+        .expect("the failed deploy carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    // Changed by DR-119 (bug 11004): the base sibling's own charge to the payer
+    // stays in the merged state.
+    // let charged = u128::from(balance) + receipt.rev_spent == u128::from(initial);
+    // let untouched = balance == initial;
+    let sibling_receipt =
+        BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &sibling_id)
+            .await
+            .unwrap()
+            .expect("the sibling carries a settlement receipt");
+    let after_sibling = u128::from(initial) - sibling_receipt.rev_spent;
+    let charged = u128::from(balance) + receipt.rev_spent == after_sibling;
+    let untouched = u128::from(balance) == after_sibling;
+    let rejected = merged
+        .rejected_user
+        .iter()
+        .any(|record| record.sig.as_ref() == id.as_slice() && record.carrier == failed.block_hash);
+    assert!(
+        charged || untouched,
+        "the payer is charged once or not at all"
+    );
+    assert!(
+        charged ^ rejected,
+        "the failed deploy is charged or rejected with a record \
+         (charged = {charged}, rejected = {rejected})"
+    );
+}
+
+/// DR-115 (bug 10986): two validators include the same failed offer in sibling
+/// blocks. Both copies settle on the payer's cursor, so their settlements
+/// conflict and the merged state charges the payer exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offered_deploy_in_two_sibling_blocks_is_charged_once() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+
+    let offer = owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string());
+    let (first, id) = offered_block(&mut nodes, 0, offer.clone()).await;
+    let (second, second_id) = offered_block(&mut nodes, 1, offer).await;
+    assert_eq!(id, second_id);
+    assert!(first.body.deploys[0].is_failed());
+    assert!(second.body.deploys[0].is_failed());
+    for node in nodes.iter_mut() {
+        for block in [&first, &second] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+
+    let snapshot = nodes[2]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("node 2 takes a snapshot");
+    assert_eq!(snapshot.parents.len(), 2);
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect();
+    let runtime_manager = nodes[2].runtime_manager.clone();
+    let merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[2].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the merge over both copies computes");
+
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .unwrap()
+        .expect("the failed deploy carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state charges the payer exactly once"
+    );
+    assert_eq!(
+        merged
+            .rejected_user
+            .iter()
+            .filter(|record| record.sig.as_ref() == id.as_slice())
+            .count(),
+        1,
+        "the merge rejects the second copy with one record"
+    );
+}
+
+/// DR-116 (gap G6): the identities in a node's rejected-envelope buffer.
+fn buffered_envelope_ids(node: &TestNode) -> Vec<Vec<u8>> {
+    node.rejected_deploy_buffer
+        .lock()
+        .expect("the buffer lock is not poisoned")
+        .read_all_envelopes(offered_funded_v6_limits().envelope)
+        .expect("the envelope table decodes")
+        .iter()
+        .map(|envelope| envelope.identity().as_bytes().to_vec())
+        .collect()
+}
+
+/// DR-116 (gap G6): two offered siblings of one cohort conflict on its cost
+/// cursor, so the merge rejects node 0's offer. Node 0 owns the rejected
+/// carrier. It accepts the merge block and buffers the envelope. Before DR-116
+/// it marked the honest block invalid.
+///
+/// Changed by DR-119 (bug 11004): before DR-119 the siblings had two signers,
+/// and the global cost-cursor lock made them conflict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owner_accepts_a_merge_that_rejects_its_own_offer() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    nodes[2].allow_empty_blocks = true;
+    let (first, first_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(
+            &genesis.genesis_vaults[2],
+            1,
+            "new x in { x!(0) }".to_string(),
+        ),
+    )
+    .await;
+    // Changed by DR-119 (bug 11004): the second sibling has the same signer.
+    // let (second, _) = offered_block(
+    //     &mut nodes,
+    //     1,
+    //     owner_direct_offer(
+    //         &genesis.genesis_vaults[0],
+    //         2,
+    //         "new y in { y!(0) }".to_string(),
+    //     ),
+    // )
+    // .await;
+    let (second, _) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(
+            &genesis.genesis_vaults[2],
+            2,
+            "new y in { y!(0) }".to_string(),
+        ),
+    )
+    .await;
+    assert!(!first.body.deploys[0].is_failed());
+    for node in nodes.iter_mut() {
+        for block in [&first, &second] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merge = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates the merge block");
+    assert_eq!(merge.header.parents_hash_list, vec![
+        second.block_hash.clone(),
+        first.block_hash.clone()
+    ]);
+    assert!(
+        merge.body.rejected_deploys.iter().any(|record| {
+            record.sig.as_ref() == first_id.as_slice()
+                && record.carrier == first.block_hash
+                && !record.duplicate
+        }),
+        "staging precondition: the merge rejects node 0's offer"
+    );
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(merge.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every node accepts the merge block"
+        );
+    }
+    assert_eq!(buffered_envelope_ids(&nodes[0]), vec![first_id]);
+    assert!(buffered_envelope_ids(&nodes[1]).is_empty());
+    assert!(buffered_envelope_ids(&nodes[2]).is_empty());
+}
+
+/// Stages a merge that rejects a failed offered deploy of node 0: block A holds
+/// the failed deploy, and the base sibling B settles another offer of the same
+/// payer. Returns the nodes, A, the failed deploy's identity, the merge block and
+/// the payer's balance after B's own charge. No node has processed the merge
+/// block yet.
+///
+/// Changed by DR-119 (bug 11004): before DR-119 B paid for another payer, and the
+/// global cost-cursor lock made the two settlements conflict. Now the two
+/// settlements of one cohort conflict on its cost cursor, so B pays for the same
+/// payer, and the helper returns the balance after B's charge instead of the
+/// genesis balance.
+async fn rejected_failed_offer_merge() -> (
+    Vec<TestNode>,
+    models::rust::casper::protocol::casper_message::BlockMessage,
+    Vec<u8>,
+    models::rust::casper::protocol::casper_message::BlockMessage,
+    u64,
+) {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    nodes[2].allow_empty_blocks = true;
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let initial = vault_balance(
+        &nodes,
+        &genesis.genesis_block.body.state.post_state_hash,
+        &payer_vault,
+    )
+    .await;
+    let (failed, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    // Changed by DR-119 (bug 11004): the base sibling pays for the same payer.
+    // let (sibling, _) = offered_block(
+    //     &mut nodes,
+    //     1,
+    //     owner_direct_offer(
+    //         &genesis.genesis_vaults[0],
+    //         2,
+    //         "new x in { x!(0) }".to_string(),
+    //     ),
+    // )
+    // .await;
+    let (sibling, sibling_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&payer, 2, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merge = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates the merge block");
+    assert!(
+        merge.body.rejected_deploys.iter().any(|record| {
+            record.sig.as_ref() == id.as_slice()
+                && record.carrier == failed.block_hash
+                && !record.duplicate
+        }),
+        "staging precondition: the merge rejects the failed offered deploy"
+    );
+    // Added by DR-119 (bug 11004): the payer's balance after B's own charge.
+    let sibling_receipt =
+        BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &sibling_id)
+            .await
+            .expect("the receipt query succeeds")
+            .expect("the sibling carries a settlement receipt");
+    let after_sibling = u64::try_from(u128::from(initial) - sibling_receipt.rev_spent)
+        .expect("the sibling's charge fits the payer's balance");
+    // Changed by DR-119 (bug 11004): the balance after B's charge replaces the
+    // genesis balance.
+    // (nodes, failed, id, merge, initial)
+    (nodes, failed, id, merge, after_sibling)
+}
+
+/// DR-116 (gap G6): a failed offered deploy that a merge rejects is final, as a
+/// failed deploy is in Casper. Its owner accepts the merge and buffers nothing,
+/// and the merged state does not charge the payer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_failed_offered_deploy_is_not_recovered() {
+    // Changed by DR-119 (bug 11004): the helper returns the payer's balance after
+    // the base sibling's own charge.
+    // let (mut nodes, _failed, id, merge, initial) = rejected_failed_offer_merge().await;
+    let (mut nodes, _failed, id, merge, after_sibling) = rejected_failed_offer_merge().await;
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(merge.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every node accepts the merge block"
+        );
+    }
+    for node in &nodes {
+        assert!(buffered_envelope_ids(node).is_empty());
+    }
+    let payer =
+        VaultAddress::from_public_key(&offered_v6_genesis(3).await.genesis_vaults[2].1).unwrap();
+    assert_eq!(
+        vault_balance(&nodes, &merge.body.state.pre_state_hash, &payer).await,
+        // Changed by DR-119 (bug 11004): see the helper.
+        // initial,
+        after_sibling,
+        "the merged state does not charge the rejected failed deploy"
+    );
+    assert!(!merge
+        .body
+        .applied_from_scope
+        .iter()
+        .any(|sig| sig.as_ref() == id.as_slice()));
+}
+
+/// DR-116 (gap G6): the rejection of a failed offered copy ends the recovery
+/// custody of its identity, so an entry that the owner already buffered for the
+/// same identity is removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_failed_offered_copy_removes_the_buffered_entry() {
+    let (mut nodes, failed, id, merge, _initial) = rejected_failed_offer_merge().await;
+    let envelope = failed.body.deploys[0]
+        .as_offered()
+        .expect("block A holds an offered deploy")
+        .envelope()
+        .clone();
+    nodes[0]
+        .rejected_deploy_buffer
+        .lock()
+        .expect("the buffer lock is not poisoned")
+        .add_envelopes(std::slice::from_ref(&envelope))
+        .expect("the envelope is buffered");
+    assert_eq!(buffered_envelope_ids(&nodes[0]), vec![id]);
+    assert!(matches!(
+        nodes[0].process_block(merge.clone()).await.unwrap(),
+        Either::Right(_)
+    ));
+    assert!(buffered_envelope_ids(&nodes[0]).is_empty());
+}
+
+/// DR-113: a deploy that exhausts its signed phlo limit is a classified user
+/// failure. The block publishes it as failed, the payer pays the granted work
+/// and the fee, and every validator accepts the block with the same receipt.
+/// Before DR-113 the exhaustion was a certificate failure, and the proposer
+/// rejected the offer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn signed_limit_exhaustion_is_published_as_a_charged_user_failure() {
+    const ENDLESS_LOOP: &str = "new loop in { contract loop(@n) = { loop!(n + 1) } | loop!(0) }";
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let limit = 20_000;
+    let offer = crate::helper::offered_deploy::owner_offer_limited(
+        &payer,
+        1,
+        ENDLESS_LOOP.to_string(),
+        0,
+        "root".to_string(),
+        limit,
+    );
+    let (block, id) = offered_block(&mut nodes, 0, offer).await;
+    assert!(
+        block.body.deploys[0].is_failed(),
+        "the exhausted deploy is published as failed"
+    );
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every validator accepts the block"
+        );
+    }
+    let receipts = futures::future::join_all(
+        nodes
+            .iter()
+            .map(|node| BlockAPI::find_offered_settlement_receipt(&node.engine_cell, &id)),
+    )
+    .await
+    .into_iter()
+    .map(|receipt| receipt.unwrap().expect("every node holds the receipt"))
+    .collect::<Vec<_>>();
+    assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
+    let receipt = &receipts[0];
+    assert_eq!(receipt.phlo_limit, limit);
+    assert!(receipt.phlo_used > 0 && receipt.phlo_used <= receipt.phlo_limit);
+    assert_eq!(receipt.retained_phlo, 0);
+    assert!(receipt.rev_spent > 0 && receipt.rev_spent <= receipt.rev_ceiling);
+    let balance = vault_balance(&nodes, &block.body.state.post_state_hash, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the payer pays the granted work and the fee"
+    );
+}
+
+/// Added by DR-125 (bug 11008): a call of a method that the method table
+/// lacks is a classified user failure (`MethodNotDefined`). The deploy is
+/// published as failed and charged, every validator holds the same receipt,
+/// and the user's write rolls back. The cases call the method at the top
+/// level and after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unknown_method_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "unknown-method-written";
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("a three-node network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).expect("a payer vault address");
+    let cases = [
+        format!("@\"{WRITTEN}\"!(1) | {{}}.xxx()"),
+        format!("new ack in {{ @\"{WRITTEN}\"!(1) | ack!(0) | for (_ <- ack) {{ {{}}.xxx() }} }}"),
+    ];
+    let mut root = genesis.genesis_block.body.state.post_state_hash.clone();
+    for (index, term) in cases.into_iter().enumerate() {
+        let initial = vault_balance(&nodes, &root, &payer_vault).await;
+        let offer = owner_direct_offer(
+            &payer,
+            i64::try_from(index + 1).expect("a small timestamp"),
+            term,
+        );
+        let (block, id) = offered_block(&mut nodes, 0, offer).await;
+        assert!(
+            block.body.deploys[0].is_failed(),
+            "case {index}: the deploy is published as failed"
+        );
+        let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+        assert!(
+            receipt.rev_spent > 0,
+            "case {index}: the failure is charged"
+        );
+        assert_eq!(
+            receipt.rev_spent,
+            u128::from(receipt.fresh_phlo) * u128::from(receipt.phlo_price) + receipt.fee_rev,
+            "case {index}: the charge is the billable work and the fee"
+        );
+        root = block.body.state.post_state_hash.clone();
+        let balance = vault_balance(&nodes, &root, &payer_vault).await;
+        assert_eq!(
+            u128::from(balance) + receipt.rev_spent,
+            u128::from(initial),
+            "case {index}: the payer pays rev_spent"
+        );
+        let (written, _) = nodes[0]
+            .runtime_manager
+            .play_exploratory_deploy(
+                format!("new return in {{ for (@value <<- @\"{WRITTEN}\") {{ return!(value) }} }}"),
+                &root,
+                None,
+            )
+            .await
+            .expect("the exploratory read runs");
+        assert!(
+            written.is_empty(),
+            "case {index}: the user's write rolls back: {written:?}"
+        );
+    }
+}
+
+// ── Deterministic user reducer errors (DR-128, bug 11414) ──────────────────
+
+/// Added by DR-128 (bug 11414): proposes `offer` on node 0. It returns the
+/// block and the deploy id, or the reason that node 0 recorded when it
+/// quarantined the offer.
+async fn offered_block_or_rejection(
+    nodes: &mut [TestNode],
+    offer: models::casper::DeployDataProto,
+) -> Result<
+    (
+        models::rust::casper::protocol::casper_message::BlockMessage,
+        Vec<u8>,
+    ),
+    String,
+> {
+    BlockAPI::deploy_offered(&nodes[0].engine_cell, offer.clone(), &None, false, "root")
+        .await
+        .expect("a well-formed offer is admitted");
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    match nodes[0].create_block_unsafe(&[]).await {
+        Ok(block) => Ok((block, offer.deploy_id.to_vec())),
+        Err(error) => {
+            let storage = nodes[0].deploy_storage.lock();
+            Err(format!(
+                "{error:?}; recorded rejection: {:?}",
+                storage
+                    .envelope_rejection(&id)
+                    .map(|rejection| rejection.reason)
+            ))
+        }
+    }
+}
+
+/// Added by DR-128 (bug 11414): runs each case as an owner-direct offer of
+/// genesis vault 2 on three validators, as the probe of DR-125 does. Each
+/// case must end in a charged user failure:
+/// - the block holds the deploy, published as failed;
+/// - every validator accepts the block, and all hold one equal receipt;
+/// - the charge is the billable work and the fee, and the payer pays it;
+/// - the write to `written` rolls back.
+///
+/// The probe runs every case, and then it reports each case that the
+/// producer quarantined.
+async fn assert_charged_user_failures(written: &str, cases: &[String]) {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("a three-node network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).expect("a payer vault address");
+    let mut root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let mut quarantined = Vec::with_capacity(cases.len());
+    for (index, term) in cases.iter().enumerate() {
+        let initial = vault_balance(&nodes, &root, &payer_vault).await;
+        let offer = owner_direct_offer(
+            &payer,
+            i64::try_from(index + 1).expect("a small timestamp"),
+            term.clone(),
+        );
+        let (block, id) = match offered_block_or_rejection(&mut nodes, offer).await {
+            Ok(published) => published,
+            Err(reason) => {
+                quarantined.push(format!("case {index} `{term}`: {reason}"));
+                continue;
+            }
+        };
+        assert!(
+            block.body.deploys[0].is_failed(),
+            "case {index}: the deploy is published as failed"
+        );
+        let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+        assert!(
+            receipt.rev_spent > 0,
+            "case {index}: the failure is charged"
+        );
+        assert_eq!(
+            receipt.rev_spent,
+            u128::from(receipt.fresh_phlo) * u128::from(receipt.phlo_price) + receipt.fee_rev,
+            "case {index}: the charge is the billable work and the fee"
+        );
+        root = block.body.state.post_state_hash.clone();
+        let balance = vault_balance(&nodes, &root, &payer_vault).await;
+        assert_eq!(
+            u128::from(balance) + receipt.rev_spent,
+            u128::from(initial),
+            "case {index}: the payer pays rev_spent"
+        );
+        let (read, _) = nodes[0]
+            .runtime_manager
+            .play_exploratory_deploy(
+                format!("new return in {{ for (@value <<- @\"{written}\") {{ return!(value) }} }}"),
+                &root,
+                None,
+            )
+            .await
+            .expect("the exploratory read runs");
+        assert!(
+            read.is_empty(),
+            "case {index}: the user's write rolls back: {read:?}"
+        );
+    }
+    assert!(
+        quarantined.is_empty(),
+        "the producer quarantined these cases: {quarantined:#?}"
+    );
+}
+
+/// Added by DR-128: the failing term at the top level, next to a write to
+/// `written`.
+fn at_top_level(written: &str, failing: &str) -> String {
+    format!("@\"{written}\"!(1) | {failing}")
+}
+
+/// Added by DR-128: the failing term after a COMM, next to a write to
+/// `written`.
+fn after_a_comm(written: &str, failing: &str) -> String {
+    format!("new ack in {{ @\"{written}\"!(1) | ack!(0) | for (_ <- ack) {{ {failing} }} }}")
+}
+
+/// Added by DR-128 (bug 11414): a division or a modulo by zero is the user
+/// failure `DivisionByZero`. The cases divide an Int by zero at the top
+/// level (`reduce.rs` EDivBody) and take a BigInt modulo zero after a COMM
+/// (EModBody).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_division_by_zero_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "division-by-zero-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(1 / 0)"),
+        after_a_comm(WRITTEN, "@\"r\"!(1n % 0n)"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): an integer result that does not fit its type
+/// is the user failure `ArithmeticOverflow`. The cases multiply Ints at the
+/// top level and sized integers after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_arithmetic_overflow_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "arithmetic-overflow-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(9223372036854775807 * 2)"),
+        after_a_comm(WRITTEN, "@\"r\"!(255u8 * 2u8)"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): an integer method argument outside the
+/// method's domain is the user failure `ArgumentOutOfRange`. The cases take
+/// an index past the end of a tuple at the top level and a negative
+/// `dropHead` count after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_argument_out_of_range_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "argument-out-of-range-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!((4, 5).nth(9))"),
+        after_a_comm(WRITTEN, "@\"r\"!({| [\"a\"] |}.dropHead(-1))"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): a send or a receive on a bundle without that
+/// permission is the user failure `BundlePermissionError`. The cases send on
+/// a `bundle0` at the top level and receive on one after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bundle_permission_error_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "bundle-permission-written";
+    assert_charged_user_failures(WRITTEN, &[
+        format!("new x in {{ @\"{WRITTEN}\"!(1) | @{{bundle0{{*x}}}}!(1) }}"),
+        format!(
+            "new x, ack in {{ @\"{WRITTEN}\"!(1) | ack!(0) | \
+             for (_ <- ack) {{ for (_ <- @{{bundle0{{*x}}}}) {{ Nil }} }} }}"
+        ),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): an operand, receiver or argument of a type
+/// that the operation rejects is the user failure `ValueTypeError`. The
+/// cases compare an Int with a String at the top level and call `toString`
+/// on an Int after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_value_type_error_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "value-type-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(1 < \"a\")"),
+        after_a_comm(WRITTEN, "@\"r\"!(42.toString())"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): a process with more than 32767 terms is the
+/// user failure `TermStructureError`. A contract doubles a one-send process
+/// fifteen times through substitution, and the receiver then evaluates the
+/// 32768 sends. The pre-execution count reads no send data, so only the
+/// reducer sees the process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_process_with_too_many_terms_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "term-structure-written";
+    assert_charged_user_failures(WRITTEN, &[format!(
+        "new double, ret in {{ @\"{WRITTEN}\"!(1) | \
+         contract double(@p, @n, r) = {{ \
+           if (n == 0) {{ r!(p) }} else {{ double!(p | p, n - 1, *r) }} \
+         }} | \
+         double!(@\"t\"!(0), 15, *ret) | \
+         for (@big <- ret) {{ big }} }}"
+    )])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): two sites reuse existing user variants. A
+/// float modulo is `OperatorNotDefined`, and `nth` on an Int is
+/// `MethodNotDefined`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reused_user_variant_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "reused-variant-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(1.0f64 % 0.0f64)"),
+        after_a_comm(WRITTEN, "@\"r\"!(42.nth(0))"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): a system-process call with an illegal
+/// argument is the user failure `SystemProcessShapeError` in native
+/// execution (DR-114). The cases look up an unknown URN at the top level and
+/// call the grant issuer with an Int after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_illegal_system_process_call_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "system-process-written";
+    assert_charged_user_failures(WRITTEN, &[
+        format!(
+            "new lookup(`rho:internal:registry_lookup`), ret in {{ \
+             @\"{WRITTEN}\"!(1) | lookup!(\"no-such-urn\", *ret) }}"
+        ),
+        format!(
+            "new issue(`rho:cost:grant:issue:v1`), ack in {{ \
+             @\"{WRITTEN}\"!(1) | ack!(0) | for (_ <- ack) {{ issue!(1) }} }}"
+        ),
+    ])
+    .await;
+}
+
+/// Added by I6 (epic 8946, D3): the term of the legacy test
+/// `replay_should_match_in_case_of_user_execution_error`
+/// (`casper/tests/util/rholang/interpreter_util_test.rs`).
+const MULTI_BRANCH_TERM_WITH_ERROR: &str = r#"
+  new rl(`rho:registry:lookup`), RevVaultCh, ackCh, out(`rho:io:stdout`)
+  in {
+    new signal in {
+      signal!(0) | signal!(0) | signal!(0) | signal!(0) | signal!(0) | signal!(0) | signal!(1) |
+      contract signal(@x) = {
+        rl!(`rho:vault:system`, *RevVaultCh) | ackCh!(x) |
+        if (x == 1) {}.xxx() // Simulates error in one branch
+      }
+    } |
+    for (@(_, RevVault) <= RevVaultCh & @x<= ackCh) {
+      @(*ackCh, "parallel universe")!("Rick and Morty")
+    }
+  }
+"#;
+
+/// Added by I6 (epic 8946, D3): the offered form of the legacy test
+/// `replay_should_match_in_case_of_user_execution_error`. Seven calls of one
+/// contract run in parallel, and one of them calls an unknown method. The
+/// deploy is a charged user failure: it is published as failed, it pays the
+/// billable work and the fee, its write rolls back, and every node holds one
+/// equal receipt, so replay matches play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_error_in_one_branch_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "branch-error-written";
+    assert_charged_user_failures(WRITTEN, &[at_top_level(
+        WRITTEN,
+        MULTI_BRANCH_TERM_WITH_ERROR,
+    )])
+    .await;
+}
+
+/// Added by I6 (epic 8946, D3): the offered form of the legacy test
+/// `compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing`
+/// (`casper/tests/util/rholang/runtime_manager_test.rs`). Its term parses.
+/// The join fires, and `1 + "hi"` then fails with `OperatorExpectedError`, a
+/// classified user failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operator_error_after_a_join_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "join-error-written";
+    assert_charged_user_failures(WRITTEN, &[at_top_level(
+        WRITTEN,
+        r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi")"#,
+    )])
+    .await;
+}
+
+/// Added by I6 (epic 8946, D3): a term that does not parse is refused at
+/// submission (`admit_deploy_envelope`). The node does not store the offer,
+/// so the offer never runs and no block holds it. The payer pays nothing
+/// (economic-failure-policy-decisions.md:82).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_that_does_not_parse_is_rejected_at_submission_without_charge() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("a three-node network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let offer = owner_direct_offer(&payer, 1, "@\"x\"!(".to_string());
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    let error = BlockAPI::deploy_offered(&nodes[0].engine_cell, offer, &None, false, "root")
+        .await
+        .expect_err("a term that does not parse is refused at submission");
+    assert!(
+        error.to_string().contains("Error in parsing term"),
+        "the refusal is a parse error: {error}"
+    );
+    assert!(
+        !nodes[0]
+            .deploy_storage
+            .lock()
+            .contains_envelope_id(&id)
+            .expect("the deploy storage answers"),
+        "the node does not store the refused offer"
+    );
+    assert!(
+        nodes[0].create_block_unsafe(&[]).await.is_err(),
+        "no block holds the refused offer"
+    );
+}
+
+/// DR-114: every node accepts `block`, and every node holds the same
+/// settlement receipt for `id`. Returns that receipt.
+async fn accepted_everywhere_with_one_receipt(
+    nodes: &mut [TestNode],
+    block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    id: &[u8],
+) -> casper::rust::api::block_api::OfferedSettlementReceipt {
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ),
+            "every validator accepts the block"
+        );
+    }
+    let id = id.to_vec();
+    let receipts = futures::future::join_all(
+        nodes
+            .iter()
+            .map(|node| BlockAPI::find_offered_settlement_receipt(&node.engine_cell, &id)),
+    )
+    .await
+    .into_iter()
+    .map(|receipt| receipt.unwrap().expect("every node holds the receipt"))
+    .collect::<Vec<_>>();
+    assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
+    receipts
+        .into_iter()
+        .next()
+        .expect("a node holds the receipt")
+}
+
+/// DR-114: an offered deploy asks an external service. The proposer records
+/// the reply in the block, and every validator replays the block from the
+/// record. A validator's own service answers differently, so a replay that
+/// asked it would reject the block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offered_deploy_records_an_external_reply_and_validators_replay_it() {
+    use rholang::rust::interpreter::openai_service::{OpenAIMockConfig, OpenAIService};
+    use rholang::rust::interpreter::rho_type::RhoString;
+    const ASK: &str = r#"new gpt4(`rho:ai:gpt4`), ack in {
+        gpt4!("hello", *ack) | for (@answer <- ack) { @"answer"!(answer) }
+    }"#;
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    *nodes[0]
+        .runtime_manager
+        .external_services
+        .openai
+        .lock()
+        .await = OpenAIService::Mock(OpenAIMockConfig::single_completion("recorded answer"));
+    let payer = genesis.genesis_vaults[2].clone();
+    let (block, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, ASK.to_string()),
+    )
+    .await;
+    let deploy = block.body.deploys[0]
+        .as_offered()
+        .expect("the block holds an offered deploy");
+    assert!(!deploy.is_failed(), "the call succeeds");
+    let records = deploy
+        .deploy_log()
+        .iter()
+        .filter_map(|event| match event {
+            models::rust::casper::protocol::casper_message::Event::Produce(produce)
+                if !produce.output_value.is_empty() =>
+            {
+                Some(produce.output_value.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [record] = records.as_slice() else {
+        panic!("the block records one reply, found {}", records.len());
+    };
+    let reply = record
+        .iter()
+        .map(|bytes| models::rhoapi::Par::decode(bytes.as_ref()).expect("a record holds pars"))
+        .collect::<Vec<_>>();
+    assert_eq!(reply, vec![RhoString::create_par(
+        "recorded answer".to_owned()
+    )]);
+    let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+    assert!(receipt.phlo_used > 0 && receipt.phlo_used <= receipt.phlo_limit);
+    assert!(receipt.rev_spent > 0 && receipt.rev_spent <= receipt.rev_ceiling);
+    let answer = models::rust::utils::new_gstring_par("answer".to_string(), Vec::new(), false);
+    for node in nodes.iter().skip(1) {
+        assert_eq!(
+            node.runtime_manager
+                .get_data(block.body.state.post_state_hash.clone(), &answer)
+                .await
+                .unwrap(),
+            vec![RhoString::create_par("recorded answer".to_owned())],
+            "the post-state of each validator holds the recorded reply"
+        );
+    }
+}
+
+/// DR-114 (§4.1 option A): a malformed call of a system process depends only
+/// on the deploy's term. The block publishes it as a failed deploy, the payer
+/// pays the granted work and the fee, and every validator accepts the block.
+/// The datum that the deploy produced before the call is rolled back. Before
+/// DR-114 the error was not a user failure, and the proposer rejected the
+/// offer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_malformed_system_call_is_published_as_a_charged_user_failure() {
+    const MALFORMED: &str = r#"new hash(`rho:crypto:sha256Hash`), ack, done in {
+        @"rolled back"!(1) | done!(0) | for (_ <- done) { hash!(42, *ack) }
+    }"#;
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).unwrap();
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let (block, id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, MALFORMED.to_string()),
+    )
+    .await;
+    assert!(
+        block.body.deploys[0].is_failed(),
+        "the malformed call is published as failed"
+    );
+    let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+    assert!(receipt.phlo_used > 0 && receipt.phlo_used <= receipt.phlo_limit);
+    assert_eq!(receipt.retained_phlo, 0);
+    assert!(receipt.rev_spent > 0 && receipt.rev_spent <= receipt.rev_ceiling);
+    let balance = vault_balance(&nodes, &block.body.state.post_state_hash, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the payer pays the granted work and the fee"
+    );
+    let rolled_back =
+        models::rust::utils::new_gstring_par("rolled back".to_string(), Vec::new(), false);
+    for node in nodes.iter() {
+        assert!(
+            node.runtime_manager
+                .get_data(block.body.state.post_state_hash.clone(), &rolled_back)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the failed deploy leaves no datum"
+        );
+    }
+}
+
+/// DR-120 (gap G9): a merge of two contender siblings above a neutral base.
+/// Node 2 creates an empty sibling before it sees the contenders, every node
+/// receives the three blocks, and node 2 merges them with the empty sibling
+/// as the main parent. Both contenders are then in the merge scope, so the
+/// v6 rule, not the base, decides between them.
+async fn neutral_base_merge(
+    nodes: &mut [TestNode],
+    contenders: [&models::rust::casper::protocol::casper_message::BlockMessage; 2],
+) -> models::rust::casper::protocol::casper_message::BlockMessage {
+    let neutral = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates an empty sibling");
+    assert!(neutral.body.deploys.is_empty());
+    for block in [contenders[0], contenders[1], &neutral] {
+        for node in nodes.iter_mut() {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merge = crate::batch2::staging::mint_on_parents(
+        &mut nodes[2],
+        vec![
+            neutral.clone(),
+            contenders[0].clone(),
+            contenders[1].clone(),
+        ],
+        "neutral-base merge",
+    )
+    .await;
+    assert_eq!(
+        merge.header.parents_hash_list.first(),
+        Some(&neutral.block_hash)
+    );
+    for node in nodes.iter_mut().take(2) {
+        assert!(
+            matches!(
+                node.process_block(merge.clone())
+                    .await
+                    .expect("the node processes the merge block"),
+                Either::Right(_)
+            ),
+            "every node accepts the merge block"
+        );
+    }
+    merge
+}
+
+/// The rejection records of `merge` for the deploy ids in `ids`.
+fn records_for<'a>(
+    merge: &'a models::rust::casper::protocol::casper_message::BlockMessage,
+    ids: &[&[u8]],
+) -> Vec<&'a models::rust::casper::protocol::casper_message::RejectedDeploy> {
+    merge
+        .body
+        .rejected_deploys
+        .iter()
+        .filter(|record| ids.contains(&record.sig.as_ref()))
+        .collect()
+}
+
+/// DR-120 (gap G9): two signers' version inserts conflict on the one store
+/// datum of the versioned registry. Above a neutral base both are in the
+/// merge scope, so the order K decides. The candidates tie on the pinned
+/// flag, the prior losses and the height, so dev's branch order decides, and
+/// it puts the chain that costs more first (deploy_chain_index.rs:179-190).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_signers_on_one_registry_key_keep_one_by_k() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let padding: Vec<String> = (0..8).map(|i| format!("@\"g9-pad\"!({i})")).collect();
+    let costly = format!("{} | {}", version_insert("costly"), padding.join(" | "));
+    let (cheap_block, cheap_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&genesis.genesis_vaults[2], 1, version_insert("cheap")),
+    )
+    .await;
+    let (costly_block, costly_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&genesis.genesis_vaults[0], 2, costly),
+    )
+    .await;
+    let cheap_cost = cheap_block.body.deploys[0].cost().cost;
+    let costly_cost = costly_block.body.deploys[0].cost().cost;
+    assert!(
+        costly_cost > cheap_cost,
+        "staging precondition: the padded insert costs more ({costly_cost} > {cheap_cost})"
+    );
+    let merge = neutral_base_merge(&mut nodes, [&cheap_block, &costly_block]).await;
+    let records = records_for(&merge, &[cheap_id.as_slice(), costly_id.as_slice()]);
+    assert_eq!(records.len(), 1, "the merge keeps one contender");
+    assert_eq!(
+        records[0].sig.as_ref(),
+        cheap_id.as_slice(),
+        "K keeps the chain that costs more"
+    );
+    assert_eq!(records[0].carrier, cheap_block.block_hash);
+    assert!(!records[0].duplicate);
+}
+
+/// DR-120 (gap G9), same-signer siblings: two offers of one signer conflict
+/// on the signer's cursor cells. Above a neutral base the order K keeps one
+/// and defers the other. The owner of the rejected carrier buffers the
+/// offer; it re-proposes it once the rejection settles in the floor
+/// (`retry_gate_spec::settled_rejection_opens_the_gate_and_the_owner_retries`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_signer_siblings_keep_one_and_the_owner_buffers_the_other() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let signer = genesis.genesis_vaults[2].clone();
+    let (first, first_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&signer, 1, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    let (second, second_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&signer, 2, "new y in { y!(1) }".to_string()),
+    )
+    .await;
+    let merge = neutral_base_merge(&mut nodes, [&first, &second]).await;
+    let records = records_for(&merge, &[first_id.as_slice(), second_id.as_slice()]);
+    assert_eq!(records.len(), 1, "the merge keeps one sibling");
+    let (owner, loser_id) = match records[0].sig.as_ref() == first_id.as_slice() {
+        true => (0usize, first_id.clone()),
+        false => (1usize, second_id.clone()),
+    };
+    assert_eq!(
+        records[0].carrier,
+        [&first, &second][owner].block_hash,
+        "the record names the deferred sibling's carrier"
+    );
+    for (index, node) in nodes.iter().enumerate() {
+        match index == owner {
+            true => assert_eq!(buffered_envelope_ids(node), vec![loser_id.clone()]),
+            false => assert!(buffered_envelope_ids(node).is_empty()),
+        }
+    }
+}
+
+/// DR-120 (gap G9): the v6 merge result does not depend on the order of the
+/// secondary parents (DR-15 item 4). Two nodes merge one neutral base with
+/// the same two contenders in opposite secondary orders. Each node uses its
+/// own parents-post-state cache, and both compute one state and one
+/// rejection set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permuted_secondary_parents_give_the_same_v6_root() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let (left, _) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&genesis.genesis_vaults[2], 1, version_insert("left")),
+    )
+    .await;
+    let (right, _) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&genesis.genesis_vaults[0], 2, version_insert("right")),
+    )
+    .await;
+    let neutral = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates an empty sibling");
+    for block in [&left, &right, &neutral] {
+        for node in nodes.iter_mut() {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let mut results = Vec::with_capacity(2);
+    for (index, parents) in [vec![neutral.clone(), left.clone(), right.clone()], vec![
+        neutral.clone(),
+        right.clone(),
+        left.clone(),
+    ]]
+    .into_iter()
+    .enumerate()
+    {
+        let snapshot = nodes[index]
+            .casper
+            .get_snapshot()
+            .await
+            .expect("the node takes a snapshot");
+        let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect();
+        let runtime_manager = nodes[index].runtime_manager.clone();
+        let merged = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+            &nodes[index].block_store,
+            parents,
+            &snapshot,
+            &runtime_manager,
+            &latest_messages,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the merge computes");
+        let mut rejected: Vec<Vec<u8>> = merged
+            .rejected_user
+            .iter()
+            .map(|record| record.sig.to_vec())
+            .collect();
+        rejected.sort();
+        results.push((merged.state.clone(), rejected));
+    }
+    assert_eq!(
+        results[0], results[1],
+        "both secondary orders give one state and one rejection set"
+    );
+    assert_eq!(results[0].1.len(), 1, "the contenders conflict");
+}
+
+/// DR-120 (gap G9): `node` merges `parents` with its own snapshot and the
+/// latest messages of that snapshot.
+async fn merge_on(
+    node: &TestNode,
+    parents: Vec<models::rust::casper::protocol::casper_message::BlockMessage>,
+) -> casper::rust::util::rholang::runtime_manager::MergedPreState {
+    let snapshot = node
+        .casper
+        .get_snapshot()
+        .await
+        .expect("the node takes a snapshot");
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect();
+    let runtime_manager = node.runtime_manager.clone();
+    casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &node.block_store,
+        parents,
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the merge computes")
+}
+
+/// DR-120 (gap G9), C2: one offer in two sibling blocks above a neutral base.
+/// Both copies are in the merge scope. The fast path declines on the
+/// repeated deploy id (F5). The two copies are equal chains, so dev's chain
+/// set keeps one of them (deploy_chain_index.rs:163-171), and the merge
+/// applies the offer once. The merged state charges the payer exactly once,
+/// and no record defers the offer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_offer_in_two_siblings_is_charged_once() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault =
+        VaultAddress::from_public_key(&payer.1).expect("the payer key forms a vault address");
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let offer = owner_direct_offer(&payer, 1, "new x in { x!(0) }".to_string());
+    let (first, id) = offered_block(&mut nodes, 0, offer.clone()).await;
+    let (second, second_id) = offered_block(&mut nodes, 1, offer).await;
+    assert_eq!(id, second_id);
+    let neutral = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 2 creates an empty sibling");
+    for block in [&first, &second, &neutral] {
+        for node in nodes.iter_mut() {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![neutral, first, second]).await;
+    assert!(
+        merged
+            .applied_from_scope
+            .contains(&prost::bytes::Bytes::from(id.clone())),
+        "the merge applies the offer from its scope"
+    );
+    assert!(
+        merged
+            .rejected_user
+            .iter()
+            .all(|record| record.sig.as_ref() != id.as_slice() || record.duplicate),
+        "no record defers the offer"
+    );
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .expect("the receipt query succeeds")
+        .expect("the offer carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state charges the payer exactly once"
+    );
+}
+
+/// DR-120 (gap G9), law L7: one offer in two sibling blocks, and the merge's
+/// main parent is one of them. The other copy is a scope copy of an offer
+/// that the base settled. Its settlement consumes a fee-cursor datum that the
+/// base no longer holds, so the fast path declines
+/// (`CursorLinearity.scope_copy_of_base_deploy_fails_fast_path`). The fast
+/// path would apply every scope chain. The slow path drops the copy, so the
+/// merge does not apply the offer from its scope, and the merged state
+/// charges the payer exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scope_copy_of_a_base_offer_takes_the_slow_path() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault =
+        VaultAddress::from_public_key(&payer.1).expect("the payer key forms a vault address");
+    let genesis_root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let initial = vault_balance(&nodes, &genesis_root, &payer_vault).await;
+    let offer = owner_direct_offer(&payer, 1, "new x in { x!(0) }".to_string());
+    let (first, id) = offered_block(&mut nodes, 0, offer.clone()).await;
+    let (second, _) = offered_block(&mut nodes, 1, offer).await;
+    for node in nodes.iter_mut() {
+        for block in [&first, &second] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![first, second]).await;
+    assert!(
+        !merged
+            .applied_from_scope
+            .contains(&prost::bytes::Bytes::from(id.clone())),
+        "the merge does not apply the scope copy"
+    );
+    assert!(
+        merged
+            .rejected_user
+            .iter()
+            .all(|record| record.sig.as_ref() != id.as_slice() || record.duplicate),
+        "no record defers the offer"
+    );
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &id)
+        .await
+        .expect("the receipt query succeeds")
+        .expect("the offer carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state charges the payer exactly once"
+    );
+}
+
+/// DR-119 (bug 11004): the SystemVault creation bucket of a cursor scope: the
+/// first byte of keccak256 over the protobuf encoding of the scope's ByteArray
+/// (`SystemVault.rho` `ensureCostCursor`, `reduce.rs:3707-3754`).
+fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 {
+    let encoded = rholang::rust::interpreter::rho_type::RhoByteArray::create_par(scope.to_vec())
+        .encode_to_vec();
+    crypto::rust::hash::keccak256::Keccak256::hash(encoded)[0]
+}
+
+/// DR-119 (bug 11004): the resource scope and the fee scope of an owner's
+/// owner-direct cohort. The two policy contexts are the hashes of
+/// `policy_snapshot.rs:131-147`. A drift there breaks the staging
+/// preconditions below.
+fn owner_cursor_scopes(owner: &crypto::rust::public_key::PublicKey) -> [[u8; 32]; 2] {
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use rholang::rust::interpreter::accounting::monetary_allocation::monetary_scope_for_custodies;
+
+    let signature = CostSignature {
+        value: Some(Value::Ground(principal_ground_v61(&owner.bytes))),
+    };
+    let custody = vault_payer(&signature)
+        .expect("a principal signature has a vault payer")
+        .custody_key;
+    let context = |label: &[u8]| -> [u8; 32] {
+        Blake2b256::hash(label.to_vec())
+            .try_into()
+            .expect("a Blake2b-256 digest has 32 bytes")
+    };
+    [
+        context(
+            b"f1r3node:monetary-resource:canonical-family-lexicographic-minimax:v1:SystemVault:General",
+        ),
+        context(b"f1r3node:monetary-fee:rotating-capped-max-min:v1:SystemVault:General"),
+    ]
+    .map(|policy| monetary_scope_for_custodies(&policy, std::iter::once(&custody)))
+}
+
+fn owner_cursor_buckets(owner: &crypto::rust::public_key::PublicKey) -> [u8; 2] {
+    owner_cursor_scopes(owner).map(|scope| cost_cursor_bucket(&scope))
+}
+
+/// DR-119 (bug 11004): the first key of the chain
+/// Blake2b256("{label}-{counter}") whose cohort buckets satisfy `accept`. The
+/// chain does not depend on the run, so the bucket relation that a test needs
+/// holds in every run. The genesis keys do not give this: DEFAULT_SEC2 is the
+/// Registry's system key, so the API refuses its offers, and the extra vault
+/// keys are random per run.
+fn searched_signer(
+    label: &str,
+    accept: impl Fn(&[u8; 2]) -> bool,
+) -> (
+    crypto::rust::private_key::PrivateKey,
+    crypto::rust::public_key::PublicKey,
+) {
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    (0u32..65_536)
+        .map(|counter| {
+            let secret = crypto::rust::private_key::PrivateKey::from_bytes(&Blake2b256::hash(
+                format!("{label}-{counter}").into_bytes(),
+            ));
+            let public = Secp256k1.to_public(&secret);
+            (secret, public)
+        })
+        .find(|(_, public)| accept(&owner_cursor_buckets(public)))
+        .expect("the key chain holds a key with the wanted buckets")
+}
+
+/// DR-119 (bug 11004): the genesis of `offered_v6_genesis` with a genesis vault
+/// for each signer in `signers`. `GenesisBuilder::offered_v6` raises each of
+/// these vaults to `OFFERED_TEST_VAULT_BALANCE`, 10^12 (step F0 of gap G1).
+/// The signers follow the default keys in `genesis_vaults`. A genesis vault
+/// avoids a funding deploy.
+async fn offered_v6_genesis_with_signers(
+    validators: usize,
+    signers: &[(
+        crypto::rust::private_key::PrivateKey,
+        crypto::rust::public_key::PublicKey,
+    )],
+) -> crate::util::genesis_builder::GenesisContext {
+    let mut parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
+    for signer in signers {
+        parameters
+            .2
+            .vaults
+            .push(casper::rust::genesis::contracts::vault::Vault {
+                vault_address: VaultAddress::from_public_key(&signer.1)
+                    .expect("a signer key forms a vault address"),
+                initial_balance: 9_000_000,
+            });
+        parameters.1.push(signer.clone());
+    }
+    GenesisBuilder::offered_v6()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("offered v6 genesis builds")
+}
+
+/// DR-119 (bug 11004): the first offers of two cohorts in sibling blocks. Both
+/// settlements create their cursors, and their four scopes fall in four
+/// distinct creation buckets, so the merge keeps both siblings. Before DR-119
+/// the global cost-cursor lock made them conflict. The two signers are
+/// searched keys with genesis vaults.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_use_cursors_in_distinct_buckets_compose() {
+    let first = searched_signer("dr-119-distinct-first", |buckets| buckets[0] != buckets[1]);
+    let first_buckets = owner_cursor_buckets(&first.1);
+    let second = searched_signer("dr-119-distinct-second", |buckets| {
+        buckets[0] != buckets[1] && buckets.iter().all(|bucket| !first_buckets.contains(bucket))
+    });
+    let buckets: std::collections::BTreeSet<u8> = first_buckets
+        .into_iter()
+        .chain(owner_cursor_buckets(&second.1))
+        .collect();
+    assert_eq!(
+        buckets.len(),
+        4,
+        "staging precondition: four distinct buckets"
+    );
+    let genesis = offered_v6_genesis_with_signers(3, &[first.clone(), second.clone()]).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let (first_block, first_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&first, 1, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    let (second_block, second_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&second, 2, "new y in { y!(1) }".to_string()),
+    )
+    .await;
+    for node in nodes.iter_mut() {
+        for block in [&first_block, &second_block] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![first_block, second_block]).await;
+    assert!(
+        merged.rejected_user.is_empty(),
+        "the merge keeps both first uses"
+    );
+    assert!(merged
+        .applied_from_scope
+        .contains(&prost::bytes::Bytes::from(second_id.clone())));
+    for (owner, id) in [(&first, &first_id), (&second, &second_id)] {
+        let vault =
+            VaultAddress::from_public_key(&owner.1).expect("the owner key forms a vault address");
+        let initial = vault_balance(
+            &nodes,
+            &genesis.genesis_block.body.state.post_state_hash,
+            &vault,
+        )
+        .await;
+        let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, id)
+            .await
+            .expect("the receipt query succeeds")
+            .expect("the offer carries a settlement receipt");
+        let balance = vault_balance(&nodes[2..], &merged.state, &vault).await;
+        assert_eq!(
+            u128::from(balance) + receipt.rev_spent,
+            u128::from(initial),
+            "the merged state charges each payer once"
+        );
+    }
+}
+
+/// DR-119 (bug 11004): the first offers of two cohorts whose scopes share a
+/// creation bucket. Both first uses take the one creation lock of that bucket,
+/// so the two settlements conflict, and the merge keeps the base's first use.
+/// The two signers are searched keys with genesis vaults.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_use_cursors_in_one_bucket_keep_one() {
+    let base_signer = searched_signer("dr-119-shared-first", |_| true);
+    let base_buckets = owner_cursor_buckets(&base_signer.1);
+    let rival = searched_signer("dr-119-shared-second", |buckets| {
+        buckets.iter().any(|bucket| base_buckets.contains(bucket))
+    });
+    let genesis = offered_v6_genesis_with_signers(3, &[base_signer.clone(), rival.clone()]).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let (base_block, base_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&base_signer, 2, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    let (rival_block, rival_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&rival, 3, "new y in { y!(1) }".to_string()),
+    )
+    .await;
+    for block in [&base_block, &rival_block] {
+        assert_eq!(
+            block.header.parents_hash_list,
+            vec![genesis.genesis_block.block_hash.clone()],
+            "staging precondition: both first uses build on genesis"
+        );
+    }
+    for node in nodes.iter_mut() {
+        for block in [&base_block, &rival_block] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![base_block, rival_block]).await;
+    let rejected: Vec<&[u8]> = merged
+        .rejected_user
+        .iter()
+        .map(|record| record.sig.as_ref())
+        .filter(|sig| *sig == base_id.as_slice() || *sig == rival_id.as_slice())
+        .collect();
+    assert_eq!(
+        rejected,
+        vec![rival_id.as_slice()],
+        "the merge keeps the base's first use and rejects the scope's"
+    );
+}
+
+/// DR-119 (bug 11004) and DR-120 (gap G9): three signers' offers in three
+/// sibling blocks. Earlier blocks settle one offer of each signer, so every
+/// cursor exists before the siblings, and the lookups take no lock. The three
+/// settlements touch disjoint cells, so the merge composes the scope without
+/// a rejection (P1:356-359). By L5 the fast path and the ordered pass compose
+/// the same state, and the unit tests check the path itself. The third signer
+/// is a searched key with a genesis vault. The proposer selects one offered
+/// deploy for each block, so each warm-up offer has its own block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_signers_compose_on_the_v6_fast_path() {
+    let searched = searched_signer("dr-119-third-signer", |_| true);
+    let genesis = offered_v6_genesis_with_signers(3, std::slice::from_ref(&searched)).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let signers = [
+        genesis.genesis_vaults[0].clone(),
+        genesis.genesis_vaults[2].clone(),
+        searched,
+    ];
+    let mut warmup = None;
+    for (index, signer) in signers.iter().enumerate() {
+        let (block, _) = propose_offer(
+            &mut nodes,
+            owner_direct_offer(signer, index as i64 + 1, "new x in { x!(0) }".to_string()),
+        )
+        .await
+        .expect("each warm-up offer is funded");
+        warmup = Some(block);
+    }
+    let warmup = warmup.expect("the warm-up proposes one block for each signer");
+    let mut siblings = Vec::with_capacity(3);
+    let mut ids = Vec::with_capacity(3);
+    for (index, signer) in signers.iter().enumerate() {
+        let (block, id) = offered_block(
+            &mut nodes,
+            index,
+            owner_direct_offer(signer, index as i64 + 11, "new y in { y!(1) }".to_string()),
+        )
+        .await;
+        assert_eq!(block.header.parents_hash_list, vec![warmup
+            .block_hash
+            .clone()]);
+        siblings.push(block);
+        ids.push(id);
+    }
+    for node in nodes.iter_mut() {
+        for block in &siblings {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    // Node 2's validator holds 5 of the 9 bonded units, so every node finalizes
+    // node 2's sibling when it processes it. That sibling is the main parent, so
+    // the base holds the floor (F1) and the fast path can run.
+    let parents = vec![
+        siblings[2].clone(),
+        siblings[0].clone(),
+        siblings[1].clone(),
+    ];
+    let merged = merge_on(&nodes[0], parents).await;
+    assert_eq!(
+        merged.merge_base,
+        Some(siblings[2].block_hash.clone()),
+        "staging precondition: the main parent is the base"
+    );
+    assert!(
+        merged.rejected_user.is_empty(),
+        "the three signers' settlements compose"
+    );
+    for id in &ids[..2] {
+        assert!(
+            merged
+                .applied_from_scope
+                .contains(&prost::bytes::Bytes::from(id.clone())),
+            "the merge applies every scope sibling"
+        );
+    }
+    for (signer, id) in signers.iter().zip(&ids) {
+        let vault =
+            VaultAddress::from_public_key(&signer.1).expect("the signer key forms a vault address");
+        let before = vault_balance(&nodes, &warmup.body.state.post_state_hash, &vault).await;
+        let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[0].engine_cell, id)
+            .await
+            .expect("the receipt query succeeds")
+            .expect("the offer carries a settlement receipt");
+        let after = vault_balance(&nodes, &merged.state, &vault).await;
+        assert_eq!(
+            u128::from(after) + receipt.rev_spent,
+            u128::from(before),
+            "the merged state charges each signer once"
+        );
+    }
+}
+
+/// DR-119 (bug 11004): a failed offer of the DEFAULT_SEC cohort in a merged
+/// branch, beside a sibling that settles the first offer of another signer.
+/// Both settlements are first uses, and the other signer is a searched key
+/// with a genesis vault whose buckets differ from those of DEFAULT_SEC. So the
+/// settlements do not conflict, and the failed deploy's charge survives in the
+/// merged state. Before DR-119 the global cost-cursor lock made the two
+/// settlements conflict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offer_charge_survives_beside_another_signer() {
+    let default_buckets = owner_cursor_buckets(&casper::rust::util::construct_deploy::DEFAULT_PUB);
+    let other = searched_signer("dr-119-failed-offer-neighbour", |buckets| {
+        buckets
+            .iter()
+            .all(|bucket| !default_buckets.contains(bucket))
+    });
+    let genesis = offered_v6_genesis_with_signers(3, std::slice::from_ref(&other)).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let payer = genesis.genesis_vaults[0].clone();
+    let payer_vault =
+        VaultAddress::from_public_key(&payer.1).expect("the payer key forms a vault address");
+    let initial = vault_balance(
+        &nodes,
+        &genesis.genesis_block.body.state.post_state_hash,
+        &payer_vault,
+    )
+    .await;
+    let (failed, failed_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    let (sibling, _) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&other, 2, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![sibling, failed]).await;
+    assert!(
+        merged.rejected_user.is_empty(),
+        "the merge keeps the failed offer's branch"
+    );
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &failed_id)
+        .await
+        .expect("the receipt query succeeds")
+        .expect("the failed deploy carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state keeps the failed deploy's charge"
+    );
+}
+
+// Added by G1-6 (DR-124): the admission tests of the live check before
+// execution. The module is declared here and not in `api/mod.rs`, so the step
+// changes no Casper file that the branch shares with dev.
+#[path = "offered_admission_api_test.rs"]
+mod offered_admission_api_test;
+
+// Added by G1-7 (DR-65 item 5): the tests of the held-capacity guard with one
+// offer per block. The module is declared here and not in `api/mod.rs`, so
+// the step changes no Casper file that the branch shares with dev.
+#[path = "offered_guard_api_test.rs"]
+mod offered_guard_api_test;
+
+// Added by H2 (bug 11419, DR-127): the capture of measured purse heads by
+// channel. The module is declared here and not in `api/mod.rs`, so the step
+// changes no Casper file that the branch shares with dev.
+#[path = "offered_capture_api_test.rs"]
+mod offered_capture_api_test;

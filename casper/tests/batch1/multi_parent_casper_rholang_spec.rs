@@ -33,14 +33,20 @@ async fn multi_parent_casper_should_create_blocks_based_on_deploys() {
         .body
         .deploys
         .iter()
-        .map(|pd| &pd.as_legacy().expect("legacy fixture").deploy)
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+        // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+        // .map(|pd| &pd.as_legacy().expect("legacy fixture").deploy)
+        .map(|pd| pd.as_legacy().expect("legacy fixture").legacy_execution_projection())
         .collect();
     let parents = proto_util::parent_hashes(&block);
 
     assert_eq!(parents.len(), 1);
     assert_eq!(parents[0], standalone_node.genesis.block_hash);
     assert_eq!(deploys.len(), 1);
-    assert_eq!(deploys[0], &deploy);
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the
+    // projection is an owned value, not a reference into the block.
+    // assert_eq!(deploys[0], &deploy);
+    assert_eq!(deploys[0], deploy);
 
     let data =
         rspace_util::get_data_at_public_channel_block(&block, 0, &standalone_node.runtime_manager)

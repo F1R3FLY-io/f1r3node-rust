@@ -131,6 +131,10 @@ impl ReplGrpcServiceImpl {
         composition.matcher.refusals().take();
         let checkpoint = runtime.create_soft_checkpoint().await;
         let evaluated = runtime.evaluate_prepared(prepared, funding, rand).await;
+        // Added by the merge of feature/cost-accounted-rho (clippy gate): only the
+        // `mettail-frontend` build pushes to `errors`, so the binding is mutable
+        // only there.
+        #[cfg_attr(not(feature = "mettail-frontend"), allow(unused_mut))]
         let EvaluateResult {
             cost, mut errors, ..
         } = match evaluated {
@@ -149,9 +153,15 @@ impl ReplGrpcServiceImpl {
         }
 
         let pretty_storage = if print_unmatched_sends_only {
-            storage_printer::pretty_print_unmatched_sends_with_reasons(&*runtime).await
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // runtime guard dereferences to the runtime automatically.
+            // storage_printer::pretty_print_unmatched_sends_with_reasons(&*runtime).await
+            storage_printer::pretty_print_unmatched_sends_with_reasons(&runtime).await
         } else {
-            storage_printer::pretty_print(&*runtime).await
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // runtime guard dereferences to the runtime automatically.
+            // storage_printer::pretty_print(&*runtime).await
+            storage_printer::pretty_print(&runtime).await
         };
 
         let error_str = if errors.is_empty() {

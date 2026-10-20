@@ -381,3 +381,179 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
         producer_receipt.purses[0].post_balance
     );
 }
+
+/// Added by H1 (bug 11420, DR-126): proposes `offer` on node 0. It returns the
+/// block, or the reason that node 0 recorded when it quarantined the offer.
+async fn propose_or_rejection(
+    nodes: &mut [TestNode],
+    offer: &models::casper::DeployDataProto,
+) -> Result<models::rust::casper::protocol::casper_message::BlockMessage, String> {
+    BlockAPI::deploy_offered(&nodes[0].engine_cell, offer.clone(), &None, false, "root")
+        .await
+        .expect("a well-formed offer is admitted");
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    match nodes[0].create_block_unsafe(&[]).await {
+        Ok(block) => Ok(block),
+        Err(error) => {
+            let storage = nodes[0].deploy_storage.lock();
+            Err(format!(
+                "{error:?}; recorded rejection: {:?}",
+                storage
+                    .envelope_rejection(&id)
+                    .map(|rejection| rejection.reason)
+            ))
+        }
+    }
+}
+
+/// Added by H1 (bug 11420, DR-126): every node accepts `block`, and every node
+/// holds one settlement receipt for `id`. Returns that receipt.
+async fn accepted_with_one_receipt(
+    nodes: &mut [TestNode],
+    block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    id: &[u8],
+) -> casper::rust::api::block_api::OfferedSettlementReceipt {
+    for node in nodes.iter_mut() {
+        assert!(
+            matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the block is processed"),
+                Either::Right(_)
+            ),
+            "every validator accepts the block"
+        );
+    }
+    let id = id.to_vec();
+    let mut receipts = Vec::with_capacity(nodes.len());
+    for node in nodes.iter() {
+        receipts.push(
+            BlockAPI::find_offered_settlement_receipt(&node.engine_cell, &id)
+                .await
+                .expect("the receipt query succeeds")
+                .expect("every node holds the receipt"),
+        );
+    }
+    assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
+    receipts.swap_remove(0)
+}
+
+/// Added by H1 (bug 11420, DR-126): a stack born as `a :: b :: ()` holds a
+/// cell of lane a and then a cell of lane b, each with one class. The
+/// consumer's run measures lane b before lane a: the peek on `@"draw-b"`
+/// waits for the stored lane b datum, and only its body sends the lane a
+/// datum. The selection gives cell a the lane a occurrence, and cell b then
+/// searches only above that position. Before H1, cell b took the earlier lane
+/// b occurrence. The positions then decreased, the canonical check rejected
+/// the evidence after execution, and the producer quarantined the offer with
+/// no charge. Now the positions of the draw strictly increase and the run
+/// settles. This run also measures lane b after lane a, so cell b takes that
+/// later occurrence. The unit test
+/// `a_stack_against_occurrences_in_reverse_order_draws_a_forward_prefix`
+/// covers a run without one, where the prefix ends after cell a.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stack_funds_its_first_cell_when_the_run_measures_its_second_lane_first() {
+    use crate::helper::offered_deploy::{
+        owner_offer_with_lanes, schedule_class, selected_schedule, PermittedLane, OFFER_PHLO_LIMIT,
+        TEST_SHARD,
+    };
+    const CONSUMER: &str =
+        "{% @\"draw-b\"!(true) %}[b] | for (_ <<- @\"draw-b\") { {% @\"draw-a\"!(true) %}[a] }";
+    let genesis = GenesisBuilder::offered_v6()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("the offered v6 genesis builds");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("a three-node network starts");
+    let owner = genesis.genesis_vaults[0].clone();
+    let stack = Compiler::source_to_adt("a :: b :: ()").expect("the stack literal compiles");
+    let cells = &stack.cost_stacks[0].cells;
+    assert_eq!(cells.len(), 2, "the literal holds the cells a and b");
+    let introduction = [schedule_class(NativePhloDimension::Introduction)];
+    let every_class = (0..selected_schedule().classes.len()).collect::<Vec<_>>();
+    let protocol = offered_funded_v6_limits();
+
+    let birth = owner_offer_with_lanes(
+        &owner,
+        1,
+        "a :: b :: ()".to_string(),
+        0,
+        TEST_SHARD.to_string(),
+        OFFER_PHLO_LIMIT,
+        &[
+            PermittedLane {
+                signature: &cells[0],
+                classes: &introduction,
+            },
+            PermittedLane {
+                signature: &cells[1],
+                classes: &introduction,
+            },
+        ],
+    );
+    let birth_block = propose_or_rejection(&mut nodes, &birth)
+        .await
+        .unwrap_or_else(|reason| panic!("the birth is published: {reason}"));
+    assert_eq!(birth_block.body.deploys.len(), 1);
+    let birth_evidence = birth_block.body.deploys[0]
+        .as_offered()
+        .expect("the birth is an offered deploy")
+        .evidence(protocol.evidence)
+        .expect("the birth evidence decodes");
+    let birth_delta =
+        NativePrepaidDeltaV1::decode(birth_evidence.prepaid_delta, protocol.prepaid_delta)
+            .expect("the birth delta decodes");
+    assert_eq!(birth_delta.births.len(), 1, "one stack is born");
+    let born = birth_delta.births[0].stack_id;
+    accepted_with_one_receipt(&mut nodes, &birth_block, &birth.deploy_id).await;
+
+    let consumer = owner_offer_with_lanes(
+        &owner,
+        2,
+        CONSUMER.to_string(),
+        1,
+        TEST_SHARD.to_string(),
+        OFFER_PHLO_LIMIT,
+        &[
+            PermittedLane {
+                signature: &cells[0],
+                classes: &every_class,
+            },
+            PermittedLane {
+                signature: &cells[1],
+                classes: &every_class,
+            },
+        ],
+    );
+    let consumer_block = propose_or_rejection(&mut nodes, &consumer)
+        .await
+        .unwrap_or_else(|reason| panic!("the consumer settles: {reason}"));
+    assert_eq!(consumer_block.body.deploys.len(), 1);
+    assert!(!consumer_block.body.deploys[0].is_failed());
+    let consumer_evidence = consumer_block.body.deploys[0]
+        .as_offered()
+        .expect("the consumer is an offered deploy")
+        .evidence(protocol.evidence)
+        .expect("the consumer evidence decodes");
+    let consumer_delta =
+        NativePrepaidDeltaV1::decode(consumer_evidence.prepaid_delta, protocol.prepaid_delta)
+            .expect("the consumer delta decodes, so its positions are canonical");
+    assert_eq!(
+        consumer_delta.draws.len(),
+        1,
+        "the consumer draws the born stack once"
+    );
+    assert_eq!(consumer_delta.draws[0].stack_id, born);
+    let positions = &consumer_delta.draws[0].positions;
+    assert!(!positions.is_empty(), "the draw takes cell a");
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "the positions of the draw strictly increase: {positions:?}"
+    );
+    let receipt = accepted_with_one_receipt(&mut nodes, &consumer_block, &consumer.deploy_id).await;
+    assert!(receipt.phlo_used + receipt.retained_phlo <= receipt.phlo_limit);
+}

@@ -1,17 +1,12 @@
-use std::mem::size_of;
-
 use models::rhoapi::{ListParWithRandom, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use models::rust::phlo_intent::PhloFundingIntentV2;
 use models::rust::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireLimits};
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_type::{RhoByteArray, RhoList};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
-use rspace_plus_plus::rspace::history::native_reader::{
-    decode_datum_record_metered, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
-};
+use rspace_plus_plus::rspace::history::native_reader::{NativeLeafKind, NativeReadError};
 use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::serializers::serializers::decode_datum_for_epoch;
 use thiserror::Error;
 
 use super::{
@@ -40,8 +35,6 @@ pub enum AcceptedTradeStateError {
     Amount,
     #[error(transparent)]
     Plan(#[from] ConversionPlanError),
-    #[error(transparent)]
-    HostBudget(#[from] HostWorkReservationError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,31 +156,9 @@ fn channel(trade_id: [u8; 32]) -> Par {
     ])
 }
 
-struct Meter<'a>(&'a HostWorkBudget);
-
-impl NativeReadMeter for Meter<'_> {
-    type Error = AcceptedTradeStateError;
-
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, charge.operations),
-            (HostWorkDimension::VerificationBytes, charge.scanned_bytes),
-            (HostWorkDimension::SearchStateBytes, charge.backing_bytes),
-        ] {
-            self.0.reserve(
-                dimension,
-                HostWorkUnits::new(
-                    u64::try_from(amount).map_err(|_| AcceptedTradeStateError::Record)?,
-                ),
-            )?;
-        }
-        Ok(())
-    }
-}
-
 fn read_error(error: NativeReadError<AcceptedTradeStateError>) -> AcceptedTradeStateError {
     match error {
-        NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+        NativeReadError::Consumer(error) => error,
         NativeReadError::Store(_) | NativeReadError::Invalid(_) => AcceptedTradeStateError::History,
     }
 }
@@ -198,13 +169,7 @@ impl RuntimeManager {
         adopted: &AdoptedResourcePolicy,
         root: [u8; 32],
         trade_id: [u8; 32],
-        budget: &HostWorkBudget,
     ) -> Result<RootedAcceptedTrade, AcceptedTradeStateError> {
-        Meter(budget).reserve(NativeReadCharge {
-            operations: 2,
-            scanned_bytes: 32,
-            backing_bytes: size_of::<RootedAcceptedTrade>(),
-        })?;
         let root_hash = Blake2b256Hash::from_bytes(root.to_vec());
         if !self
             .history_repo
@@ -222,7 +187,7 @@ impl RuntimeManager {
             .map_err(|_| AcceptedTradeStateError::History)?;
         let reader = self.history_repo.native_history_reader(root);
         let observed = reader
-            .with_records(NativeLeafKind::Data, &hash, &Meter(budget), |records| {
+            .with_records(NativeLeafKind::Data, &hash, |records| {
                 if records.len() != 1 {
                     return Err(AcceptedTradeStateError::Record);
                 }
@@ -231,8 +196,8 @@ impl RuntimeManager {
                     .next()
                     .ok_or(AcceptedTradeStateError::Record)?;
                 let datum: Datum<ListParWithRandom> =
-                    decode_datum_record_metered(raw, adopted.event_codec_epoch(), &Meter(budget))
-                        .map_err(read_error)?;
+                    decode_datum_for_epoch(adopted.event_codec_epoch(), raw)
+                        .map_err(|error| read_error(error.into()))?;
                 let [par] = datum.a.pars.as_slice() else {
                     return Err(AcceptedTradeStateError::Record);
                 };
@@ -242,26 +207,7 @@ impl RuntimeManager {
                 else {
                     return Err(AcceptedTradeStateError::Record);
                 };
-                Meter(budget).reserve(NativeReadCharge {
-                    operations: 1,
-                    scanned_bytes: bytes.len(),
-                    backing_bytes: bytes
-                        .len()
-                        .checked_mul(2)
-                        .ok_or(AcceptedTradeStateError::Record)?,
-                })?;
                 let receipt = Receipt::decode(bytes)?;
-                let copy_bytes = bytes
-                    .len()
-                    .checked_mul(4)
-                    .and_then(|size| size.checked_add(receipt.custody.len()))
-                    .and_then(|size| size.checked_add(receipt.asset.len()))
-                    .ok_or(AcceptedTradeStateError::Record)?;
-                Meter(budget).reserve(NativeReadCharge {
-                    operations: 2,
-                    scanned_bytes: bytes.len(),
-                    backing_bytes: copy_bytes,
-                })?;
                 if receipt.trade_id != trade_id
                     || datum
                         != Datum::create(
@@ -298,9 +244,8 @@ pub fn plan_separate_prior_receipt_transition(
     output: &RootedPhysicalCapacity,
     authorized_hold: u128,
     realized_debit: u128,
-    budget: &HostWorkBudget,
 ) -> Result<Option<PreparedAcceptedTradeTransition>, AcceptedTradeStateError> {
-    check_separate_prior(funding_root, intent, trade, output, authorized_hold, budget)?;
+    check_separate_prior(funding_root, intent, trade, output, authorized_hold)?;
     if realized_debit > authorized_hold {
         return Err(AcceptedTradeStateError::Amount);
     }
@@ -311,19 +256,6 @@ pub fn plan_separate_prior_receipt_transition(
         .unspent_output
         .checked_sub(realized_debit)
         .ok_or(AcceptedTradeStateError::Amount)?;
-    let record_bytes = ACCEPTED_TRADE_DOMAIN
-        .len()
-        .checked_add(32 + 32 + 16 + 6 * 8)
-        .and_then(|size| size.checked_add(trade.output_custody.len()))
-        .and_then(|size| size.checked_add(trade.output_asset.len()))
-        .ok_or(AcceptedTradeStateError::Record)?;
-    Meter(budget).reserve(NativeReadCharge {
-        operations: 2,
-        scanned_bytes: record_bytes,
-        backing_bytes: record_bytes
-            .checked_mul(4)
-            .ok_or(AcceptedTradeStateError::Record)?,
-    })?;
     let old = Receipt {
         trade_id: trade.trade_id,
         source_identity: trade.output_source_identity,
@@ -340,11 +272,6 @@ pub fn plan_separate_prior_receipt_transition(
         unspent: replacement_unspent,
     }
     .encode()?;
-    Meter(budget).reserve(NativeReadCharge {
-        operations: 4,
-        scanned_bytes: old.len() + new.len(),
-        backing_bytes: old.len() + new.len(),
-    })?;
     Ok(Some(PreparedAcceptedTradeTransition {
         funding_root,
         trade_id: trade.trade_id,

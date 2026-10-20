@@ -3,17 +3,15 @@
 use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use shared::rust::clone_backing::CloneBacking;
-use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
-use super::hashing::native_source::SourceMeter;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
-use super::serializers::cold_store_decode::ColdStoreDecode;
+// Disabled by the merge of feature/cost-accounted-rho (DR-131): only the
+// removed `get_data_cold_decode_metered` default named this trait.
+// use super::serializers::cold_store_decode::ColdStoreDecode;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce, RestingCOMM};
 use crate::rspace::checkpoint::SoftCheckpoint;
@@ -158,7 +156,7 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
         _continuation_persistent: bool,
         _data: &[(&A, bool)],
     ) -> Result<(), RSpaceError> {
-        Err(RSpaceError::HostWorkRejected)
+        Err(RSpaceError::ProduceCommitDenied)
     }
 }
 
@@ -195,31 +193,6 @@ pub trait ISpace<
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError>;
 
     async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError>;
-
-    async fn get_data_metered(
-        &self,
-        _channel: &C,
-        _meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking + DeserializeOwned,
-        // D-S2 (DR-95): the history rows decode in History mode.
-        A: CloneBacking + DeserializeOwned + ClosedDecode,
-    {
-        Err(RSpaceError::HostWorkRejected)
-    }
-
-    async fn get_data_cold_decode_metered(
-        &self,
-        _channel: &C,
-        _meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking + ColdStoreDecode,
-    {
-        Err(RSpaceError::HostWorkRejected)
-    }
 
     async fn get_waiting_continuations(
         &self,
@@ -394,25 +367,24 @@ pub trait ISpace<
 
     async fn rig(&self, log: Log) -> Result<(), RSpaceError>;
 
-    /// The authenticated protocol-7 replay entrypoints require a finite
-    /// caller-owned host-work meter. Defaults refuse; a legacy `ISpace`
-    /// implementation must never infer CostV2 authority from an event body.
-    async fn rig_cost_v2_metered(
-        &self,
-        _start_root: Blake2b256Hash,
-        _log: Log,
-        _meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<(), RSpaceError> {
+    // Changed by the merge of feature/cost-accounted-rho (finding R2-08):
+    // DR-131 removed the host-work meter, so these entrypoints take none.
+    // /// The authenticated protocol-7 replay entrypoints require a finite
+    // /// caller-owned host-work meter. Defaults refuse; a legacy `ISpace`
+    // /// implementation must never infer CostV2 authority from an event body.
+    /// The authenticated protocol-7 replay entrypoints. Defaults refuse; a
+    /// legacy `ISpace` implementation must never infer CostV2 authority from
+    /// an event body.
+    async fn rig_cost_v2(&self, _start_root: Blake2b256Hash, _log: Log) -> Result<(), RSpaceError> {
         Err(RSpaceError::ProduceCommitProtocolViolation)
     }
 
-    async fn replay_produce_cost_v2_metered(
+    async fn replay_produce_cost_v2(
         &self,
         _channel: C,
         _data: A,
         _persist: bool,
         _guard: Option<&dyn ProduceCommitGuard>,
-        _meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError>
     where
         C: 'static,
@@ -421,14 +393,13 @@ pub trait ISpace<
         Err(RSpaceError::ProduceCommitProtocolViolation)
     }
 
-    async fn replay_consume_cost_v2_metered(
+    async fn replay_consume_cost_v2(
         &self,
         _channels: Vec<C>,
         _patterns: Vec<P>,
         _continuation: K,
         _persist: bool,
         _peeks: BTreeSet<i32>,
-        _meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError>
     where
         C: 'static,
@@ -438,10 +409,9 @@ pub trait ISpace<
         Err(RSpaceError::ProduceCommitProtocolViolation)
     }
 
-    async fn replay_resting_cost_v2_metered(
+    async fn replay_resting_cost_v2(
         &self,
         _candidate: &ProduceCandidate<C, P, A, K>,
-        _meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         Err(RSpaceError::ProduceCommitProtocolViolation)
     }

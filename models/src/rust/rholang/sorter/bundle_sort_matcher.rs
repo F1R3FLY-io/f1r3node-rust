@@ -2,44 +2,16 @@
 //
 // Leg-2 Stage C-2: see `sort_drive` / `sort_combine`.
 
-use shared::rust::clone_backing::BackingError;
-
-use super::metered::SorterMeter;
-use super::par_sort_matcher::ParSortMatcher;
-use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+// Changed by the merge of feature/cost-accounted-rho (DR-131): only the removed
+// metered sorter used the names that this edit takes out of these imports.
+// use super::par_sort_matcher::ParSortMatcher;
+// use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::score_tree::ScoredTerm;
 use super::sort_drive::sort_bundle;
 use super::sortable::Sortable;
 use crate::rhoapi::Bundle;
 
 pub struct BundleSortMatcher;
-
-impl BundleSortMatcher {
-    pub fn sort_match_metered(
-        bundle: &Bundle,
-        meter: &SorterMeter<'_>,
-    ) -> Result<ScoredTerm<Bundle>, BackingError> {
-        let score = match (bundle.write_flag, bundle.read_flag) {
-            (true, true) => Score::BUNDLE_READ_WRITE,
-            (true, false) => Score::BUNDLE_WRITE,
-            (false, true) => Score::BUNDLE_READ,
-            (false, false) => Score::BUNDLE_EQUIV,
-        };
-        let sorted_body = ParSortMatcher::sort_match_metered(
-            bundle.body.as_ref().ok_or(BackingError::Rejected)?,
-            meter,
-        )?;
-        let mut children = meter.vec(1)?;
-        children.push(sorted_body.score);
-        Ok(ScoredTerm {
-            term: Bundle {
-                body: Some(sorted_body.term),
-                write_flag: bundle.write_flag,
-                read_flag: bundle.read_flag,
-            },
-            score: Tree::<ScoreAtom>::create_node_from_i32_metered(score, children, meter)?,
-        })
-    }
-}
 
 impl Sortable<Bundle> for BundleSortMatcher {
     fn sort_match(b: &Bundle) -> ScoredTerm<Bundle> { sort_bundle(b) }

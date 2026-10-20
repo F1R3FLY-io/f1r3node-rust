@@ -9,7 +9,6 @@ use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
 use models::rust::block_hash::BlockHash;
-use models::rust::host_work::{HostWorkDimension, HostWorkLimits, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::sorted_par_map::SortedParMap;
@@ -46,11 +45,10 @@ use super::env::Env;
 use super::errors::InterpreterError;
 use super::execution_space::ExecutionSpace;
 use super::frontend::{PreparedProgram, ProgramFrontend};
-use super::host_work::{HostWorkBudget, HostWorkReport};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::{finite_native_replay_meter, ChargingRSpace};
+use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -258,14 +256,10 @@ pub trait RhoRuntime: HasCost {
 
     async fn rig(&self, log: Log) -> Result<(), InterpreterError>;
 
-    /// Protocol-7 replay rig is a separate host-authorized entrypoint. The
-    /// adopted policy selects CostV2 and supplies a finite meter before any
-    /// event decoding or cursor installation; event bytes cannot select it.
-    async fn rig_cost_v2_metered(
+    async fn rig_cost_v2(
         &self,
         start_root: Blake2b256Hash,
         log: Log,
-        host_work: HostWorkBudget,
     ) -> Result<(), InterpreterError>;
 
     async fn check_replay_data(&self) -> Result<(), InterpreterError>;
@@ -342,8 +336,6 @@ impl RhoRuntimeImpl {
         config: NativeRuntimeConfig,
     ) -> Result<EvaluateResult, InterpreterError> {
         let start = Instant::now();
-        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
-        let host_work = config.host_work();
         let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
         let result = interpreter
             .inj_attempt_with_native_phlo(
@@ -355,19 +347,6 @@ impl RhoRuntimeImpl {
                 config,
             )
             .await;
-        if host_work.is_rejected()
-            || result.as_ref().map_or(true, |evaluation| {
-                evaluation
-                    .errors
-                    .iter()
-                    .any(|error| matches!(error, InterpreterError::HostWorkRejected))
-            })
-        {
-            self.reducer
-                .space
-                .revert_to_soft_checkpoint(checkpoint)
-                .await?;
-        }
         metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         result
@@ -375,43 +354,24 @@ impl RhoRuntimeImpl {
 
     /// Run a checked frontend's normalized program under the same native
     /// funding and rollback contract as `evaluate_with_native_phlo`.
-    /// `source_bytes` is the exact original source length; preparation quotas
-    /// do not replace the native structural-byte reservation.
     pub async fn evaluate_prepared_with_native_phlo(
         &mut self,
         prepared: PreparedProgram,
-        source_bytes: u64,
         rand: Blake2b512Random,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
         config: NativeRuntimeConfig,
     ) -> Result<EvaluateResult, InterpreterError> {
         let start = Instant::now();
-        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
-        let host_work = config.host_work();
         let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
         let result = interpreter
             .inj_prepared_with_native_phlo(
                 &self.reducer,
                 prepared,
-                source_bytes,
                 rand,
                 authority_allocation,
                 config,
             )
             .await;
-        if host_work.is_rejected()
-            || result.as_ref().map_or(true, |evaluation| {
-                evaluation
-                    .errors
-                    .iter()
-                    .any(|error| matches!(error, InterpreterError::HostWorkRejected))
-            })
-        {
-            self.reducer
-                .space
-                .revert_to_soft_checkpoint(checkpoint)
-                .await?;
-        }
         metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         result
@@ -463,87 +423,6 @@ impl RhoRuntimeImpl {
                 authority_allocation,
             )
             .await;
-        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
-            .record(start.elapsed().as_secs_f64());
-        result
-    }
-
-    pub async fn evaluate_with_host_work(
-        &self,
-        term: &str,
-        initial_phlo: Cost,
-        normalizer_env: HashMap<String, Par>,
-        rand: Blake2b512Random,
-        limits: HostWorkLimits,
-    ) -> Result<(EvaluateResult, HostWorkReport), InterpreterError> {
-        self.evaluate_with_authority_and_host_work(
-            term,
-            initial_phlo,
-            normalizer_env,
-            rand,
-            None,
-            limits,
-        )
-        .await
-    }
-
-    pub async fn evaluate_with_authority_and_host_work(
-        &self,
-        term: &str,
-        initial_phlo: Cost,
-        normalizer_env: HashMap<String, Par>,
-        rand: Blake2b512Random,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        limits: HostWorkLimits,
-    ) -> Result<(EvaluateResult, HostWorkReport), InterpreterError> {
-        let host_work = HostWorkBudget::new(limits);
-        let result = self
-            .evaluate_with_authority_and_host_work_budget(
-                term,
-                initial_phlo,
-                normalizer_env,
-                rand,
-                authority_allocation,
-                host_work.clone(),
-            )
-            .await;
-        let report = host_work.report();
-        result.map(|evaluation| (evaluation, report))
-    }
-
-    pub async fn evaluate_with_authority_and_host_work_budget(
-        &self,
-        term: &str,
-        initial_phlo: Cost,
-        normalizer_env: HashMap<String, Par>,
-        rand: Blake2b512Random,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        host_work: HostWorkBudget,
-    ) -> Result<EvaluateResult, InterpreterError> {
-        let start = Instant::now();
-        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
-        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
-        let result = if host_work.is_rejected() {
-            Err(InterpreterError::HostWorkRejected)
-        } else {
-            interpreter
-                .inj_attempt_with_host_work(
-                    &self.reducer,
-                    term,
-                    initial_phlo,
-                    normalizer_env,
-                    rand,
-                    authority_allocation,
-                    host_work.clone(),
-                )
-                .await
-        };
-        if host_work.is_rejected() {
-            self.reducer
-                .space
-                .revert_to_soft_checkpoint(checkpoint)
-                .await?;
-        }
         metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         result
@@ -692,20 +571,17 @@ impl RhoRuntime for RhoRuntimeImpl {
         Ok(())
     }
 
-    async fn rig_cost_v2_metered(
+    async fn rig_cost_v2(
         &self,
         start_root: Blake2b256Hash,
         log: Log,
-        host_work: HostWorkBudget,
     ) -> Result<(), InterpreterError> {
         if self.cost.native_event_codec_epoch() != Some(EventCodecEpoch::CostV2) {
-            return Err(InterpreterError::HostWorkRejected);
+            return Err(InterpreterError::ReduceError(
+                "native replay codec epoch does not match its runtime budget".to_owned(),
+            ));
         }
-        let meter = finite_native_replay_meter(host_work)?;
-        self.reducer
-            .space
-            .rig_cost_v2_metered(start_root, log, &meter)
-            .await?;
+        self.reducer.space.rig_cost_v2(start_root, log).await?;
         Ok(())
     }
 
@@ -742,24 +618,6 @@ pub type ISpaceAndReplay = (RhoISpace, RhoReplayISpace);
 
 struct RhoCommObserver {
     budget: RuntimeBudget,
-}
-
-fn reserve_native_observation_work(
-    host: &HostWorkBudget,
-    operations: usize,
-    scanned: usize,
-    backing: usize,
-) -> Result<(), RSpaceError> {
-    for (dimension, amount) in [
-        (HostWorkDimension::VerificationOperations, operations),
-        (HostWorkDimension::VerificationBytes, scanned),
-        (HostWorkDimension::SearchStateBytes, backing),
-    ] {
-        let units = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
-        host.reserve(dimension, HostWorkUnits::new(units))
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -801,38 +659,18 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
             return Ok(());
         }
-        let host = self.budget.native_host_work();
-        let meter = |operations, scanned, backing| {
-            reserve_native_observation_work(
-                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
-                operations,
-                scanned,
-                backing,
-            )
-        };
-        let identity = match host.as_ref() {
-            Some(_) => super::accounting::byte_accounting::produce_introduction_identity_metered(
-                source, &meter,
-            )?,
-            None => super::accounting::byte_accounting::produce_introduction_identity(source),
-        };
-        let authority = self
+        let identity = super::accounting::byte_accounting::produce_introduction_identity(source);
+        let record = self
             .budget
-            .introduction_authority(
+            .introduction(
                 identity,
                 super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             )
             .map_err(RSpaceError::from)?;
-        let observed = match host.as_ref() {
-            Some(_) => {
-                super::accounting::observation_construction::produce_introduction_metered_with_identity(
-                    identity, channel, data, &authority, &meter,
-                )?
-            }
-            None => super::accounting::observation_construction::produce_introduction(
-                source, channel, data, &authority,
-            )?,
-        };
+        let observed =
+            super::accounting::observation_construction::produce_introduction_recorded_with_identity(
+                identity, channel, data, &record,
+            )?;
         self.budget
             .reserve_produce_introduction_measured(
                 observed.event_id,
@@ -858,38 +696,22 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         self.budget
             .observe_native_consume_peeks(peeks)
             .map_err(RSpaceError::from)?;
-        let host = self.budget.native_host_work();
-        let meter = |operations, scanned, backing| {
-            reserve_native_observation_work(
-                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
-                operations,
-                scanned,
-                backing,
-            )
-        };
-        let identity = match host.as_ref() {
-            Some(_) => super::accounting::byte_accounting::consume_introduction_identity_metered(
-                source, &meter,
-            )?,
-            None => super::accounting::byte_accounting::consume_introduction_identity(source),
-        };
-        let authority = self
+        let identity = super::accounting::byte_accounting::consume_introduction_identity(source);
+        let record = self
             .budget
-            .introduction_authority(
+            .introduction(
                 identity,
                 super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             )
             .map_err(RSpaceError::from)?;
-        let observed = match host.as_ref() {
-            Some(_) => {
-                super::accounting::observation_construction::consume_introduction_metered_with_identity(
-                    identity, channels, patterns, continuation, &authority, &meter,
-                )?
-            }
-            None => super::accounting::observation_construction::consume_introduction(
-                source, channels, patterns, continuation, &authority,
-            )?,
-        };
+        let observed =
+            super::accounting::observation_construction::consume_introduction_recorded_with_identity(
+                identity,
+                channels,
+                patterns,
+                continuation,
+                &record,
+            )?;
         self.budget
             .reserve_consume_introduction_measured(
                 observed.event_id,
@@ -913,42 +735,32 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         self.budget
             .observe_native_comm_source(comm)
             .map_err(RSpaceError::from)?;
-        let host = self.budget.native_host_work();
-        let meter = |operations, scanned, backing| {
-            reserve_native_observation_work(
-                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
-                operations,
-                scanned,
-                backing,
-            )
-        };
         // DR-101: the deployment that resolves residue seals.
         let residue = super::accounting::authority::ResidueContext::new(
             &self.budget.signature(),
             self.budget.deploy_id(),
         )
         .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-        let observed = match host.as_ref() {
-            Some(_) => super::accounting::observation_construction::comm_metered(
-                comm,
-                continuation,
-                continuation_persistent,
-                data,
-                &residue,
-                &meter,
-            )?,
-            None => super::accounting::observation_construction::comm(
-                comm,
-                continuation,
-                continuation_persistent,
-                data,
-                &residue,
-            )?,
-        };
+        let observed = super::accounting::observation_construction::comm(
+            comm,
+            continuation,
+            continuation_persistent,
+            data,
+            &residue,
+        )?;
+        // Changed by D-F1 (DR-117): the COMM authority is a canonical witness,
+        // so the reservation moves it instead of canonicalizing it again.
+        // self.budget
+        //     .reserve_comm_authority_measured(
+        //         observed.event_id,
+        //         &observed.authority,
+        //         observed.measurement,
+        //     )
+        //     .map_err(RSpaceError::from)?;
         self.budget
-            .reserve_comm_authority_measured(
+            .reserve_comm_authority_canonical(
                 observed.event_id,
-                &observed.authority,
+                observed.authority,
                 observed.measurement,
             )
             .map_err(RSpaceError::from)?;
@@ -963,17 +775,10 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         continuation_persistent: bool,
         data: &[(&ListParWithRandom, bool)],
     ) -> Result<(), RSpaceError> {
-        // The RSpace commit computed this domain-separated identity under the
-        // caller's finite SourceMeter before entering its atomic publication
-        // closure. This observer never rehashes without a meter and never
-        // manufactures a Produce/Consume introduction.
-        //
-        // Until the additive V3 native journal is installed, only a trusted
-        // standalone sandbox with an explicit local authorization may charge
-        // this transition. A CostV2 RSpace in a consensus runtime, an
-        // unmetered budget, or a call outside the COMM scope must fail closed.
         if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
-            return Err(RSpaceError::HostWorkRejected);
+            return Err(RSpaceError::InterpreterError(
+                "resting COMM requires its authorized runtime and codec epoch".to_owned(),
+            ));
         }
         let event_id: [u8; 32] = identity
             .0
@@ -984,43 +789,39 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             if self.budget.native_event_codec_epoch() != Some(EventCodecEpoch::CostV2)
                 || self.budget.standalone_resting_comm_enabled()
             {
-                return Err(RSpaceError::HostWorkRejected);
+                return Err(RSpaceError::InterpreterError(
+                    "resting COMM requires its authorized runtime and codec epoch".to_owned(),
+                ));
             }
             self.budget
                 .observe_native_resting_source(event_id, event)
                 .map_err(RSpaceError::from)?;
-            let host = self
-                .budget
-                .native_host_work()
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            let meter = |operations, scanned, backing| {
-                reserve_native_observation_work(&host, operations, scanned, backing)
-            };
             let residue = super::accounting::authority::ResidueContext::new(
                 &self.budget.signature(),
                 self.budget.deploy_id(),
             )
             .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-            let observed = super::accounting::observation_construction::resting_metered(
+            let observed = super::accounting::observation_construction::resting(
                 event,
                 event_id,
                 continuation,
                 continuation_persistent,
                 data,
                 &residue,
-                &meter,
             )?;
             return self
                 .budget
-                .reserve_resting_authority_measured(
+                .reserve_resting_authority_canonical(
                     observed.event_id,
-                    &observed.authority,
+                    observed.authority,
                     observed.measurement,
                 )
                 .map_err(RSpaceError::from);
         }
         if !self.budget.standalone_resting_comm_enabled() {
-            return Err(RSpaceError::HostWorkRejected);
+            return Err(RSpaceError::InterpreterError(
+                "resting COMM requires its authorized runtime and codec epoch".to_owned(),
+            ));
         }
         self.budget
             .reserve_comm_identity(event_id)
@@ -1944,7 +1745,6 @@ pub struct NativeReplayEnvironment {
         Arc<NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
     reducer: Arc<ReducerCore>,
     budget: RuntimeBudget,
-    host: HostWorkBudget,
     unavailable: bool,
     evaluation_started: bool,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
@@ -2015,7 +1815,6 @@ impl NativeReplayEnvironment {
         let authority = self.budget.native_authority_checkpoint()?;
         let session = self.session.checkpoint().await?;
         let mergeable = self.merge_chs.read().await;
-        super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &self.host)?;
         let mergeable = mergeable.clone();
         Ok(NativeReplayEnvironmentCheckpoint {
             session,
@@ -2058,52 +1857,27 @@ impl NativeReplayEnvironment {
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError> {
         self.ensure_fresh_evaluation()?;
-        let host = self.host.clone();
         let interpreter = InterpreterImpl::new(self.budget.clone(), self.merge_chs.clone());
-        if host.is_rejected() {
-            return interpreter.host_rejected_result(Default::default());
-        }
-        let checkpoint = match self.checkpoint().await {
-            Ok(checkpoint) => checkpoint,
-            Err(_) if host.is_rejected() => {
-                return interpreter.host_rejected_result(Default::default());
-            }
-            Err(error) => return Err(error),
-        };
+        let checkpoint = self.checkpoint().await?;
         self.unavailable = true;
         self.evaluation_started = true;
         self.merge_chs.write().await.clear();
         let scope = self
             .budget
             .enter_comm_accounting_scope_for_epoch(self.reducer.space.codec_epoch());
-        let (execution, failures) = self
-            .reducer
-            .inj_with_observation(par, rand, Some(host.clone()))
-            .await;
+        let (execution, failures) = self.reducer.inj_with_observation(par, rand).await;
         drop(scope);
-        if host.is_rejected() {
-            let result = interpreter.host_rejected_result(failures);
-            self.restore_state(checkpoint).await?;
-            return result;
-        }
         let result = async {
             let evidence = self.session.completed_evidence().await?;
             let mergeable = self.merge_chs.read().await;
             // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
             // super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &host)?;
-            super::accounting::clone_backing::reserve_blocks_copy_and_cleanup(&*mergeable, &host)?;
             let mergeable = mergeable.clone();
-            if host.is_rejected() {
-                return Err(InterpreterError::HostWorkRejected);
-            }
             interpreter.complete_replay_result(execution, failures, mergeable, evidence)
         }
         .await;
         if result.is_err() {
             self.restore_state(checkpoint).await?;
-            if host.is_rejected() {
-                return interpreter.host_rejected_result(failures);
-            }
         }
         self.unavailable = false;
         result
@@ -2131,10 +1905,7 @@ impl NativeReplayEnvironment {
         let _scope = self
             .budget
             .enter_comm_accounting_scope_for_epoch(self.reducer.space.codec_epoch());
-        let result = self
-            .reducer
-            .inj_with_observation(par, rand, Some(self.host.clone()))
-            .await;
+        let result = self.reducer.inj_with_observation(par, rand).await;
         self.unavailable = false;
         result
     }
@@ -2180,15 +1951,6 @@ impl NativeReplayEnvironment {
         self.session.get_data(channel).await
     }
 
-    pub async fn get_data_with_host_work(
-        &self,
-        channel: &Par,
-        host: &HostWorkBudget,
-    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-        self.ensure_available()?;
-        self.session.get_data_with_host_work(channel, host).await
-    }
-
     pub async fn get_joins(&self, channel: &Par) -> Result<Vec<Vec<Par>>, RSpaceError> {
         self.ensure_available()?;
         self.session.get_joins(channel).await
@@ -2200,7 +1962,6 @@ pub async fn create_native_replay_env(
     trace: CheckedNativeOperationTrace,
     history: RhoHistoryRepository,
     matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
-    host: HostWorkBudget,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     extra_system_processes: &mut Vec<Definition>,
@@ -2208,7 +1969,9 @@ pub async fn create_native_replay_env(
     external_services: ExternalServices,
 ) -> Result<NativeReplayEnvironment, InterpreterError> {
     if cost.native_event_codec_epoch() != Some(codec_epoch) {
-        return Err(InterpreterError::HostWorkRejected);
+        return Err(InterpreterError::ReduceError(
+            "native replay codec epoch does not match its runtime budget".to_owned(),
+        ));
     }
     if !cost.has_exclusive_authority_owner() {
         return Err(InterpreterError::ReduceError(
@@ -2230,7 +1993,6 @@ pub async fn create_native_replay_env(
     let session = Arc::new(trace.into_runtime_session(
         history,
         matcher,
-        host.clone(),
         installations,
         cost.clone(),
         codec_epoch,
@@ -2257,7 +2019,6 @@ pub async fn create_native_replay_env(
         session,
         reducer,
         budget: cost,
-        host,
         unavailable: false,
         evaluation_started: false,
         merge_chs,
@@ -2590,10 +2351,11 @@ pub async fn create_runtime_from_kv_store_for_epoch(
 
 #[cfg(test)]
 mod kv_store_epoch_tests {
-    use super::*;
-    use crate::rust::interpreter::matcher::r#match::Matcher;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
 
     #[tokio::test]
     async fn explicit_epoch_is_preserved_and_default_constructor_stays_legacy() {
@@ -2673,7 +2435,10 @@ mod prepared_merge_tracking_tests {
 
     #[tokio::test]
     async fn only_successful_prepared_admission_resets_private_merge_tracking() {
-        with_runtime("prepared-private-merge-tracking-", |mut runtime| async move {
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // the binding is never mutated.
+        // with_runtime("prepared-private-merge-tracking-", |mut runtime| async move {
+        with_runtime("prepared-private-merge-tracking-", |runtime| async move {
             let seeded = Par::default();
             runtime
                 .merge_chs

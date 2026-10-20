@@ -6,7 +6,6 @@ use crate::rust::interpreter::accounting::costs::Cost;
 use crate::rust::interpreter::accounting::native_runtime::tests::{authority, config};
 
 mod sparse_ledger;
-mod backing;
 
 fn budget() -> RuntimeBudget {
     budget_for_epoch(EventCodecEpoch::Legacy)

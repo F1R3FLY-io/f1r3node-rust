@@ -1,4 +1,10 @@
 ----------------------- MODULE RestingCommCommit -----------------------
+\* Changed by the merge of feature/cost-accounted-rho (DR-131, plan step 1.8):
+\* DR-131 removes host work, so a resting COMM has no host-work credit to
+\* refuse. The model drops the variable credit, the refusal HostWorkRejected
+\* and the action HostRefusal. Each old line stays below as a comment. The
+\* per-COMM charge (playCharge, replayCharge) stays, because COMMs are the
+\* metered compute.
 EXTENDS Naturals, Sequences
 
 CONSTANT CompareOrdered
@@ -9,16 +15,19 @@ CandidateOrders == {<<"p", "q">>, <<"q", "p">>}
 Guards == {"Accept", "Deny", "Unknown"}
 Observers == {"Accept", "Reject"}
 Refusals == {"EpochRefused", "Stale", "GuardDenied",
-             "GuardUndecidable", "ObserverDenied", "HostWorkRejected",
+\*           "GuardUndecidable", "ObserverDenied", "HostWorkRejected",
+             "GuardUndecidable", "ObserverDenied",
              "InstalledLinearRefused"}
 
 VARIABLES epoch, candidate, candidateWaiter, candidateIndex,
-          guard, observer, credit, firstLinear, secondLinear,
+\*        guard, observer, credit, firstLinear, secondLinear,
+          guard, observer, firstLinear, secondLinear,
           waiterPersistent, installedWaiter, playData, replayData, playWaiter,
           replayWaiter, playLog, replayLog, playCharge, replayCharge,
           playCounter, replayCounter, phase, result
 vars == <<epoch, candidate, candidateWaiter, candidateIndex,
-          guard, observer, credit, firstLinear, secondLinear,
+\*        guard, observer, credit, firstLinear, secondLinear,
+          guard, observer, firstLinear, secondLinear,
           waiterPersistent, installedWaiter, playData, replayData, playWaiter,
           replayWaiter, playLog, replayLog, playCharge, replayCharge,
           playCounter, replayCounter, phase, result>>
@@ -47,7 +56,7 @@ Init ==
   /\ candidateIndex \in {1, 2}
   /\ guard \in Guards
   /\ observer \in Observers
-  /\ credit \in 0..1
+\*  /\ credit \in 0..1
   /\ firstLinear \in BOOLEAN
   /\ secondLinear \in BOOLEAN
   /\ waiterPersistent \in BOOLEAN
@@ -70,7 +79,8 @@ Refuse(reason) ==
   /\ phase' = "Done"
   /\ result' = reason
   /\ UNCHANGED <<epoch, candidate, candidateWaiter, candidateIndex,
-       guard, observer, credit, firstLinear, secondLinear,
+\*     guard, observer, credit, firstLinear, secondLinear,
+       guard, observer, firstLinear, secondLinear,
        waiterPersistent, installedWaiter, playData, replayData, playWaiter,
        replayWaiter, playLog, replayLog, playCharge, replayCharge,
        playCounter, replayCounter>>
@@ -102,14 +112,14 @@ InstalledLinearRefusal ==
   /\ installedWaiter
   /\ ~waiterPersistent
   /\ Refuse("InstalledLinearRefused")
-HostRefusal ==
-  /\ epoch = "CostV2"
-  /\ CandidateMatches
-  /\ guard = "Accept"
-  /\ observer = "Accept"
-  /\ ~(installedWaiter /\ ~waiterPersistent)
-  /\ credit = 0
-  /\ Refuse("HostWorkRejected")
+\* HostRefusal ==
+\*   /\ epoch = "CostV2"
+\*   /\ CandidateMatches
+\*   /\ guard = "Accept"
+\*   /\ observer = "Accept"
+\*   /\ ~(installedWaiter /\ ~waiterPersistent)
+\*   /\ credit = 0
+\*   /\ Refuse("HostWorkRejected")
 
 PlayCommit ==
   /\ phase = "Ready"
@@ -118,7 +128,7 @@ PlayCommit ==
   /\ guard = "Accept"
   /\ observer = "Accept"
   /\ ~(installedWaiter /\ ~waiterPersistent)
-  /\ credit = 1
+\*  /\ credit = 1
   /\ playData' = RemainingData
   /\ playWaiter' = RemainingWaiter
   /\ playLog' = Append(playLog, RestingEvent)
@@ -126,7 +136,8 @@ PlayCommit ==
   /\ phase' = "PlayCommitted"
   /\ result' = "Committed"
   /\ UNCHANGED <<epoch, candidate, candidateWaiter, candidateIndex,
-       guard, observer, credit, firstLinear, secondLinear,
+\*     guard, observer, credit, firstLinear, secondLinear,
+       guard, observer, firstLinear, secondLinear,
        waiterPersistent, installedWaiter, replayData, replayWaiter, replayLog,
        replayCharge, playCounter, replayCounter>>
 
@@ -144,12 +155,14 @@ ReplayCommit ==
   /\ phase' = "Done"
   /\ result' = "Replayed"
   /\ UNCHANGED <<epoch, candidate, candidateWaiter, candidateIndex,
-       guard, observer, credit, firstLinear, secondLinear,
+\*     guard, observer, credit, firstLinear, secondLinear,
+       guard, observer, firstLinear, secondLinear,
        waiterPersistent, installedWaiter, playData, playWaiter, playLog, playCharge,
        playCounter, replayCounter>>
 
 Next == EpochRefusal \/ StaleRefusal \/ GuardRefusal \/ GuardUnknown
-     \/ ObserverRefusal \/ InstalledLinearRefusal \/ HostRefusal
+\*   \/ ObserverRefusal \/ InstalledLinearRefusal \/ HostRefusal
+     \/ ObserverRefusal \/ InstalledLinearRefusal
      \/ PlayCommit \/ ReplayCommit
 Spec == Init /\ [][Next]_vars
 

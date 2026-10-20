@@ -14,21 +14,17 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
-use shared::rust::clone_backing::CloneBacking;
-use shared::rust::closed_decode::ClosedDecode;
 
 use super::candidate_order::order_candidates_with_index;
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
-use super::hashing::native_source::{SourceMeter, channel_hash_for_epoch};
 use super::hashing::stable_hash_provider::StableHashSerialize;
-use super::history::history_reader::HistoryReader;
+// Disabled by the merge of feature/cost-accounted-rho (lint fix):
+// `create_new_hot_store` takes F1R3Lang's `EpochHistoryReader`, so no code here
+// names this trait. It was unused at HEAD too.
+// use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
-use super::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
-};
 use super::logging::{BasicLogger, RSpaceLogger};
 use super::r#match::Match;
 use super::metrics_constants::{
@@ -43,8 +39,10 @@ use super::rspace_interface::{
     ProduceCommitGuard, RSpaceAccountingObserver, RSpaceOperationCompletion, RSpaceOperationSource,
     RSpaceResult,
 };
-use super::serializers::cold_store_decode::ColdStoreDecode;
-use super::serializers::serializers::{DatumOracleDe, NativeRecordDecode};
+// Disabled by the merge of feature/cost-accounted-rho (DR-131): only the
+// removed `get_data_cold_decode_metered` named this trait by its short name.
+// The other bounds in this file use its full path.
+// use super::serializers::cold_store_decode::ColdStoreDecode;
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce, recorded_removal_for_epoch};
@@ -379,172 +377,6 @@ where
 
     async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
         self.get_store().get_data(channel)
-    }
-
-    async fn get_data_metered(
-        &self,
-        channel: &C,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned + ClosedDecode,
-    {
-        // CostV1's stack-safe positional decoder is not yet metered. Refuse
-        // this cold path until the separate metered decoder is available.
-        if self.epoch != crate::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy {
-            return Err(RSpaceError::HostWorkRejected);
-        }
-        struct ReadMeter<'a>(&'a dyn SourceMeter);
-
-        impl NativeReadMeter for ReadMeter<'_> {
-            type Error = RSpaceError;
-
-            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-                self.0
-                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
-            }
-        }
-
-        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
-            match error {
-                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
-                NativeReadError::Store(error) => error.into(),
-                NativeReadError::Invalid(
-                    NativeReadFault::Depth |
-                    NativeReadFault::Allocation |
-                    NativeReadFault::Overflow,
-                ) => RSpaceError::HostWorkRejected,
-                NativeReadError::Invalid(error) => {
-                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
-                }
-            }
-        }
-
-        let history = self.get_history_repository();
-        let root: [u8; 32] = history
-            .root()
-            .0
-            .as_slice()
-            .try_into()
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        // Changed by D-C4 (D-S5, DR-98): the metered read no longer fills the
-        // store. The cold fill inserted the decoded values with
-        // native_insert_new, whose charges read the whole shard, and grew the
-        // shard that every later lookup charges. A read now copies an entry
-        // only for an installed channel or a channel that the runtime wrote
-        // since its last reset or checkpoint.
-        // self.get_store().get_data_with_reader(
-        self.get_store().get_data_uncached_with_reader(
-            channel,
-            &|| {
-                let projection = channel_hash_for_epoch(
-                    self.epoch,
-                    channel,
-                    &|operations, scanned, backing| meter.reserve(operations, scanned, backing),
-                )?;
-                let projection: [u8; 32] = projection
-                    .0
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-                let reader = history.native_history_reader(root);
-                let read_meter = ReadMeter(meter);
-                reader
-                    .with_records(NativeLeafKind::Data, &projection, &read_meter, |rows| {
-                        meter.reserve(
-                            rows.len()
-                                .checked_mul(2)
-                                .and_then(|n| n.checked_add(1))
-                                .ok_or(RSpaceError::HostWorkRejected)?,
-                            0,
-                            rows.len()
-                                .checked_mul(std::mem::size_of::<DatumOracleDe<A>>())
-                                .ok_or(RSpaceError::HostWorkRejected)?,
-                        )?;
-                        let mut values = Vec::new();
-                        values
-                            .try_reserve_exact(rows.len())
-                            .map_err(|_| RSpaceError::HostWorkRejected)?;
-                        for row in rows.iter() {
-                            values.push(
-                                Datum::<A>::decode_native(row, &read_meter).map_err(read_error)?,
-                            );
-                        }
-                        Ok(values)
-                    })
-                    .map_err(read_error)
-                    .map(Option::unwrap_or_default)
-            },
-            meter,
-        )
-    }
-
-    async fn get_data_cold_decode_metered(
-        &self,
-        channel: &C,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking + ColdStoreDecode,
-    {
-        struct ReadMeter<'a>(&'a dyn SourceMeter);
-
-        impl NativeReadMeter for ReadMeter<'_> {
-            type Error = RSpaceError;
-
-            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-                self.0
-                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
-            }
-        }
-
-        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
-            match error {
-                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
-                NativeReadError::Store(error) => error.into(),
-                NativeReadError::Invalid(
-                    NativeReadFault::Depth |
-                    NativeReadFault::Allocation |
-                    NativeReadFault::Overflow,
-                ) => RSpaceError::HostWorkRejected,
-                NativeReadError::Invalid(error) => {
-                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
-                }
-            }
-        }
-
-        self.get_store().get_data_uncached_with_reader(
-            channel,
-            &|| {
-                let history = self.get_history_repository();
-                let root: [u8; 32] = history
-                    .root()
-                    .0
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-                let projection = channel_hash_for_epoch(
-                    self.epoch,
-                    channel,
-                    &|operations, scanned, backing| meter.reserve(operations, scanned, backing),
-                )?;
-                let projection: [u8; 32] = projection
-                    .0
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-                history
-                    .native_history_reader(root)
-                    .with_records(NativeLeafKind::Data, &projection, &ReadMeter(meter), |_| {
-                        Err(RSpaceError::HostWorkRejected)
-                    })
-                    .map_err(read_error)
-                    .map(Option::unwrap_or_default)
-            },
-            meter,
-        )
     }
 
     async fn get_waiting_continuations(
@@ -912,30 +744,6 @@ where
         store: Arc<Box<dyn HotStore<C, P, A, K>>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> ReplayRSpace<C, P, A, K> {
-        Self::apply_with_shards(epoch, history_repository, store, matcher, None)
-    }
-
-    pub(crate) fn apply_native(
-        epoch: crate::rspace::hashing::stable_hash_provider::EventCodecEpoch,
-        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
-        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A, K>>>,
-        cache_shards: usize,
-    ) -> ReplayRSpace<C, P, A, K> {
-        Self::apply_with_shards(epoch, history_repository, store, matcher, Some(cache_shards))
-    }
-
-    fn apply_with_shards(
-        epoch: crate::rspace::hashing::stable_hash_provider::EventCodecEpoch,
-        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
-        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A, K>>>,
-        cache_shards: Option<usize>,
-    ) -> ReplayRSpace<C, P, A, K> {
-        let replay_data = match cache_shards {
-            Some(shards) => MultisetMultiMap::empty_with_shard_amount(shards),
-            None => MultisetMultiMap::empty(),
-        };
         ReplayRSpace {
             epoch,
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
@@ -945,7 +753,7 @@ where
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
-            replay_data: Arc::new(Mutex::new(replay_data)),
+            replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
             ordered_cursor: Arc::new(Mutex::new(ordered_cursor::OrderedReplayCursor::default())),
             ordered_replay_barrier: Arc::new(tokio::sync::RwLock::new(())),
             consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
@@ -954,40 +762,6 @@ where
             phase_a_locks: Self::new_striped_locks(),
             phase_b_locks: Self::new_striped_locks(),
         }
-    }
-
-    pub(crate) fn native_constructor_layout(cache_shards: usize) -> Option<(usize, usize)> {
-        use super::native_backing::{arc_allocation_bytes, dashmap_shard_bytes};
-
-        let arc_bytes = [
-            arc_allocation_bytes::<
-                std::sync::RwLock<
-                    Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
-                >,
-            >()?,
-            arc_allocation_bytes::<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>()?,
-            arc_allocation_bytes::<
-                std::sync::RwLock<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>>,
-            >()?,
-            arc_allocation_bytes::<Mutex<HashMap<Vec<C>, Install<P, K>>>>()?,
-            arc_allocation_bytes::<Mutex<Log>>()?,
-            arc_allocation_bytes::<Mutex<BTreeMap<Produce, i32>>>()?,
-            arc_allocation_bytes::<Mutex<MultisetMultiMap<IOEvent, COMM>>>()?,
-            arc_allocation_bytes::<Mutex<ordered_cursor::OrderedReplayCursor>>()?,
-            arc_allocation_bytes::<tokio::sync::RwLock<()>>()?,
-            arc_allocation_bytes::<
-                Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<COMM>>>>,
-            >()?,
-            arc_allocation_bytes::<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>()?,
-            arc_allocation_bytes::<AtomicI64>()?,
-        ]
-        .into_iter()
-        .try_fold(0usize, |sum, bytes| sum.checked_add(bytes))?;
-        let replay_index_bytes =
-            cache_shards.checked_mul(dashmap_shard_bytes::<IOEvent, counter::Counter<COMM>>())?;
-        let bytes = arc_bytes.checked_add(replay_index_bytes)?;
-        let operations = cache_shards.checked_add(12)?;
-        Some((operations, bytes))
     }
 
     pub fn apply_with_logger(
@@ -1260,18 +1034,31 @@ where
             return Ok(result);
         }
         let comms_option = {
+            // Changed by the merge of feature/cost-accounted-rho (plan step
+            // 1.9, CBR-048): the checkpoint merge e5102e945 lost the canonical
+            // projection of dd11241da. A raw `Counter<COMM>` iteration follows
+            // the hash map's process-local order, so two validators could try
+            // the recorded COMMs in different orders.
+            // ```text
+            // let full = || {
+            //     self.replay_data
+            //         .lock()
+            //         .unwrap()
+            //         .map
+            //         .get(&IOEvent::Consume(consume_ref.clone()))
+            //         .map(|comms| {
+            //             comms
+            //                 .iter()
+            //                 .map(|tuple| tuple.0.clone())
+            //                 .collect::<Vec<_>>()
+            //         })
+            // };
+            // ```
             let full = || {
                 self.replay_data
                     .lock()
                     .unwrap()
-                    .map
-                    .get(&IOEvent::Consume(consume_ref.clone()))
-                    .map(|comms| {
-                        comms
-                            .iter()
-                            .map(|tuple| tuple.0.clone())
-                            .collect::<Vec<_>>()
-                    })
+                    .get_distinct_values_sorted(&IOEvent::Consume(consume_ref.clone()))
             };
             let narrowed: Option<Vec<COMM>> = {
                 let index = self
@@ -1289,6 +1076,12 @@ where
                             }
                         }
                     }
+                    // Added by the merge of feature/cost-accounted-rho (plan
+                    // step 1.9, CBR-048): the narrowed list is upstream's new
+                    // path, and its order follows the store's data order. It
+                    // holds distinct recorded COMMs, so it takes the same
+                    // canonical order as the full projection.
+                    out.sort_unstable();
                     out
                 })
             };
@@ -1444,18 +1237,24 @@ where
     /// post-state silently. Two things make that unreachable, and both are
     /// required:
     ///
-    /// 1. the pools are ordered by THE canonical candidate order, the same one
-    ///    the play space uses (replay previously used raw store order), and
+    /// 1. Changed by the complete guard search (defect D1, user decision 4 of
+    ///    2026-10-16): replay keeps only the recorded data and orders them by
+    ///    THE canonical candidate order. Play draws its pools in random order
+    ///    (DR-129), but E1 orders the pool of each channel that the join names
+    ///    more than once by the same key, and the pool of a channel that the
+    ///    join names once keeps only data equal to the recorded datum (equal
+    ///    source hashes mean equal data). So replay walks the recorded data in
+    ///    play's order, and
     /// 2. the selection is made by the same guard-aware search the play space
     ///    uses, so a guard that discriminates between two assignments decides
     ///    the same way on both sides (this path did not consult the guard at
     ///    all before — it did not need to while a guard rejection could only
     ///    ever mean "no COMM at all", which defect D1's fix changes).
     ///
-    /// The COMM filter below only REMOVES candidates, so replay's pool is a
-    /// subsequence of play's and the lexicographically least admissible
-    /// selection is the same in both. See
-    /// [`crate::rspace::space_matcher::SpaceMatcher::extract_guarded_data_candidates`].
+    /// The COMM filter below only REMOVES candidates, so replay's pool, in the
+    /// order of point 1, is a subsequence of play's, and the first admissible
+    /// selection of the recorded data is the same in both. See
+    /// [`crate::rspace::space_matcher::SpaceMatcher::extract_prepared_data_candidates`].
     fn run_matcher_consume(
         &self,
         channels: Vec<C>,
@@ -1512,7 +1311,13 @@ where
             .record(start.elapsed().as_secs_f64());
         drop(lock_guard);
         let result = result?;
-        self.notify_produce(produce_ref, &channel, &data, persist);
+        // Disabled by the merge of feature/cost-accounted-rho (plan step 1.9):
+        // 1bd18074e notified here because its commit closures only counted the
+        // produce. In the merged code every commit closure calls `log_produce`,
+        // which notifies after the last fallible step of the commit and before
+        // the COMM is logged. A second notification here made the reporting
+        // space record each produce twice.
+        // self.notify_produce(produce_ref, &channel, &data, persist);
         Ok(result)
     }
 
@@ -1588,18 +1393,29 @@ where
         // fields (`is_deterministic`, `output_value`, `failed`) are
         // documented as non-identity, so this is semantically identical
         // to a hash-only linear scan over the map.
+        //
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // CBR-048): the checkpoint merge e5102e945 lost the canonical
+        // projection of dd11241da, as in the consume path.
+        // ```text
+        // let comms_option = self
+        //     .replay_data
+        //     .lock()
+        //     .unwrap()
+        //     .map
+        //     .get(&IOEvent::Produce(produce_ref.clone()))
+        //     .map(|comms| {
+        //         comms
+        //             .iter()
+        //             .map(|tuple| tuple.0.clone())
+        //             .collect::<Vec<_>>()
+        //     });
+        // ```
         let comms_option = self
             .replay_data
             .lock()
             .unwrap()
-            .map
-            .get(&IOEvent::Produce(produce_ref.clone()))
-            .map(|comms| {
-                comms
-                    .iter()
-                    .map(|tuple| tuple.0.clone())
-                    .collect::<Vec<_>>()
-            });
+            .get_distinct_values_sorted(&IOEvent::Produce(produce_ref.clone()));
         match comms_option {
             None => {
                 tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (no recorded COMM for this produce)");
@@ -1625,31 +1441,59 @@ where
                 )? {
                     Some((comm, pc)) => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce OK: matched a recorded COMM (fired a waiting consume)");
-                        let result = self
-                            .handle_match(
-                                pc,
-                                comms,
-                                &channel,
-                                &data,
-                                persist,
-                                &produce_ref,
-                                observer,
-                                guard,
-                            )
-                            .map(|matched| {
-                                matched.map(|consume_result| {
-                                    let p = comm
-                                        .produces
-                                        .into_iter()
-                                        .find(|p| p.hash == produce_ref.hash);
-                                    (
-                                        consume_result.0,
-                                        consume_result.1,
-                                        p.unwrap_or_else(|| produce_ref.clone()),
-                                    )
-                                })
-                            });
-                        result
+                        // Changed by the merge of feature/cost-accounted-rho
+                        // (clippy gate): the arm returned this expression
+                        // through a `let result` binding.
+                        // ```text
+                        // let result = self
+                        //     .handle_match(
+                        //         pc,
+                        //         comms,
+                        //         &channel,
+                        //         &data,
+                        //         persist,
+                        //         &produce_ref,
+                        //         observer,
+                        //         guard,
+                        //     )
+                        //     .map(|matched| {
+                        //         matched.map(|consume_result| {
+                        //             let p = comm
+                        //                 .produces
+                        //                 .into_iter()
+                        //                 .find(|p| p.hash == produce_ref.hash);
+                        //             (
+                        //                 consume_result.0,
+                        //                 consume_result.1,
+                        //                 p.unwrap_or_else(|| produce_ref.clone()),
+                        //             )
+                        //         })
+                        //     });
+                        // result
+                        // ```
+                        self.handle_match(
+                            pc,
+                            comms,
+                            &channel,
+                            &data,
+                            persist,
+                            &produce_ref,
+                            observer,
+                            guard,
+                        )
+                        .map(|matched| {
+                            matched.map(|consume_result| {
+                                let p = comm
+                                    .produces
+                                    .into_iter()
+                                    .find(|p| p.hash == produce_ref.hash);
+                                (
+                                    consume_result.0,
+                                    consume_result.1,
+                                    p.unwrap_or_else(|| produce_ref.clone()),
+                                )
+                            })
+                        })
                     }
                     None => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (recorded COMM exists but no matching consume waiting yet)");
@@ -2019,20 +1863,30 @@ where
         }
     }
 
-    fn rollback_produce_counter(&self, produce_ref: &Produce, persist: bool) {
-        if !persist {
-            let mut counter = self.produce_counter.lock().expect("produce counter lock");
-            match counter.get(produce_ref).copied().unwrap_or(0) {
-                0 => {}
-                1 => {
-                    counter.remove(produce_ref);
-                }
-                count => {
-                    counter.insert(produce_ref.clone(), count - 1);
-                }
-            }
-        }
-    }
+    // Disabled by the merge of feature/cost-accounted-rho (plan step 1.3):
+    // theirs counts a produce when the operation starts and calls this
+    // rollback after a failed match. Here a produce is counted only inside
+    // the commit closures (`log_produce` in `commit_produce` and
+    // `permit.commit_with`), and the COMM check adds the pending count
+    // itself (`produce_counters_closure` in `handle_match`). A rollback
+    // would undo a count that never happened, and the `times_repeated`
+    // check would then reject valid blocks.
+    // ```text
+    // fn rollback_produce_counter(&self, produce_ref: &Produce, persist: bool) {
+    //     if !persist {
+    //         let mut counter = self.produce_counter.lock().expect("produce counter lock");
+    //         match counter.get(produce_ref).copied().unwrap_or(0) {
+    //             0 => {}
+    //             1 => {
+    //                 counter.remove(produce_ref);
+    //             }
+    //             count => {
+    //                 counter.insert(produce_ref.clone(), count - 1);
+    //             }
+    //         }
+    //     }
+    // }
+    // ```
 
     fn get_comm_or_candidate<Candidate>(
         &self,

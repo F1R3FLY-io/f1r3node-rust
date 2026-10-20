@@ -270,6 +270,9 @@ pub fn join_err_abort(je: tokio::task::JoinError) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the tests that require a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
 
     /// Round-trip pin: every declared FSERR_* string maps to the
     /// corresponding FSERR_CODE_* u32 under `fserr_to_code`.
@@ -325,23 +328,26 @@ mod tests {
 
     // --- DD-FailClosedOnInvariantBreak: poison_abort ---------------
 
-    /// Extract a `catch_unwind` payload as a `String` — covers both
-    /// `String` and `&'static str` panic shapes.  Non-string
-    /// payloads (`panic_any(u32)`, etc.) return an empty string,
-    /// which the caller can then treat as a distinct failure mode.
-    /// Hoisted so the panic-shape tests don't repeat the downcast
-    /// chain.
-    fn panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
-        payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| {
-                payload
-                    .downcast_ref::<&'static str>()
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_default()
-    }
+    // Disabled by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the four panic-shape tests below now read the panic message from the
+    // stderr of a child process, so no test extracts an in-process panic payload.
+    // /// Extract a `catch_unwind` payload as a `String` — covers both
+    // /// `String` and `&'static str` panic shapes.  Non-string
+    // /// payloads (`panic_any(u32)`, etc.) return an empty string,
+    // /// which the caller can then treat as a distinct failure mode.
+    // /// Hoisted so the panic-shape tests don't repeat the downcast
+    // /// chain.
+    // fn panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
+    //     payload
+    //         .downcast_ref::<String>()
+    //         .cloned()
+    //         .or_else(|| {
+    //             payload
+    //                 .downcast_ref::<&'static str>()
+    //                 .map(|s| s.to_string())
+    //         })
+    //         .unwrap_or_default()
+    // }
 
     /// A non-poisoned `Ok` guard passes through unchanged; no
     /// panic.
@@ -359,6 +365,34 @@ mod tests {
     /// — keep it stable.
     #[test]
     fn poison_abort_panics_with_canonical_prefix_on_poison() {
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+        // policy test): a child process runs `poison_abort` on the poisoned lock, and this
+        // process checks the message of the panic of the child.
+        let child = PanicChild::new(
+            module_path!(),
+            "poison_abort_panics_with_canonical_prefix_on_poison",
+        );
+        if !child.is_child() {
+            let report = child.expect_panic(POISON_ABORT_PREFIX);
+            let msg = report.message();
+            assert!(
+                msg.starts_with(POISON_ABORT_PREFIX),
+                "poison_abort panic message must start with \
+                 POISON_ABORT_PREFIX = {POISON_ABORT_PREFIX:?} for \
+                 log-scan alerting; got {msg:?}"
+            );
+            assert!(
+                msg.contains("MySlot"),
+                "poison_abort message must include the caller-supplied \
+                 slot for triage; got {msg:?}"
+            );
+            assert!(
+                msg.contains("DD-FailClosedOnInvariantBreak"),
+                "message must cite the DD for operator traceability; \
+                 got {msg:?}"
+            );
+            return;
+        }
         use std::sync::{Arc, Mutex};
         let m = Arc::new(Mutex::new(0u32));
         let m2 = Arc::clone(&m);
@@ -371,27 +405,32 @@ mod tests {
         let _ = handle.join(); // Absorb the thread's panic.
         assert!(m.is_poisoned(), "test setup: mutex must be poisoned");
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            poison_abort(m.lock(), "MySlot")
-        }));
-        let payload = result.expect_err("poison_abort MUST panic on a poisoned lock, not return");
-        let msg = panic_msg(&payload);
-        assert!(
-            msg.starts_with(POISON_ABORT_PREFIX),
-            "poison_abort panic message must start with \
-             POISON_ABORT_PREFIX = {POISON_ABORT_PREFIX:?} for \
-             log-scan alerting; got {msg:?}"
-        );
-        assert!(
-            msg.contains("MySlot"),
-            "poison_abort message must include the caller-supplied \
-             slot for triage; got {msg:?}"
-        );
-        assert!(
-            msg.contains("DD-FailClosedOnInvariantBreak"),
-            "message must cite the DD for operator traceability; \
-             got {msg:?}"
-        );
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): the call ran behind an unwind interceptor. The
+        // three message checks moved to the parent branch above.
+        // let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        //     poison_abort(m.lock(), "MySlot")
+        // }));
+        // let payload = result.expect_err("poison_abort MUST panic on a poisoned lock, not return");
+        // let msg = panic_msg(&payload);
+        // assert!(
+        //     msg.starts_with(POISON_ABORT_PREFIX),
+        //     "poison_abort panic message must start with \
+        //      POISON_ABORT_PREFIX = {POISON_ABORT_PREFIX:?} for \
+        //      log-scan alerting; got {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("MySlot"),
+        //     "poison_abort message must include the caller-supplied \
+        //      slot for triage; got {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("DD-FailClosedOnInvariantBreak"),
+        //     "message must cite the DD for operator traceability; \
+        //      got {msg:?}"
+        // );
+        child.subject_reached();
+        let _guard = poison_abort(m.lock(), "MySlot");
     }
 
     // --- DD-FailClosedOnInvariantBreak: join_err_abort -------------
@@ -401,30 +440,63 @@ mod tests {
     /// underlying panic payload, and cites the DD.
     #[tokio::test]
     async fn join_err_abort_panics_with_canonical_prefix_on_task_panic() {
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+        // policy test): a child process runs `join_err_abort`, and this process checks the
+        // message of the panic of the child.
+        let child = PanicChild::new(
+            module_path!(),
+            "join_err_abort_panics_with_canonical_prefix_on_task_panic",
+        );
+        if !child.is_child() {
+            let report = child.expect_panic(JOIN_ERR_ABORT_PREFIX);
+            let msg = report.message();
+            assert!(
+                msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+                "join_err_abort panic must start with \
+                 JOIN_ERR_ABORT_PREFIX = {JOIN_ERR_ABORT_PREFIX:?} for \
+                 log-scan alerting; got {msg:?}"
+            );
+            assert!(
+                msg.contains("underlying task panic"),
+                "original panic payload must be preserved in the abort \
+                 banner for operator triage; got {msg:?}"
+            );
+            assert!(
+                msg.contains("DD-FailClosedOnInvariantBreak"),
+                "message must cite the DD for operator traceability; \
+                 got {msg:?}"
+            );
+            return;
+        }
         let je = tokio::task::spawn(async { panic!("underlying task panic") })
             .await
             .expect_err("spawned task should surface a JoinError");
         assert!(je.is_panic(), "test setup: JoinError must carry a panic");
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| join_err_abort(je)));
-        let payload = result.expect_err("join_err_abort MUST panic on a task-panic JoinError");
-        let msg = panic_msg(&payload);
-        assert!(
-            msg.starts_with(JOIN_ERR_ABORT_PREFIX),
-            "join_err_abort panic must start with \
-             JOIN_ERR_ABORT_PREFIX = {JOIN_ERR_ABORT_PREFIX:?} for \
-             log-scan alerting; got {msg:?}"
-        );
-        assert!(
-            msg.contains("underlying task panic"),
-            "original panic payload must be preserved in the abort \
-             banner for operator triage; got {msg:?}"
-        );
-        assert!(
-            msg.contains("DD-FailClosedOnInvariantBreak"),
-            "message must cite the DD for operator traceability; \
-             got {msg:?}"
-        );
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): the call ran behind an unwind interceptor. The
+        // three message checks moved to the parent branch above.
+        // let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| join_err_abort(je)));
+        // let payload = result.expect_err("join_err_abort MUST panic on a task-panic JoinError");
+        // let msg = panic_msg(&payload);
+        // assert!(
+        //     msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+        //     "join_err_abort panic must start with \
+        //      JOIN_ERR_ABORT_PREFIX = {JOIN_ERR_ABORT_PREFIX:?} for \
+        //      log-scan alerting; got {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("underlying task panic"),
+        //     "original panic payload must be preserved in the abort \
+        //      banner for operator triage; got {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("DD-FailClosedOnInvariantBreak"),
+        //     "message must cite the DD for operator traceability; \
+        //      got {msg:?}"
+        // );
+        child.subject_reached();
+        join_err_abort(je);
     }
 
     /// A cancellation `JoinError` (task aborted via `handle.abort()`)
@@ -434,6 +506,33 @@ mod tests {
     /// future refactor that special-cases only the panic branch.
     #[tokio::test]
     async fn join_err_abort_panics_with_canonical_prefix_on_task_cancel() {
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+        // policy test): a child process runs `join_err_abort`, and this process checks the
+        // message of the panic of the child.
+        let child = PanicChild::new(
+            module_path!(),
+            "join_err_abort_panics_with_canonical_prefix_on_task_cancel",
+        );
+        if !child.is_child() {
+            let report = child.expect_panic(JOIN_ERR_ABORT_PREFIX);
+            let msg = report.message();
+            assert!(
+                msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+                "cancellation-branch panic must also start with \
+                 JOIN_ERR_ABORT_PREFIX; got {msg:?}"
+            );
+            assert!(
+                msg.contains("cancelled"),
+                "cancellation-branch cause string must be included in \
+                 the abort banner; got {msg:?}"
+            );
+            assert!(
+                msg.contains("DD-FailClosedOnInvariantBreak"),
+                "cancellation-branch message must cite the DD too; \
+                 got {msg:?}"
+            );
+            return;
+        }
         // Spawn a long-sleep task then abort it — produces a
         // JoinError with `is_cancelled() == true` (the branch the
         // panic-only test above skips).
@@ -449,24 +548,29 @@ mod tests {
             "test setup: cancellation JoinError must NOT be a panic variant"
         );
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| join_err_abort(je)));
-        let payload = result.expect_err("join_err_abort MUST panic on any JoinError variant");
-        let msg = panic_msg(&payload);
-        assert!(
-            msg.starts_with(JOIN_ERR_ABORT_PREFIX),
-            "cancellation-branch panic must also start with \
-             JOIN_ERR_ABORT_PREFIX; got {msg:?}"
-        );
-        assert!(
-            msg.contains("cancelled"),
-            "cancellation-branch cause string must be included in \
-             the abort banner; got {msg:?}"
-        );
-        assert!(
-            msg.contains("DD-FailClosedOnInvariantBreak"),
-            "cancellation-branch message must cite the DD too; \
-             got {msg:?}"
-        );
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): the call ran behind an unwind interceptor. The
+        // three message checks moved to the parent branch above.
+        // let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| join_err_abort(je)));
+        // let payload = result.expect_err("join_err_abort MUST panic on any JoinError variant");
+        // let msg = panic_msg(&payload);
+        // assert!(
+        //     msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+        //     "cancellation-branch panic must also start with \
+        //      JOIN_ERR_ABORT_PREFIX; got {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("cancelled"),
+        //     "cancellation-branch cause string must be included in \
+        //      the abort banner; got {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("DD-FailClosedOnInvariantBreak"),
+        //     "cancellation-branch message must cite the DD too; \
+        //      got {msg:?}"
+        // );
+        child.subject_reached();
+        join_err_abort(je);
     }
 
     /// A `panic_any(u32)` task produces a `JoinError` whose panic
@@ -477,25 +581,53 @@ mod tests {
     /// caller uses a structured panic type.
     #[tokio::test]
     async fn join_err_abort_falls_back_on_non_string_panic_payload() {
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+        // policy test): a child process runs `join_err_abort`, and this process checks the
+        // message of the panic of the child.
+        let child = PanicChild::new(
+            module_path!(),
+            "join_err_abort_falls_back_on_non_string_panic_payload",
+        );
+        if !child.is_child() {
+            let report = child.expect_panic(JOIN_ERR_ABORT_PREFIX);
+            let msg = report.message();
+            assert!(
+                msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+                "non-string-payload branch must still start with the \
+                 canonical prefix; got {msg:?}"
+            );
+            assert!(
+                msg.contains("<non-string panic payload>"),
+                "non-string payload must surface the sentinel string so \
+                 operators know the underlying panic type wasn't a \
+                 String / &str; got {msg:?}"
+            );
+            return;
+        }
         let je = tokio::task::spawn(async { std::panic::panic_any(42u32) })
             .await
             .expect_err("panic_any task should surface a JoinError");
         assert!(je.is_panic(), "test setup: JoinError must carry a panic");
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| join_err_abort(je)));
-        let payload = result.expect_err("join_err_abort MUST panic on any panic variant");
-        let msg = panic_msg(&payload);
-        assert!(
-            msg.starts_with(JOIN_ERR_ABORT_PREFIX),
-            "non-string-payload branch must still start with the \
-             canonical prefix; got {msg:?}"
-        );
-        assert!(
-            msg.contains("<non-string panic payload>"),
-            "non-string payload must surface the sentinel string so \
-             operators know the underlying panic type wasn't a \
-             String / &str; got {msg:?}"
-        );
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): the call ran behind an unwind interceptor. The two
+        // message checks moved to the parent branch above.
+        // let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| join_err_abort(je)));
+        // let payload = result.expect_err("join_err_abort MUST panic on any panic variant");
+        // let msg = panic_msg(&payload);
+        // assert!(
+        //     msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+        //     "non-string-payload branch must still start with the \
+        //      canonical prefix; got {msg:?}"
+        // );
+        // assert!(
+        //     msg.contains("<non-string panic payload>"),
+        //     "non-string payload must surface the sentinel string so \
+        //      operators know the underlying panic type wasn't a \
+        //      String / &str; got {msg:?}"
+        // );
+        child.subject_reached();
+        join_err_abort(je);
     }
 
     // --- Source-scan discipline ------------------------------------

@@ -13,16 +13,24 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
+// Changed by the merge of feature/cost-accounted-rho: `CostRegion` named only
+// the host-work backing charges that DR-131 removed, and `GPrivate` has no use.
+// use models::rhoapi::{
+//     BindPattern, Bundle, CostAuthority, CostRegion, CostSignedTerm, CostStack, EAnd, EDiv, EEq,
+//     EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq,
+//     EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GPrivate,
+//     GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom,
+//     Receive, ReceiveBind, Send, TaggedContinuation, Var,
+// };
 use models::rhoapi::{
-    BindPattern, Bundle, CostAuthority, CostRegion, CostSignedTerm, CostStack, EAnd, EDiv, EEq,
-    EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
-    EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet,
-    ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom,
-    Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, CostAuthority, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr,
+    EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GUnforgeable,
+    If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
+    ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
 use models::rust::epathmap_trie_codec::EPathMapMode;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -37,33 +45,49 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source;
+// Disabled by the merge of feature/cost-accounted-rho: the only uses raised
+// `RSpaceError::HostWorkRejected` in the host-work charges that DR-131 removed.
+// use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::logging::ReductionKind;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use smallvec::SmallVec;
-use shared::rust::clone_backing::{self as clone_backing, BackingError, BackingMeter};
 use tokio::sync::RwLock;
 use typed_arena::Arena;
 
 use super::accounting::authority::{
-    cost_region, cost_region_metered, cost_signature_to_sig, cost_signature_to_sig_metered,
-    extend_authority, funding_sig_channel_metered, merge_authorities_metered,
-    resolve_system_residue, sig_to_cost_signature, sig_to_cost_signature_metered,
-    system_residue_authority, AuthorityError, ResidueContext,
+    cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
+    sig_to_cost_signature, system_residue_authority, AuthorityError, ResidueContext,
 };
+use super::accounting::byte_accounting::{
+    message_field_bytes, par_with_random_bytes, IntroductionMeasurement,
+};
+// Changed by the merge of feature/cost-accounted-rho: F1R3Lang's explicit-stack
+// `combine_eq` and `combine_neq` charge `equality_check_cost` on every budget,
+// as HEAD does, so `equality_check_cost_legacy` has no use. Base and theirs
+// charge it on a legacy budget. That legacy-runtime difference is out of the
+// scope of this merge (one note line on the merge task).
+// use super::accounting::costs::{
+//     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
+//     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
+//     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
+//     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
+//     byte_array_append_cost, comparison_cost, division_cost, equality_check_cost,
+//     equality_check_cost_legacy, list_append_cost, method_call_cost, modulo_cost,
+//     multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
+//     string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
+// };
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
-    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost,
-    equality_check_cost_legacy, list_append_cost, method_call_cost, modulo_cost,
-    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
-    string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
+    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
+    method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
+    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
+    var_eval_cost,
 };
 use super::accounting::RuntimeBudget;
 use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
@@ -74,8 +98,9 @@ use super::env::Env;
 use super::errors::InterpreterError;
 use super::execution_space::ExecutionSpace;
 use super::fused_pathmap_chain::{FusedAction, FusedEval};
-use super::host_work::HostWorkBudget;
-use super::matcher::has_locally_free::HasLocallyFree;
+// Disabled by the merge of feature/cost-accounted-rho: no method call in this
+// file resolves through the trait (HEAD has none either).
+// use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
     REDUCER_EVAL_MATCH_CALLS_METRIC, REDUCER_EVAL_MATCH_TIME_NS_METRIC,
@@ -111,42 +136,6 @@ include!("../../../tests/support/reduce_expression_oracle.rs");
 // O(1)-stack tokio tasks, so the interpreter is heap-bounded WITHOUT growing the native stack. See
 // issues #305 / #306 (both resolved by the driver, not by stack growth).
 const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
-
-fn reserve_reducer_random_bytes(
-    rand: &Blake2b512Random,
-    backing: &dyn BackingMeter,
-) -> Result<(), InterpreterError> {
-    let count_bytes = rand.count_view.len().checked_mul(8).ok_or(InterpreterError::HostWorkRejected)?;
-    let output_bytes = 168usize
-        .checked_add(rand.last_block.len())
-        .and_then(|size| size.checked_add(rand.path_view.len()))
-        .and_then(|size| size.checked_add(count_bytes))
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    let allocation = output_bytes
-        .checked_mul(4)
-        .and_then(|size| size.checked_add(144))
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    backing.reserve(output_bytes, output_bytes, allocation)
-        .map_err(|_| InterpreterError::HostWorkRejected)
-}
-
-fn reserve_matcher_host_work(
-    host: &HostWorkBudget,
-    operations: usize,
-    scanned: usize,
-    backing: usize,
-) -> Result<(), RSpaceError> {
-    for (dimension, amount) in [
-        (HostWorkDimension::VerificationOperations, operations),
-        (HostWorkDimension::VerificationBytes, scanned),
-        (HostWorkDimension::SearchStateBytes, backing),
-    ] {
-        let amount = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
-        host.reserve(dimension, HostWorkUnits::new(amount))
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-    }
-    Ok(())
-}
 
 // ============================================================================
 // Detached-spawn + atomic-counter REDUCTION DRIVER.
@@ -240,25 +229,31 @@ impl Drop for LiveGuard {
 // rather than deep-cloning it. `eval_par_split_is_unchanged_by_the_move`
 // pins that this re-typing is behaviour-preserving across every width
 // boundary — the split id routing is consensus-relevant.
-pub(crate) fn eval_par_split(
-    id: i32,
-    term_count: usize,
-    rand: Blake2b512Random,
-) -> Blake2b512Random {
-    if term_count == 1 {
-        rand
-    } else if term_count > 128 {
-        rand.split_short(
-            id.try_into()
-                .expect("term index must fit i16: widths are capped at i16::MAX terms"),
-        )
-    } else {
-        rand.split_byte(
-            id.try_into()
-                .expect("term index must fit i8 for parallel widths <= 128"),
-        )
-    }
-}
+// Changed by the merge of feature/cost-accounted-rho (finding R1-38): no code
+// calls this function since the checkpoint merge e5102e945. The reducer splits
+// through `evaluation_random` (util/mod.rs), which is dev's rule: `split_byte`
+// takes a `u8`, so a width up to 256 splits on one byte, as Scala does. A carried
+// dev-bug fix stays only until dev fixes the bug, so this F1R3Lang rule
+// (31b354e68) is retired. The comment block above describes the retired rule.
+// pub(crate) fn eval_par_split(
+//     id: i32,
+//     term_count: usize,
+//     rand: Blake2b512Random,
+// ) -> Blake2b512Random {
+//     if term_count == 1 {
+//         rand
+//     } else if term_count > 128 {
+//         rand.split_short(
+//             id.try_into()
+//                 .expect("term index must fit i16: widths are capped at i16::MAX terms"),
+//         )
+//     } else {
+//         rand.split_byte(
+//             id.try_into()
+//                 .expect("term index must fit i8 for parallel widths <= 128"),
+//         )
+//     }
+// }
 
 /// ★ THE REQUIRED DIFFERENTIAL FOR THE SPAWN-BOUNDARY DE-CLONE.
 ///
@@ -278,103 +273,110 @@ pub(crate) fn eval_par_split(
 /// routing changes behaviour: the `== 1` short circuit, the `<= 128`
 /// `split_byte` domain, the `> 128` `split_short` domain, and both sides of
 /// each boundary.
+///
+/// Changed by the merge of feature/cost-accounted-rho (finding R1-38): the
+/// differential is commented out with `eval_par_split`. The module keeps the
+/// move test, which does not depend on the split rule.
 #[cfg(test)]
 mod differential_eval_par_split {
     use models::rhoapi::Par;
 
     use super::*;
 
-    /// The pre-change body, verbatim, still taking the term vector.
-    fn split_oracle(
-        id: i32,
-        terms: &Vec<GeneratedMessage>,
-        rand: Blake2b512Random,
-    ) -> Blake2b512Random {
-        if terms.len() == 1 {
-            rand
-        } else if terms.len() > 128 {
-            rand.split_short(
-                id.try_into()
-                    .expect("term index must fit i16: widths are capped at i16::MAX terms"),
-            )
-        } else {
-            rand.split_byte(
-                id.try_into()
-                    .expect("term index must fit i8 for parallel widths <= 128"),
-            )
-        }
-    }
-
-    /// Only `len()` is ever read, but the oracle takes the real type, so the
-    /// fixture builds real values.
-    fn terms_of_width(width: usize) -> Vec<GeneratedMessage> {
-        (0..width)
-            .map(|_| {
-                GeneratedMessage::Expr(models::rhoapi::Expr {
-                    expr_instance: None,
-                })
-            })
-            .collect()
-    }
-
-    #[test]
-    fn eval_par_split_is_unchanged_by_the_move() {
-        let seed = Blake2b512Random::create_from_bytes(&[7u8; 32]);
-        // Every width where the routing can change: the `== 1` short circuit,
-        // the `split_byte` domain and its last member, the first `split_short`
-        // width, and widths past the old (crashing) `> 256` boundary.
-        for width in [1usize, 2, 3, 127, 128, 129, 200, 255, 256, 257, 400] {
-            let terms = terms_of_width(width);
-            // The ORDERED sequence, exactly as `eval_par` generates it.
-            let produced: Vec<Vec<i8>> = (0..width)
-                .map(|index| {
-                    eval_par_split(
-                        i32::try_from(index).expect("index fits i32"),
-                        width,
-                        seed.clone(),
-                    )
-                    .clone()
-                    .next()
-                    .to_vec()
-                })
-                .collect();
-            let expected: Vec<Vec<i8>> = (0..width)
-                .map(|index| {
-                    split_oracle(
-                        i32::try_from(index).expect("index fits i32"),
-                        &terms,
-                        seed.clone(),
-                    )
-                    .clone()
-                    .next()
-                    .to_vec()
-                })
-                .collect();
-            assert_eq!(
-                produced, expected,
-                "★ THE PARALLEL-BRANCH RAND TRACE MOVED at width {}. `eval_par_split` \
-                 decides each branch's Blake2b512Random, hence every unforgeable name it \
-                 mints and every COMM it can take part in. This is a consensus fork, not \
-                 a performance regression.",
-                width
-            );
-            // And the sequence must be pairwise DISTINCT wherever the routing
-            // splits at all — otherwise the comparison above could pass on a
-            // degenerate all-equal trace.
-            if width > 1 {
-                let mut sorted = produced.clone();
-                sorted.sort();
-                sorted.dedup();
-                assert_eq!(
-                    sorted.len(),
-                    produced.len(),
-                    "VACUOUS: width {} produced a degenerate rand trace with repeats, so \
-                     the equality above would prove nothing",
-                    width
-                );
-            }
-        }
-    }
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-38): the
+    // oracle and the differential are commented out with `eval_par_split`, which
+    // no code calls. The reducer splits through `evaluation_random` (dev's rule).
+    // /// The pre-change body, verbatim, still taking the term vector.
+    // fn split_oracle(
+    //     id: i32,
+    //     terms: &Vec<GeneratedMessage>,
+    //     rand: Blake2b512Random,
+    // ) -> Blake2b512Random {
+    //     if terms.len() == 1 {
+    //         rand
+    //     } else if terms.len() > 128 {
+    //         rand.split_short(
+    //             id.try_into()
+    //                 .expect("term index must fit i16: widths are capped at i16::MAX terms"),
+    //         )
+    //     } else {
+    //         rand.split_byte(
+    //             id.try_into()
+    //                 .expect("term index must fit i8 for parallel widths <= 128"),
+    //         )
+    //     }
+    // }
+    //
+    // /// Only `len()` is ever read, but the oracle takes the real type, so the
+    // /// fixture builds real values.
+    // fn terms_of_width(width: usize) -> Vec<GeneratedMessage> {
+    //     (0..width)
+    //         .map(|_| {
+    //             GeneratedMessage::Expr(models::rhoapi::Expr {
+    //                 expr_instance: None,
+    //             })
+    //         })
+    //         .collect()
+    // }
+    //
+    // #[test]
+    // fn eval_par_split_is_unchanged_by_the_move() {
+    //     let seed = Blake2b512Random::create_from_bytes(&[7u8; 32]);
+    //     // Every width where the routing can change: the `== 1` short circuit,
+    //     // the `split_byte` domain and its last member, the first `split_short`
+    //     // width, and widths past the old (crashing) `> 256` boundary.
+    //     for width in [1usize, 2, 3, 127, 128, 129, 200, 255, 256, 257, 400] {
+    //         let terms = terms_of_width(width);
+    //         // The ORDERED sequence, exactly as `eval_par` generates it.
+    //         let produced: Vec<Vec<i8>> = (0..width)
+    //             .map(|index| {
+    //                 eval_par_split(
+    //                     i32::try_from(index).expect("index fits i32"),
+    //                     width,
+    //                     seed.clone(),
+    //                 )
+    //                 .clone()
+    //                 .next()
+    //                 .to_vec()
+    //             })
+    //             .collect();
+    //         let expected: Vec<Vec<i8>> = (0..width)
+    //             .map(|index| {
+    //                 split_oracle(
+    //                     i32::try_from(index).expect("index fits i32"),
+    //                     &terms,
+    //                     seed.clone(),
+    //                 )
+    //                 .clone()
+    //                 .next()
+    //                 .to_vec()
+    //             })
+    //             .collect();
+    //         assert_eq!(
+    //             produced, expected,
+    //             "★ THE PARALLEL-BRANCH RAND TRACE MOVED at width {}. `eval_par_split` \
+    //              decides each branch's Blake2b512Random, hence every unforgeable name it \
+    //              mints and every COMM it can take part in. This is a consensus fork, not \
+    //              a performance regression.",
+    //             width
+    //         );
+    //         // And the sequence must be pairwise DISTINCT wherever the routing
+    //         // splits at all — otherwise the comparison above could pass on a
+    //         // degenerate all-equal trace.
+    //         if width > 1 {
+    //             let mut sorted = produced.clone();
+    //             sorted.sort();
+    //             sorted.dedup();
+    //             assert_eq!(
+    //                 sorted.len(),
+    //                 produced.len(),
+    //                 "VACUOUS: width {} produced a degenerate rand trace with repeats, so \
+    //                  the equality above would prove nothing",
+    //                 width
+    //             );
+    //         }
+    //     }
+    // }
 
     /// The de-clone must not change what the branch is given, only how it gets
     /// there: moving a term and cloning it produce the same value.
@@ -965,21 +967,6 @@ impl ReducerCore {
         )
     }
 
-    fn host_work_budget(&self) -> Option<HostWorkBudget> {
-        self.current_context().and_then(|context| context.host_work_budget())
-    }
-
-    fn reserve_host_work(
-        &self,
-        dimension: HostWorkDimension,
-        units: HostWorkUnits,
-    ) -> Result<(), InterpreterError> {
-        if let Some(host) = self.host_work_budget() {
-            host.reserve(dimension, units)?;
-        }
-        Ok(())
-    }
-
     fn substitute_and_charge<A>(
         &self,
         term: A,
@@ -990,37 +977,40 @@ impl ReducerCore {
         Substitute: SubstituteTrait<A>,
         A: Message,
     {
-        let host_work = self.host_work_budget();
-        self.substitute
-            .substitute_and_charge(term, depth, env, host_work.as_ref())
+        self.substitute.substitute_and_charge(term, depth, env)
     }
 
-    fn substitute_no_sort_and_charge<A>(
-        &self,
-        term: A,
-        depth: i32,
-        env: &Env<Par>,
-    ) -> Result<A, InterpreterError>
-    where
-        Substitute: SubstituteTrait<A>,
-        A: Message,
-    {
-        let host_work = self.host_work_budget();
-        self.substitute
-            .substitute_no_sort_and_charge(term, depth, env, host_work.as_ref())
-    }
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): this
+    // wrapper has no caller. Theirs' D-F2 (DR-118) consume introduction calls
+    // `substitute_no_sort_and_measure` on the substitution directly.
+    // fn substitute_no_sort_and_charge<A>(
+    //     &self,
+    //     term: A,
+    //     depth: i32,
+    //     env: &Env<Par>,
+    // ) -> Result<A, InterpreterError>
+    // where
+    //     Substitute: SubstituteTrait<A>,
+    //     A: Message,
+    // {
+    //     self.substitute
+    //         .substitute_no_sort_and_charge(term, depth, env)
+    // }
 
     pub fn eval_work_stats(&self) -> EvalWorkStats {
         EvalWorkStats {
             single_term_evaluations: self.single_term_evaluations.load(Ordering::Relaxed),
-            yielded_single_term_evaluations: self.yielded_single_term_evaluations.load(Ordering::Relaxed),
+            yielded_single_term_evaluations: self
+                .yielded_single_term_evaluations
+                .load(Ordering::Relaxed),
             spawned_eval_tasks: self.spawned_eval_tasks.load(Ordering::Relaxed),
         }
     }
 
     pub fn reset_eval_work_stats(&self) {
         self.single_term_evaluations.store(0, Ordering::Relaxed);
-        self.yielded_single_term_evaluations.store(0, Ordering::Relaxed);
+        self.yielded_single_term_evaluations
+            .store(0, Ordering::Relaxed);
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
     }
 
@@ -1033,24 +1023,6 @@ impl ReducerCore {
         } else {
             std::borrow::Cow::Borrowed(self)
         }
-    }
-
-
-    fn reserve_host_primitive<M: Message>(&self, input: &M) -> Result<(), InterpreterError> {
-        let input_bytes = u64::try_from(input.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "primitive input byte count does not fit in u64".to_string(),
-            )
-        })?;
-        self.reserve_host_work(
-            HostWorkDimension::PrimitiveCalls,
-            HostWorkUnits::new(1),
-        )?;
-        self.reserve_host_work(
-            HostWorkDimension::PrimitiveInputBytes,
-            HostWorkUnits::new(input_bytes),
-        )?;
-        Ok(())
     }
 
     fn with_metering_child(&self, component: usize) -> Self {
@@ -1080,40 +1052,24 @@ impl ReducerCore {
                 self.space.clone(),
                 self.metering.budget(),
                 self.reduction_coordinator.clone(),
-                None,
                 self.eval_drive_root(par, env, rand, CostAuthority::default()),
-            ).await;
+            )
+            .await;
             self.finish_detached_errors(result, errors)
         })
     }
-
-    pub fn eval_with_host_work<'a>(
-        &'a self,
-        par: Par,
-        env: &'a Env<Par>,
-        rand: Blake2b512Random,
-        host_work: HostWorkBudget,
-    ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a>> {
-        Box::pin(async move {
-            let (result, _, errors) = deterministic_reduction::root_with_observation(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                Some(host_work),
-                self.eval_drive_root(par, env, rand, CostAuthority::default()),
-            ).await;
-            self.finish_detached_errors(result, errors)
-        })
-    }
-
 
     fn finish_detached_errors(
         &self,
         result: Result<(), InterpreterError>,
         mut errors: Vec<InterpreterError>,
     ) -> Result<(), InterpreterError> {
-        if errors.is_empty() { return result; }
-        if let Err(error) = result { errors.insert(0, error); }
+        if errors.is_empty() {
+            return result;
+        }
+        if let Err(error) = result {
+            errors.insert(0, error);
+        }
         self.aggregate_evaluator_errors(errors).map(|_| ())
     }
 
@@ -1132,15 +1088,24 @@ impl ReducerCore {
         });
         *self.drive.write().expect("drive cell poisoned") = drive.clone();
         let root = LiveGuard(drive.clone());
-        if let Err(error) = self.eval_with_path_authority(par, env, rand, SmallVec::new(), authority).await {
-            drive.sink.lock().expect("DriveState.sink mutex poisoned").push(
-                InterpreterError::Located { path: Vec::new(), source: Box::new(error) }
-            );
+        if let Err(error) = self
+            .eval_with_path_authority(par, env, rand, SmallVec::new(), authority)
+            .await
+        {
+            drive
+                .sink
+                .lock()
+                .expect("DriveState.sink mutex poisoned")
+                .push(InterpreterError::Located {
+                    path: Vec::new(),
+                    source: Box::new(error),
+                });
         }
         drop(root);
         let _parked = deterministic_reduction::park_current_participant_for_join();
         let _ = rx.await;
-        let mut errors = std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
+        let mut errors =
+            std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
         errors.sort_by(|a, b| located_path(a).cmp(located_path(b)));
         self.aggregate_evaluator_errors(errors).map(|_| ())
     }
@@ -1170,17 +1135,24 @@ impl ReducerCore {
                 reducer.space.clone(),
                 reducer.metering.budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 reducer.eval_drive_root(par, &env, rand, CostAuthority::default()),
-            ).await;
+            )
+            .await;
             return reducer.finish_detached_errors(result, errors);
         };
         let context = parent.fork_detached_child();
         let drive = self.drive.read().expect("drive cell poisoned").clone();
         let child_path = path.clone();
-        spawn_detached(&drive, child_path, Box::pin(async move {
-            reducer.eval_inner(par, &env, rand, CostAuthority::default(), path).await
-        }), context);
+        spawn_detached(
+            &drive,
+            child_path,
+            Box::pin(async move {
+                reducer
+                    .eval_inner(par, &env, rand, CostAuthority::default(), path)
+                    .await
+            }),
+            context,
+        );
         Ok(())
     }
 
@@ -1206,7 +1178,8 @@ impl ReducerCore {
         // detached branch's error is localizable. Display-only (NOT consensus).
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        self.eval_machine(EvalInput::Process(par), env, rand, authority, path).await
+        self.eval_machine(EvalInput::Process(par), env, rand, authority, path)
+            .await
     }
 
     async fn eval_machine(
@@ -1225,7 +1198,7 @@ impl ReducerCore {
                     let terms = owned_evaluation_terms(par);
                     let term_split_limit = i16::MAX;
                     if terms.len() > term_split_limit.try_into().unwrap() {
-                        return Err(InterpreterError::ReduceError(format!(
+                        return Err(InterpreterError::TermStructureError(format!(
                             "The number of terms in the Par is {}, which exceeds the limit of {}",
                             terms.len(),
                             i16::MAX
@@ -1255,11 +1228,11 @@ impl ReducerCore {
                             .await
                         {
                             Ok(EvalControl::Complete) => {}
-                            Ok(EvalControl::Continue(_)) => declaration_errors.push(
-                                InterpreterError::BugFoundError(
+                            Ok(EvalControl::Continue(_)) => {
+                                declaration_errors.push(InterpreterError::BugFoundError(
                                     "cost-stack declaration returned a process continuation".into(),
-                                ),
-                            ),
+                                ))
+                            }
                             Err(error) => declaration_errors.push(error),
                         }
                     }
@@ -1271,9 +1244,14 @@ impl ReducerCore {
 
                     if reduction_terms.len() == 1 {
                         let (index, term) = reduction_terms.into_iter().next().expect("one term");
-                        let evaluation = reducer.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                        let evaluation = reducer
+                            .single_term_evaluations
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
                         if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
-                            reducer.yielded_single_term_evaluations.fetch_add(1, Ordering::Relaxed);
+                            reducer
+                                .yielded_single_term_evaluations
+                                .fetch_add(1, Ordering::Relaxed);
                             tokio::task::yield_now().await;
                         }
                         let rand_split = evaluation_random(&rand, index, term_count)?;
@@ -1283,8 +1261,17 @@ impl ReducerCore {
                         continue;
                     }
 
-                    let futures: Vec<Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static>>> =
-                        reduction_terms.into_iter().map(|(index, term)| {
+                    let futures: Vec<
+                        Pin<
+                            Box<
+                                dyn Future<Output = Result<(), InterpreterError>>
+                                    + std::marker::Send
+                                    + 'static,
+                            >,
+                        >,
+                    > = reduction_terms
+                        .into_iter()
+                        .map(|(index, term)| {
                             let child_reducer = reducer.with_metering_child(index);
                             let child_env = env.as_ref().clone();
                             let child_authority = authority.clone();
@@ -1294,18 +1281,35 @@ impl ReducerCore {
                             child_path.push(index as u32);
                             Box::pin(async move {
                                 child_reducer
-                                    .eval_machine(EvalInput::Term(term), &child_env, rand_split, child_authority, child_path)
+                                    .eval_machine(
+                                        EvalInput::Term(term),
+                                        &child_env,
+                                        rand_split,
+                                        child_authority,
+                                        child_path,
+                                    )
                                     .await
-                            }) as Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static>>
-                        }).collect();
-                    reducer.spawned_eval_tasks.fetch_add(futures.len() as u64, Ordering::Relaxed);
+                            })
+                                as Pin<
+                                    Box<
+                                        dyn Future<Output = Result<(), InterpreterError>>
+                                            + std::marker::Send
+                                            + 'static,
+                                    >,
+                                >
+                        })
+                        .collect();
+                    reducer
+                        .spawned_eval_tasks
+                        .fetch_add(futures.len() as u64, Ordering::Relaxed);
 
                     metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
                     metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
                         .increment(futures.len() as u64);
 
                     let drive = reducer.drive.read().expect("drive cell poisoned").clone();
-                    let parent_context = reducer.current_context()
+                    let parent_context = reducer
+                        .current_context()
                         .expect("parallel evaluation requires a reduction context");
                     let contexts = parent_context.split(futures.len());
                     for ((index, fut), context) in futures.into_iter().enumerate().zip(contexts) {
@@ -1352,30 +1356,19 @@ impl ReducerCore {
         &self,
         par: Par,
         rand: Blake2b512Random,
-        host_work: Option<HostWorkBudget>,
     ) -> (
         Result<(), InterpreterError>,
         super::accounting::economic_failure::EvaluationFailureSummary,
     ) {
         let env = Env::new();
         let (result, summary, errors) = deterministic_reduction::root_with_observation(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                host_work,
-                self.eval_drive_root(par, &env, rand, CostAuthority::default()),
-            ).await;
+            self.space.clone(),
+            self.metering.budget(),
+            self.reduction_coordinator.clone(),
+            self.eval_drive_root(par, &env, rand, CostAuthority::default()),
+        )
+        .await;
         (self.finish_detached_errors(result, errors), summary)
-    }
-
-    pub async fn inj_with_host_work(
-        &self,
-        par: Par,
-        rand: Blake2b512Random,
-        host_work: HostWorkBudget,
-    ) -> Result<(), InterpreterError> {
-        self.eval_with_host_work(par, &Env::new(), rand, host_work)
-            .await
     }
 
     /**
@@ -1392,6 +1385,7 @@ impl ReducerCore {
         persistent: bool,
         introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -1399,7 +1393,14 @@ impl ReducerCore {
                 + 'a,
         >,
     > {
-        Box::pin(self.produce_inner(chan, data, persistent, introduction_authority, path))
+        Box::pin(self.produce_inner(
+            chan,
+            data,
+            persistent,
+            introduction_authority,
+            path,
+            measurement,
+        ))
     }
 
     /// Reactive single-step per-reduction seam (MeTTaIL OSLF stepper): emit `redex` to the installed
@@ -1428,14 +1429,15 @@ impl ReducerCore {
         persistent: bool,
         introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
-        let source =
-            Produce::create_for_epoch(self.space.codec_epoch(), &chan, &data, persistent)?;
-        self.metering.budget().register_introduction_authority(
+        let source = Produce::create_for_epoch(self.space.codec_epoch(), &chan, &data, persistent)?;
+        self.metering.budget().register_introduction(
             super::accounting::byte_accounting::produce_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             &introduction_authority,
+            measurement,
         )?;
         // The space consumes the channel and
         // payload — the only post-call consumer is the persistent-produce
@@ -1463,7 +1465,10 @@ impl ReducerCore {
                         InterpreterError::ReduceError("single-step session aborted".to_string())
                     })?;
                 }
-                let dispatch_type = self
+                // Changed by the merge of feature/cost-accounted-rho: the
+                // DR-114 arm below takes the parts of the error by reference.
+                // let dispatch_type = self
+                let mut dispatch_type = self
                     .continue_produce_process(
                         unpack_option_with_peek(Some((c, s))),
                         refire,
@@ -1473,6 +1478,7 @@ impl ReducerCore {
                         produce_event.failed,
                         introduction_authority,
                         path,
+                        measurement,
                     )
                     .await?;
 
@@ -1483,6 +1489,42 @@ impl ReducerCore {
                             .mark_as_non_deterministic(output.clone());
                         self.space.update_produce(&produce_event, produce1).await?;
                         Ok(dispatch_type)
+                    }
+
+                    // Added by DR-114 (gap G-A): in native funded execution a
+                    // recorded reply whose produce failed keeps its record, so
+                    // replay produces the same reply and meets the same denial.
+                    // The cause is raised as is, so a signed-limit exhaustion
+                    // stays a charged user failure (DR-113).
+                    // Changed by the merge of feature/cost-accounted-rho:
+                    // F1R3Lang's `InterpreterError` has an iterative `Drop`, so
+                    // a pattern cannot move its fields out (E0509). The arm
+                    // takes them by reference, as `errors.rs` detaches a cause.
+                    // DispatchType::FailedNonDeterministicCall(
+                    //     InterpreterError::ProduceFailureWithOutput {
+                    //         cause,
+                    //         output_not_produced,
+                    //     },
+                    // ) if self.metering.budget().native_execution_active() => {
+                    //     let recorded = produce_event
+                    //         .clone()
+                    //         .mark_as_non_deterministic(output_not_produced);
+                    //     self.space.update_produce(&produce_event, recorded).await?;
+                    //     Err(*cause)
+                    // }
+                    DispatchType::FailedNonDeterministicCall(
+                        InterpreterError::ProduceFailureWithOutput {
+                            ref mut cause,
+                            ref mut output_not_produced,
+                        },
+                    ) if self.metering.budget().native_execution_active() => {
+                        let recorded = produce_event
+                            .clone()
+                            .mark_as_non_deterministic(std::mem::take(output_not_produced));
+                        let cause =
+                            std::mem::replace(cause, Box::new(InterpreterError::UserAbortError));
+                        self.space.update_produce(&produce_event, recorded).await?;
+                        Err(*cause)
                     }
 
                     DispatchType::FailedNonDeterministicCall(error) => {
@@ -1526,6 +1568,7 @@ impl ReducerCore {
         authority: CostAuthority,
         introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -1533,7 +1576,17 @@ impl ReducerCore {
                 + 'a,
         >,
     > {
-        Box::pin(self.consume_inner(binds, body, persistent, peek, guard, authority, introduction_authority, path))
+        Box::pin(self.consume_inner(
+            binds,
+            body,
+            persistent,
+            peek,
+            guard,
+            authority,
+            introduction_authority,
+            path,
+            measurement,
+        ))
     }
 
     async fn consume_inner(
@@ -1546,6 +1599,7 @@ impl ReducerCore {
         authority: CostAuthority,
         introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -1566,10 +1620,11 @@ impl ReducerCore {
             &continuation,
             persistent,
         )?;
-        self.metering.budget().register_introduction_authority(
+        self.metering.budget().register_introduction(
             super::accounting::byte_accounting::consume_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             &introduction_authority,
+            measurement,
         )?;
         let consume_result = self
             .space
@@ -1610,6 +1665,7 @@ impl ReducerCore {
             authority,
             introduction_authority,
             path,
+            measurement,
         )
         .await
     }
@@ -1627,6 +1683,7 @@ impl ReducerCore {
         trace_failed: bool,
         introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         // During replay, if the trace shows a failed non-deterministic process,
         // we cannot replay it - the external service call failed during original execution
@@ -1651,6 +1708,22 @@ impl ReducerCore {
         match res {
             Some((continuation, data_list, peek)) => {
                 if persistent {
+                    // Added by DR-114 (P2): a recorded external-service call is
+                    // one linear request with one reply. A persistent send to
+                    // one would call the service again on every iteration, and
+                    // no iteration records its reply.
+                    if let Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(
+                        body_ref,
+                    )) = continuation.tagged_cont.as_ref()
+                    {
+                        if super::system_processes::is_native_recorded_op(*body_ref)
+                            && self.metering.budget().native_execution_active()
+                        {
+                            return Err(InterpreterError::SystemProcessShapeError(
+                                "a persistent send to a recorded system process".to_string(),
+                            ));
+                        }
+                    }
                     // dispatchAndRun
                     let self_clone1 = self.with_metering_child(0);
                     let self_clone2 = self.with_metering_child(1);
@@ -1702,7 +1775,14 @@ impl ReducerCore {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .produce(chan_refire, data_refire, persistent_flag, introduction_authority_refire, path_refire)
+                            .produce(
+                                chan_refire,
+                                data_refire,
+                                persistent_flag,
+                                introduction_authority_refire,
+                                path_refire,
+                                measurement,
+                            )
                             .await
                     })
                         as Pin<
@@ -1779,6 +1859,7 @@ impl ReducerCore {
         authority: CostAuthority,
         introduction_authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         // The SAME read as `continue_produce_process` — literally, now: both go
         // through `dispatch::decode_non_deterministic_output`, which is where the
@@ -1855,6 +1936,7 @@ impl ReducerCore {
                                 authority_reconsume,
                                 introduction_authority_reconsume,
                                 path_reconsume,
+                                measurement,
                             )
                             .await
                     })
@@ -1984,8 +2066,18 @@ impl ReducerCore {
                         }
                         None => CostAuthority::default(),
                     };
+                    // D-F2 (DR-118): a restored datum passes no measurement. A
+                    // datum that this deployment produced keeps its first
+                    // registration, and the observer walks any other one.
                     self_clone
-                        .produce(chan, removed_data, false, introduction_authority, path_peek)
+                        .produce(
+                            chan,
+                            removed_data,
+                            false,
+                            introduction_authority,
+                            path_peek,
+                            None,
+                        )
                         .await
                 })
                     as Pin<
@@ -2023,7 +2115,8 @@ impl ReducerCore {
         // collapses the parked-parent chain while preserving concurrency (same spawns) => COMM order
         // unchanged => no consensus divergence.
         let drive = self.drive.read().expect("drive cell poisoned").clone();
-        let parent_context = self.current_context()
+        let parent_context = self
+            .current_context()
             .expect("parallel dispatch requires a reduction context");
         let contexts = parent_context.split(futures.len());
         for ((index, fut), context) in futures.into_iter().enumerate().zip(contexts) {
@@ -2137,6 +2230,18 @@ impl ReducerCore {
                 Err(InterpreterError::OutOfPhlogistonsError)
             }
 
+            // Added by DR-113: exhaustion of the signed limit also stops the
+            // whole evaluation. It collapses after the non-user exhaustion, so
+            // a mixed failure still reports the non-user error. The full list
+            // is recorded above for the classification.
+            err_list
+                if err_list.iter().any(|error| {
+                    matches!(error.root_cause(), InterpreterError::SignedLimitExhausted)
+                }) =>
+            {
+                Err(InterpreterError::SignedLimitExhausted)
+            }
+
             // Rethrow single error — unwrap any `Located` so handle_error sees the raw variant it
             // classifies on (e.g. IfConditionTypeError / OperatorNotDefined cost arms).
             [ex] => Err(ex.root_cause().clone()),
@@ -2176,19 +2281,6 @@ impl ReducerCore {
         authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<EvalControl, InterpreterError> {
-        self.reserve_host_work(
-            HostWorkDimension::ReductionSteps,
-            HostWorkUnits::new(1),
-        )?;
-        let term_bytes = u64::try_from(term.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "reduction term byte count does not fit in u64".to_string(),
-            )
-        })?;
-        self.reserve_host_work(
-            HostWorkDimension::ReductionTermBytes,
-            HostWorkUnits::new(term_bytes),
-        )?;
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
@@ -2227,9 +2319,17 @@ impl ReducerCore {
                 result
             }
             GeneratedMessage::If(term) => self.eval_if(term, env, rand, &authority, path).await,
-            GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, &authority, path).await,
-            GeneratedMessage::CostSignedTerm(term) => self.eval_cost_signed_term(term, env, rand, &authority, path).await.map(|_| EvalControl::Complete),
-            GeneratedMessage::CostStack(term) => self.eval_cost_stack(term, env, rand, &authority, path).await.map(|_| EvalControl::Complete),
+            GeneratedMessage::Bundle(term) => {
+                self.eval_bundle(term, env, rand, &authority, path).await
+            }
+            GeneratedMessage::CostSignedTerm(term) => self
+                .eval_cost_signed_term(term, env, rand, &authority, path)
+                .await
+                .map(|_| EvalControl::Complete),
+            GeneratedMessage::CostStack(term) => self
+                .eval_cost_stack(term, env, rand, &authority, path)
+                .await
+                .map(|_| EvalControl::Complete),
             GeneratedMessage::Expr(term) => match term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     // DR-101 (P1 rem:signed-subst): a process held in a variable
@@ -2334,7 +2434,9 @@ impl ReducerCore {
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::BundlePermissionError(
                         "Trying to send on non-writeable channel.".to_string(),
                     ));
                 } else {
@@ -2344,13 +2446,22 @@ impl ReducerCore {
             None => sub_chan,
         };
 
-        let subst_data = data
+        let measured_data = data
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
-                self.substitute_and_charge(evaluated, 0, env)
+                self.substitute.substitute_and_measure(evaluated, 0, env)
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
+        let pars = measured_data.iter().try_fold(0_u64, |total, (_, bytes)| {
+            message_field_bytes(1, *bytes)
+                .ok()
+                .and_then(|field| total.checked_add(field))
+        });
+        let subst_data = measured_data
+            .into_iter()
+            .map(|(par, _)| par)
+            .collect::<Vec<_>>();
 
         self.produce(
             unbundled,
@@ -2363,6 +2474,7 @@ impl ReducerCore {
             persistent,
             authority,
             path,
+            pars.map(|pars| IntroductionMeasurement::Produce { pars }),
         )
         .await?;
         Ok(())
@@ -2401,7 +2513,10 @@ impl ReducerCore {
 
         self.metering.reserve_primitive(receive_eval_cost())?;
         let entropy = rand.to_bytes();
-        let signed_binds = binds.iter().filter(|bind| bind.cost_signature.is_some()).count();
+        let signed_binds = binds
+            .iter()
+            .filter(|bind| bind.cost_signature.is_some())
+            .count();
         if signed_binds != 0 && signed_binds != binds.len() {
             return Err(InterpreterError::ReduceError(
                 "cost-accounting: a join must sign either every receive clause or none".to_string(),
@@ -2436,8 +2551,12 @@ impl ReducerCore {
         let receive_authority = binds.iter().enumerate().try_fold(
             base_authority,
             |authority, (index, bind)| -> Result<CostAuthority, InterpreterError> {
-                let Some(signature) = bind.cost_signature.as_ref() else { return Ok(authority); };
-                let signature = self.substitute.substitute_cost_signature(signature.clone(), 0, env)?;
+                let Some(signature) = bind.cost_signature.as_ref() else {
+                    return Ok(authority);
+                };
+                let signature =
+                    self.substitute
+                        .substitute_cost_signature(signature.clone(), 0, env)?;
                 let region = cost_region(&signature, &entropy, (index + 1) as u32)
                     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
                 extend_authority(&authority, region)
@@ -2455,11 +2574,12 @@ impl ReducerCore {
         // ⚠ `Some(empty Par)` is treated as "no guard", exactly as before — the
         // comparison is against a fresh `Par::default()` either way, only now on
         // an owned value instead of through a reference.
-        let subst_guard = match condition {
+        let (subst_guard, guard_bytes) = match condition {
             Some(c) if c != Par::default() => {
-                Some(self.substitute_and_charge(c, 1, env)?)
+                let (guard, bytes) = self.substitute.substitute_and_measure(c, 1, env)?;
+                (Some(guard), Some(bytes))
             }
-            _ => None,
+            _ => (None, None),
         };
 
         // ★ THE GUARD-DECIDABILITY GATE, reduce half. The normalizer already
@@ -2525,24 +2645,32 @@ impl ReducerCore {
         // most expensive copy on the receive path — the body is the largest term
         // a receive touches — and it existed only because `receive` was
         // borrowed.
-        let subst_body = self.substitute_no_sort_and_charge(
+        let (subst_body, body_bytes) = self.substitute.substitute_no_sort_and_measure(
             body.expect("Receive.body: normalizer post-condition"),
             0,
             &env.shift(bind_count),
         )?;
+        let body = ParWithRandom {
+            body: Some(subst_body),
+            random_state: rand.to_bytes(),
+        };
+        let measurement = par_with_random_bytes(body_bytes, &body.random_state)
+            .ok()
+            .map(|body| IntroductionMeasurement::Consume {
+                body,
+                guard: guard_bytes,
+            });
 
         self.consume(
             binds,
-            ParWithRandom {
-                body: Some(subst_body),
-                random_state: rand.to_bytes(),
-            },
+            body,
             persistent,
             peek,
             subst_guard,
             receive_authority,
             introduction_authority,
             path,
+            measurement,
         )
         .await?;
         Ok(())
@@ -2559,7 +2687,6 @@ impl ReducerCore {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.reserve_host_primitive(valproc)?;
         self.metering.reserve_primitive(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
@@ -2627,46 +2754,14 @@ impl ReducerCore {
                         ..
                     } = single_case;
 
-                    let pattern = self.substitute_and_charge(
-                        unwrap_option_safe(pattern)?,
-                        1,
-                        env,
-                    )?;
+                    let pattern =
+                        self.substitute_and_charge(unwrap_option_safe(pattern)?, 1, env)?;
 
                     let match_result = {
-                        let host = self.host_work_budget();
-                        let meter = |operations, scanned, backing| {
-                            reserve_matcher_host_work(
-                                host.as_ref().expect("metered matcher has a host budget"),
-                                operations,
-                                scanned,
-                                backing,
-                            )
-                        };
-                        let mut spatial_matcher = if host.is_some() {
-                            SpatialMatcherContext::with_meter(&meter)
-                                .map_err(|_| InterpreterError::HostWorkRejected)?
-                        } else {
-                            SpatialMatcherContext::new()
-                        };
-                        if let Some(host) = host.as_ref() {
-                            let backing = |operations, scanned, bytes| {
-                                reserve_matcher_host_work(host, operations, scanned, bytes)
-                                    .map_err(|_| BackingError::Rejected)
-                            };
-                            clone_backing::reserve_copy_and_cleanup(&target, &backing)
-                                .map_err(|_| InterpreterError::HostWorkRejected)?;
-                        }
-                        // The target is copied once per case attempted because
-                        // each pattern consumes its candidate. Own the free map
-                        // before the matcher and its non-Send meter leave scope.
-                        let match_result = spatial_matcher
+                        let mut spatial_matcher = SpatialMatcherContext::new();
+                        spatial_matcher
                             .spatial_match_result(target.clone(), pattern)
-                            .cloned();
-                        if spatial_matcher.take_error().is_some() {
-                            return Err(InterpreterError::HostWorkRejected);
-                        }
-                        match_result
+                            .cloned()
                     };
 
                     match match_result {
@@ -2717,7 +2812,6 @@ impl ReducerCore {
                                         }
                                         other => other.commits(),
                                     }
-
                                 }
                                 _ => true,
                             };
@@ -2833,7 +2927,8 @@ impl ReducerCore {
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<EvalControl, InterpreterError> {
-        self.metering.reserve_primitive(new_bindings_cost(new.bind_count as i64))?;
+        self.metering
+            .reserve_primitive(new_bindings_cost(new.bind_count as i64))?;
         let new_env = allocate_new_bindings(&new, env, &mut rand, &self.urn_map)?;
         let body = unwrap_option_safe(new.p.take())?;
         self.observe_and_pause(&body, ReductionKind::New).await?;
@@ -2866,7 +2961,9 @@ impl ReducerCore {
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
                 if !value.read_flag {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::BundlePermissionError(
                         "Trying to read from non-readable channel.".to_string(),
                     ));
                 } else {
@@ -2910,74 +3007,19 @@ impl ReducerCore {
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let host = self.host_work_budget();
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| BackingError::Rejected)?;
-            }
-            Ok(())
-        };
-        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
-            backing(
-                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                scanned,
-                bytes,
-            )
-        };
-        let native_error = |error: AuthorityError| match error {
-            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
-            other => InterpreterError::ReduceError(other.to_string()),
-        };
-        if host.is_some() {
-            clone_backing::inspect(&term.signature, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&term.signature, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
-        // `GeneratedMessage` already owns this node. Keep the source metering
-        // reservations above, but move the signature into the explicit
-        // substitution machine: a recursive protobuf Clone here could overflow
-        // before the machine's metered depth guard rejects deep input.
+        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
         let signature = unwrap_option_safe(term.signature)?;
-        let signature = if host.is_some() {
-            self.substitute
-                .substitute_cost_signature_metered(signature, 0, env, &backing)?
-        } else {
-            self.substitute
-                .substitute_cost_signature(signature, 0, env)?
-        };
-        let authority = if host.is_some() {
-            reserve_reducer_random_bytes(&rand, &owned_backing)?;
-            let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
-                .map_err(native_error)?;
-            backing(1, 0, std::mem::size_of::<CostRegion>())
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            let singleton = CostAuthority {
-                regions: vec![region],
-            };
-            merge_authorities_metered([authority, &singleton], &owned_backing)
-                .map_err(native_error)?
-        } else {
+        let signature = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
+        let authority = {
             let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
             extend_authority(authority, region).map_err(native_error)?
         };
-        if host.is_some() {
-            clone_backing::inspect(&term.body, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&term.body, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
+
         let body = unwrap_option_safe(term.body)?;
-        let context = self.current_context()
+        let context = self
+            .current_context()
             .expect("signed reduction requires a reduction context")
             .split(1)
             .pop()
@@ -2986,12 +3028,19 @@ impl ReducerCore {
         let reducer = self.clone();
         let env = env.clone();
         let child_path = path.clone();
-        spawn_detached(&drive, child_path, Box::pin(async move {
-            // Re-enter through the existing boxed drive boundary. The signed
-            // child is scheduled as a separate task, so a chain of nested
-            // signatures never recursively polls parent evaluator futures.
-            reducer.eval_with_path_authority(body, &env, rand, path, authority).await
-        }), context);
+        spawn_detached(
+            &drive,
+            child_path,
+            Box::pin(async move {
+                // Re-enter through the existing boxed drive boundary. The signed
+                // child is scheduled as a separate task, so a chain of nested
+                // signatures never recursively polls parent evaluator futures.
+                reducer
+                    .eval_with_path_authority(body, &env, rand, path, authority)
+                    .await
+            }),
+            context,
+        );
         Ok(())
     }
 
@@ -3003,154 +3052,40 @@ impl ReducerCore {
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let host = self.host_work_budget();
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| BackingError::Rejected)?;
-            }
-            Ok(())
-        };
-        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
-            backing(
-                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                scanned,
-                bytes,
-            )
-        };
-        let source_meter = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            let operations = operations
-                .checked_mul(2)
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-            }
-            Ok(())
-        };
-        let native_error = |error: AuthorityError| match error {
-            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
-            other => InterpreterError::ReduceError(other.to_string()),
-        };
-        if host.is_some() {
-            clone_backing::inspect(&stack, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&stack, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
-        let stack = if host.is_some() {
-            self.substitute
-                .substitute_cost_stack_metered(stack, 0, env, &backing)?
-        } else {
-            self.substitute.substitute_cost_stack(stack, 0, env)?
-        };
+        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
+        let stack = self.substitute.substitute_cost_stack(stack, 0, env)?;
         let head = stack.cells.first().ok_or_else(|| {
             InterpreterError::ReduceError("cost-accounting: empty token stack".to_string())
         })?;
-        if host.is_some() {
-            backing(1, 0, std::mem::size_of::<&CostStack>())
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
+
         let mut stack_work = Vec::new();
-        stack_work
-            .try_reserve(1)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
         stack_work.push(&stack);
         while let Some(node) = stack_work.pop() {
             for cell in &node.cells {
-                let cell_signature = if host.is_some() {
-                    cost_signature_to_sig_metered(cell, &backing).map_err(native_error)?
-                } else {
-                    cost_signature_to_sig(cell).map_err(native_error)?
-                };
+                let cell_signature = cost_signature_to_sig(cell).map_err(native_error)?;
                 if cell_signature == super::accounting::Sig::Unit {
                     return Err(InterpreterError::ReduceError(
                         "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
                     ));
                 }
             }
-            let branch_count = node.parallel_tail.len();
-            if host.is_some() {
-                let bytes = branch_count
-                    .checked_mul(std::mem::size_of::<&CostStack>())
-                    .ok_or(InterpreterError::HostWorkRejected)?;
-                backing(branch_count, 0, bytes)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-            }
-            stack_work
-                .try_reserve(branch_count)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
+
             stack_work.extend(node.parallel_tail.iter().rev());
         }
-        let signature = if host.is_some() {
-            cost_signature_to_sig_metered(head, &backing).map_err(native_error)?
-        } else {
-            cost_signature_to_sig(head).map_err(native_error)?
-        };
+        let signature = cost_signature_to_sig(head).map_err(native_error)?;
         let authority = if authority.regions.is_empty()
             && self.space.codec_epoch() != EventCodecEpoch::Legacy
             && self.metering.budget().has_comm_accounting_scope()
         {
-            let payer = if let Some(host) = host.as_ref() {
-                self.metering.budget().signature_with_host_work(host)?
-            } else {
-                self.metering.budget().signature()
-            };
-            if host.is_some() {
-                let signature =
-                    sig_to_cost_signature_metered(&payer, &backing).map_err(native_error)?;
-                reserve_reducer_random_bytes(&rand, &owned_backing)?;
-                let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
-                    .map_err(native_error)?;
-                backing(1, 0, std::mem::size_of::<CostRegion>())
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-                let singleton = CostAuthority {
-                    regions: vec![region],
-                };
-                merge_authorities_metered([authority, &singleton], &owned_backing)
-                    .map_err(native_error)?
-            } else {
-                let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
-                let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
-                extend_authority(authority, region).map_err(native_error)?
-            }
+            let payer = self.metering.budget().signature();
+            let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
+            let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+            extend_authority(authority, region).map_err(native_error)?
         } else {
-            if host.is_some() {
-                clone_backing::inspect(authority, &backing)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-                clone_backing::reserve(authority, &owned_backing)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-            }
             authority.clone()
         };
-        let channel = if host.is_some() {
-            funding_sig_channel_metered(&signature, &owned_backing).map_err(native_error)?
-        } else {
-            super::accounting::SignatureChannel::from_sig(&signature).par
-        };
-        if host.is_some() {
-            reserve_reducer_random_bytes(&rand, &owned_backing)?;
-            clone_backing::inspect(&stack, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&stack, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
+        let channel = super::accounting::SignatureChannel::from_sig(&signature).par;
+
         let transfer_stack = stack.clone();
         let datum = ListParWithRandom {
             pars: Vec::new(),
@@ -3158,28 +3093,18 @@ impl ReducerCore {
             cost_authority: None,
             cost_stack: Some(stack),
         };
-        let source = if host.is_some() {
-            native_source::produce_for_epoch(
-                self.space.codec_epoch(),
-                &channel,
-                &datum,
-                false,
-                &source_meter,
-            )?
-        } else {
-            Produce::create_for_epoch(self.space.codec_epoch(), &channel, &datum, false)?
-        };
+        let source = Produce::create_for_epoch(self.space.codec_epoch(), &channel, &datum, false)?;
         let produce_hash: [u8; 32] = source
             .hash
             .bytes()
             .try_into()
             .expect("RSpace produce hash length");
-        let reservation = self.metering.budget().prepare_authority_stack_tree_transfer(
-            produce_hash,
-            transfer_stack,
-            &authority,
-        )?;
-        self.produce(channel, datum, false, authority, path).await?;
+        let reservation = self
+            .metering
+            .budget()
+            .prepare_authority_stack_tree_transfer(produce_hash, transfer_stack, &authority)?;
+        self.produce(channel, datum, false, authority, path, None)
+            .await?;
         reservation.commit();
         Ok(())
     }
@@ -3349,9 +3274,6 @@ impl ReducerCore {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if matches!(expr.expr_instance.as_ref(), Some(ExprInstance::EMethodBody(_))) {
-            self.reserve_host_primitive(expr)?;
-        }
         if let Some(ExprInstance::EMethodBody(emethod)) = &expr.expr_instance {
             if let Some(action) = self.begin_fused_method_chain(emethod, env)? {
                 Self::continue_fused_action(action, FusedOutput::Par, decoded_entries, work, vals);
@@ -3418,7 +3340,7 @@ impl ReducerCore {
             || !p.unforgeables.is_empty()
             || !p.bundles.is_empty()
         {
-            return Err(InterpreterError::ReduceError(String::from(
+            return Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
         }
@@ -3428,7 +3350,7 @@ impl ReducerCore {
                 work.push(EvWork::EToExpr(e));
                 Ok(())
             }
-            _ => Err(InterpreterError::ReduceError(
+            _ => Err(InterpreterError::ValueTypeError(
                 "Error: Multiple expressions given.".to_string(),
             )),
         }
@@ -3528,13 +3450,10 @@ impl ReducerCore {
         if plan.is_empty() {
             let mut prepared = PreparedMethodValues::empty();
             let Some(method) = self.method_named(&emethod.method_name) else {
-                let name = match output {
-                    MethodOutput::Par => emethod.method_name.clone(),
-                    MethodOutput::Expr => format!("{:?}", emethod.method_name),
-                };
-                return Err(InterpreterError::ReduceError(format!(
-                    "Unimplemented method: {name}"
-                )));
+                return Err(InterpreterError::MethodNotDefined {
+                    method: emethod.method_name.clone(),
+                    other_type: "any type".to_owned(),
+                });
             };
             let result = method.apply(&target, &args, &mut prepared, env)?;
             Self::push_method_result(result, output, decoded_entries, work, vals);
@@ -3576,7 +3495,7 @@ impl ReducerCore {
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
         {
-            return Err(InterpreterError::ReduceError(String::from(
+            return Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
         }
@@ -3599,7 +3518,7 @@ impl ReducerCore {
                 work.push(EvWork::EToExpr(e));
                 Ok(())
             }
-            _ => Err(InterpreterError::ReduceError(
+            _ => Err(InterpreterError::ValueTypeError(
                 "Error: Multiple expressions given.".to_string(),
             )),
         }
@@ -3621,7 +3540,7 @@ impl ReducerCore {
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
         {
-            return Err(InterpreterError::ReduceError(String::from(
+            return Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )));
         }
@@ -3644,7 +3563,7 @@ impl ReducerCore {
                 work.push(EvWork::EToExpr(e));
                 Ok(())
             }
-            _ => Err(InterpreterError::ReduceError(
+            _ => Err(InterpreterError::ValueTypeError(
                 "Error: Integer expected, or unimplemented expression.".to_string(),
             )),
         }
@@ -3659,39 +3578,6 @@ impl ReducerCore {
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        if matches!(
-            expr.expr_instance.as_ref(),
-            Some(
-                ExprInstance::ENotBody(_)
-                    | ExprInstance::ENegBody(_)
-                    | ExprInstance::EMultBody(_)
-                    | ExprInstance::EDivBody(_)
-                    | ExprInstance::EPlusBody(_)
-                    | ExprInstance::EMinusBody(_)
-                    | ExprInstance::ELtBody(_)
-                    | ExprInstance::ELteBody(_)
-                    | ExprInstance::EGtBody(_)
-                    | ExprInstance::EGteBody(_)
-                    | ExprInstance::EEqBody(_)
-                    | ExprInstance::ENeqBody(_)
-                    | ExprInstance::EAndBody(_)
-                    | ExprInstance::EOrBody(_)
-                    | ExprInstance::EListBody(_)
-                    | ExprInstance::ETupleBody(_)
-                    | ExprInstance::ESetBody(_)
-                    | ExprInstance::EMapBody(_)
-                    | ExprInstance::EMethodBody(_)
-                    | ExprInstance::EPathmapBody(_)
-                    | ExprInstance::EZipperBody(_)
-                    | ExprInstance::EMatchesBody(_)
-                    | ExprInstance::EPercentPercentBody(_)
-                    | ExprInstance::EPlusPlusBody(_)
-                    | ExprInstance::EMinusMinusBody(_)
-                    | ExprInstance::EModBody(_)
-            )
-        ) {
-            self.reserve_host_primitive(expr)?;
-        }
         let expr_instance = match &expr.expr_instance {
             Some(ei) => ei,
             None => {
@@ -4408,7 +4294,7 @@ impl ReducerCore {
         match evaled.expr_instance {
             Some(expr_instance) => match expr_instance {
                 ExprInstance::GBool(b) => Ok(b),
-                _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: expression didn't evaluate to boolean.".to_string(),
                 )),
             },
@@ -4422,7 +4308,7 @@ impl ReducerCore {
         match evaled.expr_instance {
             Some(expr_instance) => match expr_instance {
                 ExprInstance::GInt(v) => Ok(v),
-                _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: expression didn't evaluate to integer.".to_string(),
                 )),
             },
@@ -4516,6 +4402,25 @@ impl ReducerCore {
                     })
                 }
             }
+            // Added by the merge of feature/cost-accounted-rho (finding R1-20): dev's float32
+            // arm, which the checkpoint merge e5102e945 lost.
+            (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                self.metering.reserve_primitive(comparison_cost())?;
+                let f1 = f32::from_bits(d1);
+                let f2 = f32::from_bits(d2);
+                if f1.is_nan() || f2.is_nan() {
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(false)),
+                    })
+                } else {
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(
+                            f1.partial_cmp(&f2).map_or(0, |o| o as i64),
+                            0,
+                        ))),
+                    })
+                }
+            }
             (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                 self.metering
                     .reserve_primitive(bigint_comparison_cost(b1.len(), b2.len()))?;
@@ -4546,7 +4451,7 @@ impl ReducerCore {
                     expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))),
                 })
             }
-            _ => Err(InterpreterError::ReduceError(format!(
+            _ => Err(InterpreterError::ValueTypeError(format!(
                 "Unexpected compare: {:?} vs. {:?}",
                 v1, v2
             ))),
@@ -4558,7 +4463,9 @@ impl ReducerCore {
         match v.expr_instance.unwrap() {
             ExprInstance::GInt(i) => {
                 let result = i.checked_neg().ok_or_else(|| {
-                    InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+                    InterpreterError::ArithmeticOverflow(
+                        "Arithmetic overflow in negation".to_string(),
+                    )
                 })?;
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GInt(result)),
@@ -4566,7 +4473,9 @@ impl ReducerCore {
             }
             ExprInstance::GInt32(i) => {
                 let result = i.checked_neg().ok_or_else(|| {
-                    InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+                    InterpreterError::ArithmeticOverflow(
+                        "Arithmetic overflow in negation".to_string(),
+                    )
                 })?;
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GInt32(result)),
@@ -4576,6 +4485,14 @@ impl ReducerCore {
                 let f = f64::from_bits(bits);
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GDouble((-f).to_bits())),
+                })
+            }
+            // Added by the merge of feature/cost-accounted-rho (finding R1-20): dev's float32
+            // arm, which the checkpoint merge e5102e945 lost.
+            ExprInstance::GFloat32(bits) => {
+                let f = f32::from_bits(bits);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32((-f).to_bits())),
                 })
             }
             ExprInstance::GBigInt(bytes) => {
@@ -4623,9 +4540,15 @@ impl ReducerCore {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(multiplication_cost())?;
                 let result = lhs.checked_mul(rhs).ok_or_else(|| {
-                    InterpreterError::ReduceError(
-                        "Arithmetic overflow in multiplication".to_string(),
-                    )
+                    // Changed by the merge of feature/cost-accounted-rho (finding R1-02):
+                    // theirs' DR-128 user failure (bug 11414), which names both operands.
+                    // InterpreterError::ReduceError(
+                    //     "Arithmetic overflow in multiplication".to_string(),
+                    // )
+                    InterpreterError::ArithmeticOverflow(format!(
+                        "Arithmetic overflow in multiplication: {} * {}",
+                        lhs, rhs
+                    ))
                 })?;
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GInt(result)),
@@ -4636,6 +4559,15 @@ impl ReducerCore {
                 let result = f64::from_bits(d1) * f64::from_bits(d2);
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                })
+            }
+            // Added by the merge of feature/cost-accounted-rho (finding R1-20): dev's float32
+            // arm, which the checkpoint merge e5102e945 lost.
+            (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                self.metering.reserve_primitive(multiplication_cost())?;
+                let result = f32::from_bits(d1) * f32::from_bits(d2);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                 })
             }
             (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -4696,12 +4628,12 @@ impl ReducerCore {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(division_cost())?;
                 if rhs == 0 {
-                    return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::DivisionByZero(
                         "Division by zero".to_string(),
                     ));
                 }
                 if lhs == i64::MIN && rhs == -1 {
-                    return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::ArithmeticOverflow(
                         "Arithmetic overflow in division".to_string(),
                     ));
                 }
@@ -4716,11 +4648,20 @@ impl ReducerCore {
                     expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
                 })
             }
+            // Added by the merge of feature/cost-accounted-rho (finding R1-20): dev's float32
+            // arm, which the checkpoint merge e5102e945 lost.
+            (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                self.metering.reserve_primitive(division_cost())?;
+                let result = f32::from_bits(d1) / f32::from_bits(d2);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
+                })
+            }
             (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                 self.metering
                     .reserve_primitive(bigint_division_cost(b1.len(), b2.len()))?;
                 if is_zero_twos_complement(&b2) {
-                    return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::DivisionByZero(
                         "Division by zero".to_string(),
                     ));
                 }
@@ -4734,7 +4675,7 @@ impl ReducerCore {
                     r2.denominator.len(),
                 ))?;
                 if is_zero_twos_complement(&r2.numerator) {
-                    return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::DivisionByZero(
                         "Division by zero".to_string(),
                     ));
                 }
@@ -4753,7 +4694,7 @@ impl ReducerCore {
                     fp2.unscaled.len(),
                 ))?;
                 if is_zero_twos_complement(&fp2.unscaled) {
-                    return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::DivisionByZero(
                         "Division by zero".to_string(),
                     ));
                 }
@@ -4789,10 +4730,12 @@ impl ReducerCore {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(modulo_cost())?;
                 if rhs == 0 {
-                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    return Err(InterpreterError::DivisionByZero(
+                        "Modulo by zero".to_string(),
+                    ));
                 }
                 if lhs == i64::MIN && rhs == -1 {
-                    return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::ArithmeticOverflow(
                         "Arithmetic overflow in modulo".to_string(),
                     ));
                 }
@@ -4800,20 +4743,29 @@ impl ReducerCore {
                     expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                 })
             }
-            (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => Err(
-                InterpreterError::ReduceError("Modulus not defined on floating point".to_string()),
-            ),
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-01): theirs'
+            // DR-128 change (bug 11414). Two floats reach the arm of equal types below, which
+            // raises the user failure `OperatorNotDefined`.
+            // (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => Err(
+            //     InterpreterError::ReduceError(
+            //         "Modulus not defined on floating point".to_string(),
+            //     ),
+            // ),
             (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                 self.metering
                     .reserve_primitive(bigint_modulo_cost(b1.len(), b2.len()))?;
                 if is_zero_twos_complement(&b2) {
-                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    return Err(InterpreterError::DivisionByZero(
+                        "Modulo by zero".to_string(),
+                    ));
                 }
                 make_bigint_expr(modulo_twos_complement(&b1, &b2), "%")
             }
             (ExprInstance::GBigRat(_), ExprInstance::GBigRat(r2)) => {
                 if is_zero_twos_complement(&r2.numerator) {
-                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    return Err(InterpreterError::DivisionByZero(
+                        "Modulo by zero".to_string(),
+                    ));
                 }
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GBigRat(models::rhoapi::GBigRational {
@@ -4835,7 +4787,9 @@ impl ReducerCore {
                     fp2.unscaled.len(),
                 ))?;
                 if is_zero_twos_complement(&fp2.unscaled) {
-                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    return Err(InterpreterError::DivisionByZero(
+                        "Modulo by zero".to_string(),
+                    ));
                 }
                 let ua = bytes_to_bigint(&fp1.unscaled);
                 let ub = bytes_to_bigint(&fp2.unscaled);
@@ -4885,7 +4839,10 @@ impl ReducerCore {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(sum_cost())?;
                 let result = lhs.checked_add(rhs).ok_or_else(|| {
-                    InterpreterError::ReduceError(format!(
+                    // Changed by the merge of feature/cost-accounted-rho (finding R1-06): the
+                    // user failure of DR-128, with the same text, as for `*` and unary `-`.
+                    // InterpreterError::ReduceError(format!(
+                    InterpreterError::ArithmeticOverflow(format!(
                         "Arithmetic overflow in addition: {lhs} + {rhs} is not representable as \
                          an Int (64-bit signed)"
                     ))
@@ -4900,6 +4857,16 @@ impl ReducerCore {
                 let result = f64::from_bits(d1) + f64::from_bits(d2);
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                })
+            }
+
+            // Added by the merge of feature/cost-accounted-rho (finding R1-20): dev's float32
+            // arm, which the checkpoint merge e5102e945 lost.
+            (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                self.metering.reserve_primitive(sum_cost())?;
+                let result = f32::from_bits(d1) + f32::from_bits(d2);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                 })
             }
 
@@ -4958,6 +4925,8 @@ impl ReducerCore {
                 return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-20): the pattern
+            // names dev's float32 again, which the checkpoint merge e5102e945 lost.
             (ExprInstance::GInt(_), other)
             | (ExprInstance::GUint64(_), other)
             | (ExprInstance::GInt32(_), other)
@@ -4965,6 +4934,7 @@ impl ReducerCore {
             | (ExprInstance::GUint16(_), other)
             | (ExprInstance::GUint8(_), other)
             | (ExprInstance::GDouble(_), other)
+            | (ExprInstance::GFloat32(_), other)
             | (ExprInstance::GBigInt(_), other)
             | (ExprInstance::GBigRat(_), other)
             | (ExprInstance::GFixedPoint(_), other) => {
@@ -5018,10 +4988,17 @@ impl ReducerCore {
             // deliberate change of computed behaviour, ruled 2026-07-29 ("fix it — checked, with a
             // clear error"), NOT a diagnostic-only change. The message names the operation and both
             // operands, which the pre-existing `*` / `-` / `/` overflow messages do not.
+            //
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-06): the overflow now
+            // raises the user failure `ArithmeticOverflow` of DR-128, with the same message. Since
+            // that merge, the `*` message names both operands too (finding R1-02).
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(subtraction_cost())?;
                 let result = lhs.checked_sub(rhs).ok_or_else(|| {
-                    InterpreterError::ReduceError(format!(
+                    // Changed by the merge of feature/cost-accounted-rho (finding R1-06): the
+                    // user failure of DR-128, with the same text, as for `*` and unary `-`.
+                    // InterpreterError::ReduceError(format!(
+                    InterpreterError::ArithmeticOverflow(format!(
                         "Arithmetic overflow in subtraction: {lhs} - {rhs} is not representable \
                          as an Int (64-bit signed)"
                     ))
@@ -5036,6 +5013,16 @@ impl ReducerCore {
                 let result = f64::from_bits(d1) - f64::from_bits(d2);
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                })
+            }
+
+            // Added by the merge of feature/cost-accounted-rho (finding R1-20): dev's float32
+            // arm, which the checkpoint merge e5102e945 lost.
+            (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                self.metering.reserve_primitive(subtraction_cost())?;
+                let result = f32::from_bits(d1) - f32::from_bits(d2);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                 })
             }
 
@@ -5116,6 +5103,8 @@ impl ReducerCore {
                 return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-20): the pattern
+            // names dev's float32 again, which the checkpoint merge e5102e945 lost.
             (ExprInstance::GInt(_), other)
             | (ExprInstance::GUint64(_), other)
             | (ExprInstance::GInt32(_), other)
@@ -5123,6 +5112,7 @@ impl ReducerCore {
             | (ExprInstance::GUint16(_), other)
             | (ExprInstance::GUint8(_), other)
             | (ExprInstance::GDouble(_), other)
+            | (ExprInstance::GFloat32(_), other)
             | (ExprInstance::GBigInt(_), other)
             | (ExprInstance::GBigRat(_), other)
             | (ExprInstance::GFixedPoint(_), other) => {
@@ -5184,40 +5174,16 @@ impl ReducerCore {
         env: &Env<Par>,
     ) -> Result<Expr, InterpreterError> {
         let subst_target = self.substitute_and_charge(evaled_target, 0, env)?;
-        let host = self.host_work_budget();
-        if let Some(host) = host.as_ref() {
-            let backing = |operations, scanned, bytes| {
-                reserve_matcher_host_work(host, operations, scanned, bytes)
-                    .map_err(|_| BackingError::Rejected)
-            };
-            clone_backing::reserve_copy_and_cleanup(pattern, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
+
         // ★ A VISIBLE, ATTRIBUTABLE COPY. `pattern` is a borrowed `&Par` — see
         // this function's own signature comment — so substituting it requires a
         // copy. It is written here rather than hidden inside the wrapper.
         let subst_pattern = self.substitute_and_charge(pattern.clone(), 1, env)?;
 
-        let meter = |operations, scanned, backing| {
-            reserve_matcher_host_work(
-                host.as_ref().expect("metered matcher has a host budget"),
-                operations,
-                scanned,
-                backing,
-            )
-        };
-        let mut spatial_matcher = if host.is_some() {
-            SpatialMatcherContext::with_meter(&meter)
-                .map_err(|_| InterpreterError::HostWorkRejected)?
-        } else {
-            SpatialMatcherContext::new()
-        };
+        let mut spatial_matcher = { SpatialMatcherContext::new() };
         let matched = spatial_matcher
             .spatial_match_result(subst_target, subst_pattern)
             .is_some();
-        if spatial_matcher.take_error().is_some() {
-            return Err(InterpreterError::HostWorkRejected);
-        }
 
         Ok(Expr {
             expr_instance: Some(ExprInstance::GBool(matched)),
@@ -5289,12 +5255,11 @@ impl ReducerCore {
 
                 // TODO: Add cases for other ground terms as well? Maybe it would be better
                 // to implement cats.Show for all ground terms. - OLD
-                (ExprInstance::GString(_), value) => Err(InterpreterError::ReduceError(format!(
-                    "Error: interpolation doesn't support {:?}",
-                    get_type(value),
-                ))),
+                (ExprInstance::GString(_), value) => Err(InterpreterError::ValueTypeError(
+                    format!("Error: interpolation doesn't support {:?}", get_type(value),),
+                )),
 
-                _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: interpolation Map should only contain String keys".to_string(),
                 )),
             }
@@ -5649,16 +5614,16 @@ impl ReducerCore {
         target_val: Par,
         arg_vals: Vec<Par>,
         env: &Env<Par>,
-        output: MethodOutput,
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): theirs'
+        // DR-128 `MethodNotDefined` error no longer reads the output position.
+        // output: MethodOutput,
+        _output: MethodOutput,
     ) -> Result<Par, InterpreterError> {
         let Some(method) = self.method_named(&emethod.method_name) else {
-            let name = match output {
-                MethodOutput::Par => emethod.method_name.clone(),
-                MethodOutput::Expr => format!("{:?}", emethod.method_name),
-            };
-            return Err(InterpreterError::ReduceError(format!(
-                "Unimplemented method: {name}"
-            )));
+            return Err(InterpreterError::MethodNotDefined {
+                method: emethod.method_name.clone(),
+                other_type: "any type".to_owned(),
+            });
         };
 
         let plan = Self::method_eval_plan(&emethod.method_name, arg_vals.len());
@@ -5732,15 +5697,23 @@ impl ReducerCore {
                             let p = new_gint_par(b as i64, Vec::new(), false);
                             Ok(p)
                         } else {
-                            Err(InterpreterError::ReduceError(format!(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // Err(InterpreterError::ReduceError(format!(
+                            Err(InterpreterError::ArgumentOutOfRange(format!(
                                 "Error: index out of bound: {}",
                                 nth
                             )))
                         }
                     }
-                    _ => Err(InterpreterError::ReduceError(String::from(
-                        "Error: nth applied to something that wasn't a list or tuple.",
-                    ))),
+                    // Changed by DR-128 (bug 11414): the user failure `MethodNotDefined`,
+                    // as other methods raise for a receiver of the wrong type.
+                    // _ => Err(InterpreterError::ReduceError(String::from(
+                    //     "Error: nth applied to something that wasn't a list or tuple.",
+                    // ))),
+                    other => Err(InterpreterError::MethodNotDefined {
+                        method: "nth".to_string(),
+                        other_type: get_type(other),
+                    }),
                 }
             }
         }
@@ -5759,7 +5732,9 @@ impl ReducerCore {
     ///
     /// ★ **MIRRORS `nth_method` ARM FOR ARM.** Same arity discipline, same receiver handling,
     /// same accepted carriers (`EList`, `ETuple`, `GByteArray`), same recoverable-error
-    /// discipline — every out-of-domain access answers `ReduceError`, never a panic. The index
+    /// discipline — every out-of-domain access answers `ReduceError`, never a panic. Changed by
+    /// the merge of feature/cost-accounted-rho (finding R1-07): those errors are now the DR-128
+    /// user failures `ArgumentOutOfRange` (index) and `MethodNotDefined` (receiver). The index
     /// is `len - 1` computed with `saturating_sub`, so the empty carrier asks for index `0` and
     /// receives exactly the error `nth(0)` would have produced, through the shared
     /// [`local_nth`]. `[].last()` and `[].nth(0)` are therefore the same call, not two calls
@@ -5814,15 +5789,21 @@ impl ReducerCore {
                             let p = new_gint_par(b as i64, Vec::new(), false);
                             Ok(p)
                         } else {
-                            Err(InterpreterError::ReduceError(format!(
+                            Err(InterpreterError::ArgumentOutOfRange(format!(
                                 "Error: index out of bound: {}",
                                 nth
                             )))
                         }
                     }
-                    _ => Err(InterpreterError::ReduceError(String::from(
-                        "Error: last applied to something that wasn't a list or tuple.",
-                    ))),
+                    // Changed by the merge of feature/cost-accounted-rho (finding R1-07): the user
+                    // failure `MethodNotDefined` of DR-128, as `nth` raises for this receiver.
+                    // _ => Err(InterpreterError::ReduceError(String::from(
+                    //     "Error: last applied to something that wasn't a list or tuple.",
+                    // ))),
+                    other => Err(InterpreterError::MethodNotDefined {
+                        method: "last".to_string(),
+                        other_type: get_type(other),
+                    }),
                 }
             }
         }
@@ -5859,8 +5840,7 @@ impl ReducerCore {
                 }
 
                 let expr_evaled = prepared.next_par();
-                let expr_subst =
-                    self.outer.substitute_and_charge(expr_evaled, 0, env)?;
+                let expr_subst = self.outer.substitute_and_charge(expr_evaled, 0, env)?;
 
                 self.outer
                     .metering
@@ -5915,7 +5895,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -5965,7 +5947,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -6016,7 +6000,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -6105,7 +6091,10 @@ impl ReducerCore {
                         let result_entries = base_pathmap
                             .entry_trie()
                             .try_join(other_pathmap.entry_trie())
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
                         let connective_used = base_pathmap.entry_trie().any_connective_used()
                             || base_pathmap.remainder.is_some()
                             || other_pathmap.entry_trie().any_connective_used()
@@ -6237,7 +6226,10 @@ impl ReducerCore {
                         let result_entries = base_pathmap
                             .entry_trie()
                             .try_subtract(other_pathmap.entry_trie())
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
                         let connective_used = base_pathmap.entry_trie().any_connective_used()
                             || base_pathmap.remainder.is_some();
                         let locally_free = base_pathmap.entry_trie().union_locally_free().to_vec();
@@ -6314,7 +6306,10 @@ impl ReducerCore {
                         let result_entries = base_pathmap
                             .entry_trie()
                             .try_meet(other_pathmap.entry_trie())
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
                         let connective_used = base_pathmap.entry_trie().any_connective_used()
                             || base_pathmap.remainder.is_some()
                             || other_pathmap.entry_trie().any_connective_used()
@@ -6396,7 +6391,10 @@ impl ReducerCore {
                         let result_entries = base_pathmap
                             .entry_trie()
                             .try_restrict_member_prefixes(other_pathmap.entry_trie())
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
                         let connective_used = base_pathmap.entry_trie().any_connective_used()
                             || base_pathmap.remainder.is_some();
                         let locally_free = base_pathmap.entry_trie().union_locally_free().to_vec();
@@ -6456,7 +6454,9 @@ impl ReducerCore {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EPathmapBody(base_pathmap) => {
                         if n < 0 {
-                            return Err(InterpreterError::ReduceError(format!(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // return Err(InterpreterError::ReduceError(format!(
+                            return Err(InterpreterError::ArgumentOutOfRange(format!(
                                 "dropHead argument must be non-negative, got: {}",
                                 n
                             )));
@@ -7072,6 +7072,10 @@ impl ReducerCore {
                                 pathmap
                                     .insert_map_value_by_encoded_key(&key, value.clone())
                                     .map_err(|error| {
+                                        // Kept by the merge of feature/cost-accounted-rho
+                                        // (finding R1-08): the arm checks the map mode first,
+                                        // so the user's term cannot raise this error (DR-128
+                                        // item 6).
                                         InterpreterError::ReduceError(error.to_string())
                                     })?;
                             }
@@ -7087,7 +7091,10 @@ impl ReducerCore {
                     }
                     ExprInstance::EPathmapBody(mut pathmap) => {
                         if pathmap.mode() == EPathMapMode::Map {
-                            return Err(InterpreterError::ReduceError(String::from(
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // return Err(InterpreterError::ReduceError(String::from(
+                            return Err(InterpreterError::ValueTypeError(String::from(
                                 "setLeaf on map-mode EPathMap requires a zipper cursor key",
                             )));
                         }
@@ -7158,7 +7165,10 @@ impl ReducerCore {
                         let mut result_pathmap = zipper.pathmap.expect("zipper pathmap was None");
                         result_pathmap
                             .replace_subtrie(&zipper.current_path, cursor_kind, &source)
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(result_pathmap)),
@@ -7242,6 +7252,10 @@ impl ReducerCore {
                         match pathmap.mode() {
                             EPathMapMode::Map => {
                                 pathmap.remove_greatest_map_entry().map_err(|error| {
+                                    // Kept by the merge of feature/cost-accounted-rho
+                                    // (finding R1-08): the arm checks the map mode first,
+                                    // so the user's term cannot raise this error (DR-128
+                                    // item 6).
                                     InterpreterError::ReduceError(error.to_string())
                                 })?;
                             }
@@ -7407,7 +7421,10 @@ impl ReducerCore {
                 let entries = dest_pathmap
                     .entry_trie()
                     .try_join(source_pathmap.entry_trie())
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                    // Changed by the merge of feature/cost-accounted-rho
+                    // (finding R1-08): a user failure, same text (DR-128).
+                    // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                    .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
                         entries,
@@ -7507,7 +7524,10 @@ impl ReducerCore {
                 let entries = base_pathmap
                     .entry_trie()
                     .try_join(source_pathmap.entry_trie())
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                    // Changed by the merge of feature/cost-accounted-rho
+                    // (finding R1-08): a user failure, same text (DR-128).
+                    // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                    .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
                         entries,
@@ -7679,7 +7699,10 @@ impl ReducerCore {
                         let key = pathmap.entry_key_at(&zipper.current_path, path_par);
                         pathmap
                             .create_path(&key)
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string()))?;
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
@@ -8917,7 +8940,10 @@ impl ReducerCore {
                         ExprInstance::EPathmapBody(pathmap) => pathmap
                             .get_map_value(&key)
                             .map(|value| value.cloned().unwrap_or_default())
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string())),
 
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("get"),
@@ -8983,7 +9009,10 @@ impl ReducerCore {
                         ExprInstance::EPathmapBody(pathmap) => pathmap
                             .get_map_value(&key)
                             .map(|value| value.cloned().unwrap_or(default))
-                            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+                            // Changed by the merge of feature/cost-accounted-rho
+                            // (finding R1-08): a user failure, same text (DR-128).
+                            // .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+                            .map_err(|error| InterpreterError::ValueTypeError(error.to_string())),
 
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("get_or_else"),
@@ -9052,7 +9081,10 @@ impl ReducerCore {
 
                         ExprInstance::EPathmapBody(mut pathmap) => {
                             pathmap.insert_map_entry(key, value).map_err(|error| {
-                                InterpreterError::ReduceError(error.to_string())
+                                // Changed by the merge of feature/cost-accounted-rho
+                                // (finding R1-08): a user failure, same text (DR-128).
+                                // InterpreterError::ReduceError(error.to_string())
+                                InterpreterError::ValueTypeError(error.to_string())
                             })?;
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
@@ -9932,14 +9964,18 @@ impl ReducerCore {
             || !p.exprs.is_empty()
             || !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: non unforgeable found where unforgeable expected.",
             )))
         } else {
             match p.unforgeables.as_slice() {
                 [e] => Ok(e),
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Multiple unforgeables given.".to_string(),
                 )),
             }
@@ -10024,7 +10060,6 @@ impl ReducerCore {
 
         etuple
     }
-
 }
 
 impl DebruijnInterpreter {
@@ -10083,7 +10118,6 @@ impl ReducerCore {
             single_term_evaluations: Arc::new(AtomicU64::new(0)),
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
-
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -10097,14 +10131,15 @@ impl ReducerCore {
 /// supplies `len - 1`). Keeping a single body is what makes the two methods agree by
 /// construction: an out-of-range access answers the SAME recoverable `ReduceError` with the same
 /// message whichever method asked, so `[].last()` and `[].nth(0)` are literally one call and
-/// cannot drift apart under later edits.
+/// cannot drift apart under later edits. Changed by the merge of feature/cost-accounted-rho
+/// (finding R1-07): that error is now the DR-128 user failure `ArgumentOutOfRange`.
 ///
 /// ⚠ Recoverable error, never a panic — `ps[nth]` is guarded, not indexed blind.
 fn local_nth(ps: &[Par], nth: usize) -> Result<Par, InterpreterError> {
     if ps.len() > nth {
         Ok(ps[nth].clone())
     } else {
-        Err(InterpreterError::ReduceError(format!(
+        Err(InterpreterError::ArgumentOutOfRange(format!(
             "Error: index out of bound: {}",
             nth
         )))
@@ -10200,10 +10235,7 @@ fn is_sized_int_pair(lhs: &ExprInstance, rhs: &ExprInstance) -> bool {
     )
 }
 
-fn compare_sized_int(
-    lhs: &ExprInstance,
-    rhs: &ExprInstance,
-) -> Option<std::cmp::Ordering> {
+fn compare_sized_int(lhs: &ExprInstance, rhs: &ExprInstance) -> Option<std::cmp::Ordering> {
     match (lhs, rhs) {
         (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => Some(a.cmp(b)),
         (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => Some(a.cmp(b)),
@@ -10222,7 +10254,9 @@ macro_rules! sized_int_op {
         let a = <$t>::try_from($lhs).map_err(|_| out_of_range($lhs.to_string()))?;
         let b = <$t>::try_from($rhs).map_err(|_| out_of_range($rhs.to_string()))?;
         let overflow = || {
-            InterpreterError::ReduceError(format!(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // InterpreterError::ReduceError(format!(
+            InterpreterError::ArithmeticOverflow(format!(
                 "Arithmetic overflow in {}: {}{} {} {}{}",
                 $op.name(),
                 a,
@@ -10238,7 +10272,9 @@ macro_rules! sized_int_op {
             SizedIntOp::Mul => a.checked_mul(b).ok_or_else(overflow)?,
             SizedIntOp::Div => {
                 if b == 0 {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::DivisionByZero(
                         "Division by zero".to_string(),
                     ));
                 }
@@ -10246,7 +10282,11 @@ macro_rules! sized_int_op {
             }
             SizedIntOp::Mod => {
                 if b == 0 {
-                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::DivisionByZero("Modulo by zero".to_string()));
+                    return Err(InterpreterError::DivisionByZero(
+                        "Modulo by zero".to_string(),
+                    ));
                 }
                 a.checked_rem(b).ok_or_else(overflow)?
             }
@@ -10934,6 +10974,91 @@ mod differential_trampoline {
             r1.eval_to_bool_recursive(&pb, &env).ok(),
             r2.eval_to_bool(&pb, &env).ok()
         );
+    }
+
+    // Added by the merge of feature/cost-accounted-rho (finding R1-42): DR-128
+    // raises six evaluator errors as `ValueTypeError`. The recursive twins must
+    // raise the same errors, because the differential compares errors by their
+    // Debug text. Each case below reaches one of the six sites on both sides.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn twins_raise_the_production_error_variants() {
+        const PARALLEL: &str = "Error: parallel or non expression found where expression expected.";
+        const MULTIPLE: &str = "Error: Multiple expressions given.";
+        const INTEGER: &str = "Error: Integer expected, or unimplemented expression.";
+        let env: Env<Par> = Env::new();
+        let int = |n| Expr {
+            expr_instance: Some(ExprInstance::GInt(n)),
+        };
+        let boolean = |x| Expr {
+            expr_instance: Some(ExprInstance::GBool(x)),
+        };
+        let mut two_ints = Par::default();
+        two_ints.exprs = vec![int(1), int(2)];
+        let mut two_bools = Par::default();
+        two_bools.exprs = vec![boolean(true), boolean(false)];
+        let mut send_and_int = Par::default();
+        send_and_int.sends.push(Send::default());
+        send_and_int.exprs.push(int(1));
+        let mut every_process = Par::default();
+        every_process.sends.push(Send::default());
+        every_process
+            .receives
+            .push(models::rhoapi::Receive::default());
+        every_process.news.push(models::rhoapi::New::default());
+        every_process.matches.push(models::rhoapi::Match::default());
+        every_process
+            .unforgeables
+            .push(models::rhoapi::GUnforgeable::default());
+        every_process.bundles.push(Bundle::default());
+        fn value_type(error: &InterpreterError, message: &str) -> bool {
+            matches!(error, InterpreterError::ValueTypeError(found) if found == message)
+        }
+
+        for (par, message) in [(&send_and_int, PARALLEL), (&two_ints, MULTIPLE)] {
+            let twin = build()
+                .await
+                .eval_single_expr_recursive(par, &env)
+                .expect_err("the twin reaches the error site");
+            let production = build()
+                .await
+                .eval_single_expr(par, &env)
+                .expect_err("production reaches the error site");
+            assert!(
+                value_type(&production, message),
+                "production: {production:?}"
+            );
+            assert!(value_type(&twin, message), "twin: {twin:?}");
+        }
+        for (par, message) in [(&every_process, PARALLEL), (&two_ints, INTEGER)] {
+            let twin = build()
+                .await
+                .eval_to_i64_recursive(par, &env)
+                .expect_err("the twin reaches the error site");
+            let production = build()
+                .await
+                .eval_to_i64(par, &env)
+                .expect_err("production reaches the error site");
+            assert!(
+                value_type(&production, message),
+                "production: {production:?}"
+            );
+            assert!(value_type(&twin, message), "twin: {twin:?}");
+        }
+        for (par, message) in [(&every_process, PARALLEL), (&two_bools, MULTIPLE)] {
+            let twin = build()
+                .await
+                .eval_to_bool_recursive(par, &env)
+                .expect_err("the twin reaches the error site");
+            let production = build()
+                .await
+                .eval_to_bool(par, &env)
+                .expect_err("production reaches the error site");
+            assert!(
+                value_type(&production, message),
+                "production: {production:?}"
+            );
+            assert!(value_type(&twin, message), "twin: {twin:?}");
+        }
     }
 
     // ---- shallow plus/list: the recursive twin has exceptionally large DEBUG

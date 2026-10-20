@@ -7,13 +7,10 @@ use std::task::Poll;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-#[cfg(test)]
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::logging::{ReductionKind, StepGate};
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
@@ -35,7 +32,6 @@ use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::RuntimeBudget;
 use super::errors::InterpreterError;
 use super::execution_space::{ExecutionBackend, ExecutionSpace};
-use super::host_work::HostWorkBudget;
 use super::rho_runtime::RhoISpace;
 
 #[cfg(test)]
@@ -54,9 +50,7 @@ pub struct ReductionCoordinator {
 }
 
 impl ReductionCoordinator {
-    fn same_identity(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.boundary, &other.boundary)
-    }
+    fn same_identity(&self, other: &Self) -> bool { Arc::ptr_eq(&self.boundary, &other.boundary) }
 
     async fn enter_evaluation(&self) -> OwnedRwLockReadGuard<()> {
         self.boundary.clone().read_owned().await
@@ -243,8 +237,6 @@ impl ReductionContext {
             .fork(&self.participant, child.participant.clone());
         child
     }
-
-    pub fn host_work_budget(&self) -> Option<HostWorkBudget> { self.session.host_work.clone() }
 }
 
 pub fn current() -> Option<ReductionContext> {
@@ -285,7 +277,7 @@ fn record_evaluator_failures_in_session(session: &ReductionSession, errors: &[In
     if errors.is_empty() {
         return;
     }
-    let summary = classify_errors(errors, session.failure_work.as_ref())
+    let summary = classify_errors(errors)
         .unwrap_or_else(|_| EvaluationFailureSummary::single(PhloFailure::Platform));
     session.failures.record(summary);
 }
@@ -304,6 +296,9 @@ pub(crate) fn record_evaluator_failures(
     }
 }
 
+// Added by the merge of feature/cost-accounted-rho (clippy gate): only the
+// tests call this wrapper. Production calls `spawn_detached_in_context`.
+#[cfg(test)]
 pub(crate) fn spawn_detached(
     future: impl Future<Output = Result<(), InterpreterError>> + Send + 'static,
 ) {
@@ -325,12 +320,6 @@ pub(crate) fn spawn_detached_in_context(
     let mut detached_guard = DetachedGuard::new(task_session.clone(), task_id, participant.clone());
     let handle = tokio::spawn(scope(child.clone(), async move {
         if ready.await.is_ok() {
-            #[cfg(test)]
-            if let Some(seed) = task_session.schedule_seed {
-                for _ in 0..schedule_yields(seed, task_id) {
-                    tokio::task::yield_now().await;
-                }
-            }
             if let Err(error) = future.await {
                 record_evaluator_failures_in_session(&task_session, std::slice::from_ref(&error));
                 task_session
@@ -496,17 +485,7 @@ pub async fn root<T>(
     coordinator: ReductionCoordinator,
     future: impl Future<Output = T>,
 ) -> T {
-    root_with_host_work(space, budget, coordinator, None, future).await
-}
-
-pub async fn root_with_host_work<T>(
-    space: impl Into<ExecutionSpace>,
-    budget: RuntimeBudget,
-    coordinator: ReductionCoordinator,
-    host_work: Option<HostWorkBudget>,
-    future: impl Future<Output = T>,
-) -> T {
-    root_with_observation(space, budget, coordinator, host_work, future)
+    root_with_observation(space, budget, coordinator, future)
         .await
         .0
 }
@@ -515,17 +494,10 @@ pub(crate) async fn root_with_observation<T>(
     space: impl Into<ExecutionSpace>,
     budget: RuntimeBudget,
     coordinator: ReductionCoordinator,
-    host_work: Option<HostWorkBudget>,
     future: impl Future<Output = T>,
 ) -> (T, EvaluationFailureSummary, Vec<InterpreterError>) {
     let space = space.into();
     if let Some(context) = current_for_domain(&space, &budget, &coordinator) {
-        assert!(
-            host_work.as_ref().is_none_or(|requested| {
-                context.session.host_work.as_ref().is_some_and(|active| requested.same_identity(active))
-            }),
-            "nested reduction cannot replace its host-work policy",
-        );
         let result = scope(context.clone(), future).await;
         return (result, context.session.failures.snapshot(), Vec::new());
     }
@@ -535,7 +507,6 @@ pub(crate) async fn root_with_observation<T>(
         space,
         budget,
         coordinator,
-        host_work,
         evaluation_guard,
     ));
     let mut cancellation = RootCancellationGuard {
@@ -633,50 +604,13 @@ thread_local! {
     pub(crate) static LEGACY_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(test)]
-thread_local! {
-    /// D-C5a (DR-100): sessions built on this thread while a seed is set
-    /// delay each detached task by a seed-dependent number of yields, so a
-    /// current-thread runtime runs a different, reproducible schedule for each
-    /// seed.
-    pub(crate) static SCHEDULE_SEED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-    /// D-C5a (DR-100): counts the operations of sessions built on this thread
-    /// that took the direct path, so a schedule test can show that its seeds
-    /// reach different path choices.
-    pub(crate) static DIRECT_PATH_PROBE: std::cell::RefCell<Option<Arc<AtomicUsize>>> =
-        const { std::cell::RefCell::new(None) };
-    /// D-C5a (DR-100): sessions built on this thread while the flag is set read
-    /// the produced channel's joins in native mode, as before DR-100 (the
-    /// oracle of the negative control).
-    pub(crate) static LEGACY_NATIVE_FOOTPRINT_READ: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-/// D-C5a (DR-100): the number of yields of a detached task under a schedule
-/// seed (splitmix64 of the seed and the task id, modulo 8).
-#[cfg(test)]
-fn schedule_yields(seed: u64, task_id: u64) -> u64 {
-    let mut value = seed ^ task_id.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    (value ^ (value >> 31)) % 8
-}
-
 struct ReductionSession {
     #[cfg(test)]
     legacy_split: bool,
-    #[cfg(test)]
-    schedule_seed: Option<u64>,
-    #[cfg(test)]
-    direct_path_probe: Option<Arc<AtomicUsize>>,
-    #[cfg(test)]
-    legacy_native_footprint_read: bool,
     space: ExecutionSpace,
     budget: RuntimeBudget,
     coordinator: ReductionCoordinator,
-    host_work: Option<HostWorkBudget>,
     failures: FailureRecorder,
-    failure_work: Option<HostWorkBudget>,
     state: Mutex<SessionState>,
     evaluation_guard: Mutex<Option<OwnedRwLockReadGuard<()>>>,
     next_detached_id: AtomicU64,
@@ -857,25 +791,14 @@ impl ReductionSession {
         space: ExecutionSpace,
         budget: RuntimeBudget,
         coordinator: ReductionCoordinator,
-        host_work: Option<HostWorkBudget>,
         evaluation_guard: OwnedRwLockReadGuard<()>,
     ) -> Self {
         Self {
             #[cfg(test)]
             legacy_split: LEGACY_SPLIT.with(std::cell::Cell::get),
-            #[cfg(test)]
-            schedule_seed: SCHEDULE_SEED.with(std::cell::Cell::get),
-            #[cfg(test)]
-            direct_path_probe: DIRECT_PATH_PROBE.with(|probe| probe.borrow().clone()),
-            #[cfg(test)]
-            legacy_native_footprint_read: LEGACY_NATIVE_FOOTPRINT_READ.with(std::cell::Cell::get),
             space,
             budget,
             coordinator,
-            failure_work: host_work
-                .as_ref()
-                .map(|budget| HostWorkBudget::new(budget.limits())),
-            host_work,
             failures: FailureRecorder::default(),
             state: Mutex::new(SessionState {
                 participants: BTreeMap::new(),
@@ -993,7 +916,7 @@ impl ReductionSession {
                 Some(slot @ ParticipantState::Running) => {
                     *slot = ParticipantState::Parked;
                     true
-                },
+                }
                 None => false,
                 Some(other) => panic!("cannot park reduction participant in state {other:?}"),
             };
@@ -1035,12 +958,12 @@ impl ReductionSession {
 
     fn frontier_ready(state: &SessionState) -> bool {
         !state.intents.is_empty()
-            && state
-                .participants
-                .values()
-                .all(|participant| {
-                    matches!(participant, ParticipantState::Waiting(_) | ParticipantState::Parked)
-                })
+            && state.participants.values().all(|participant| {
+                matches!(
+                    participant,
+                    ParticipantState::Waiting(_) | ParticipantState::Parked
+                )
+            })
     }
 
     fn claim_driver(state: &mut SessionState) -> bool {
@@ -1069,10 +992,6 @@ impl ReductionSession {
         let order = context.next_operation();
         if self.claim_direct(&context.participant) {
             let _direct = DirectExecutionGuard::new(self.clone(), context.participant.clone());
-            #[cfg(test)]
-            if let Some(probe) = &self.direct_path_probe {
-                probe.fetch_add(1, Ordering::Relaxed);
-            }
             return internal_scope(operation_context::scope(
                 order,
                 self.space.produce(channel, data, persistent),
@@ -1163,10 +1082,6 @@ impl ReductionSession {
         let order = context.next_operation();
         if self.claim_direct(&context.participant) {
             let _direct = DirectExecutionGuard::new(self.clone(), context.participant.clone());
-            #[cfg(test)]
-            if let Some(probe) = &self.direct_path_probe {
-                probe.fetch_add(1, Ordering::Relaxed);
-            }
             return internal_scope(operation_context::scope(
                 order,
                 self.space
@@ -1211,6 +1126,10 @@ impl ReductionSession {
         Self::claim_driver(&mut state)
     }
 
+    // Added by the merge of feature/cost-accounted-rho (clippy gate): the new
+    // clippy also applies `result_large_err` to async functions. The error
+    // type `Completion` is unchanged by the merge.
+    #[allow(clippy::result_large_err)]
     async fn prepare(
         &self,
         order: OperationOrder,
@@ -1238,8 +1157,6 @@ impl ReductionSession {
                 //     }
                 // }
                 let read_joins = !self.budget.native_execution_active();
-                #[cfg(test)]
-                let read_joins = read_joins || self.legacy_native_footprint_read;
                 if read_joins {
                     let joins = match self.space.get_joins(channel.clone()).await {
                         Ok(joins) => joins,
@@ -1478,13 +1395,13 @@ pub struct DeterministicRSpace {
 }
 
 impl DeterministicRSpace {
-    pub fn new(
-        inner: RhoISpace,
-        coordinator: ReductionCoordinator,
-        budget: RuntimeBudget,
-    ) -> Self {
+    pub fn new(inner: RhoISpace, coordinator: ReductionCoordinator, budget: RuntimeBudget) -> Self {
         Self {
-            execution: scheduled_execution(inner.clone().into(), coordinator.clone(), budget.clone()),
+            execution: scheduled_execution(
+                inner.clone().into(),
+                coordinator.clone(),
+                budget.clone(),
+            ),
             inner,
             coordinator,
             budget,
@@ -1542,22 +1459,6 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
 
     async fn get_data(&self, channel: &Par) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
         self.inner.get_data(channel).await
-    }
-
-    async fn get_data_metered(
-        &self,
-        channel: &Par,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-        self.inner.get_data_metered(channel, meter).await
-    }
-
-    async fn get_data_cold_decode_metered(
-        &self,
-        channel: &Par,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-        self.inner.get_data_cold_decode_metered(channel, meter).await
     }
 
     async fn get_waiting_continuations(
@@ -1729,14 +1630,9 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
         self.inner.rig(log).await
     }
 
-    async fn rig_cost_v2_metered(
-        &self,
-        start_root: Blake2b256Hash,
-        log: Log,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<(), RSpaceError> {
+    async fn rig_cost_v2(&self, start_root: Blake2b256Hash, log: Log) -> Result<(), RSpaceError> {
         let _boundary = self.coordinator.enter_boundary().await;
-        self.inner.rig_cost_v2_metered(start_root, log, meter).await
+        self.inner.rig_cost_v2(start_root, log).await
     }
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError> {
@@ -1757,7 +1653,11 @@ pub(crate) fn scheduled_execution(
     coordinator: ReductionCoordinator,
     budget: RuntimeBudget,
 ) -> ExecutionSpace {
-    ExecutionSpace::new(ScheduledExecution { inner, coordinator, budget })
+    ExecutionSpace::new(ScheduledExecution {
+        inner,
+        coordinator,
+        budget,
+    })
 }
 
 struct ScheduledExecution {
@@ -1768,7 +1668,9 @@ struct ScheduledExecution {
 
 #[async_trait]
 impl ExecutionBackend for ScheduledExecution {
-    fn codec_epoch(&self) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+    fn codec_epoch(
+        &self,
+    ) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
         self.inner.codec_epoch()
     }
 
@@ -1868,7 +1770,6 @@ mod tests {
     use std::time::Duration;
 
     use models::rhoapi::{CostAuthority, CostRegion};
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsage};
     use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -2006,19 +1907,22 @@ mod tests {
             1,
         )
         .unwrap();
-        let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
-        let config = NativeRuntimeConfig::new(
-            contract,
-            NativeBudgetTraceLimits {
-                attempts: 4,
-                path_segments: 4,
-                regions: NativePhloRegionLimits {
-                    regions: 4,
-                    encoded_authority_bytes: 4096,
-                },
+        // Changed by DR-113: the contract names the source of its bound.
+        // let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+        let contract = NativePhloExecutionContract::new(
+            controls,
+            &binding,
+            crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate,
+        )
+        .unwrap();
+        let config = NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+            attempts: 4,
+            path_segments: 4,
+            regions: NativePhloRegionLimits {
+                regions: 4,
+                encoded_authority_bytes: 4096,
             },
-            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000))),
-        );
+        });
         let budget = RuntimeBudget::new(Cost::create(1, "native global schedule"));
         budget.reset_for_native_execution(config).unwrap();
         budget
@@ -2033,7 +1937,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 let children = current().expect("root reduction context").split(1);
                 drop(children);
@@ -2046,7 +1949,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {},
         )
         .await;
@@ -2123,7 +2025,9 @@ mod tests {
                 space.clone(),
                 RuntimeBudget::new(Cost::create(100, "detached frontier drain")),
                 reducer.reduction_coordinator.clone(),
-                None,
+                // Changed by the merge of feature/cost-accounted-rho: DR-131
+                // removed the host-work budget of the reduction domain.
+                // None,
                 async move {
                     let parent = current().expect("root reduction context");
                     let child = parent.fork_detached_child();
@@ -2170,7 +2074,6 @@ mod tests {
             reducer.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 spawn_detached(async {
                     tokio::task::yield_now().await;
@@ -2193,7 +2096,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 spawn_detached(async {
                     tokio::task::yield_now().await;
@@ -2227,7 +2129,6 @@ mod tests {
                 reducer.space.clone(),
                 reducer.metering.budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async move {
                     spawn_detached(async move {
                         let _guard = MarkDrop(dropped_child);
@@ -2254,7 +2155,6 @@ mod tests {
                 reducer.space.clone(),
                 reducer.metering.budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async {},
             ),
         )
@@ -2275,7 +2175,6 @@ mod tests {
                 reducer.space.clone(),
                 reducer.metering.budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async move {
                     let context = current().expect("reduction context");
                     let child = context.split(1).pop().expect("child context");
@@ -2308,7 +2207,9 @@ mod tests {
 
     #[async_trait]
     impl ExecutionBackend for NearLimitBackend {
-        fn codec_epoch(&self) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+        fn codec_epoch(
+            &self,
+        ) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
             rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy
         }
 
@@ -2343,7 +2244,7 @@ mod tests {
             if self.admissions.fetch_add(1, Ordering::SeqCst) == 0 {
                 Ok(None)
             } else {
-                Err(RSpaceError::HostWorkRejected)
+                Err(refused_admission())
             }
         }
 
@@ -2361,7 +2262,7 @@ mod tests {
                 if self.admissions.fetch_add(1, Ordering::SeqCst) == 0 {
                     Ok(None)
                 } else {
-                    Err(RSpaceError::HostWorkRejected)
+                    Err(refused_admission())
                 }
             })?
         }
@@ -2375,50 +2276,61 @@ mod tests {
         }
     }
 
+    /// Changed by DR-131 S6: the error of a refused admission. It was
+    /// `RSpaceError::HostWorkRejected`, which is deleted.
+    fn refused_admission() -> RSpaceError {
+        RSpaceError::InterpreterError("admission refused".to_owned())
+    }
+
+    /// Changed by DR-131 S6: the test was
+    /// `native_disjoint_operations_reserve_near_limit_in_causal_order`. The
+    /// backend refused the second admission with the host-work error, which
+    /// is deleted, so it refuses it with an ordinary error. The test keeps its
+    /// check that the scheduler admits the disjoint operations in causal
+    /// order.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn native_disjoint_operations_reserve_near_limit_in_causal_order() {
+    async fn native_disjoint_operations_are_admitted_in_causal_order() {
         let budget = native_budget();
         let coordinator = ReductionCoordinator::default();
         let first_channel = models::rust::utils::new_gint_par(1, Vec::new(), false);
         let second_channel = models::rust::utils::new_gint_par(2, Vec::new(), false);
         let admissions = Arc::new(AtomicUsize::new(0));
-        let space = scheduled_execution(ExecutionSpace::new(NearLimitBackend {
-            first_channel: first_channel.clone(),
-            admissions: admissions.clone(),
-            step_gate: None,
-            reduction_observations: None,
-        }), coordinator.clone(), budget.clone());
-        let (first, second) = root(
-            space.clone(),
-            budget,
-            coordinator,
-            async {
-                let parent = current().unwrap();
-                let mut children = parent.split(2).into_iter();
-                let first_context = children.next().unwrap();
-                let second_context = children.next().unwrap();
-                let first_space = space.clone();
-                let first = tokio::spawn(scope(first_context.clone(), async move {
-                    let _guard = ParticipantGuard::for_context(&first_context);
-                    first_space
-                        .produce(first_channel, ListParWithRandom::default(), false)
-                        .await
-                }));
-                let second_space = space.clone();
-                let second = tokio::spawn(scope(second_context.clone(), async move {
-                    let _guard = ParticipantGuard::for_context(&second_context);
-                    second_space
-                        .produce(second_channel, ListParWithRandom::default(), false)
-                        .await
-                }));
-                let result = (first.await.unwrap(), second.await.unwrap());
-                parent.rejoin();
-                result
-            },
-        )
+        let space = scheduled_execution(
+            ExecutionSpace::new(NearLimitBackend {
+                first_channel: first_channel.clone(),
+                admissions: admissions.clone(),
+                step_gate: None,
+                reduction_observations: None,
+            }),
+            coordinator.clone(),
+            budget.clone(),
+        );
+        let (first, second) = root(space.clone(), budget, coordinator, async {
+            let parent = current().unwrap();
+            let mut children = parent.split(2).into_iter();
+            let first_context = children.next().unwrap();
+            let second_context = children.next().unwrap();
+            let first_space = space.clone();
+            let first = tokio::spawn(scope(first_context.clone(), async move {
+                let _guard = ParticipantGuard::for_context(&first_context);
+                first_space
+                    .produce(first_channel, ListParWithRandom::default(), false)
+                    .await
+            }));
+            let second_space = space.clone();
+            let second = tokio::spawn(scope(second_context.clone(), async move {
+                let _guard = ParticipantGuard::for_context(&second_context);
+                second_space
+                    .produce(second_channel, ListParWithRandom::default(), false)
+                    .await
+            }));
+            let result = (first.await.unwrap(), second.await.unwrap());
+            parent.rejoin();
+            result
+        })
         .await;
         assert!(first.is_ok());
-        assert!(matches!(second, Err(RSpaceError::HostWorkRejected)));
+        assert_eq!(second, Err(refused_admission()));
         assert_eq!(admissions.load(Ordering::SeqCst), 2);
     }
 
@@ -2426,12 +2338,16 @@ mod tests {
     fn scheduled_execution_preserves_live_reduction_observer() {
         let gate = Arc::new(StepGate::new());
         let observations = Arc::new(AtomicUsize::new(0));
-        let space = scheduled_execution(ExecutionSpace::new(NearLimitBackend {
-            first_channel: Par::default(),
-            admissions: Arc::new(AtomicUsize::new(0)),
-            step_gate: Some(gate.clone()),
-            reduction_observations: Some(observations.clone()),
-        }), ReductionCoordinator::default(), native_budget());
+        let space = scheduled_execution(
+            ExecutionSpace::new(NearLimitBackend {
+                first_channel: Par::default(),
+                admissions: Arc::new(AtomicUsize::new(0)),
+                step_gate: Some(gate.clone()),
+                reduction_observations: Some(observations.clone()),
+            }),
+            ReductionCoordinator::default(),
+            native_budget(),
+        );
         assert!(Arc::ptr_eq(&space.step_gate().expect("step gate"), &gate));
         space.observe_reduction(&Par::default(), ReductionKind::New);
         assert_eq!(observations.load(Ordering::SeqCst), 1);
@@ -2443,7 +2359,9 @@ mod tests {
 
     #[async_trait]
     impl ExecutionBackend for OrderedNativeBackend {
-        fn codec_epoch(&self) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+        fn codec_epoch(
+            &self,
+        ) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
             rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy
         }
 
@@ -2513,51 +2431,48 @@ mod tests {
         let guard = Arc::new(FirstDeniedCommitGuard(AtomicUsize::new(0)));
         let budget = native_budget();
         let coordinator = ReductionCoordinator::default();
-        let space = scheduled_execution(ExecutionSpace::new(OrderedNativeBackend {
-            seen: seen.clone(),
-        }), coordinator.clone(), budget.clone());
-        let (first, second) = root(
-            space.clone(),
-            budget,
-            coordinator,
-            async {
-                let parent = current().expect("reduction context");
-                let mut children = parent.split(2).into_iter();
-                let first_context = children.next().unwrap();
-                let second_context = children.next().unwrap();
-                let first_space = space.clone();
-                let first_channel = channel.clone();
-                let first_guard = guard.clone();
-                let first = tokio::spawn(scope(first_context.clone(), async move {
-                    let _participant = ParticipantGuard::for_context(&first_context);
-                    first_space
-                        .produce_guarded(
-                            first_channel,
-                            ListParWithRandom::default(),
-                            false,
-                            first_guard.as_ref(),
-                        )
-                        .await
-                }));
-                let second_space = space.clone();
-                let second_channel = channel.clone();
-                let second_guard = guard.clone();
-                let second = tokio::spawn(scope(second_context.clone(), async move {
-                    let _participant = ParticipantGuard::for_context(&second_context);
-                    second_space
-                        .produce_guarded(
-                            second_channel,
-                            ListParWithRandom::default(),
-                            false,
-                            second_guard.as_ref(),
-                        )
-                        .await
-                }));
-                let results = (first.await.unwrap(), second.await.unwrap());
-                parent.rejoin();
-                results
-            },
-        )
+        let space = scheduled_execution(
+            ExecutionSpace::new(OrderedNativeBackend { seen: seen.clone() }),
+            coordinator.clone(),
+            budget.clone(),
+        );
+        let (first, second) = root(space.clone(), budget, coordinator, async {
+            let parent = current().expect("reduction context");
+            let mut children = parent.split(2).into_iter();
+            let first_context = children.next().unwrap();
+            let second_context = children.next().unwrap();
+            let first_space = space.clone();
+            let first_channel = channel.clone();
+            let first_guard = guard.clone();
+            let first = tokio::spawn(scope(first_context.clone(), async move {
+                let _participant = ParticipantGuard::for_context(&first_context);
+                first_space
+                    .produce_guarded(
+                        first_channel,
+                        ListParWithRandom::default(),
+                        false,
+                        first_guard.as_ref(),
+                    )
+                    .await
+            }));
+            let second_space = space.clone();
+            let second_channel = channel.clone();
+            let second_guard = guard.clone();
+            let second = tokio::spawn(scope(second_context.clone(), async move {
+                let _participant = ParticipantGuard::for_context(&second_context);
+                second_space
+                    .produce_guarded(
+                        second_channel,
+                        ListParWithRandom::default(),
+                        false,
+                        second_guard.as_ref(),
+                    )
+                    .await
+            }));
+            let results = (first.await.unwrap(), second.await.unwrap());
+            parent.rejoin();
+            results
+        })
         .await;
         assert!(matches!(first, Err(RSpaceError::ProduceCommitDenied)));
         assert!(second.is_ok());
@@ -2575,31 +2490,32 @@ mod tests {
         let outer_seen = Arc::new(Mutex::new(Vec::new()));
         let inner_seen = Arc::new(Mutex::new(Vec::new()));
         let outer_space = scheduled_execution(
-            ExecutionSpace::new(OrderedNativeBackend { seen: outer_seen.clone() }),
+            ExecutionSpace::new(OrderedNativeBackend {
+                seen: outer_seen.clone(),
+            }),
             outer_coordinator.clone(),
             outer_budget.clone(),
         );
         let inner_space = scheduled_execution(
-            ExecutionSpace::new(OrderedNativeBackend { seen: inner_seen.clone() }),
+            ExecutionSpace::new(OrderedNativeBackend {
+                seen: inner_seen.clone(),
+            }),
             inner_coordinator.clone(),
             inner_budget.clone(),
         );
         let outer_channel = models::rust::utils::new_gint_par(10, Vec::new(), false);
         let reentrant_channel = models::rust::utils::new_gint_par(11, Vec::new(), false);
-        let outer_host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
-        let inner_channels = [21, 22]
-            .map(|value| models::rust::utils::new_gint_par(value, Vec::new(), false));
+        let inner_channels =
+            [21, 22].map(|value| models::rust::utils::new_gint_par(value, Vec::new(), false));
         let allow = FirstDeniedCommitGuard(AtomicUsize::new(1));
         tokio::time::timeout(
             Duration::from_secs(5),
-            Box::pin(root_with_host_work(
+            Box::pin(root(
                 outer_space.clone(),
                 outer_budget.clone(),
                 outer_coordinator.clone(),
-                Some(outer_host_work.clone()),
                 async {
                     let outer = current().expect("outer reduction context");
-                    assert!(outer.host_work_budget().unwrap().same_identity(&outer_host_work));
                     Box::pin(root(
                         outer_space.clone(),
                         outer_budget.clone(),
@@ -2607,8 +2523,12 @@ mod tests {
                         async {
                             assert!(Arc::ptr_eq(&current().unwrap().session, &outer.session));
                         },
-                    )).await;
-                    assert!(current_for_domain(&inner_space, &inner_budget, &inner_coordinator).is_none());
+                    ))
+                    .await;
+                    assert!(
+                        current_for_domain(&inner_space, &inner_budget, &inner_coordinator)
+                            .is_none()
+                    );
                     Box::pin(root(
                         inner_space.clone(),
                         inner_budget.clone(),
@@ -2616,8 +2536,9 @@ mod tests {
                         async {
                             let inner = current().expect("inner reduction context");
                             assert!(!Arc::ptr_eq(&inner.session, &outer.session));
-                            assert!(inner.host_work_budget().is_none());
-                            assert!(current_for_scheduler(&outer_budget, &outer_coordinator).is_none());
+                            assert!(
+                                current_for_scheduler(&outer_budget, &outer_coordinator).is_none()
+                            );
                             Box::pin(root(
                                 outer_space.clone(),
                                 outer_budget.clone(),
@@ -2625,24 +2546,33 @@ mod tests {
                                 async {
                                     let reentered = current().expect("reentered reduction context");
                                     assert!(Arc::ptr_eq(&reentered.session, &outer.session));
-                                    assert!(reentered.host_work_budget().unwrap().same_identity(&outer_host_work));
                                     Box::pin(root(
                                         inner_space.clone(),
                                         inner_budget.clone(),
                                         inner_coordinator.clone(),
                                         async {
-                                            assert!(Arc::ptr_eq(&current().unwrap().session, &inner.session));
-                                            assert!(current().unwrap().host_work_budget().is_none());
+                                            assert!(Arc::ptr_eq(
+                                                &current().unwrap().session,
+                                                &inner.session
+                                            ));
                                         },
-                                    )).await;
-                                    assert!(Arc::ptr_eq(&current().unwrap().session, &outer.session));
-                                    outer_space.produce(
-                                        reentrant_channel.clone(),
-                                        ListParWithRandom::default(),
-                                        false,
-                                    ).await.unwrap();
+                                    ))
+                                    .await;
+                                    assert!(Arc::ptr_eq(
+                                        &current().unwrap().session,
+                                        &outer.session
+                                    ));
+                                    outer_space
+                                        .produce(
+                                            reentrant_channel.clone(),
+                                            ListParWithRandom::default(),
+                                            false,
+                                        )
+                                        .await
+                                        .unwrap();
                                 },
-                            )).await;
+                            ))
+                            .await;
                             assert!(Arc::ptr_eq(&current().unwrap().session, &inner.session));
                             let mut children = inner.split(2).into_iter();
                             let first = children.next().unwrap();
@@ -2653,74 +2583,42 @@ mod tests {
                             let second_channel = inner_channels[1].clone();
                             let first_op = scope(first.clone(), async move {
                                 let _guard = ParticipantGuard::for_context(&first);
-                                first_space.produce(
-                                    first_channel,
-                                    ListParWithRandom::default(),
-                                    false,
-                                ).await
+                                first_space
+                                    .produce(first_channel, ListParWithRandom::default(), false)
+                                    .await
                             });
                             let second_op = scope(second.clone(), async move {
                                 let _guard = ParticipantGuard::for_context(&second);
-                                second_space.produce(
-                                    second_channel,
-                                    ListParWithRandom::default(),
-                                    false,
-                                ).await
+                                second_space
+                                    .produce(second_channel, ListParWithRandom::default(), false)
+                                    .await
                             });
                             let (first_result, second_result) = tokio::join!(first_op, second_op);
                             first_result.unwrap();
                             second_result.unwrap();
                         },
-                    )).await;
+                    ))
+                    .await;
                     assert!(Arc::ptr_eq(&current().unwrap().session, &outer.session));
-                    assert!(current().unwrap().host_work_budget().unwrap().same_identity(&outer_host_work));
-                    outer_space.produce_guarded(
-                        outer_channel.clone(),
-                        ListParWithRandom::default(),
-                        false,
-                        &allow,
-                    ).await.unwrap();
+                    outer_space
+                        .produce_guarded(
+                            outer_channel.clone(),
+                            ListParWithRandom::default(),
+                            false,
+                            &allow,
+                        )
+                        .await
+                        .unwrap();
                 },
             )),
-        ).await.expect("nested reductions must make progress");
-        assert_eq!(*outer_seen.lock().unwrap(), vec![reentrant_channel, outer_channel]);
+        )
+        .await
+        .expect("nested reductions must make progress");
+        assert_eq!(*outer_seen.lock().unwrap(), vec![
+            reentrant_channel,
+            outer_channel
+        ]);
         assert_eq!(*inner_seen.lock().unwrap(), inner_channels.to_vec());
-    }
-
-    #[tokio::test]
-    async fn same_domain_reentry_inherits_its_host_work_policy() {
-        let budget = RuntimeBudget::new(Cost::unsafe_max());
-        let coordinator = ReductionCoordinator::default();
-        let space = ExecutionSpace::new(OrderedNativeBackend {
-            seen: Arc::new(Mutex::new(Vec::new())),
-        });
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
-        root_with_host_work(
-            space.clone(), budget.clone(), coordinator.clone(), Some(host_work.clone()),
-            async {
-                root(space, budget, coordinator, async {
-                    assert!(current().unwrap().host_work_budget().unwrap().same_identity(&host_work));
-                }).await;
-            },
-        ).await;
-    }
-
-    #[tokio::test]
-    #[should_panic(expected = "nested reduction cannot replace its host-work policy")]
-    async fn same_domain_reentry_rejects_a_distinct_host_work_policy() {
-        let budget = RuntimeBudget::new(Cost::unsafe_max());
-        let coordinator = ReductionCoordinator::default();
-        let space = ExecutionSpace::new(OrderedNativeBackend {
-            seen: Arc::new(Mutex::new(Vec::new())),
-        });
-        let first = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
-        let second = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
-        root_with_host_work(
-            space.clone(), budget.clone(), coordinator.clone(), Some(first),
-            async {
-                root_with_host_work(space, budget, coordinator, Some(second), async {}).await;
-            },
-        ).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2731,56 +2629,53 @@ mod tests {
             let seen = Arc::new(Mutex::new(Vec::new()));
             let budget = native_budget();
             let coordinator = ReductionCoordinator::default();
-            let space = scheduled_execution(ExecutionSpace::new(OrderedNativeBackend {
-                seen: seen.clone(),
-            }), coordinator.clone(), budget.clone());
+            let space = scheduled_execution(
+                ExecutionSpace::new(OrderedNativeBackend { seen: seen.clone() }),
+                coordinator.clone(),
+                budget.clone(),
+            );
             let expected = channels.clone();
             tokio::time::timeout(
                 Duration::from_secs(2),
-                root(
-                    space.clone(),
-                    budget,
-                    coordinator,
-                    async {
-                        let parent = current().expect("root reduction context");
-                        let mut children = parent.split(2).into_iter();
-                        let first_context = children.next().unwrap();
-                        let second_context = children.next().unwrap();
-                        let first_space = space.clone();
-                        let first_channels = [channels[0].clone(), channels[2].clone()];
-                        let first = tokio::spawn(scope(first_context.clone(), async move {
-                            let _guard = ParticipantGuard::for_context(&first_context);
-                            if iteration % 2 == 0 {
-                                tokio::time::sleep(Duration::from_millis(2)).await;
-                            }
-                            for channel in first_channels {
-                                first_space
-                                    .produce(channel, ListParWithRandom::default(), false)
-                                    .await?;
-                                tokio::task::yield_now().await;
-                            }
-                            Ok::<(), RSpaceError>(())
-                        }));
-                        let second_space = space.clone();
-                        let second_channels = [channels[1].clone(), channels[3].clone()];
-                        let second = tokio::spawn(scope(second_context.clone(), async move {
-                            let _guard = ParticipantGuard::for_context(&second_context);
-                            if iteration % 2 == 1 {
-                                tokio::time::sleep(Duration::from_millis(2)).await;
-                            }
-                            for channel in second_channels {
-                                second_space
-                                    .produce(channel, ListParWithRandom::default(), false)
-                                    .await?;
-                                tokio::task::yield_now().await;
-                            }
-                            Ok::<(), RSpaceError>(())
-                        }));
-                        first.await.unwrap().unwrap();
-                        second.await.unwrap().unwrap();
-                        parent.rejoin();
-                    },
-                ),
+                root(space.clone(), budget, coordinator, async {
+                    let parent = current().expect("root reduction context");
+                    let mut children = parent.split(2).into_iter();
+                    let first_context = children.next().unwrap();
+                    let second_context = children.next().unwrap();
+                    let first_space = space.clone();
+                    let first_channels = [channels[0].clone(), channels[2].clone()];
+                    let first = tokio::spawn(scope(first_context.clone(), async move {
+                        let _guard = ParticipantGuard::for_context(&first_context);
+                        if iteration % 2 == 0 {
+                            tokio::time::sleep(Duration::from_millis(2)).await;
+                        }
+                        for channel in first_channels {
+                            first_space
+                                .produce(channel, ListParWithRandom::default(), false)
+                                .await?;
+                            tokio::task::yield_now().await;
+                        }
+                        Ok::<(), RSpaceError>(())
+                    }));
+                    let second_space = space.clone();
+                    let second_channels = [channels[1].clone(), channels[3].clone()];
+                    let second = tokio::spawn(scope(second_context.clone(), async move {
+                        let _guard = ParticipantGuard::for_context(&second_context);
+                        if iteration % 2 == 1 {
+                            tokio::time::sleep(Duration::from_millis(2)).await;
+                        }
+                        for channel in second_channels {
+                            second_space
+                                .produce(channel, ListParWithRandom::default(), false)
+                                .await?;
+                            tokio::task::yield_now().await;
+                        }
+                        Ok::<(), RSpaceError>(())
+                    }));
+                    first.await.unwrap().unwrap();
+                    second.await.unwrap().unwrap();
+                    parent.rejoin();
+                }),
             )
             .await
             .expect("native frontier stalled");
@@ -2871,45 +2766,6 @@ mod tests {
             },
         )
         .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn parallel_children_share_the_root_host_work_budget() {
-        let (_, reducer) =
-            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-                .await;
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
-        root_with_host_work(
-            reducer.space.clone(),
-            RuntimeBudget::new(Cost::create(100, "host work propagation")),
-            ReductionCoordinator::default(),
-            Some(host_work.clone()),
-            async {
-                let parent = current().expect("root reduction context");
-                let children = parent.split(4);
-                let mut handles = Vec::new();
-                for child in children {
-                    handles.push(tokio::spawn(scope(child.clone(), async move {
-                        let _guard = ParticipantGuard::for_context(&child);
-                        child
-                            .host_work_budget()
-                            .expect("child inherits host-work budget")
-                            .reserve(HostWorkDimension::ReductionSteps, HostWorkUnits::new(1))
-                            .unwrap();
-                    })));
-                }
-                for handle in handles {
-                    handle.await.unwrap();
-                }
-                parent.rejoin();
-            },
-        )
-        .await;
-
-        assert_eq!(
-            host_work.usage(HostWorkDimension::ReductionSteps),
-            HostWorkUsage::new(4)
-        );
     }
 
     #[tokio::test]
@@ -3143,7 +2999,6 @@ mod tests {
                 reducer.space.clone(),
                 native_budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async {
                     let root = current().expect("root reduction context");
                     let compacted_root =
@@ -3202,7 +3057,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 let root = current().expect("root reduction context");
                 let mut compacted = ReductionContext::root(root.session.clone(), root.session_id);

@@ -24,7 +24,7 @@
 //! | [`play_and_replay_agree_when_the_guard_permutes_a_repeated_channel`] | …including when the guard picks an assignment the spatial order would not |
 //! | [`an_unguarded_workload_costs_exactly_what_it_did`] | the guard-aware search is pay-for-what-you-use: no extra `Match::get` calls without a guard |
 //! | [`the_canonical_candidate_order_is_a_pure_function_of_the_candidates`] | selection rests on an order that is reproducible, not on store insertion order |
-//! | [`the_guarded_selection_is_stable_across_repetitions`] | the same store answers the same way every time |
+//! | [`every_repetition_of_the_guarded_selection_fires_on_an_admissible_offer`] | every repetition fires on an admissible offer, whatever datum the random play order (DR-129) puts first |
 //!
 //! ⚠ **Consensus.** Every one of these fixes changes WHEN A COMM FIRES. See the
 //! commit body.
@@ -633,62 +633,91 @@ fn canonical_position(channel: &str, data: &[&str], datum: &str) -> usize {
 /// is installed last, so nothing later can re-trigger the rendezvous and
 /// whatever the consume decides is final. The admissible datum must be the one
 /// consumed, and it must be consumed on the FIRST attempt — no matter where the
-/// canonical order happens to place it.
+/// play order happens to place it.
 ///
 /// This is the rspace-level transliteration of the settlement demo's Beat 3
 /// (`@"offer"!(55) | @"offer"!(42)` under `for(@px <- @"offer" where px <=
-/// 45)`), widened from two data to eight so that a matcher which merely got
-/// lucky with the order cannot pass.
+/// 45)`), widened from two data to eight. Play orders the candidates at random
+/// (DR-129), so a matcher that only tries the first datum passes one run with
+/// probability 1/8. The rendezvous therefore repeats on fresh spaces, and at
+/// least one repetition must reach the admissible datum behind a rejection.
 #[tokio::test]
 async fn a_guard_selects_the_one_admissible_datum_out_of_many() {
-    let (space, _replay, matcher) = fixture().await;
-
     // Exactly one of these is <= 45.
     const OFFERS: [&str; 8] = ["91", "77", "68", "55", "42", "63", "88", "59"];
     const ADMISSIBLE: &str = "42";
+    const REPETITIONS: usize = 64;
 
-    assert!(
-        canonical_position("offer", &OFFERS, ADMISSIBLE) > 0,
-        "the admissible datum must NOT be the first spatial pick, or this test would pass without \
-         any backtracking at all — choose different payloads"
-    );
+    // Disabled by DR-129 (random play order): play no longer enumerates the
+    // canonical order, so the canonical position of the admissible datum does
+    // not decide whether a run backtracks. The backtrack count below checks
+    // that instead.
+    // ```text
+    // assert!(
+    //     canonical_position("offer", &OFFERS, ADMISSIBLE) > 0,
+    //     "the admissible datum must NOT be the first spatial pick, or this test would pass without \
+    //      any backtracking at all — choose different payloads"
+    // );
+    // ```
+    let mut backtracked = 0usize;
 
-    for offer in OFFERS {
+    for _ in 0..REPETITIONS {
+        let (space, _replay, matcher) = fixture().await;
+
+        for offer in OFFERS {
+            let fired = space
+                .produce("offer".to_string(), offer.to_string(), false)
+                .await
+                .expect("produce");
+            assert!(fired.is_none(), "nothing is waiting yet, so {offer} must rest");
+        }
+
+        let guards_before = matcher.guard_calls();
         let fired = space
-            .produce("offer".to_string(), offer.to_string(), false)
+            .consume(
+                vec!["offer".to_string()],
+                vec![Pattern::Wildcard],
+                GuardedContinuation::guarded("desk", Guard::AtMost(45)),
+                false,
+                BTreeSet::new(),
+            )
             .await
-            .expect("produce");
-        assert!(fired.is_none(), "nothing is waiting yet, so {offer} must rest");
+            .expect("consume");
+
+        let (_continuation, results) = fired.expect(
+            "⚠ DEFECT D1: an admissible datum was resting, so the COMM was ENABLED and must fire",
+        );
+        assert_eq!(results.len(), 1, "one bind, one result");
+        assert_eq!(results[0].matched_datum, ADMISSIBLE, "the guard chose which datum settles");
+
+        let mut left = resting(&space, "offer").await;
+        left.sort();
+        let mut expected: Vec<i64> = OFFERS
+            .iter()
+            .filter(|offer| **offer != ADMISSIBLE)
+            .map(|offer| offer.parse().expect("integer"))
+            .collect();
+        expected.sort();
+        assert_eq!(
+            left, expected,
+            "exactly the admissible datum was consumed; the rest still rest"
+        );
+        assert_eq!(waiting(&space, &["offer"]).await, 0, "the receive fired, so it is not waiting");
+        // Disabled by DR-129 (random play order): the random order puts the
+        // admissible datum first in about one run of eight, and that run asks
+        // the guard once. The count across all repetitions replaces this check.
+        // ```text
+        // assert!(matcher.guard_calls() >= 2, "the guard was asked about more than one candidate");
+        // ```
+        if matcher.guard_calls() - guards_before >= 2 {
+            backtracked += 1;
+        }
     }
 
-    let fired = space
-        .consume(
-            vec!["offer".to_string()],
-            vec![Pattern::Wildcard],
-            GuardedContinuation::guarded("desk", Guard::AtMost(45)),
-            false,
-            BTreeSet::new(),
-        )
-        .await
-        .expect("consume");
-
-    let (_continuation, results) = fired.expect(
-        "⚠ DEFECT D1: an admissible datum was resting, so the COMM was ENABLED and must fire",
+    assert!(
+        backtracked > 0,
+        "in at least one repetition the guard was asked about more than one candidate"
     );
-    assert_eq!(results.len(), 1, "one bind, one result");
-    assert_eq!(results[0].matched_datum, ADMISSIBLE, "the guard chose which datum settles");
-
-    let mut left = resting(&space, "offer").await;
-    left.sort();
-    let mut expected: Vec<i64> = OFFERS
-        .iter()
-        .filter(|offer| **offer != ADMISSIBLE)
-        .map(|offer| offer.parse().expect("integer"))
-        .collect();
-    expected.sort();
-    assert_eq!(left, expected, "exactly the admissible datum was consumed; the rest still rest");
-    assert_eq!(waiting(&space, &["offer"]).await, 0, "the receive fired, so it is not waiting");
-    assert!(matcher.guard_calls() >= 2, "the guard was asked about more than one candidate");
 }
 
 /// The negative. When NO resting datum satisfies the guard the receive must
@@ -1372,31 +1401,40 @@ fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates() {
     );
 }
 
-/// The same store answers the same way every time: repeat the whole guarded
-/// rendezvous on fresh spaces and require an identical selection each time.
-/// (Determinism here is per-store, which is what consensus needs; the payloads
-/// themselves determine the order.)
+/// Every repetition of the guarded rendezvous fires on an ADMISSIBLE offer.
+/// Play orders the candidates at random (DR-129), so which admissible offer
+/// fires can vary run to run, and replay follows the recorded COMM. The
+/// complete search must find an admissible offer whatever datum the random
+/// order puts first, and it must consume that offer exactly once.
 #[tokio::test]
-async fn the_guarded_selection_is_stable_across_repetitions() {
-    // Canonical order: 50, 44, 63, 42, 77 — an inadmissible datum first (so the
-    // answer is reached by backtracking) and TWO admissible ones (so "which
-    // one" is a real question).
+async fn every_repetition_of_the_guarded_selection_fires_on_an_admissible_offer() {
+    // Three inadmissible offers (so a random order often puts a rejection
+    // first) and TWO admissible ones (so "which one" is a real question).
     const OFFERS: [&str; 5] = ["63", "42", "77", "44", "50"];
-    assert_eq!(
-        canonical_position("offer", &OFFERS, "50"),
-        0,
-        "this test requires an inadmissible datum FIRST in the canonical order"
-    );
-    let mut selections = Vec::with_capacity(8);
+    const REPETITIONS: usize = 64;
+    // Disabled by DR-129 (random play order): play no longer enumerates the
+    // canonical order, so the canonical position of the first datum does not
+    // decide whether a repetition backtracks. The guard-call count below
+    // checks that instead.
+    // ```text
+    // assert_eq!(
+    //     canonical_position("offer", &OFFERS, "50"),
+    //     0,
+    //     "this test requires an inadmissible datum FIRST in the canonical order"
+    // );
+    // ```
+    let mut selections = Vec::with_capacity(REPETITIONS);
+    let mut backtracked = 0usize;
 
-    for _ in 0..8 {
-        let (space, _replay, _matcher) = fixture().await;
+    for _ in 0..REPETITIONS {
+        let (space, _replay, matcher) = fixture().await;
         for offer in OFFERS {
             let _ = space
                 .produce("offer".to_string(), offer.to_string(), false)
                 .await
                 .expect("produce");
         }
+        let guards_before = matcher.guard_calls();
         let fired = space
             .consume(
                 vec!["offer".to_string()],
@@ -1408,31 +1446,66 @@ async fn the_guarded_selection_is_stable_across_repetitions() {
             .await
             .expect("consume")
             .expect("two of the five offers are admissible, so the COMM is enabled");
-        selections.push(fired.1[0].matched_datum.clone());
+        if matcher.guard_calls() - guards_before > 1 {
+            backtracked += 1;
+        }
+
+        let selection = fired.1[0].matched_datum.clone();
+        assert!(
+            selection == "42" || selection == "44",
+            "the selection must be one of the ADMISSIBLE offers: {selection}"
+        );
+
+        let mut rest = resting(&space, "offer").await;
+        rest.sort_unstable();
+        let mut expected: Vec<i64> = OFFERS
+            .iter()
+            .filter(|offer| **offer != selection)
+            .map(|offer| {
+                offer
+                    .parse::<i64>()
+                    .expect("test offers are decimal integers")
+            })
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(rest, expected, "the other four offers still rest, each exactly once");
+        selections.push(selection);
     }
 
-    let first = selections[0].clone();
     assert!(
-        selections.iter().all(|selection| *selection == first),
-        "the guarded selection must not vary run to run: {selections:?}"
+        backtracked > 0,
+        "at least one repetition must reach its answer behind a rejection, or this test does not \
+         exercise backtracking at all: {selections:?}"
     );
-    assert!(first == "42" || first == "44", "and it must be one of the ADMISSIBLE offers: {first}");
 
-    // …and it is the FIRST admissible candidate in the canonical order — the
-    // same selection rule an unguarded receive follows, with "admissible"
-    // widened from spatial to spatial+guard.
-    let admissible_first =
-        canonical_position("offer", &OFFERS, "42").min(canonical_position("offer", &OFFERS, "44"));
-    assert!(
-        admissible_first > 0,
-        "the answer must lie behind at least one rejection, or this test does not exercise \
-         backtracking at all"
-    );
-    assert_eq!(
-        canonical_position("offer", &OFFERS, &first),
-        admissible_first,
-        "the selection is the FIRST admissible candidate in the canonical order"
-    );
+    // Disabled by DR-129 (random play order): the selection varies run to run
+    // by design, and play has no canonical order to select the first
+    // admissible candidate of. The admissibility and residue checks above
+    // replace these assertions.
+    // ```text
+    // let first = selections[0].clone();
+    // assert!(
+    //     selections.iter().all(|selection| *selection == first),
+    //     "the guarded selection must not vary run to run: {selections:?}"
+    // );
+    // assert!(first == "42" || first == "44", "and it must be one of the ADMISSIBLE offers: {first}");
+    //
+    // // …and it is the FIRST admissible candidate in the canonical order — the
+    // // same selection rule an unguarded receive follows, with "admissible"
+    // // widened from spatial to spatial+guard.
+    // let admissible_first =
+    //     canonical_position("offer", &OFFERS, "42").min(canonical_position("offer", &OFFERS, "44"));
+    // assert!(
+    //     admissible_first > 0,
+    //     "the answer must lie behind at least one rejection, or this test does not exercise \
+    //      backtracking at all"
+    // );
+    // assert_eq!(
+    //     canonical_position("offer", &OFFERS, &first),
+    //     admissible_first,
+    //     "the selection is the FIRST admissible candidate in the canonical order"
+    // );
+    // ```
 }
 
 /// A guarded receive that no data satisfy must not disturb the map the next
@@ -1481,11 +1554,96 @@ async fn a_failed_guarded_search_restores_the_candidate_pools() {
     assert_eq!(waiting(&space, &["ch"]).await, 1, "the strict receive is still waiting");
 }
 
-/// A regression guard for the pools themselves: `HashMap` iteration order must
-/// not leak into the selection. The join below binds two DIFFERENT channels, so
-/// the search visits two map entries; run it repeatedly and require one answer.
+/// A regression guard for the pools themselves. The join below binds two
+/// DIFFERENT channels, so the search visits two map entries. Play orders the
+/// candidates at random (DR-129), so the selected pair can vary run to run.
+/// Every repetition must still fire on a pair that satisfies the guard, and
+/// every datum the COMM did not take must still rest exactly once.
 #[tokio::test]
-async fn a_multi_channel_guarded_selection_does_not_depend_on_map_iteration_order() {
+async fn a_multi_channel_guarded_selection_is_admissible_and_leaves_the_rest_resting() {
+    const BIDS: [&str; 4] = ["60", "20", "55", "15"];
+    const ASKS: [&str; 3] = ["30", "80", "25"];
+    const REPETITIONS: usize = 64;
+    let mut selections: Vec<Vec<String>> = Vec::with_capacity(REPETITIONS);
+    let mut backtracked = 0usize;
+
+    let remaining = |data: &[&str], taken: &str| -> Vec<i64> {
+        let mut rest: Vec<i64> = data
+            .iter()
+            .filter(|datum| **datum != taken)
+            .map(|datum| {
+                datum
+                    .parse::<i64>()
+                    .expect("test data are decimal integers")
+            })
+            .collect();
+        rest.sort_unstable();
+        rest
+    };
+
+    for _ in 0..REPETITIONS {
+        let (space, _replay, matcher) = fixture().await;
+
+        for bid in BIDS {
+            let _ = space
+                .produce("bid".to_string(), bid.to_string(), false)
+                .await
+                .expect("produce");
+        }
+        for ask in ASKS {
+            let _ = space
+                .produce("ask".to_string(), ask.to_string(), false)
+                .await
+                .expect("produce");
+        }
+
+        let guards_before = matcher.guard_calls();
+        let fired = space
+            .consume(
+                vec!["bid".to_string(), "ask".to_string()],
+                vec![Pattern::Wildcard, Pattern::Wildcard],
+                GuardedContinuation::guarded("settle", Guard::AtMost(40)),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("consume")
+            .expect("several pairings satisfy the guard, so the COMM is enabled");
+        if matcher.guard_calls() - guards_before > 1 {
+            backtracked += 1;
+        }
+
+        let selection: Vec<String> = fired.1.iter().map(|r| r.matched_datum.clone()).collect();
+        assert_eq!(selection.len(), 2, "one datum per bind: {selection:?}");
+        assert!(
+            as_int(&selection[0]) <= 40 && as_int(&selection[1]) <= 40,
+            "the selection must satisfy the guard: {selection:?}"
+        );
+        assert!(BIDS.contains(&selection[0].as_str()), "the first bind takes a bid: {selection:?}");
+        assert!(
+            ASKS.contains(&selection[1].as_str()),
+            "the second bind takes an ask: {selection:?}"
+        );
+
+        let mut bids = resting(&space, "bid").await;
+        bids.sort_unstable();
+        let mut asks = resting(&space, "ask").await;
+        asks.sort_unstable();
+        assert_eq!(bids, remaining(&BIDS, &selection[0]), "every other bid still rests");
+        assert_eq!(asks, remaining(&ASKS, &selection[1]), "every other ask still rests");
+        selections.push(selection);
+    }
+
+    assert!(
+        backtracked > 0,
+        "at least one repetition must reach its answer behind a rejection, or this test does not \
+         exercise backtracking across the two map entries: {selections:?}"
+    );
+
+    // Disabled by DR-129 (random play order): the loop above replaces the
+    // original fixed-order loop and its single-answer check, because the
+    // selected pair now varies run to run by design.
+    /*
     let mut selections: Vec<Vec<String>> = Vec::with_capacity(8);
 
     for _ in 0..8 {
@@ -1528,6 +1686,7 @@ async fn a_multi_channel_guarded_selection_does_not_depend_on_map_iteration_orde
         as_int(&first[0]) <= 40 && as_int(&first[1]) <= 40,
         "and it must satisfy the guard: {first:?}"
     );
+    */
 }
 
 /// The `HashMap` the search mutates is keyed by channel; this pins that a bind

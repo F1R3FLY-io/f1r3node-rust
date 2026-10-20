@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
@@ -46,8 +45,11 @@ fn change<'a>(
     }
 }
 
+/// Changed by DR-131: the metered read and its rejections went with host
+/// work. The test keeps its check that a cold and a warm read return the same
+/// receipt.
 #[tokio::test]
-async fn metered_receipt_read_has_cold_warm_parity_and_rejects_before_mutation() {
+async fn receipt_read_has_cold_warm_parity() {
     let mut runtime = runtime().await;
     let receipt_id = [91; 32];
     runtime
@@ -55,50 +57,23 @@ async fn metered_receipt_read_has_cold_warm_parity_and_rejects_before_mutation()
         .await
         .unwrap();
     let checkpoint = runtime.runtime.create_checkpoint().await;
-    let ample = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
     let cold = runtime
-        .read_prepaid_receipt_metered(&receipt_id, LIMITS.value_bytes, &ample)
+        .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
         .await
         .unwrap();
     let warm = runtime
-        .read_prepaid_receipt_metered(&receipt_id, LIMITS.value_bytes, &ample)
+        .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
         .await
         .unwrap();
     assert_eq!(cold, Some(b"funded".to_vec()));
     assert_eq!(warm, cold);
-    assert_eq!(
-        runtime
-            .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
-            .await
-            .unwrap(),
-        cold
-    );
-
-    let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(runtime
-        .read_prepaid_receipt_metered(&receipt_id, LIMITS.value_bytes, &exhausted)
-        .await
-        .is_err());
-    assert!(runtime
-        .replace_prepaid_receipts_metered(
-            &[change(91, Some(b"funded"), Some(b"spent"))],
-            LIMITS,
-            &HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0))),
-        )
-        .await
-        .is_err());
     assert_eq!(runtime.runtime.get_root().await, checkpoint.root);
-    assert_eq!(
-        runtime
-            .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
-            .await
-            .unwrap(),
-        cold
-    );
 }
 
+/// Changed by DR-131: the metered read and its rejection went with host work.
+/// The test keeps its check that replay reads the cold and the warm history.
 #[tokio::test]
-async fn metered_receipt_replay_reads_cold_and_warm_history() {
+async fn receipt_replay_reads_cold_and_warm_history() {
     let store = InMemoryStoreManager::new().r_space_stores().await.unwrap();
     let (play, replay, _) = create_runtimes(store, false, &mut Vec::new()).await;
     let mut play = RuntimeOps::new(play);
@@ -108,144 +83,17 @@ async fn metered_receipt_replay_reads_cold_and_warm_history() {
         .unwrap();
     let root = play.runtime.create_checkpoint().await.root;
     replay.runtime.reset(&root).await.unwrap();
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
     let cold = replay
-        .read_prepaid_receipt_metered(&[92; 32], LIMITS.value_bytes, &budget)
+        .read_prepaid_receipt(&[92; 32], LIMITS.value_bytes)
         .await
         .unwrap();
     let warm = replay
-        .read_prepaid_receipt_metered(&[92; 32], LIMITS.value_bytes, &budget)
+        .read_prepaid_receipt(&[92; 32], LIMITS.value_bytes)
         .await
         .unwrap();
     assert_eq!(cold, Some(b"backed".to_vec()));
     assert_eq!(warm, cold);
-    let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(replay
-        .read_prepaid_receipt_metered(&[92; 32], LIMITS.value_bytes, &exhausted)
-        .await
-        .is_err());
     assert_eq!(replay.runtime.get_root().await, root);
-}
-
-fn wide_receipt_id(index: u16) -> [u8; 32] {
-    let mut receipt_id = [0x5a; 32];
-    receipt_id[..2].copy_from_slice(&index.to_be_bytes());
-    receipt_id
-}
-
-async fn live_read_usages(
-    runtime: &RuntimeOps,
-    receipt_id: &[u8; 32],
-) -> (Option<Vec<u8>>, models::rust::host_work::HostWorkUsages) {
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-    let data = read_live_data_metered(runtime, &receipt_channel(receipt_id), &budget)
-        .await
-        .expect("metered live read");
-    let bytes = decode_receipt_data(&data, LIMITS.value_bytes)
-        .expect("canonical receipt data")
-        .map(<[u8]>::to_vec);
-    (bytes, budget.usages())
-}
-
-/// D-C4 (D-S5, DR-98; `NativeSharedReads.cache_state_independent_charge`):
-/// the charge of a metered live read depends on the writes since the last
-/// reset and not on the earlier reads. 300 receipts share the 256 store
-/// shards, so some reads probe a shard that holds another read's channel.
-/// Every read on the play and on the replay runtime is charged as an
-/// isolated read after a reset, also when it is repeated. After the same
-/// write on both runtimes, the two runtimes charge every read the same, and
-/// the written receipt is read as its replacement.
-#[tokio::test]
-async fn read_live_data_metered_charge_independent_of_cache_state() {
-    let store = InMemoryStoreManager::new().r_space_stores().await.unwrap();
-    let (play, replay, _) = create_runtimes(store, false, &mut Vec::new()).await;
-    let mut play = RuntimeOps::new(play);
-    let mut replay = RuntimeOps::new(replay);
-    let receipt_ids = (0..300u16).map(wide_receipt_id).collect::<Vec<_>>();
-    let value = b"receipt".to_vec();
-    for batch in receipt_ids.chunks(LIMITS.entries) {
-        let changes = batch
-            .iter()
-            .map(|receipt_id| PrepaidReceiptChange {
-                receipt_id: *receipt_id,
-                expected: None,
-                replacement: Some(value.as_slice()),
-            })
-            .collect::<Vec<_>>();
-        play.replace_prepaid_receipts(&changes, LIMITS)
-            .await
-            .expect("receipt batch");
-    }
-    let root = play.runtime.create_checkpoint().await.root;
-
-    let mut isolated = Vec::with_capacity(receipt_ids.len());
-    for receipt_id in &receipt_ids {
-        play.runtime.reset(&root).await.expect("reset to the root");
-        let (bytes, usages) = live_read_usages(&play, receipt_id).await;
-        assert_eq!(bytes.as_deref(), Some(value.as_slice()));
-        isolated.push(usages);
-    }
-    for (name, runtime) in [("play", &mut play), ("replay", &mut replay)] {
-        runtime
-            .runtime
-            .reset(&root)
-            .await
-            .expect("reset to the root");
-        for pass in 0..2 {
-            for (receipt_id, expected) in receipt_ids.iter().zip(&isolated) {
-                let (bytes, usages) = live_read_usages(&*runtime, receipt_id).await;
-                assert_eq!(bytes.as_deref(), Some(value.as_slice()));
-                assert_eq!(
-                    &usages, expected,
-                    "{name}, pass {pass}: an earlier read changed the charge"
-                );
-            }
-        }
-    }
-
-    let written = receipt_ids[7];
-    let replacement = b"replaced".to_vec();
-    let edit = [PrepaidReceiptChange {
-        receipt_id: written,
-        expected: Some(value.as_slice()),
-        replacement: Some(replacement.as_slice()),
-    }];
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-    play.runtime.reset(&root).await.expect("reset to the root");
-    let log = play
-        .replace_prepaid_receipts_metered(&edit, LIMITS, &budget)
-        .await
-        .expect("play replacement");
-    replay
-        .runtime
-        .reset(&root)
-        .await
-        .expect("reset to the root");
-    replay.runtime.rig(log).await.expect("rig the replacement");
-    replay
-        .replace_prepaid_receipts_metered(&edit, LIMITS, &budget)
-        .await
-        .expect("replay replacement");
-    for (index, receipt_id) in receipt_ids.iter().enumerate() {
-        let (play_bytes, play_usages) = live_read_usages(&play, receipt_id).await;
-        let (replay_bytes, replay_usages) = live_read_usages(&replay, receipt_id).await;
-        assert_eq!(play_usages, replay_usages, "receipt {index}");
-        assert_eq!(play_bytes, replay_bytes, "receipt {index}");
-        if *receipt_id == written {
-            assert_eq!(play_bytes.as_deref(), Some(replacement.as_slice()));
-            assert_ne!(
-                play_usages, isolated[index],
-                "a written receipt is read as resident"
-            );
-        } else {
-            assert_eq!(play_bytes.as_deref(), Some(value.as_slice()));
-        }
-    }
-    replay
-        .runtime
-        .check_replay_data()
-        .await
-        .expect("the replay consumed the rig");
 }
 
 #[tokio::test]

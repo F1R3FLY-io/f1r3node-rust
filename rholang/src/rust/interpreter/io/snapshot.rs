@@ -2337,6 +2337,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the tests that require a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
 
     /// Hard-fork surface pin.  A change here rolls every WAL root
     /// on the network and requires a coordinated fleet upgrade.
@@ -5132,8 +5135,20 @@ mod tests {
     /// rather than deferred to first `maybe_write` call (which
     /// would divide-by-zero in `is_multiple_of`).
     #[test]
-    #[should_panic(expected = "cadence MUST be >= 1")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "cadence MUST be >= 1")]
     fn snapshot_writer_with_default_retain_panics_on_cadence_zero() {
+        let child = PanicChild::new(
+            module_path!(),
+            "snapshot_writer_with_default_retain_panics_on_cadence_zero",
+        );
+        if !child.is_child() {
+            child.expect_panic("cadence MUST be >= 1");
+            return;
+        }
+        child.subject_reached();
         let _ = SnapshotWriter::with_default_retain(PathBuf::from("/x"), 0, None, None);
     }
 
@@ -5143,8 +5158,19 @@ mod tests {
     /// and then calls `maybe_write`.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "cadence MUST be >= 1")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "cadence MUST be >= 1")]
     fn snapshot_writer_maybe_write_debug_asserts_cadence_invariant() {
+        let child = PanicChild::new(
+            module_path!(),
+            "snapshot_writer_maybe_write_debug_asserts_cadence_invariant",
+        );
+        if !child.is_child() {
+            child.expect_panic("cadence MUST be >= 1");
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         // Direct construction with cadence=0 — bypasses the
         // constructor's panic.
@@ -5155,6 +5181,7 @@ mod tests {
             signer_sk: None,
             payload_dir: None,
         };
+        child.subject_reached();
         let _ = w.maybe_write(1, &diverse_entries());
     }
 
@@ -5163,8 +5190,19 @@ mod tests {
     /// `retain = 0`.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "retain MUST be >= 1")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "retain MUST be >= 1")]
     fn snapshot_writer_maybe_write_debug_asserts_retain_invariant() {
+        let child = PanicChild::new(
+            module_path!(),
+            "snapshot_writer_maybe_write_debug_asserts_retain_invariant",
+        );
+        if !child.is_child() {
+            child.expect_panic("retain MUST be >= 1");
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let w = SnapshotWriter {
             dir: tmp.path().to_path_buf(),
@@ -5173,6 +5211,7 @@ mod tests {
             signer_sk: None,
             payload_dir: None,
         };
+        child.subject_reached();
         let _ = w.maybe_write(1, &diverse_entries());
     }
 }

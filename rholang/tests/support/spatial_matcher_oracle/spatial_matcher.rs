@@ -22,7 +22,11 @@ oracle_list_match!(
     Match,
     Bundle,
     GUnforgeable,
-    ReceiveBind
+    ReceiveBind,
+    // Added by the merge of feature/cost-accounted-rho (finding R3-17).
+    If,
+    CostSignedTerm,
+    CostStack
 );
 
 pub trait SpatialMatcher<T, P> {
@@ -512,7 +516,65 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                     wildcard,
                 )
             })
+            // Added by the merge of feature/cost-accounted-rho (finding
+            // R3-17): base's three field matches (base `spatial_matcher.rs`,
+            // at `dd03e0f0c`, lines 583-610), in base's order.
+            .and_then(|_| {
+                self.list_match_single_(
+                    std::mem::take(&mut remainder.conditionals),
+                    std::mem::take(&mut pattern.conditionals),
+                    &|mut p, values| {
+                        p.conditionals = values;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
+            .and_then(|_| {
+                self.list_match_single_(
+                    std::mem::take(&mut remainder.cost_signed_terms),
+                    std::mem::take(&mut pattern.cost_signed_terms),
+                    &|mut p, values| {
+                        p.cost_signed_terms = values;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
+            .and_then(|_| {
+                self.list_match_single_(
+                    std::mem::take(&mut remainder.cost_stacks),
+                    std::mem::take(&mut pattern.cost_stacks),
+                    &|mut p, values| {
+                        p.cost_stacks = values;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
         }
+    }
+}
+
+// Added by the merge of feature/cost-accounted-rho (finding R3-17): base's
+// element rules for the three kinds, without the meter. An element matches
+// only an equal element.
+impl SpatialMatcher<If, If> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: If, pattern: If) -> Option<()> { guard(target == pattern) }
+}
+
+impl SpatialMatcher<CostSignedTerm, CostSignedTerm> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostSignedTerm, pattern: CostSignedTerm) -> Option<()> {
+        guard(target == pattern)
+    }
+}
+
+impl SpatialMatcher<CostStack, CostStack> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostStack, pattern: CostStack) -> Option<()> {
+        guard(target == pattern)
     }
 }
 

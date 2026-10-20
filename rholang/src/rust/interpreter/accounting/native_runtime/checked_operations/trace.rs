@@ -1,20 +1,14 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use models::rust::host_work::HostWorkDimension;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
 };
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
 use thiserror::Error;
 
-use super::super::operation_sources::allocate;
 use super::super::operations::sort;
-use super::super::recording::work;
-use super::super::{
-    HostWorkBudget, InterpreterError, NativeOperationRecord, NativeOperationSource,
-};
+use super::super::{InterpreterError, NativeOperationRecord, NativeOperationSource};
 use super::CheckedNativeOperationJournal;
 
 mod replay;
@@ -37,7 +31,7 @@ pub struct NativeOperationTraceLimits {
 #[derive(Debug, Error)]
 pub enum NativeOperationTraceError {
     #[error(transparent)]
-    Host(#[from] InterpreterError),
+    Interpreter(#[from] InterpreterError),
     #[error("native operation trace exceeds its structural limits")]
     Limit,
     #[error("native operation journal does not cover the committed trace exactly")]
@@ -105,9 +99,8 @@ fn width(completion: RSpaceOperationCompletion) -> usize {
     }
 }
 
-struct TraceSize<'a> {
+struct TraceSize {
     limits: NativeOperationTraceLimits,
-    host: &'a HostWorkBudget,
     entries: usize,
     bytes: usize,
     items: usize,
@@ -122,33 +115,31 @@ fn count(total: &mut usize, amount: usize, limit: usize) -> Result<(), NativeOpe
     Ok(())
 }
 
-fn work_count(count: usize, scale: usize, extra: usize) -> Result<usize, InterpreterError> {
-    count
-        .checked_mul(scale)
-        .and_then(|total| total.checked_add(extra))
-        .ok_or(InterpreterError::HostWorkRejected)
-}
-
-impl TraceSize<'_> {
+impl TraceSize {
     fn entries(&mut self, amount: usize) -> Result<(), NativeOperationTraceError> {
-        count(&mut self.entries, amount, self.limits.source_entries)?;
-        work(
-            self.host,
-            HostWorkDimension::VerificationOperations,
-            work_count(amount, 1, 1)?,
-        )?;
-        Ok(())
+        count(&mut self.entries, amount, self.limits.source_entries)
     }
 
     fn bytes(&mut self, amount: usize) -> Result<(), NativeOperationTraceError> {
-        count(&mut self.bytes, amount, self.limits.source_bytes)?;
-        work(self.host, HostWorkDimension::VerificationBytes, amount)?;
-        Ok(())
+        count(&mut self.bytes, amount, self.limits.source_bytes)
     }
 
     fn consume(&mut self, source: &Consume) -> Result<(), NativeOperationTraceError> {
-        self.entries(work_count(source.channel_hashes.len(), 1, 1)?)?;
-        self.bytes(work_count(source.hash.0.len(), 1, 1)?)?;
+        self.entries(
+            source
+                .channel_hashes
+                .len()
+                .checked_add(1)
+                .ok_or(NativeOperationTraceError::Limit)?,
+        )?;
+        self.bytes(
+            source
+                .hash
+                .0
+                .len()
+                .checked_add(1)
+                .ok_or(NativeOperationTraceError::Limit)?,
+        )?;
         for channel in &source.channel_hashes {
             self.bytes(channel.0.len())?;
         }
@@ -171,14 +162,8 @@ impl TraceSize<'_> {
             source.output_value.len(),
             self.limits.telemetry_items,
         )?;
-        work(
-            self.host,
-            HostWorkDimension::VerificationOperations,
-            source.output_value.len(),
-        )?;
         for item in &source.output_value {
             count(&mut self.outputs, item.len(), self.limits.telemetry_bytes)?;
-            work(self.host, HostWorkDimension::VerificationBytes, item.len())?;
         }
         Ok(())
     }
@@ -215,75 +200,58 @@ fn same_producer(a: &Produce, b: &Produce) -> bool {
     a.hash == b.hash && a.channel_hash == b.channel_hash && a.persistent == b.persistent
 }
 
-fn comm_copies(comm: &COMM, host: &HostWorkBudget) -> Result<(), NativeOperationTraceError> {
-    let entries = comm
-        .produces
-        .len()
-        .checked_add(comm.times_repeated.len())
-        .ok_or(NativeOperationTraceError::Limit)?;
-    work(host, HostWorkDimension::VerificationOperations, entries)?;
-    let produce_hash_bytes = comm
-        .produces
-        .iter()
-        .map(|produce| produce.hash.0.len())
-        .max()
-        .unwrap_or(0);
-    let key_hash_bytes = comm
-        .times_repeated
-        .keys()
-        .map(|produce| produce.hash.0.len())
-        .max()
-        .unwrap_or(0);
-    let compared_bytes = produce_hash_bytes
-        .checked_add(key_hash_bytes)
-        .ok_or(NativeOperationTraceError::Limit)?;
-    let comparisons = work_count(
-        work_count(
-            comm.times_repeated.len().checked_ilog2().unwrap_or(0) as usize,
-            1,
-            1,
-        )?,
-        16,
-        0,
-    )?
-    .checked_mul(comm.produces.len())
-    .ok_or(NativeOperationTraceError::Limit)?;
-    work(host, HostWorkDimension::VerificationOperations, comparisons)?;
-    work(
-        host,
-        HostWorkDimension::VerificationBytes,
-        comparisons
-            .checked_mul(compared_bytes)
-            .ok_or(NativeOperationTraceError::Limit)?,
-    )?;
-    let mut producers = allocate(comm.produces.len(), host)?;
+/// Added by DR-114 (E1): the record rules of native evidence for one slot. A
+/// produce copy is never failed, and it is deterministic exactly when it
+/// carries no record. A record may sit only on the introduction produce of a
+/// matched produce slot and on the COMM copy of that produce, and the two
+/// copies must be equal. Every other produce copy carries no record. The
+/// `times_repeated` keys follow through `comm_copies`.
+fn record_placement(events: &[Event]) -> Result<(), NativeOperationTraceError> {
+    let introduction = match events.first() {
+        Some(Event::IoEvent(IOEvent::Produce(produce))) => Some(produce),
+        _ => None,
+    };
+    let comm = match events.get(1) {
+        Some(Event::Comm(comm)) => Some(comm),
+        _ => None,
+    };
+    let selected = match (introduction, comm) {
+        (Some(introduction), Some(comm)) => comm
+            .produces
+            .iter()
+            .find(|copy| same_producer(introduction, copy)),
+        _ => None,
+    };
+    let copies = introduction
+        .into_iter()
+        .chain(comm.into_iter().flat_map(|comm| comm.produces.iter()));
+    for produce in copies {
+        let may_record = selected.is_some()
+            && (introduction.is_some_and(|introduction| std::ptr::eq(introduction, produce))
+                || selected.is_some_and(|selected| std::ptr::eq(selected, produce)));
+        if produce.failed
+            || produce.is_deterministic != produce.output_value.is_empty()
+            || (!may_record && !produce.output_value.is_empty())
+        {
+            return Err(NativeOperationTraceError::Telemetry);
+        }
+    }
+    if let (Some(introduction), Some(selected)) = (introduction, selected) {
+        if introduction.is_deterministic != selected.is_deterministic
+            || introduction.output_value != selected.output_value
+        {
+            return Err(NativeOperationTraceError::Telemetry);
+        }
+    }
+    Ok(())
+}
+
+fn comm_copies(comm: &COMM) -> Result<(), NativeOperationTraceError> {
+    let mut producers = Vec::with_capacity(comm.produces.len());
     producers.extend(comm.produces.iter());
-    sort(&mut producers, |a, b| {
-        work(host, HostWorkDimension::VerificationOperations, 1)?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            a.hash
-                .0
-                .len()
-                .checked_add(b.hash.0.len())
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )?;
-        Ok(a.hash.cmp(&b.hash))
-    })?;
+    sort(&mut producers, |a, b| Ok(a.hash.cmp(&b.hash)))?;
     let mut distinct = usize::from(!producers.is_empty());
     for pair in producers.windows(2) {
-        work(host, HostWorkDimension::VerificationOperations, 1)?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            pair[0]
-                .hash
-                .0
-                .len()
-                .checked_add(pair[1].hash.0.len())
-                .ok_or(NativeOperationTraceError::Limit)?,
-        )?;
         if pair[0].hash != pair[1].hash {
             distinct = distinct
                 .checked_add(1)
@@ -298,32 +266,8 @@ fn comm_copies(comm: &COMM, host: &HostWorkBudget) -> Result<(), NativeOperation
             .times_repeated
             .get_key_value(produce)
             .ok_or(NativeOperationTraceError::Source)?;
-        work(host, HostWorkDimension::VerificationOperations, 3)?;
-        let source_bytes = [
-            &produce.hash.0,
-            &produce.channel_hash.0,
-            &copy.hash.0,
-            &copy.channel_hash.0,
-        ]
-        .into_iter()
-        .try_fold(0usize, |total, bytes| total.checked_add(bytes.len()))
-        .ok_or(NativeOperationTraceError::Limit)?;
-        work(host, HostWorkDimension::VerificationBytes, source_bytes)?;
         if !same_producer(produce, copy) {
             return Err(NativeOperationTraceError::Source);
-        }
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            produce
-                .output_value
-                .len()
-                .checked_add(copy.output_value.len())
-                .and_then(|count| count.checked_add(1))
-                .ok_or(NativeOperationTraceError::Limit)?,
-        )?;
-        for item in produce.output_value.iter().chain(copy.output_value.iter()) {
-            work(host, HostWorkDimension::VerificationBytes, item.len())?;
         }
         if produce.is_deterministic != copy.is_deterministic
             || produce.failed != copy.failed
@@ -340,13 +284,7 @@ impl CheckedNativeOperationJournal {
         self,
         trace: Arc<[Event]>,
         limits: NativeOperationTraceLimits,
-        host: &HostWorkBudget,
     ) -> Result<CheckedNativeOperationTrace, NativeOperationTraceError> {
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            work_count(self.operations.len(), 1, 1)?,
-        )?;
         let mut expected = 0;
         for row in self.operations.iter() {
             count(&mut expected, width(row.completion), limits.events)?;
@@ -356,7 +294,6 @@ impl CheckedNativeOperationJournal {
         }
         let mut size = TraceSize {
             limits,
-            host,
             entries: 0,
             bytes: 0,
             items: 0,
@@ -372,15 +309,7 @@ impl CheckedNativeOperationJournal {
                 Event::RestingComm(_) => return Err(NativeOperationTraceError::Coverage),
             }
         }
-        let mut slots = allocate(self.operations.len(), host)?;
-        let meter = |operations, scanned, backing| -> Result<(), RSpaceError> {
-            work(host, HostWorkDimension::VerificationOperations, operations)
-                .map_err(|_| RSpaceError::HostWorkRejected)?;
-            work(host, HostWorkDimension::VerificationBytes, scanned)
-                .map_err(|_| RSpaceError::HostWorkRejected)?;
-            work(host, HostWorkDimension::SearchStateBytes, backing)
-                .map_err(|_| RSpaceError::HostWorkRejected)
-        };
+        let mut slots = Vec::with_capacity(self.operations.len());
         // Changed by C7b (DR-86): the slots follow a depth-first walk of the
         // path trie that visits the children of each node by increasing
         // segment. The walk lists the paths in sorted vector order
@@ -413,18 +342,12 @@ impl CheckedNativeOperationJournal {
         //     )?;
         //     Ok(a.session.cmp(&b.session).then_with(|| a.path.cmp(&b.path)))
         // })?;
-        let order = self.recording.paths.preorder(host)?;
+        let order = self.recording.paths.preorder();
         let nodes = order
             .len()
             .checked_add(1)
             .ok_or(NativeOperationTraceError::Limit)?;
-        let mut node_operation = allocate::<Option<usize>>(nodes, host)?;
-        node_operation.resize(nodes, None);
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            work_count(self.operations.len(), 1, order.len())?,
-        )?;
+        let mut node_operation: Vec<Option<usize>> = vec![None; nodes];
         for (operation, row) in self.operations.iter().enumerate() {
             *node_operation
                 .get_mut(row.occurrence.path.index())
@@ -469,11 +392,7 @@ impl CheckedNativeOperationJournal {
                         return Err(NativeOperationTraceError::Coverage)
                     }
                 };
-                if !row
-                    .source
-                    .metered_matches(source, &meter)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?
-                {
+                if !row.source.matches(source) {
                     return Err(NativeOperationTraceError::Source);
                 }
             }
@@ -485,34 +404,20 @@ impl CheckedNativeOperationJournal {
                     .comm
                     .as_ref()
                     .ok_or(NativeOperationTraceError::Coverage)?;
-                if !recorded
-                    .source
-                    .metered_matches(comm, &meter)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?
+                if !recorded.source.matches(comm) {
+                    return Err(NativeOperationTraceError::Source);
+                }
+                if matches!(&row.source, NativeOperationSource::Consume(_))
+                    && !row
+                        .source
+                        .matches(RSpaceOperationSource::Consume(&comm.consume))
                 {
                     return Err(NativeOperationTraceError::Source);
                 }
-                if matches!(&row.source, NativeOperationSource::Consume(_)) {
-                    work(
-                        host,
-                        HostWorkDimension::VerificationOperations,
-                        work_count(comm.consume.channel_hashes.len(), 1, 1)?,
-                    )?;
-                    work(
-                        host,
-                        HostWorkDimension::VerificationBytes,
-                        work_count(comm.consume.channel_hashes.len(), 32, 33)?,
-                    )?;
-                    if !row
-                        .source
-                        .metered_matches(RSpaceOperationSource::Consume(&comm.consume), &meter)
-                        .map_err(|_| InterpreterError::HostWorkRejected)?
-                    {
-                        return Err(NativeOperationTraceError::Source);
-                    }
-                }
-                comm_copies(comm, host)?;
+                comm_copies(comm)?;
             }
+            // Added by DR-114 (E1).
+            record_placement(events)?;
             cursor = end;
         }
         Ok(CheckedNativeOperationTrace {

@@ -6,7 +6,6 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::{
     EventCodecEpoch, StableHashSerialize,
 };
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
-use rspace_plus_plus::rspace::history::native_reader::{NativeReadCharge, NativeReadMeter};
 use rspace_plus_plus::rspace::internal::{Datum, Install, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::{
@@ -17,14 +16,8 @@ use rspace_plus_plus::rspace::replay_rspace::native_session::{
 };
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Serialize;
-use shared::rust::clone_backing::CloneBacking;
 
 use super::*;
-use crate::rust::interpreter::accounting::authority::AuthorityError;
-use crate::rust::interpreter::accounting::monetary_allocation::FundingSearchError;
-use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativePhloExecutionError, NativePhloRegionError,
-};
 
 mod operations;
 mod execution;
@@ -34,45 +27,12 @@ mod errors;
 
 struct SessionEpoch {
     replay: NativeOperationReplay,
-    host: HostWorkBudget,
     codec_epoch: EventCodecEpoch,
-}
-
-impl NativeReadMeter for HostWorkBudget {
-    type Error = InterpreterError;
-
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        work(
-            self,
-            HostWorkDimension::VerificationOperations,
-            charge.operations,
-        )?;
-        work(
-            self,
-            HostWorkDimension::VerificationBytes,
-            charge.scanned_bytes,
-        )?;
-        work(
-            self,
-            HostWorkDimension::SearchStateBytes,
-            charge.backing_bytes,
-        )
-    }
 }
 
 fn error(error: impl Into<NativeReplayError>) -> RSpaceError {
     match error.into() {
-        NativeReplayError::Host(error) => error.into(),
-        NativeReplayError::Budget(
-            NativeBudgetTraceError::Work(FundingSearchError::HostWork(_))
-            | NativeBudgetTraceError::Execution(
-                NativePhloExecutionError::Work(FundingSearchError::HostWork(_))
-                | NativePhloExecutionError::Authority(AuthorityError::HostWorkRejected)
-                | NativePhloExecutionError::Region(NativePhloRegionError::Authority(
-                    AuthorityError::HostWorkRejected,
-                )),
-            ),
-        ) => RSpaceError::HostWorkRejected,
+        NativeReplayError::Interpreter(error) => error.into(),
         other => RSpaceError::InterpreterError(other.to_string()),
     }
 }
@@ -84,33 +44,19 @@ impl NativeReplayEpoch for SessionEpoch {
 
     fn invalidate(&self) { self.replay.invalidate(); }
 
+    /// Added by DR-113: a replayed denial takes the class of the bound
+    /// source, as the play denial does.
+    fn denial(&self) -> RSpaceError {
+        RSpaceError::from(
+            crate::rust::interpreter::accounting::native_runtime::exhaustion_error(
+                self.replay.bound_source(),
+            ),
+        )
+    }
+
     fn begin_boundary(&self) -> Result<Self::Boundary, RSpaceError> {
         self.replay.begin_boundary().map_err(error)
     }
-
-    fn reserve_work(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError> {
-        reserve_host_work(&self.host, operations, bytes)
-    }
-
-    fn reserve_comparison(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError> {
-        work(
-            &self.host,
-            HostWorkDimension::VerificationOperations,
-            operations,
-        )
-        .map_err(error)?;
-        work(&self.host, HostWorkDimension::VerificationBytes, bytes).map_err(error)
-    }
-}
-
-fn reserve_host_work(
-    host: &HostWorkBudget,
-    operations: usize,
-    bytes: usize,
-) -> Result<(), RSpaceError> {
-    work(host, HostWorkDimension::VerificationOperations, operations).map_err(error)?;
-    work(host, HostWorkDimension::VerificationBytes, bytes).map_err(error)?;
-    work(host, HostWorkDimension::SearchStateBytes, bytes).map_err(error)
 }
 
 impl EpochBoundary for NativeReplayBoundary {
@@ -159,7 +105,6 @@ impl CheckedNativeOperationTrace {
         self,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
-        host: HostWorkBudget,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
@@ -167,9 +112,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + Hash
             + Ord
@@ -182,9 +125,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -194,9 +135,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -206,15 +145,13 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
-        self.into_installed_session(history, matcher, host, std::iter::empty())
+        self.into_installed_session(history, matcher, std::iter::empty())
     }
 
     pub fn into_session_for_epoch<C, P, A, K>(
@@ -222,7 +159,6 @@ impl CheckedNativeOperationTrace {
         codec_epoch: EventCodecEpoch,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
-        host: HostWorkBudget,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
@@ -230,9 +166,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + Hash
             + Ord
@@ -245,9 +179,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -257,9 +189,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -269,28 +199,19 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
-        self.into_installed_session_for_epoch(
-            codec_epoch,
-            history,
-            matcher,
-            host,
-            std::iter::empty(),
-        )
+        self.into_installed_session_for_epoch(codec_epoch, history, matcher, std::iter::empty())
     }
 
     pub fn into_installed_session<C, P, A, K>(
         self,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
-        host: HostWorkBudget,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
@@ -299,9 +220,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + Hash
             + Ord
@@ -314,9 +233,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -326,9 +243,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -338,9 +253,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -350,7 +263,6 @@ impl CheckedNativeOperationTrace {
             EventCodecEpoch::Legacy,
             history,
             matcher,
-            host,
             installations,
         )
     }
@@ -360,7 +272,6 @@ impl CheckedNativeOperationTrace {
         codec_epoch: EventCodecEpoch,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
-        host: HostWorkBudget,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
@@ -369,9 +280,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + Hash
             + Ord
@@ -384,9 +293,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -396,9 +303,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -408,29 +313,19 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
-        self.build_session(
-            history,
-            matcher,
-            host,
-            installations,
-            None,
-            codec_epoch,
-        )
+        self.build_session(history, matcher, installations, None, codec_epoch)
     }
 
     pub(crate) fn into_runtime_session<C, P, A, K>(
         self,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
-        host: HostWorkBudget,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: RuntimeBudget,
         codec_epoch: EventCodecEpoch,
@@ -441,9 +336,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + Hash
             + Ord
@@ -456,9 +349,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -468,9 +359,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -480,48 +369,41 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
-        let bound_epoch = budget
-            .native_event_codec_epoch()
-            .ok_or(RSpaceError::HostWorkRejected)?;
+        let bound_epoch =
+            budget
+                .native_event_codec_epoch()
+                .ok_or(RSpaceError::InterpreterError(
+                    "native replay codec epoch differs from bound runtime".to_string(),
+                ))?;
         if bound_epoch != codec_epoch {
-            return Err(RSpaceError::HostWorkRejected);
+            return Err(RSpaceError::InterpreterError(
+                "native replay codec epoch differs from bound runtime".to_string(),
+            ));
         }
-        self.build_session(
-            history,
-            matcher,
-            host,
-            installations,
-            Some(budget),
-            codec_epoch,
-        )
+        self.build_session(history, matcher, installations, Some(budget), codec_epoch)
     }
 
     fn build_session<C, P, A, K>(
         self,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
-        host: HostWorkBudget,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: Option<RuntimeBudget>,
         codec_epoch: EventCodecEpoch,
-        ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
+    ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
             + Debug
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + Hash
             + Ord
@@ -534,9 +416,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -546,9 +426,7 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
@@ -558,19 +436,19 @@ impl CheckedNativeOperationTrace {
             + Default
             + Serialize
             + StableHashSerialize
-            + CloneBacking
             + serde::de::DeserializeOwned
-            + shared::rust::closed_decode::ClosedDecode
             + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
-        let replay = self.into_replay(host.clone()).map_err(error)?;
+        let replay = self.into_replay().map_err(error)?;
         let replay = match budget {
             Some(budget) => {
                 if budget.native_event_codec_epoch() != Some(codec_epoch) {
-                    return Err(RSpaceError::HostWorkRejected);
+                    return Err(RSpaceError::InterpreterError(
+                        "native replay codec epoch differs from bound runtime".to_string(),
+                    ));
                 }
                 replay.bind_runtime(budget).map_err(error)?
             }
@@ -582,7 +460,6 @@ impl CheckedNativeOperationTrace {
                 matcher,
                 SessionEpoch {
                     replay,
-                    host,
                     codec_epoch,
                 },
                 installations,
@@ -598,9 +475,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -612,9 +488,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -623,9 +498,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -634,9 +508,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -678,18 +551,6 @@ where
 
     pub async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
         self.inner.get_data(channel).await
-    }
-
-    pub async fn get_data_with_host_work(
-        &self,
-        channel: &C,
-        host: &HostWorkBudget,
-    ) -> Result<Vec<Datum<A>>, RSpaceError> {
-        self.inner
-            .get_data_with_budget(channel, |operations, bytes| {
-                reserve_host_work(host, operations, bytes)
-            })
-            .await
     }
 
     pub async fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {

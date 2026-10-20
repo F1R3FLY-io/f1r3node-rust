@@ -188,14 +188,23 @@ macro_rules! assert_ok_expr {
     }};
 }
 
+// Changed by DR-128 (bug 11414): the fourth argument is the expected error,
+// because the user failures have their own variants.
+// macro_rules! assert_err {
+//     ($reducer:expr, $env:expr, $input:expr, $msg:expr) => {{
+//         let result = $reducer.eval_expr(&$input, &$env);
+//         assert!(result.is_err());
+//         assert_eq!(
+//             result.unwrap_err(),
+//             InterpreterError::ReduceError($msg.to_string())
+//         );
+//     }};
+// }
 macro_rules! assert_err {
-    ($reducer:expr, $env:expr, $input:expr, $msg:expr) => {{
+    ($reducer:expr, $env:expr, $input:expr, $expected:expr) => {{
         let result = $reducer.eval_expr(&$input, &$env);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            InterpreterError::ReduceError($msg.to_string())
-        );
+        assert_eq!(result.unwrap_err(), $expected);
     }};
 }
 
@@ -274,7 +283,12 @@ async fn float_modulo_rejected() {
         r,
         e,
         binop_expr!(modulo, gdouble_par(5.0), gdouble_par(2.0)),
-        "Modulus not defined on floating point"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Modulus not defined on floating point"
+        InterpreterError::OperatorNotDefined {
+            op: "%".to_string(),
+            other_type: "float".to_string()
+        }
     );
 }
 
@@ -495,7 +509,12 @@ async fn float32_modulo_rejected() {
         r,
         e,
         binop_expr!(modulo, gfloat32_par(5.0), gfloat32_par(2.0)),
-        "Modulus not defined on floating point"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Modulus not defined on floating point"
+        InterpreterError::OperatorNotDefined {
+            op: "%".to_string(),
+            other_type: "float32".to_string()
+        }
     );
 }
 
@@ -586,8 +605,22 @@ async fn bigint_errors() {
     let (r, e) = setup!();
     let bi = |v: i64| bigint_par(bigint_from_i64(v));
 
-    assert_err!(r, e, binop_expr!(div, bi(10), bi(0)), "Division by zero");
-    assert_err!(r, e, binop_expr!(modulo, bi(10), bi(0)), "Modulo by zero");
+    // Changed by DR-128 (bug 11414): the expected error, not its text.
+    // assert_err!(r, e, binop_expr!(div, bi(10), bi(0)), "Division by zero");
+    assert_err!(
+        r,
+        e,
+        binop_expr!(div, bi(10), bi(0)),
+        InterpreterError::DivisionByZero("Division by zero".to_string())
+    );
+    // Changed by DR-128 (bug 11414): the expected error, not its text.
+    // assert_err!(r, e, binop_expr!(modulo, bi(10), bi(0)), "Modulo by zero");
+    assert_err!(
+        r,
+        e,
+        binop_expr!(modulo, bi(10), bi(0)),
+        InterpreterError::DivisionByZero("Modulo by zero".to_string())
+    );
 }
 
 #[tokio::test]
@@ -643,13 +676,17 @@ async fn bigrat_errors() {
         r,
         e,
         binop_expr!(div, rat(1, 2), rat(0, 1)),
-        "Division by zero"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Division by zero"
+        InterpreterError::DivisionByZero("Division by zero".to_string())
     );
     assert_err!(
         r,
         e,
         binop_expr!(modulo, rat(1, 2), rat(0, 1)),
-        "Modulo by zero"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Modulo by zero"
+        InterpreterError::DivisionByZero("Modulo by zero".to_string())
     );
 }
 
@@ -790,13 +827,17 @@ async fn fixedpoint_division_errors() {
         r,
         e,
         binop_expr!(div, fixed(100, 1), fixed(0, 1)),
-        "Division by zero"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Division by zero"
+        InterpreterError::DivisionByZero("Division by zero".to_string())
     );
     assert_err!(
         r,
         e,
         binop_expr!(modulo, fixed(100, 1), fixed(0, 1)),
-        "Modulo by zero"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Modulo by zero"
+        InterpreterError::DivisionByZero("Modulo by zero".to_string())
     );
 }
 
@@ -974,8 +1015,22 @@ async fn uint64_division_and_modulo_by_zero() {
     let (r, e) = setup!();
     let u = guint64_par;
 
-    assert_err!(r, e, binop_expr!(div, u(1), u(0)), "Division by zero");
-    assert_err!(r, e, binop_expr!(modulo, u(1), u(0)), "Modulo by zero");
+    // Changed by DR-128 (bug 11414): the expected error, not its text.
+    // assert_err!(r, e, binop_expr!(div, u(1), u(0)), "Division by zero");
+    assert_err!(
+        r,
+        e,
+        binop_expr!(div, u(1), u(0)),
+        InterpreterError::DivisionByZero("Division by zero".to_string())
+    );
+    // Changed by DR-128 (bug 11414): the expected error, not its text.
+    // assert_err!(r, e, binop_expr!(modulo, u(1), u(0)), "Modulo by zero");
+    assert_err!(
+        r,
+        e,
+        binop_expr!(modulo, u(1), u(0)),
+        InterpreterError::DivisionByZero("Modulo by zero".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1143,13 +1198,17 @@ async fn sized_int_overflow_and_zero_errors() {
         r,
         e,
         binop_expr!(div, guint16_par(1), guint16_par(0)),
-        "Division by zero"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Division by zero"
+        InterpreterError::DivisionByZero("Division by zero".to_string())
     );
     assert_err!(
         r,
         e,
         binop_expr!(modulo, guint32_par(1), guint32_par(0)),
-        "Modulo by zero"
+        // Changed by DR-128 (bug 11414): the expected error, not its text.
+        // "Modulo by zero"
+        InterpreterError::DivisionByZero("Modulo by zero".to_string())
     );
     assert!(r.eval_expr(&neg_expr!(guint8_par(1)), &e).is_err());
 }

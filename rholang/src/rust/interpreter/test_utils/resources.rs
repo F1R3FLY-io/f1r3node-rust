@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -62,6 +63,21 @@ where
     F: FnOnce(RhoRuntimeImpl) -> Fut,
     Fut: Future<Output = R>,
 {
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+    // body moved to `with_runtime_for_epoch`. This wrapper keeps the Legacy
+    // epoch, which F1R3Lang tests pin.
+    with_runtime_for_epoch(EventCodecEpoch::Legacy, prefix, f).await
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-39): runs `f`
+/// with a runtime of the given event codec epoch. A Legacy runtime opens no COMM
+/// accounting scope (`LegacyEpochScope.v`), so a test of cost-accounted Rho
+/// selects the epoch of its protocol: CostV1 for protocol 6, CostV2 for 7.
+pub async fn with_runtime_for_epoch<F, Fut, R>(epoch: EventCodecEpoch, prefix: &str, f: F) -> R
+where
+    F: FnOnce(RhoRuntimeImpl) -> Fut,
+    Fut: Future<Output = R>,
+{
     let temp_dir = Builder::new()
         .prefix(prefix)
         .tempdir()
@@ -79,7 +95,8 @@ where
     #[cfg(not(feature = "chromadb"))]
     let external_services = ExternalServices::noop();
 
-    let runtime = rho_runtime::create_runtime_from_kv_store(
+    let runtime = rho_runtime::create_runtime_from_kv_store_for_epoch(
+        epoch,
         rspace_store,
         Arc::new(default_mergeable_tags()),
         false,
@@ -118,6 +135,35 @@ pub async fn create_runtimes(
     .await
 }
 
+/// Added by the merge of feature/cost-accounted-rho (finding R1-39): the play
+/// and replay runtimes of `create_runtimes`, in the given event codec epoch.
+pub async fn create_runtimes_for_epoch(
+    epoch: EventCodecEpoch,
+    stores: RSpaceStore,
+    init_registry: bool,
+    additional_system_processes: &mut Vec<Definition>,
+) -> (
+    RhoRuntimeImpl,
+    RhoRuntimeImpl,
+    Arc<
+        Box<
+            dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    >,
+) {
+    create_runtimes_with_services_for_epoch(
+        epoch,
+        stores,
+        init_registry,
+        additional_system_processes,
+        ExternalServices::noop(),
+    )
+    .await
+}
+
 /// Create runtimes with custom external services for testing
 pub async fn create_runtimes_with_services(
     stores: RSpaceStore,
@@ -136,12 +182,46 @@ pub async fn create_runtimes_with_services(
         >,
     >,
 ) {
-    let hrstores =
-        RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
-            stores,
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+    // body moved to `create_runtimes_with_services_for_epoch`. This wrapper
+    // keeps the Legacy epoch.
+    create_runtimes_with_services_for_epoch(
+        EventCodecEpoch::Legacy,
+        stores,
+        init_registry,
+        additional_system_processes,
+        external_services,
+    )
+    .await
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-39): the play
+/// and replay runtimes with custom external services, in the given event codec
+/// epoch. Play and replay share the epoch, as a node's two roles do.
+pub async fn create_runtimes_with_services_for_epoch(
+    epoch: EventCodecEpoch,
+    stores: RSpaceStore,
+    init_registry: bool,
+    additional_system_processes: &mut Vec<Definition>,
+    external_services: ExternalServices,
+) -> (
+    RhoRuntimeImpl,
+    RhoRuntimeImpl,
+    Arc<
+        Box<
+            dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    >,
+) {
+    let hrstores = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay_for_epoch(
+        epoch,
+        stores,
+        Arc::new(Box::new(Matcher)),
+    )
+    .unwrap();
 
     let (space, replay) = hrstores;
 

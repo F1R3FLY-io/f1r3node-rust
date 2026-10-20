@@ -5,7 +5,6 @@ use models::rhoapi::{
     Par, Var,
 };
 use models::rust::rholang::drive::{drive, Outcome, Step, Traversal};
-use shared::rust::clone_backing::{self, BackingError, BackingMeter};
 
 use crate::env::Env;
 use crate::error::EvalError;
@@ -35,36 +34,7 @@ pub fn eval(par: &Par, env: &Env<Par>) -> Result<Par, EvalError> {
 /// total and deterministic — see [`SpatialMatch`] for the contract this
 /// crate's own determinism guarantee rests on.
 pub fn eval_with(par: &Par, env: &Env<Par>, matcher: &dyn SpatialMatch) -> Result<Par, EvalError> {
-    eval_with_optional_meter(par, env, matcher, None)
-}
-
-/// Evaluate with the offered-funded backing meter. A spatial-match oracle must
-/// implement its metered method; its default refuses instead of bypassing the
-/// deploy budget.
-pub fn eval_with_metered(
-    par: &Par,
-    env: &Env<Par>,
-    matcher: &dyn SpatialMatch,
-    meter: &dyn BackingMeter,
-) -> Result<Par, EvalError> {
-    eval_with_optional_meter(par, env, matcher, Some(meter))
-}
-
-pub fn eval_metered(par: &Par, env: &Env<Par>, meter: &dyn BackingMeter) -> Result<Par, EvalError> {
-    eval_with_metered(par, env, &NoSpatialMatch, meter)
-}
-
-fn eval_with_optional_meter(
-    par: &Par,
-    env: &Env<Par>,
-    matcher: &dyn SpatialMatch,
-    meter: Option<&dyn BackingMeter>,
-) -> Result<Par, EvalError> {
-    let mut traversal = EvalTraversal {
-        env,
-        matcher,
-        meter,
-    };
+    let mut traversal = EvalTraversal { env, matcher };
     let mut state = ();
     drive(
         &mut traversal,
@@ -137,20 +107,6 @@ fn concatenate(mut a: Par, mut b: Par) -> Par {
     );
     a.connective_used |= b.connective_used;
     a
-}
-
-fn concatenate_metered(a: Par, b: Par, meter: Option<&dyn BackingMeter>) -> Result<Par, EvalError> {
-    if let Some(meter) = meter {
-        clone_backing::reserve_blocks_copy_and_cleanup(&a, meter)?;
-        clone_backing::reserve_blocks_copy_and_cleanup(&b, meter)?;
-        let scanned = a
-            .locally_free
-            .len()
-            .checked_add(b.locally_free.len())
-            .ok_or(BackingError::Overflow)?;
-        meter.reserve(2, scanned, 0)?;
-    }
-    Ok(concatenate(a, b))
 }
 
 fn union_bytes(mut a: Vec<u8>, b: Vec<u8>) -> Vec<u8> {
@@ -362,23 +318,6 @@ fn resolve_var(v: &Var, env: &Env<Par>) -> Result<Par, EvalError> {
     }
 }
 
-fn resolve_var_metered(
-    v: &Var,
-    env: &Env<Par>,
-    meter: Option<&dyn BackingMeter>,
-) -> Result<Par, EvalError> {
-    match meter {
-        None => resolve_var(v, env),
-        Some(meter) => match v.var_instance.as_ref() {
-            Some(VarInstance::BoundVar(idx)) => env
-                .get_metered(idx, meter)?
-                .ok_or(EvalError::UnboundVariable { index: *idx }),
-            Some(VarInstance::FreeVar(idx)) => Err(EvalError::UnboundVariable { index: *idx }),
-            Some(VarInstance::Wildcard(_)) | None => Err(EvalError::MissingExprInstance),
-        },
-    }
-}
-
 /// ⚠ ORACLE-ONLY. The production machine uses [`require_par_ref`], which
 /// borrows: this spelling `cloned()` every operand of every operator — a
 /// Θ(depth) `<Par as Clone>::clone` per operand — and the machine only reads
@@ -432,19 +371,6 @@ fn single_expr_instance(par: &Par) -> Result<ExprInstance, EvalError> {
         .expr_instance
         .clone()
         .ok_or(EvalError::MissingExprInstance)
-}
-
-fn single_expr_instance_metered(
-    par: &Par,
-    meter: Option<&dyn BackingMeter>,
-) -> Result<ExprInstance, EvalError> {
-    if let Some(meter) = meter {
-        clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
-        // The owned evaluator result is released after extracting its one
-        // expression; charge that traversal before the clone.
-        clone_backing::inspect_blocks(par, meter)?;
-    }
-    single_expr_instance(par)
 }
 
 #[cfg(test)]
@@ -745,7 +671,7 @@ enum EvNode<'t> {
 /// a child value.
 enum EvKont<'t> {
     /// Fold one evaluated expression into the already-built Par shell. This
-    /// runs before the next expression, preserving the source meter schedule.
+    /// runs before the next expression.
     ParConcat,
     Not,
     Neg,
@@ -789,7 +715,6 @@ enum EvKont<'t> {
 struct EvalTraversal<'e> {
     env: &'e Env<Par>,
     matcher: &'e dyn SpatialMatch,
-    meter: Option<&'e dyn BackingMeter>,
 }
 
 impl<'e> Traversal for EvalTraversal<'e> {
@@ -823,20 +748,7 @@ impl<'e> Traversal for EvalTraversal<'e> {
         vals: &mut Vec<EvVal>,
     ) -> Result<(), EvalError> {
         match node {
-            // Reserve and copy the Par shell before its first child, just as
-            // the source recursive evaluator did. Each child is then folded
-            // immediately before the next child runs. Deferring all folds to
-            // a final n-ary fold would reorder backing reservations and could make
-            // rejection depend on a later child instead of the current one.
             EvNode::Eval { par, extract } => {
-                if let Some(meter) = self.meter {
-                    clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
-                    meter.reserve(
-                        1,
-                        par.exprs.len(),
-                        std::mem::size_of::<Par>() + std::mem::size_of::<Vec<Expr>>(),
-                    )?;
-                }
                 if extract {
                     work.push(Step::Combine(EvKont::Extract));
                 }
@@ -856,17 +768,7 @@ impl<'e> Traversal for EvalTraversal<'e> {
                 work.push(Step::Descend(EvNode::Eval { par, extract }));
                 Ok(())
             }
-            EvNode::Expr(expr) => {
-                if let Some(meter) = self.meter {
-                    clone_backing::reserve_blocks_copy_and_cleanup(expr, meter)?;
-                    meter.reserve(
-                        4,
-                        0,
-                        std::mem::size_of::<Par>() + std::mem::size_of::<Expr>(),
-                    )?;
-                }
-                descend_ev_expr(expr, self.env, self.matcher, self.meter, work, vals)
-            }
+            EvNode::Expr(expr) => descend_ev_expr(expr, self.env, self.matcher, work, vals),
         }
     }
 
@@ -884,7 +786,7 @@ impl<'e> Traversal for EvalTraversal<'e> {
         // there is no configuration in which a combine already holds the
         // answer. `Outcome::Done` is for the comparison traversals, where it
         // restores the short-circuit of the `&&` chain it replaces.
-        run_ev_combine(kont, self.matcher, self.meter, vals).map(Outcome::Value)
+        run_ev_combine(kont, self.matcher, vals).map(Outcome::Value)
     }
 
     /// ★ Deliberately duplicates the pop counts in [`run_ev_combine`], so the
@@ -924,7 +826,7 @@ fn push_binary<'t, 'e>(
 ) -> Result<(), EvalError> {
     // The recursive source evaluates p1 (including its extraction) before it
     // even validates p2. Defer the latter check to a work item so a malformed
-    // p2 cannot mask a p1 error or move a meter reservation before p1's work.
+    // p2 cannot mask a p1 error.
     let a = require_par_ref(p1)?;
     work.push(Step::Combine(kont));
     work.push(Step::Descend(EvNode::MaybeEval { par: p2, extract }));
@@ -963,20 +865,7 @@ fn combine_bool(
     }
 }
 
-fn combine_eq(
-    expect_eq: bool,
-    lhs: Par,
-    rhs: Par,
-    meter: Option<&dyn BackingMeter>,
-) -> Result<Par, EvalError> {
-    if let Some(meter) = meter {
-        // The NaN scan, equality comparison, and release each traverse both
-        // owned operands once. Prepay all three block walks.
-        for _ in 0..3 {
-            clone_backing::inspect_blocks(&lhs, meter)?;
-            clone_backing::inspect_blocks(&rhs, meter)?;
-        }
-    }
+fn combine_eq(expect_eq: bool, lhs: Par, rhs: Par) -> Result<Par, EvalError> {
     // IEEE 754: any comparison involving NaN is false (so == is false and
     // != is true). Mirrors `par_contains_nan_double` in the full reducer.
     let eq = if par_contains_nan_double(&lhs) || par_contains_nan_double(&rhs) {
@@ -992,18 +881,7 @@ fn combine_cmp(
     interpret: impl Fn(i64) -> bool,
     v1: ExprInstance,
     v2: ExprInstance,
-    meter: Option<&dyn BackingMeter>,
 ) -> Result<Par, EvalError> {
-    if let Some(meter) = meter {
-        let scanned = match (&v1, &v2) {
-            (ExprInstance::GString(left), ExprInstance::GString(right)) => left
-                .len()
-                .checked_add(right.len())
-                .ok_or(BackingError::Overflow)?,
-            _ => 0,
-        };
-        meter.reserve(1, scanned, 0)?;
-    }
     let order: i64 = match (&v1, &v2) {
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => i64::from(i1.cmp(i2) as i8),
         (ExprInstance::GString(s1), ExprInstance::GString(s2)) => i64::from(s1.cmp(s2) as i8),
@@ -1048,7 +926,6 @@ fn descend_ev_expr<'t, 'e>(
     expr: &'t Expr,
     env: &Env<Par>,
     matcher: &dyn SpatialMatch,
-    meter: Option<&dyn BackingMeter>,
     work: &mut Vec<Step<'t, EvalTraversal<'e>>>,
     vals: &mut Vec<EvVal>,
 ) -> Result<(), EvalError> {
@@ -1096,10 +973,8 @@ fn descend_ev_expr<'t, 'e>(
         // disposition as `substitute_deep_binding`.
         ExprInstance::EVarBody(evar) => {
             let v = evar.v.as_ref().ok_or(EvalError::MissingExprInstance)?;
-            let p = resolve_var_metered(v, env, meter)?;
-            vals.push(EvVal::Par(eval_with_optional_meter(
-                &p, env, matcher, meter,
-            )?));
+            let p = resolve_var(v, env)?;
+            vals.push(EvVal::Par(eval_with(&p, env, matcher)?));
             Ok(())
         }
 
@@ -1301,7 +1176,6 @@ fn descend_ev_expr<'t, 'e>(
 fn run_ev_combine(
     kont: EvKont<'_>,
     matcher: &dyn SpatialMatch,
-    meter: Option<&dyn BackingMeter>,
     vals: &mut Vec<EvVal>,
 ) -> Result<EvVal, EvalError> {
     let pop = |vals: &mut Vec<EvVal>| vals.pop().expect("eval_drive: value stack underflow");
@@ -1309,7 +1183,7 @@ fn run_ev_combine(
         EvKont::ParConcat => {
             let child = pop(vals).into_par();
             let accumulator = pop(vals).into_par();
-            concatenate_metered(accumulator, child, meter).map(EvVal::Par)
+            Ok(EvVal::Par(concatenate(accumulator, child)))
         }
         EvKont::Not => combine_not(pop(vals).into_inst()).map(EvVal::Par),
         EvKont::Neg => combine_neg(pop(vals).into_inst()).map(EvVal::Par),
@@ -1321,12 +1195,12 @@ fn run_ev_combine(
         EvKont::EqK { expect_eq } => {
             let rhs = pop(vals).into_par();
             let lhs = pop(vals).into_par();
-            combine_eq(expect_eq, lhs, rhs, meter).map(EvVal::Par)
+            combine_eq(expect_eq, lhs, rhs).map(EvVal::Par)
         }
         EvKont::CmpK { op, interpret } => {
             let v2 = pop(vals).into_inst();
             let v1 = pop(vals).into_inst();
-            combine_cmp(op, interpret, v1, v2, meter).map(EvVal::Par)
+            combine_cmp(op, interpret, v1, v2).map(EvVal::Par)
         }
         EvKont::IntK { op, f } => {
             let v2 = pop(vals).into_inst();
@@ -1340,15 +1214,12 @@ fn run_ev_combine(
         }
         EvKont::MatchesK { pattern } => {
             let evaled_target = pop(vals).into_par();
-            let matched = match meter {
-                Some(meter) => matcher.matches_metered(&evaled_target, pattern, meter)?,
-                None => matcher.matches(&evaled_target, pattern),
-            };
+            let matched = matcher.matches(&evaled_target, pattern);
             Ok(EvVal::Par(par_with_bool(matched)))
         }
         EvKont::Extract => {
             let evaled = pop(vals).into_par();
-            single_expr_instance_metered(&evaled, meter).map(EvVal::Inst)
+            single_expr_instance(&evaled).map(EvVal::Inst)
         }
     }
 }

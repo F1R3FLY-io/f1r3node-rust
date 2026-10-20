@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 use super::*;
 
 fn payer(byte: u8) -> Sig { Sig::Ground(vec![byte; 33]) }
@@ -152,47 +150,13 @@ fn residue_has_demand_only_inside_its_deployment() {
     );
 }
 
-#[test]
-fn metered_resolution_matches_and_rejects_before_hashing() {
-    let entropy = b"entropy".as_slice();
-    let stored = residue_seal(&payer(1), entropy, [7; 32]);
-    let unbounded = |_: usize, _: usize, _: usize| Ok(());
-    for context in [
-        ResidueContext::new(&payer(1), [7; 32]).expect("same deployment"),
-        ResidueContext::new(&payer(1), [8; 32]).expect("later deployment"),
-        ResidueContext::system(),
-    ] {
-        assert_eq!(
-            resolve_system_residue_metered(&stored, entropy, &context, &unbounded)
-                .expect("metered resolution"),
-            resolve_system_residue(&stored, entropy, &context).expect("resolution")
-        );
-    }
-    let calls = Cell::new(0_usize);
-    let exhausted = |_: usize, _: usize, _: usize| {
-        calls.set(calls.get() + 1);
-        Err(BackingError::Rejected)
-    };
-    assert_eq!(
-        resolve_system_residue_metered(
-            &stored,
-            entropy,
-            &ResidueContext::new(&payer(1), [7; 32]).expect("context"),
-            &exhausted,
-        ),
-        Err(AuthorityError::HostWorkRejected)
-    );
-    assert_eq!(calls.get(), 1);
-}
-
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
 
     /// The invariants of `SystemResidueAuthority.tla` over arbitrary payers,
     /// deployments and entropies: `InDeployChargeRefinesInheritance`,
     /// `NoForeignSystemResidueDemand`, `WriterIndependentCost`,
-    /// `GenesisSealUnchanged`, `UserTermResidueStillCharged` and the metered
-    /// and unmetered agreement behind `ReplayAgreement`.
+    /// `GenesisSealUnchanged` and `UserTermResidueStillCharged`.
     #[test]
     fn residue_resolution_keeps_the_model_invariants(
         writer in proptest::collection::vec(proptest::prelude::any::<u8>(), 33),
@@ -210,12 +174,6 @@ proptest::proptest! {
         let stored = residue_seal(&writer, &entropy, written_in);
         let context = ResidueContext::new(&reader, read_in).expect("ground context");
         let resolved = resolve_system_residue(&stored, &entropy, &context).expect("resolution");
-        let unbounded = |_: usize, _: usize, _: usize| Ok(());
-        proptest::prop_assert_eq!(
-            resolve_system_residue_metered(&stored, &entropy, &context, &unbounded)
-                .expect("metered resolution"),
-            resolved.clone()
-        );
         if reader == writer && read_in == written_in {
             proptest::prop_assert_eq!(resolved.into_owned(), seal(vec![paid.clone()]));
         } else {

@@ -1,6 +1,13 @@
 use loom::sync::{Arc, Mutex, RwLock};
 use loom::thread;
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the negative controls below.
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
+use panic_child::PanicChild;
+
 #[derive(Default)]
 struct Observer {
     events: Mutex<Vec<(usize, usize)>>,
@@ -67,9 +74,21 @@ fn concurrent_operations_retain_their_captured_observers() {
 }
 
 #[test]
-#[should_panic(expected = "operation callbacks crossed observer ownership")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "operation callbacks crossed observer ownership")]
 fn reloading_observer_during_an_operation_violates_ownership() {
+    let child = PanicChild::new(
+        module_path!(),
+        "reloading_observer_during_an_operation_violates_ownership",
+    );
+    if !child.is_child() {
+        child.expect_panic("operation callbacks crossed observer ownership");
+        return;
+    }
     let mut model = loom::model::Builder::new();
     model.preemption_bound = Some(2);
+    child.subject_reached();
     model.check(|| verify_capture(false));
 }

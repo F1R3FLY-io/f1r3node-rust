@@ -300,7 +300,17 @@ impl PartialEq for cost_signature::Value {
             (Self::Compound(a), Self::Compound(b)) => a == b,
             (Self::Name(a), Self::Name(b)) => a == b,
             (Self::Unit(a), Self::Unit(b)) => a == b,
-            _ => false,
+            // Changed by the merge of feature/cost-accounted-rho (plan step
+            // 1.9): the catch-all arm hid a new variant from the compiler, and
+            // the F1R3Lang gate `no_comparison_impl_carries_an_irrefutable_arm`
+            // refuses it. The residue is now listed by variant.
+            // _ => false,
+            (Self::Ground(_), _)
+            | (Self::BoundLevel(_), _)
+            | (Self::Quote(_), _)
+            | (Self::Compound(_), _)
+            | (Self::Name(_), _)
+            | (Self::Unit(_), _) => false,
         }
     }
 }

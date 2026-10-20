@@ -219,7 +219,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         vec![genesis_block.clone()],
         proto_util::deploys(&block_a_raw)
             .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+            // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+            // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
@@ -275,7 +278,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         vec![genesis_block.clone()],
         proto_util::deploys(&block_b_raw)
             .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+            // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+            // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),

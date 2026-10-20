@@ -81,7 +81,7 @@ use super::unwrap_option_safe;
 // the recursive twin
 // ===========================================================================
 
-fn signature_recursive(
+pub(crate) fn signature_recursive(
     mut signature: CostSignature,
     ctx: SubCtx,
     env: EnvView<'_>,
@@ -790,7 +790,7 @@ mod differential_substitute_worklist {
             // here feeds the production call without disturbing what the oracle
             // was computed from — it is the harness owning a second copy, not
             // the wrapper copying its input.
-            let tr = production.substitute_and_charge(case.term.clone(), case.depth, &env, None);
+            let tr = production.substitute_and_charge(case.term.clone(), case.depth, &env);
             let trace_tr = trace_of(&production, tr);
 
             assert_eq!(
@@ -820,7 +820,7 @@ mod differential_substitute_worklist {
 
             let production_ns = subject();
             let tr_ns =
-                production_ns.substitute_no_sort_and_charge(case.term.clone(), case.depth, &env, None);
+                production_ns.substitute_no_sort_and_charge(case.term.clone(), case.depth, &env);
             let trace_tr_ns = trace_of(&production_ns, tr_ns);
 
             assert_eq!(
@@ -858,7 +858,7 @@ mod differential_substitute_worklist {
             let trace_rec = trace_of(&oracle, rec);
 
             let production = subject();
-            let tr = production.substitute_and_charge(term.clone(), depth, &env, None);
+            let tr = production.substitute_and_charge(term.clone(), depth, &env);
             let trace_tr = trace_of(&production, tr);
             assert_eq!(
                 trace_rec, trace_tr,
@@ -878,7 +878,7 @@ mod differential_substitute_worklist {
             let trace_rec_ns = trace_of(&oracle_ns, rec_ns);
 
             let production_ns = subject();
-            let tr_ns = production_ns.substitute_no_sort_and_charge(term.clone(), depth, &env, None);
+            let tr_ns = production_ns.substitute_no_sort_and_charge(term.clone(), depth, &env);
             let trace_tr_ns = trace_of(&production_ns, tr_ns);
             assert_eq!(
                 trace_rec_ns, trace_tr_ns,

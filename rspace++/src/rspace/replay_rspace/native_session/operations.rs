@@ -1,15 +1,17 @@
 use std::borrow::Borrow;
 
-use shared::rust::clone_backing::CloneBacking;
-
 use super::*;
 use crate::rspace::hashing::native_source::{GroupKeys, OperationKeys, StoreKey};
-use crate::rspace::native_backing;
-use crate::rspace::replay_rspace::native_candidate::metered::{CandidateReader, ProduceSelection};
+// Changed by D-D5 (DR-107): the produce selection owns the incoming datum.
+// use crate::rspace::replay_rspace::native_candidate::metered::CandidateReader;
+use crate::rspace::replay_rspace::native_candidate::selection::{
+    CandidateReader, ProduceSelection,
+};
 use crate::rspace::replay_rspace::native_epoch::{
     NativeOperationEpoch, NativeOperationPublication, NativeOperationTicket, NativeReplayDecision,
     NativeReplayOutcome,
 };
+use crate::rspace::rspace_interface::ProduceCommitGuard;
 
 type Authority<C, P, A, K, E> =
     <<E as NativeOperationEpoch<C, P, A, K>>::Ticket as NativeOperationTicket<C, P, A, K>>::Authority;
@@ -36,9 +38,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -50,9 +51,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -61,9 +61,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -72,9 +71,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -90,7 +88,9 @@ where
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
         completion.publish();
         publication.complete();
-        Err(RSpaceError::OutOfPhlogistons)
+        // Changed by DR-113: the epoch names the error of its denial.
+        // Err(RSpaceError::OutOfPhlogistons)
+        Err(self.epoch.denial())
     }
 
     pub async fn consume(
@@ -132,7 +132,7 @@ where
             self.consume_source(&channels, &patterns, &continuation, persist)?;
         let authority = resolve(&source)?;
         let authority = authority.borrow();
-        let hashes = self.channel_hashes(&channels, channels.len())?;
+        let hashes = self.channel_hashes(&channels, channels.len());
         let (_shared, _channels, mut ticket) = loop {
             self.ensure_open()?;
             self.epoch
@@ -164,10 +164,8 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        let reserve =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         // D-C2c (D-S1, DR-96): the group key of the consume's channels.
-        let keys = GroupKeys::from_channel_keys(channel_keys, &reserve)?;
+        let keys = GroupKeys::from_channel_keys(channel_keys);
         // Changed by C1 (DR-81): the prefetch fills the cache and copies no
         // continuation.
         // self.read_continuations(&channels)?;
@@ -187,18 +185,19 @@ where
         // Changed by D-C2c (D-S1, DR-96): the readers receive the keys.
         // let read_data = |channel: &C| self.read_data_view_with(channel,
         // &reserve);
-        let read_data = |channel: &C, channel_key: StoreKey| {
-            self.read_data_view_with(channel, channel_key, &reserve)
-        };
+        let read_data =
+            |channel: &C, channel_key: StoreKey| self.read_data_view_with(channel, channel_key);
         // Changed by C1 (DR-81): candidates read shared views.
+        // let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        // let read_continuations = |channels: &[C]|
+        // self.read_continuation_views(channels);
         let read_continuations =
             |channels: &[C], group: &GroupKeys| self.read_continuation_views(channels, group);
         let reader = CandidateReader {
-            meter: &reserve,
             data: &read_data,
             continuations: &read_continuations,
         };
-        let prepared = self.space.prepare_metered_consume_candidate(
+        let prepared = self.space.prepare_consume_candidate(
             &channels,
             &keys.channels,
             &patterns,
@@ -227,9 +226,7 @@ where
             // let store = self.space.get_store();
             // let (inserted, depth) = store.store_consume_metered(&channels,
             // waiting, &reserve)?;
-            let (inserted, depth) = self
-                .store
-                .store_consume(&channels, &keys, waiting, &reserve)?;
+            let (inserted, depth) = self.store.store_consume(&channels, &keys, waiting)?;
             if inserted {
                 self.space.inc_replay_waiting_continuations_depth(depth);
             }
@@ -245,13 +242,7 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        for candidate in &prepared.data {
-            native_backing::reserve_blocks_copy_and_cleanup(candidate.datum.a.as_ref(), &reserve)?;
-            native_backing::reserve_blocks_copy_and_cleanup(candidate.removed_datum.as_ref(), &reserve)?;
-        }
-        let result = result::prepare(prepared.data, |operations, bytes| {
-            self.epoch.reserve_work(operations, bytes)
-        })?;
+        let result = result::prepare(prepared.data);
         let continuation = ContResult {
             patterns,
             continuation,
@@ -268,7 +259,7 @@ where
         // store.retire_data_metered(&result.data, &result.retirement,
         // &reserve)?;
         self.store
-            .retire_data(&result.data, &keys.channels, &result.retirement, &reserve)?;
+            .retire_data(&result.data, &keys.channels, &result.retirement)?;
         completion.publish();
         publication.complete();
         Ok(Some((continuation, result.data)))
@@ -300,13 +291,15 @@ where
             .await
     }
 
+    // Added by the merge of feature/cost-accounted-rho (finding R2-08): HEAD's
+    // doc, restored without its metering text, because DR-131 removed the
+    // meter. HEAD said "Candidate search and metering remain outside that
+    // boundary", and its second paragraph said that `with_commit` must not
+    // hold a lock that the native host-work meter re-enters.
     /// Replay a produce while holding the caller's commit authority across
-    /// native store/counter/ticket publication. Candidate search and metering
-    /// remain outside that boundary; a refused guard publishes nothing and
-    /// dropping the prepared ticket cancels its replay slot.
-    ///
-    /// `with_commit` must not hold a lock re-entered by the native host-work
-    /// meter: the final store mutation can reserve work inside the callback.
+    /// native store/counter/ticket publication. Candidate search remains
+    /// outside that boundary; a refused guard publishes nothing and dropping
+    /// the prepared ticket cancels its replay slot.
     pub async fn produce_with_authority_guarded<F, R>(
         &self,
         channel: C,
@@ -338,9 +331,7 @@ where
         let source = self.produce_source(&channel, &data, persist)?;
         // D-C2c (D-S1, DR-96): the store key of the produced channel is its
         // source digest.
-        let key = StoreKey::from_digest(&source.channel_hash, &|operations, scanned, backing| {
-            self.history_reserve(operations, scanned, backing)
-        })?;
+        let key = StoreKey::from_digest(&source.channel_hash)?;
         let authority = resolve(&source)?;
         let authority = authority.borrow();
         let (_shared, _channels, mut ticket) = loop {
@@ -373,11 +364,12 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        let reserve =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         // D-C2c (D-S1, DR-96): the keys of the joins, one digest per channel,
         // computed once for the operation.
-        let join_keys = OperationKeys::build_for_epoch(self.epoch.codec_epoch(), &joins, &reserve)?;
+        // Changed by D-E3 (DR-110): the keys also reserve the traversals of the
+        // join channels that they read.
+        // let join_keys = OperationKeys::build(&joins, &reserve)?;
+        let join_keys = OperationKeys::build_for_epoch(self.epoch.codec_epoch(), &joins)?;
         // Changed by C2 (DR-82): the prefetch copies no datum.
         // self.prepare_data(&channel)?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the keys.
@@ -400,46 +392,62 @@ where
         // Changed by D-C2c (D-S1, DR-96): the readers receive the keys.
         // let read_data = |channel: &C| self.read_data_view_with(channel,
         // &reserve);
-        let read_data = |channel: &C, channel_key: StoreKey| {
-            self.read_data_view_with(channel, channel_key, &reserve)
-        };
+        let read_data =
+            |channel: &C, channel_key: StoreKey| self.read_data_view_with(channel, channel_key);
         // Changed by C1 (DR-81): candidates read shared views.
+        // let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        // let read_continuations = |channels: &[C]|
+        // self.read_continuation_views(channels);
         let read_continuations =
             |channels: &[C], group: &GroupKeys| self.read_continuation_views(channels, group);
         let reader = CandidateReader {
-            meter: &reserve,
             data: &read_data,
             continuations: &read_continuations,
         };
-        let arc_bytes = native_backing::arc_allocation_bytes::<A>()
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        reserve(2, arc_bytes, arc_bytes)?;
-        let incoming = Datum {
-            a: Arc::new(data),
-            persist,
-            source,
-        };
-        let selection = self.space.prepare_metered_produce_candidate(
+        // Changed by D-D5 (DR-107): the selection owns the incoming datum.
+        // It gives the datum back when nothing matches, and the source back
+        // when a continuation matches.
+        // let prepared = self.space.prepare_metered_produce_candidate(
+        //     &channel,
+        //     &data,
+        //     persist,
+        //     &source,
+        //     joins,
+        //     &join_keys,
+        //     ticket.candidate_identity(),
+        //     &reader,
+        // )?;
+        let selection = self.space.prepare_produce_candidate(
             &channel,
-            incoming,
+            Datum {
+                a: Arc::new(data),
+                persist,
+                source,
+            },
             joins,
             &join_keys,
             ticket.candidate_identity(),
             &reader,
         )?;
         if outcome == NativeReplayOutcome::Stored {
+            // if prepared.is_some() {
+            //     return Err(mismatch());
+            // }
             let ProduceSelection::Unmatched(incoming) = selection else {
                 return Err(mismatch());
             };
+            // let counter = self
+            //     .space
+            //     .prepare_metered_produce_counter(&source, persist, &reserve)?;
             let counter = self
                 .space
-                .prepare_metered_produce_counter(&incoming.source, incoming.persist, &reserve)?;
+                .prepare_produce_counter(&incoming.source, incoming.persist)?;
             let mut completion = ticket.prepare(outcome)?;
             return crate::rspace::rspace_interface::commit_produce(guard, || {
                 let publication = PublicationGuard::with_invalidation(&self.unavailable, || {
                     self.epoch.invalidate()
                 });
-                self.store.put_datum(&channel, key, incoming, &reserve)?;
+                self.store.put_datum(&channel, key, incoming)?;
                 counter.publish();
                 completion.publish();
                 publication.complete();
@@ -448,7 +456,14 @@ where
         }
         // Changed by D-C2c (D-S1, DR-96): the candidate names its join group.
         // let prepared = prepared.ok_or_else(mismatch)?;
-        let ProduceSelection::Matched { prepared, group, source } = selection else {
+        // Changed by D-D5 (DR-107): the selection also gives the source back.
+        // let (prepared, group) = prepared.ok_or_else(mismatch)?;
+        let ProduceSelection::Matched {
+            prepared,
+            group,
+            source,
+        } = selection
+        else {
             return Err(mismatch());
         };
         let group_keys = join_keys.groups.get(group).ok_or_else(mismatch)?;
@@ -465,13 +480,7 @@ where
         }
         require(decision, NativeReplayDecision::Granted)?;
         let returned = ticket.returned_produce(&source)?;
-        for datum in &candidate.data_candidates {
-            native_backing::reserve_blocks_copy_and_cleanup(datum.datum.a.as_ref(), &reserve)?;
-            native_backing::reserve_blocks_copy_and_cleanup(datum.removed_datum.as_ref(), &reserve)?;
-        }
-        let result = result::prepare(candidate.data_candidates, |operations, bytes| {
-            self.epoch.reserve_work(operations, bytes)
-        })?;
+        let result = result::prepare(candidate.data_candidates);
         let continuation = ContResult {
             continuation: Arc::unwrap_or_clone(candidate.continuation.continuation),
             persistent: candidate.continuation.persist,
@@ -479,9 +488,7 @@ where
             patterns: Arc::unwrap_or_clone(candidate.continuation.patterns),
             peek: !candidate.continuation.peeks.is_empty(),
         };
-        let counter = self
-            .space
-            .prepare_metered_produce_counter(&source, persist, &reserve)?;
+        let counter = self.space.prepare_produce_counter(&source, persist)?;
         let mut completion = ticket.prepare(NativeReplayOutcome::Matched)?;
         crate::rspace::rspace_interface::commit_produce(guard, || {
             let publication =
@@ -493,7 +500,6 @@ where
                 continuation.persistent,
                 &result.data,
                 &result.retirement,
-                &reserve,
             )?;
             self.space.mark_replay_waiting_continuation_match();
             counter.publish();

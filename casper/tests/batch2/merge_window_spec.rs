@@ -34,12 +34,19 @@ use crate::util::genesis_builder::GenesisBuilder;
 const DEPLOY_LIFESPAN: i64 = 5;
 
 fn gstring_channel(name: &str) -> Par {
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GString(name.to_string())),
-        }],
-        ..Default::default()
-    }
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-33): F1R3Lang
+    // gives `Par` an iterative `Drop`, so a struct-update literal cannot move the
+    // other fields out of `Default::default()` (E0509). The builder makes the
+    // same `Par`. The old literal was:
+    // Par {
+    //     exprs: vec![Expr {
+    //         expr_instance: Some(ExprInstance::GString(name.to_string())),
+    //     }],
+    //     ..Default::default()
+    // }
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GString(name.to_string())),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -526,6 +526,10 @@ fn the_encode_differential_can_go_red() {
 /// The generated table is what the assertions are measured against, so a
 /// degenerate table would make every coverage assertion above vacuous.
 #[test]
+// Added by the merge of feature/cost-accounted-rho (clippy gate): the
+// models library allows `assertions_on_constants` crate-wide. This test
+// checks the generated constants at run time on purpose.
+#[allow(clippy::assertions_on_constants)]
 fn the_generated_variant_table_is_not_degenerate() {
     assert_eq!(
         EXPR_INSTANCE_VARIANTS.len(),

@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6b32fe680c6ce49cbfc1a06fda5e2729e57ec3bfcdf8599f4677e12e611f58cf # shrinks to case = Case { price: 1, counts: [], extra: 1, complete: false, sources: [SourceCase { capacity: 1, hold_cap: 4, debit_cap: 1, fee: true, permits: [] }], custody: [1], total_exposure: 5, cursors: (0, 0) }
+cc 90eb089b91162c741394824218bdc1fa17448d0a4e5f649d8cdf75f220d79c38 # shrinks to case = Case { price: 1, counts: [(1, 1, 2), (1, 2, 1)], extra: 1, complete: false, sources: [SourceCase { capacity: 4, hold_cap: 4, debit_cap: 4, fee: true, permits: [true, true] }], custody: [1], total_exposure: 5, cursors: (0, 0) }
+cc 5d600cc27d2701325f050a4083637e318aa53293a7a258bea7ce82704c7787a0 # shrinks to case = Case { price: 1, counts: [(0, 0, 3), (1, 3, 1)], extra: 1, complete: false, sources: [SourceCase { capacity: 5, hold_cap: 5, debit_cap: 5, fee: true, permits: [true, true] }], custody: [1], total_exposure: 6, cursors: (0, 0) }
+cc 9fc4df6db30659422ac1c86e0f714a45e84f30bc3aeb03f8fe852dc77f9f34d0 # shrinks to case = Case { price: 1, counts: [], extra: 1, complete: false, sources: [SourceCase { capacity: 0, hold_cap: 0, debit_cap: 0, fee: false, permits: [] }, SourceCase { capacity: 2, hold_cap: 2, debit_cap: 2, fee: true, permits: [] }], custody: [1, 2], total_exposure: 2, cursors: (0, 0) }, flags = [false, true, true]
+cc 54a9524dd24daebbcc2e997bb9ce5ced93c7e4cb396898147ccbd053e19e38b4 # shrinks to case = Case { price: 1, counts: [], extra: 0, complete: true, sources: [SourceCase { capacity: 1, hold_cap: 1, debit_cap: 1, fee: true, permits: [] }], custody: [1], total_exposure: 1, cursors: (0, 0) }, flags = [true, false, false]
+cc 18fc4edb4efb538c4dc79dd814617affd5578c1d42346b1cfaccfb51789fbcfe # shrinks to case = Case { price: 1, counts: [], extra: 0, complete: true, sources: [SourceCase { capacity: 1, hold_cap: 1, debit_cap: 1, fee: true, permits: [] }], custody: [1], total_exposure: 1, cursors: (0, 0) }, flags = [true, false, false]

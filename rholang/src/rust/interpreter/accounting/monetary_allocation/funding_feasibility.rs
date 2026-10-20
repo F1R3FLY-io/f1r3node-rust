@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use thiserror::Error;
 
 use super::funding_adjacency::advance_adjacency;
@@ -22,7 +21,6 @@ mod search_properties;
 #[cfg(test)]
 #[path = "funding_domain_properties.rs"]
 mod domain_properties;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FundingSearchLimits {
@@ -45,8 +43,6 @@ pub enum FundingFeasibility {
 pub enum FundingSearchError {
     #[error(transparent)]
     InvalidProblem(#[from] FundingAssignmentError),
-    #[error(transparent)]
-    HostWork(#[from] HostWorkReservationError),
     #[error("funding search allocation failed")]
     AllocationFailed,
     #[error("funding search arithmetic overflow")]
@@ -64,16 +60,6 @@ pub enum FundingSearchError {
 }
 
 const ABSENT: usize = usize::MAX;
-
-pub(in crate::rust::interpreter::accounting) fn reserve_work(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), FundingSearchError> {
-    let units = u64::try_from(amount).map_err(|_| FundingSearchError::Overflow)?;
-    budget.reserve(dimension, HostWorkUnits::new(units))?;
-    Ok(())
-}
 
 fn reserved_vec<T>(capacity: usize) -> Result<Vec<T>, FundingSearchError> {
     let mut result = Vec::new();
@@ -97,7 +83,6 @@ pub fn solve_funding_feasibility(
     obligations: &[u64],
     eligible: &[Vec<bool>],
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<FundingFeasibility, FundingSearchError> {
     let sources = capacities.len();
     let count = obligations.len();
@@ -110,17 +95,10 @@ pub fn solve_funding_feasibility(
     if count > limits.obligation_cap.get() {
         return Err(FundingAssignmentError::TooManyObligations.into());
     }
-    let cells = sources
-        .checked_mul(count)
-        .ok_or(FundingSearchError::Overflow)?;
     let vertices = sources
         .checked_add(count)
         .and_then(|n| n.checked_add(2))
         .ok_or(FundingSearchError::Overflow)?;
-    let scan = cells
-        .checked_add(vertices)
-        .ok_or(FundingSearchError::Overflow)?;
-    reserve_work(budget, HostWorkDimension::SearchCandidates, scan)?;
     if eligible.len() != sources || eligible.iter().any(|row| row.len() != count) {
         return Err(FundingAssignmentError::InvalidDimensions.into());
     }
@@ -138,20 +116,6 @@ pub fn solve_funding_feasibility(
         .and_then(|n| n.checked_add(count))
         .and_then(|n| n.checked_mul(2))
         .ok_or(FundingSearchError::Overflow)?;
-    let state_bytes = [
-        (directed_edges, 24_usize),
-        (vertices, 24),
-        (cells, 8),
-        (sources, 32),
-        (count, 9),
-    ]
-    .into_iter()
-    .try_fold(0_usize, |sum, (n, width)| {
-        n.checked_mul(width)
-            .and_then(|bytes| sum.checked_add(bytes))
-    })
-    .ok_or(FundingSearchError::Overflow)?;
-    reserve_work(budget, HostWorkDimension::SearchStateBytes, state_bytes)?;
     let mut edges = reserved_vec(directed_edges)?;
     let mut heads = filled_vec(vertices, ABSENT)?;
     let first_obligation = sources + 1;
@@ -177,7 +141,6 @@ pub fn solve_funding_feasibility(
     #[cfg(test)]
     tests::assert_residual_state(capacities, obligations, eligible, &edges, &heads, funded);
     while funded < total {
-        reserve_work(budget, HostWorkDimension::SearchCandidates, vertices)?;
         parents.fill(ABSENT);
         parents[0] = 0;
         queue.clear();
@@ -192,7 +155,6 @@ pub fn solve_funding_feasibility(
             cursor += 1;
             let mut adjacency_cursor = heads[node];
             while adjacency_cursor != ABSENT {
-                reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
                 let index = advance_adjacency(&edges, &mut adjacency_cursor)
                     .ok_or(FundingSearchError::InvalidResult)?;
                 let edge = &edges[index];
@@ -214,7 +176,6 @@ pub fn solve_funding_feasibility(
             tests::assert_closed_cut(capacities, obligations, eligible, &edges, &parents, funded);
             let mut selected = reserved_vec(count)?;
             selected.extend((0..count).map(|j| parents[first_obligation + j] == ABSENT));
-            reserve_work(budget, HostWorkDimension::VerificationOperations, scan)?;
             match check_funding_deficit(
                 capacities,
                 obligations,
@@ -234,7 +195,6 @@ pub fn solve_funding_feasibility(
         let mut amount = total - funded;
         let mut node = sink;
         while node != 0 {
-            reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
             let index = parents[node];
             amount = amount.min(edges[index].capacity);
             node = edges[index ^ 1].to;
@@ -249,7 +209,6 @@ pub fn solve_funding_feasibility(
             search_properties::AugmentationSnapshot::new(&edges, &parents, sink, amount);
         node = sink;
         while node != 0 {
-            reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
             let index = parents[node];
             node =
                 augment_edge(&mut edges, index, amount).ok_or(FundingSearchError::InvalidResult)?;
@@ -264,12 +223,6 @@ pub fn solve_funding_feasibility(
         #[cfg(test)]
         tests::assert_residual_state(capacities, obligations, eligible, &edges, &heads, funded);
     }
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        scan.checked_add(directed_edges)
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
     let mut assignment = reserved_vec(sources)?;
     for _ in 0..sources {
         assignment.push(filled_vec(count, 0_u64)?);
@@ -295,10 +248,12 @@ pub fn solve_funding_feasibility(
 
 #[cfg(test)]
 mod tests {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use proptest::prelude::*;
 
     use super::*;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the tests that require a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
 
     fn residual_assignment(
         edges: &[ResidualEdge],
@@ -540,17 +495,25 @@ mod tests {
         }
     }
 
-    fn budget() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-    }
-
     #[test]
-    #[should_panic(expected = "an augmenting path must be simple")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "an augmenting path must be simple")]
     fn parent_path_checks_detect_a_cycle_disconnected_from_the_root() {
+        let child = PanicChild::new(
+            module_path!(),
+            "parent_path_checks_detect_a_cycle_disconnected_from_the_root",
+        );
+        if !child.is_child() {
+            child.expect_panic("an augmenting path must be simple");
+            return;
+        }
         let mut edges = Vec::new();
         let mut heads = vec![ABSENT; 3];
         add_edge(&mut edges, &mut heads, 1, 2, 1);
         add_edge(&mut edges, &mut heads, 2, 1, 1);
+        child.subject_reached();
         assert_augmenting_path(&edges, &[0, 2, 0], 2, 1, 1);
     }
 
@@ -601,26 +564,62 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "paired residual capacities must conserve original capacity")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "paired residual capacities must conserve original capacity")]
     fn invariant_checks_detect_a_missing_reverse_update() {
+        let child = PanicChild::new(
+            module_path!(),
+            "invariant_checks_detect_a_missing_reverse_update",
+        );
+        if !child.is_child() {
+            child.expect_panic("paired residual capacities must conserve original capacity");
+            return;
+        }
         let (mut edges, heads) = one_source_graph(1, 1, 0);
         edges[2].capacity = 0;
+        child.subject_reached();
         assert_residual_state(&[1], &[1], &[vec![true]], &edges, &heads, 0);
     }
 
     #[test]
-    #[should_panic(expected = "source flow must equal assigned row")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "source flow must equal assigned row")]
     fn invariant_checks_detect_disconnected_source_funding() {
+        let child = PanicChild::new(
+            module_path!(),
+            "invariant_checks_detect_disconnected_source_funding",
+        );
+        if !child.is_child() {
+            child.expect_panic("source flow must equal assigned row");
+            return;
+        }
         let (mut edges, heads) = one_source_graph(1, 1, 0);
         edges[2].capacity = 0;
         edges[3].capacity = 1;
+        child.subject_reached();
         assert_residual_state(&[1], &[1], &[vec![true]], &edges, &heads, 0);
     }
 
     #[test]
-    #[should_panic(expected = "funded counter must equal projected assignment")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "funded counter must equal projected assignment")]
     fn invariant_checks_detect_a_counter_without_funding() {
+        let child = PanicChild::new(
+            module_path!(),
+            "invariant_checks_detect_a_counter_without_funding",
+        );
+        if !child.is_child() {
+            child.expect_panic("funded counter must equal projected assignment");
+            return;
+        }
         let (edges, heads) = one_source_graph(1, 1, 0);
+        child.subject_reached();
         assert_residual_state(&[1], &[1], &[vec![true]], &edges, &heads, 1);
     }
 
@@ -639,9 +638,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "forward residual edge must preserve reachability")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "forward residual edge must preserve reachability")]
     fn invariant_checks_detect_incomplete_forward_search() {
+        let child = PanicChild::new(
+            module_path!(),
+            "invariant_checks_detect_incomplete_forward_search",
+        );
+        if !child.is_child() {
+            child.expect_panic("forward residual edge must preserve reachability");
+            return;
+        }
         let (edges, _) = one_source_graph(1, 1, 0);
+        child.subject_reached();
         assert_closed_cut(
             &[1],
             &[1],
@@ -653,9 +664,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "reverse residual edge must preserve reachability")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "reverse residual edge must preserve reachability")]
     fn invariant_checks_detect_incomplete_reverse_search() {
+        let child = PanicChild::new(
+            module_path!(),
+            "invariant_checks_detect_incomplete_reverse_search",
+        );
+        if !child.is_child() {
+            child.expect_panic("reverse residual edge must preserve reachability");
+            return;
+        }
         let (edges, _) = one_source_graph(1, 2, 1);
+        child.subject_reached();
         assert_closed_cut(
             &[1],
             &[2],
@@ -667,11 +690,25 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "reachable obligation must be saturated when the sink is unreachable"
-    )]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(
+    //     expected = "reachable obligation must be saturated when the sink is unreachable"
+    // )]
     fn invariant_checks_detect_an_omitted_sink_path() {
+        let child = PanicChild::new(
+            module_path!(),
+            "invariant_checks_detect_an_omitted_sink_path",
+        );
+        if !child.is_child() {
+            child.expect_panic(
+                "reachable obligation must be saturated when the sink is unreachable",
+            );
+            return;
+        }
         let (edges, _) = one_source_graph(2, 2, 1);
+        child.subject_reached();
         assert_closed_cut(&[2], &[2], &[vec![true]], &edges, &[0, 0, 2, ABSENT], 1);
     }
 
@@ -687,7 +724,7 @@ mod tests {
         obligations: &[u64],
         eligible: &[Vec<bool>],
     ) -> FundingFeasibility {
-        solve_funding_feasibility(capacities, obligations, eligible, limits(), &budget()).unwrap()
+        solve_funding_feasibility(capacities, obligations, eligible, limits()).unwrap()
     }
 
     fn three_source_reference(
@@ -761,83 +798,23 @@ mod tests {
         };
         assert_eq!(totals.total(), 0);
         assert_eq!(assignment, vec![Vec::<u64>::new(), Vec::new()]);
-        let mut usages = Vec::new();
         for amount in [1, u64::MAX] {
-            let work = budget();
             let result = solve_funding_feasibility(
                 &[amount, amount],
                 &[amount],
                 &[vec![true], vec![true]],
                 limits(),
-                &work,
             )
             .unwrap();
             let FundingFeasibility::Feasible { totals, .. } = result else {
                 panic!("maximum amount rejected")
             };
             assert_eq!(totals.total(), amount);
-            usages.push(work.usages());
         }
-        assert_eq!(usages[0], usages[1]);
         assert!(matches!(
             solve(&[u64::MAX], &[1], &[vec![false]]),
             FundingFeasibility::Infeasible { .. }
         ));
-    }
-
-    #[test]
-    fn work_exhaustion_is_not_financial_infeasibility() {
-        for dimension in [
-            HostWorkDimension::SearchCandidates,
-            HostWorkDimension::SearchStateBytes,
-            HostWorkDimension::VerificationOperations,
-        ] {
-            let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(100_000));
-            bounds.set(dimension, HostWorkLimit::new(0));
-            let work = HostWorkBudget::new(bounds);
-            let result = solve_funding_feasibility(&[1], &[1], &[vec![true]], limits(), &work);
-            assert!(matches!(result, Err(FundingSearchError::HostWork(_))));
-            assert!(work.is_rejected());
-        }
-    }
-
-    #[test]
-    fn every_budget_prefix_discards_partial_search_without_a_financial_result() {
-        let demands = [1, 1];
-        let eligible = [vec![false, true], vec![true, true]];
-        for capacities in [[1, 1], [0, 1]] {
-            let measured = budget();
-            let expected =
-                solve_funding_feasibility(&capacities, &demands, &eligible, limits(), &measured)
-                    .unwrap();
-            for dimension in [
-                HostWorkDimension::SearchCandidates,
-                HostWorkDimension::SearchStateBytes,
-                HostWorkDimension::VerificationOperations,
-            ] {
-                let required = measured.usage(dimension).get();
-                for available in 0..=required {
-                    let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-                    bounds.set(dimension, HostWorkLimit::new(available));
-                    let work = HostWorkBudget::new(bounds);
-                    let result = solve_funding_feasibility(
-                        &capacities,
-                        &demands,
-                        &eligible,
-                        limits(),
-                        &work,
-                    );
-                    if available < required {
-                        assert!(matches!(result, Err(FundingSearchError::HostWork(_))));
-                        assert_eq!(work.rejection().unwrap().dimension(), dimension);
-                    } else {
-                        assert_eq!(result, Ok(expected.clone()));
-                        assert!(!work.is_rejected());
-                    }
-                    assert_eq!(solve(&capacities, &demands, &eligible), expected);
-                }
-            }
-        }
     }
 
     #[test]
@@ -876,7 +853,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                solve_funding_feasibility(&capacities, &demands, &eligible, limits(), &budget()),
+                solve_funding_feasibility(&capacities, &demands, &eligible, limits()),
                 Err(FundingSearchError::InvalidProblem(expected))
             );
         }

@@ -166,6 +166,12 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("rejected_deploy_buffer_checked_v1".to_string(), None),
             deploy_storage_env_config(),
         ),
+        // Added by DR-116 (gap G6): the rejected offered envelopes, beside the
+        // legacy rejected-deploy table.
+        (
+            Db::new("rejected_envelope_buffer".to_string(), None),
+            deploy_storage_env_config(),
+        ),
         // Reporting (trace) cache
         (
             Db::new("reporting-cache".to_string(), None),

@@ -157,7 +157,7 @@ pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
     // error, never an implicit fallback to the historical Tree-Sitter parser.
     let frontend = this.runtime_manager.required_program_frontend()?;
     let prepared = match prepare_offered_source(frontend, &envelope) {
-        Ok((prepared, _source_bytes)) => prepared,
+        Ok(prepared) => prepared,
         Err(error) => {
             return Ok(Either::Left(DeployError::parsing_error(format!(
                 "Error in parsing term: \n{error}"

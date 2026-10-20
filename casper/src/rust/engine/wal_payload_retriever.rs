@@ -365,6 +365,12 @@ fn slice_to_hash(slice: &[u8]) -> Option<[u8; 32]> {
     Some(out)
 }
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of `tests::mark_resolved_rejects_hash_mismatch`.
+#[cfg(all(test, debug_assertions))]
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
 #[cfg(test)]
 mod tests {
     use prost::bytes::Bytes;
@@ -512,31 +518,67 @@ mod tests {
     /// sync-driver can fall back to peer fetch.  Both modes
     /// MUST refuse to store wrong bytes.
     ///
-    /// Uses `catch_unwind` + `cfg(debug_assertions)` branches
-    /// so the test exercises the actual mode-dependent
-    /// behavior instead of documenting a contract-via-string
-    /// (which the earlier version did).
+    /// A debug build runs the mismatch in a child process, and
+    /// this process checks the panic of the child. A release
+    /// build checks the `false` result in this process.
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test ran the mismatch behind an unwind interceptor and required a
+    // panic in a debug build. The former doc paragraph and body follow.
+    // /// Uses `catch_unwind` + `cfg(debug_assertions)` branches
+    // /// so the test exercises the actual mode-dependent
+    // /// behavior instead of documenting a contract-via-string
+    // /// (which the earlier version did).
     #[test]
     fn mark_resolved_rejects_hash_mismatch() {
-        use std::panic;
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let retriever = WalPayloadRetriever::new();
-                retriever.mark_resolved([0xAA; 32], vec![0xFF; 10]).await
-            })
-        }));
+        // use std::panic;
+        // let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        //     tokio::runtime::Runtime::new().unwrap().block_on(async {
+        //         let retriever = WalPayloadRetriever::new();
+        //         retriever.mark_resolved([0xAA; 32], vec![0xFF; 10]).await
+        //     })
+        // }));
+        // #[cfg(debug_assertions)]
+        // {
+        //     assert!(
+        //         result.is_err(),
+        //         "debug build must panic via debug_assert on hash/bytes mismatch"
+        //     );
+        // }
+        // #[cfg(not(debug_assertions))]
+        // {
+        //     assert_eq!(
+        //         result.expect("release build must not panic"),
+        //         false,
+        //         "release build must return false on hash/bytes mismatch"
+        //     );
+        // }
+        let mismatch = || {
+            tokio::runtime::Runtime::new()
+                .expect("a tokio runtime starts")
+                .block_on(async {
+                    let retriever = WalPayloadRetriever::new();
+                    retriever.mark_resolved([0xAA; 32], vec![0xFF; 10]).await
+                })
+        };
         #[cfg(debug_assertions)]
         {
-            assert!(
-                result.is_err(),
-                "debug build must panic via debug_assert on hash/bytes mismatch"
+            let child = super::panic_child::PanicChild::new(
+                module_path!(),
+                "mark_resolved_rejects_hash_mismatch",
             );
+            if !child.is_child() {
+                child.expect_panic(
+                    "reducer produced bytes that don't hash to the requested payload_hash",
+                );
+                return;
+            }
+            child.subject_reached();
+            mismatch();
         }
         #[cfg(not(debug_assertions))]
         {
-            assert_eq!(
-                result.expect("release build must not panic"),
-                false,
+            assert!(
+                !mismatch(),
                 "release build must return false on hash/bytes mismatch"
             );
         }

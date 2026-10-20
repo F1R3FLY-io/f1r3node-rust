@@ -165,10 +165,10 @@ proptest! {
         let summarize = |rows: &[(Vec<u8>, [u64; 3])]| {
             let input = pooled_snapshot(rows);
             let measured = rules.measure(&input, rows.len()).unwrap();
-            let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-            let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+            let regions = measured.region_demands(region_limits()).unwrap();
+            let located = regions.locate_purses(purse_limits()).unwrap();
             let prepared = located
-                .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
+                .prepare_acquisition_demand(&binding, &terms, limits())
                 .unwrap();
             prepared
                 .resources()
@@ -189,10 +189,10 @@ proptest! {
 
         let input = pooled_snapshot(&rows);
         let measured = rules.measure(&input, rows.len()).unwrap();
-        let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-        let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+        let regions = measured.region_demands(region_limits()).unwrap();
+        let located = regions.locate_purses(purse_limits()).unwrap();
         let prepared = located
-            .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
+            .prepare_acquisition_demand(&binding, &terms, limits())
             .unwrap();
         let entries = prepared.resources();
         for (index, left) in entries.iter().enumerate() {
@@ -216,10 +216,10 @@ proptest! {
         let ceilings = [schedules[0].actual_price];
         let controls = controls(&schedules, &ceilings);
         let by_occurrence =
-            prepare_counted_phlo_discharge(&[], &occurrences, discharge_limits(execution_limits()), &budget())
+            prepare_counted_phlo_discharge(&[], &occurrences, discharge_limits(execution_limits()))
                 .unwrap();
         let aggregated =
-            prepare_counted_phlo_discharge(&[], entries, discharge_limits(execution_limits()), &budget())
+            prepare_counted_phlo_discharge(&[], entries, discharge_limits(execution_limits()))
                 .unwrap();
         let by_occurrence =
             check_counted_phlo_execution(controls, by_occurrence.witness(), execution_limits()).unwrap();
@@ -276,8 +276,7 @@ proptest! {
 }
 
 /// C8 (DR-87): a demand with many occurrences of a few keys gives one
-/// obligation for each key and the fee, settlement encodes each key once, and
-/// the encoding work is the work of a demand with one occurrence per key.
+/// obligation for each key and the fee, and settlement encodes each key once.
 #[test]
 fn settlement_encodes_each_key_once() {
     let descriptor = schedule();
@@ -287,19 +286,18 @@ fn settlement_encodes_each_key_once() {
     let schedules = [binding.schedule()];
     let ceilings = [schedules[0].actual_price];
     let controls = controls(&schedules, &ceilings);
-    let encode_work = |input: &ByteObservationSnapshot, copies: usize| {
+    let encode = |input: &ByteObservationSnapshot, copies: usize| {
         let measured = rules.measure(input, copies).unwrap();
-        let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-        let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+        let regions = measured.region_demands(region_limits()).unwrap();
+        let located = regions.locate_purses(purse_limits()).unwrap();
         let prepared = located
-            .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
+            .prepare_acquisition_demand(&binding, &terms, limits())
             .unwrap();
         let distinct = prepared.resources().len();
         let discharge = prepare_counted_phlo_discharge(
             &[],
             prepared.resources(),
             discharge_limits(execution_limits()),
-            &budget(),
         )
         .unwrap();
         let checked =
@@ -328,11 +326,7 @@ fn settlement_encodes_each_key_once() {
         assert_eq!(unique.len(), keys.len());
         assert!(obligations.encoded_keys(key_limits(), total).is_ok());
         assert!(obligations.encoded_keys(key_limits(), total - 1).is_err());
-        let host = budget();
-        obligations
-            .encoded_keys_with_budget(key_limits(), total, &host)
-            .unwrap();
-        (distinct, host.usages())
+        distinct
     };
     let many = snapshot([3, 5, 7], 3, 64);
     let mut single = snapshot([3, 5, 7], 3, 1);
@@ -340,11 +334,8 @@ fn settlement_encodes_each_key_once() {
         .authority
         .regions
         .truncate(1);
-    let (many_keys, many_work) = encode_work(&many, 64);
-    let (single_keys, single_work) = encode_work(&single, 1);
-    assert_eq!(many_keys, 4);
-    assert_eq!(single_keys, 4);
-    assert_eq!(many_work, single_work);
+    assert_eq!(encode(&many, 64), 4);
+    assert_eq!(encode(&single, 1), 4);
 }
 
 /// C8 (DR-87): the shape of the gateway funding flow. Two purse identities
@@ -363,36 +354,27 @@ fn funding_flow_has_nine_keys() {
         .collect::<Vec<_>>();
     let input = pooled_snapshot(&rows);
     let measured = rules.measure(&input, rows.len()).unwrap();
-    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    let regions = measured.region_demands(region_limits()).unwrap();
+    let located = regions.locate_purses(purse_limits()).unwrap();
     let original = PhloExecutionLimits {
         resource_entries: 4_096,
         authority_nodes: 4_096,
         key_bytes: 262_144,
     };
     let prepared = located
-        .prepare_acquisition_demand(
-            &binding,
-            &terms,
-            NativePhloAcquisitionLimits {
-                entries: 4_096,
-                ..limits()
-            },
-            &budget(),
-        )
+        .prepare_acquisition_demand(&binding, &terms, NativePhloAcquisitionLimits {
+            entries: 4_096,
+            ..limits()
+        })
         .unwrap();
     assert_eq!(prepared.occurrence_count(), 2_904);
     assert_eq!(prepared.resources().len(), 8);
     let schedules = [binding.schedule()];
     let ceilings = [schedules[0].actual_price];
     let controls = controls(&schedules, &ceilings);
-    let discharge = prepare_counted_phlo_discharge(
-        &[],
-        prepared.resources(),
-        discharge_limits(original),
-        &budget(),
-    )
-    .unwrap();
+    let discharge =
+        prepare_counted_phlo_discharge(&[], prepared.resources(), discharge_limits(original))
+            .unwrap();
     let checked = check_counted_phlo_execution(controls, discharge.witness(), original).unwrap();
     let obligations = project_phlo_obligations(
         checked,

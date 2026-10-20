@@ -73,9 +73,19 @@ impl ExecutionBackend for NativeExecution {
                 continuation,
                 persistent,
                 peeks,
+                // Changed by D-F2 (DR-118): the resolved introduction is the
+                // record, so the observer can reuse the reducer's measurement.
+                // |source| {
+                //     self.budget
+                //         .introduction_authority(
+                //             consume_introduction_identity(source),
+                //             AuthorityByteEventKind::ConsumeIntroduction,
+                //         )
+                //         .map_err(Into::into)
+                // },
                 |source| {
                     self.budget
-                        .introduction_authority(
+                        .introduction(
                             consume_introduction_identity(source),
                             AuthorityByteEventKind::ConsumeIntroduction,
                         )
@@ -91,17 +101,34 @@ impl ExecutionBackend for NativeExecution {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<ProduceResult, RSpaceError> {
-        self.session
+        // Changed by DR-114: the result is checked before it is returned.
+        let result = self
+            .session
             .inner
+            // Changed by D-F2 (DR-118): the resolved introduction is the record,
+            // so the observer can reuse the reducer's measurement.
+            // .produce_with_authority(channel, data, persistent, |source| {
+            //     self.budget
+            //         .introduction_authority(
+            //             produce_introduction_identity(source),
+            //             AuthorityByteEventKind::ProduceIntroduction,
+            //         )
+            //         .map_err(Into::into)
+            // })
             .produce_with_authority(channel, data, persistent, |source| {
                 self.budget
-                    .introduction_authority(
+                    .introduction(
                         produce_introduction_identity(source),
                         AuthorityByteEventKind::ProduceIntroduction,
                     )
                     .map_err(Into::into)
             })
-            .await
+            .await?;
+        // Changed by the cost-accounted-rho merge (R1-10): the E2 check of
+        // DR-114 moved into `reject_forged_recorded_output`, which the guarded
+        // produce calls too.
+        reject_forged_recorded_output(&result, persistent)?;
+        Ok(result)
     }
 
     async fn produce_guarded(
@@ -111,7 +138,29 @@ impl ExecutionBackend for NativeExecution {
         persistent: bool,
         guard: &dyn ProduceCommitGuard,
     ) -> Result<ProduceResult, RSpaceError> {
-        self.session
+        // Changed by the cost-accounted-rho merge (R1-10): the guarded produce
+        // resolves the whole introduction record, as the unguarded produce
+        // does (D-F2, DR-118), and it checks its result for a forged record
+        // (DR-114, E2).
+        // self.session
+        //     .inner
+        //     .produce_with_authority_guarded(
+        //         channel,
+        //         data,
+        //         persistent,
+        //         |source| {
+        //             self.budget
+        //                 .introduction_authority(
+        //                     produce_introduction_identity(source),
+        //                     AuthorityByteEventKind::ProduceIntroduction,
+        //                 )
+        //                 .map_err(Into::into)
+        //         },
+        //         guard,
+        //     )
+        //     .await
+        let result = self
+            .session
             .inner
             .produce_with_authority_guarded(
                 channel,
@@ -119,7 +168,7 @@ impl ExecutionBackend for NativeExecution {
                 persistent,
                 |source| {
                     self.budget
-                        .introduction_authority(
+                        .introduction(
                             produce_introduction_identity(source),
                             AuthorityByteEventKind::ProduceIntroduction,
                         )
@@ -127,7 +176,9 @@ impl ExecutionBackend for NativeExecution {
                 },
                 guard,
             )
-            .await
+            .await?;
+        reject_forged_recorded_output(&result, persistent)?;
+        Ok(result)
     }
 
     async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, RSpaceError> {
@@ -146,6 +197,30 @@ impl ExecutionBackend for NativeExecution {
             .validate_produce_update(original, &updated)
             .await
     }
+}
+
+/// Added by DR-114 (E2): a returned produce may carry a record only when it
+/// fires a non-persistent call of a recorded process. Otherwise a block could
+/// hand a forged record to the user's code. Both produces of native replay
+/// call this check (R1-10).
+fn reject_forged_recorded_output(
+    result: &ProduceResult,
+    persistent: bool,
+) -> Result<(), RSpaceError> {
+    if let Some((continuation, _, produce)) = result.as_ref() {
+        let recorded_call = !persistent
+            && matches!(
+                continuation.continuation.tagged_cont.as_ref(),
+                Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(body_ref))
+                    if crate::rust::interpreter::system_processes::is_native_recorded_op(*body_ref)
+            );
+        if !produce.output_value.is_empty() && !recorded_call {
+            return Err(RSpaceError::InterpreterError(
+                "native replay found a recorded output on an unrecorded call".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

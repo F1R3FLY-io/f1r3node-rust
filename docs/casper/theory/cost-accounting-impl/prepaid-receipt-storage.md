@@ -180,6 +180,12 @@ The check requires these identities:
 | Resource shape | Original location, class, and full typed authority tree equal the measured resource shape. |
 | Acquisition provenance | The output retains the original cell terms and does not replace them with the current price. |
 
+The canonical selection (`select_measured_demand`) chooses the demand index of each cell of a prefix.
+Since [DR-126](../cost-accounting-decision-records.md#dr-126--the-prepaid-selection-searches-forward-bug-11420), cell j searches only the free occurrences above the index of cell j − 1, and a miss ends the prefix.
+So the indexes of each prefix strictly increase, as the canonical check of the evidence requires.
+Where the earlier rule gave increasing indexes, the forward rule gives the same indexes, so no valid evidence changes.
+[`PrepaidOccurrenceSelection.v`](../../../../formal/rocq/cost_accounted_rho/theories/PrepaidOccurrenceSelection.v) proves both claims.
+
 Let $`q_j`$ be the measured quantity at occurrence $`j`$.
 Let $`c_j`$ be the number of assigned prepaid cells, and let $`r_j`$ be its residual fresh quantity.
 Successful binding requires:

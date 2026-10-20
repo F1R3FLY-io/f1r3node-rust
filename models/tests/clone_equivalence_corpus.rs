@@ -104,10 +104,10 @@ use models::rhoapi::var::{VarInstance, WildcardMsg};
 use models::rhoapi::{
     BindPattern, Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
     EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GDeployId,
-    GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair,
-    ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
-    ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GAuthorityId,
+    GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate, GSysAuthToken,
+    GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match, MatchCase, New,
+    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
 use models::rust::rhoapi_ext::EPathMap;
 use models::rust::rholang::bincode_encoder::encode;
@@ -549,6 +549,17 @@ fn expr_instance_values() -> Vec<(&'static str, ExprInstance)> {
                 scale: 3,
             }),
         ),
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9): the
+        // checkpoint merge e5102e945 brought dev's six sized numeric variants
+        // into the schema. Every payload is non-zero, so a clone that dropped
+        // one would differ. `GFloat32` carries an IEEE-754 bit pattern, as
+        // `GDouble` does.
+        ("GFloat32", ExprInstance::GFloat32(0x4049_0fdb)),
+        ("GUint64", ExprInstance::GUint64(u64::MAX - 1)),
+        ("GInt32", ExprInstance::GInt32(-7)),
+        ("GUint32", ExprInstance::GUint32(4_000_000_000)),
+        ("GUint16", ExprInstance::GUint16(65_000)),
+        ("GUint8", ExprInstance::GUint8(200)),
     ]
 }
 
@@ -616,6 +627,20 @@ fn unf_instance_values() -> Vec<(&'static str, UnfInstance)> {
         (
             "GSysAuthTokenBody",
             UnfInstance::GSysAuthTokenBody(GSysAuthToken {}),
+        ),
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9): the
+        // checkpoint merge e5102e945 brought the two principal identifiers
+        // into the `GUnforgeable` oneof.
+        (
+            "GAuthorityIdBody",
+            UnfInstance::GAuthorityIdBody(GAuthorityId { id: vec![7, 8, 9] }),
+        ),
+        (
+            "GPrincipalIdBody",
+            UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: 2,
+                public_key: vec![10, 11, 12],
+            }),
         ),
     ]
 }
@@ -1175,6 +1200,10 @@ fn dropping_a_field_from_the_rebuild_is_caught_and_names_the_axis() {
 /// empty (the `String::new()` failure mode) is caught by the test suite as well
 /// as by the build.
 #[test]
+// Added by the merge of feature/cost-accounted-rho (clippy gate): the
+// models library allows `assertions_on_constants` crate-wide. This test
+// checks the generated constants at run time on purpose.
+#[allow(clippy::assertions_on_constants)]
 fn the_emitters_join_tables_describe_a_real_conversion() {
     assert!(
         !CLONE_CUT_SET.is_empty(),

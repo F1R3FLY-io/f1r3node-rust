@@ -14,7 +14,6 @@ use rspace_plus_plus::rspace::trace::event::Produce;
 
 use super::accounting::RuntimeBudget;
 use super::rho_runtime::RhoISpace;
-use super::storage::charging_rspace::native_replay_meter;
 
 pub type ConsumeResult =
     MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
@@ -72,9 +71,6 @@ impl ExecutionSpace {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
-    /// Installs a host-owned replay lease beneath deterministic scheduling.
-    /// The scheduler still chooses the operation order; only the terminal
-    /// replay dispatch may consume this policy-derived finite lease.
     pub(crate) fn with_native_replay(space: RhoISpace, cost: RuntimeBudget) -> Self {
         Self::new(LegacyExecution {
             space,
@@ -104,6 +100,24 @@ struct LegacyExecution {
 }
 
 impl LegacyExecution {
+    fn authorize_native_replay(&self) -> Result<(), RSpaceError> {
+        let cost = self
+            .native_replay
+            .as_ref()
+            .expect("native replay dispatch has a runtime budget");
+        if cost.native_event_codec_epoch() != Some(EventCodecEpoch::CostV2)
+            || !cost.native_execution_active()
+            || !cost.has_comm_accounting_scope()
+            || cost.is_unmetered()
+        {
+            return Err(RSpaceError::InterpreterError(
+                "native replay requires an active CostV2 execution and COMM accounting scope"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn cost_v2_replay(&self) -> bool {
         self.native_replay
             .as_ref()
@@ -131,17 +145,10 @@ impl ExecutionBackend for LegacyExecution {
         peeks: BTreeSet<i32>,
     ) -> Result<ConsumeResult, RSpaceError> {
         if self.cost_v2_replay().await {
-            let meter = native_replay_meter(self.native_replay.as_ref().expect("checked above"))?;
+            self.authorize_native_replay()?;
             return self
                 .space
-                .replay_consume_cost_v2_metered(
-                    channels,
-                    patterns,
-                    continuation,
-                    persistent,
-                    peeks,
-                    &meter,
-                )
+                .replay_consume_cost_v2(channels, patterns, continuation, persistent, peeks)
                 .await;
         }
         self.space
@@ -156,10 +163,10 @@ impl ExecutionBackend for LegacyExecution {
         persistent: bool,
     ) -> Result<ProduceResult, RSpaceError> {
         if self.cost_v2_replay().await {
-            let meter = native_replay_meter(self.native_replay.as_ref().expect("checked above"))?;
+            self.authorize_native_replay()?;
             return self
                 .space
-                .replay_produce_cost_v2_metered(channel, data, persistent, None, &meter)
+                .replay_produce_cost_v2(channel, data, persistent, None)
                 .await;
         }
         self.space.produce(channel, data, persistent).await
@@ -173,10 +180,10 @@ impl ExecutionBackend for LegacyExecution {
         guard: &dyn ProduceCommitGuard,
     ) -> Result<ProduceResult, RSpaceError> {
         if self.cost_v2_replay().await {
-            let meter = native_replay_meter(self.native_replay.as_ref().expect("checked above"))?;
+            self.authorize_native_replay()?;
             return self
                 .space
-                .replay_produce_cost_v2_metered(channel, data, persistent, Some(guard), &meter)
+                .replay_produce_cost_v2(channel, data, persistent, Some(guard))
                 .await;
         }
         self.space

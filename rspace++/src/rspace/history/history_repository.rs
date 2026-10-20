@@ -9,7 +9,6 @@ use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use super::native_checkpoint::NativeCheckpoint;
 use crate::rspace::errors::{HistoryError, HistoryRepositoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::hashing::stable_hash_provider::{EventCodecEpoch, StableHashSerialize};
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
@@ -55,7 +54,6 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn prepare_native_checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError>
     where
         P: StableHashSerialize,
@@ -67,7 +65,6 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn prepare_native_checkpoint_borrowed(
         &self,
         actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError>
     where
         P: StableHashSerialize,
@@ -78,7 +75,6 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         &self,
         epoch: EventCodecEpoch,
         actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError>
     where
         P: StableHashSerialize,
@@ -120,16 +116,13 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
 
     fn get_current_history_reader_native(
         &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, RSpaceError>;
+    ) -> Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>;
 
     fn get_current_history_reader_native_for_epoch(
         &self,
         epoch: EventCodecEpoch,
-        meter: &dyn SourceMeter,
-    ) -> Result<EpochHistoryReader<C, P, A, K>, RSpaceError> {
-        self.get_current_history_reader_native(meter)
-            .map(|reader| EpochHistoryReader::new(reader, epoch))
+    ) -> EpochHistoryReader<C, P, A, K> {
+        EpochHistoryReader::new(self.get_current_history_reader_native(), epoch)
     }
 
     fn get_history_reader_struct(

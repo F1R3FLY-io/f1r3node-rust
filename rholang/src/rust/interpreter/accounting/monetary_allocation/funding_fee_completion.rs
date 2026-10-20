@@ -1,16 +1,12 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::HostWorkDimension;
-
-use super::{reserve_work, FundingAssignmentError, FundingSearchError};
-use crate::rust::interpreter::host_work::HostWorkBudget;
+use super::{FundingAssignmentError, FundingSearchError};
 
 pub fn can_complete_unit_fee(
     capacities: &[u64],
     resource_draws: &[u64],
     fee_eligible: &[bool],
     source_cap: NonZeroUsize,
-    budget: &HostWorkBudget,
 ) -> Result<bool, FundingSearchError> {
     let count = capacities.len();
     if count == 0 {
@@ -22,7 +18,6 @@ pub fn can_complete_unit_fee(
     if resource_draws.len() != count || fee_eligible.len() != count {
         return Err(FundingAssignmentError::InvalidDimensions.into());
     }
-    reserve_work(budget, HostWorkDimension::VerificationOperations, count)?;
     let mut payable = false;
     for ((capacity, draw), eligible) in capacities.iter().zip(resource_draws).zip(fee_eligible) {
         if draw > capacity {

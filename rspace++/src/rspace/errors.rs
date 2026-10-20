@@ -7,7 +7,8 @@ pub enum RSpaceError {
     ProduceCommitDenied,
     ProduceCommitProtocolViolation,
     OutOfPhlogistons,
-    HostWorkRejected,
+    /// Added by DR-113: a native charge exceeds the signed phlo limit.
+    SignedLimitExhausted,
     InterpreterError(String),
     HistoryError(HistoryError),
     RadixTreeError(RadixTreeError),
@@ -33,7 +34,7 @@ impl std::fmt::Display for RSpaceError {
                 write!(f, "Produce commit guard violated its invocation contract")
             }
             RSpaceError::OutOfPhlogistons => write!(f, "Out of phlogistons"),
-            RSpaceError::HostWorkRejected => write!(f, "Host work budget rejected evaluation."),
+            RSpaceError::SignedLimitExhausted => write!(f, "Signed phlo limit exhausted"),
             RSpaceError::InterpreterError(err) => write!(f, "Interpreter Error: {}", err),
             RSpaceError::HistoryError(err) => write!(f, "History Error: {}", err),
             RSpaceError::RadixTreeError(err) => write!(f, "Radix Tree Error: {}", err),

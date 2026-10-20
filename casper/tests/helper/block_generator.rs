@@ -60,7 +60,10 @@ async fn compute_block_checkpoint(
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+        // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+        // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
         .collect();
 
     let checkpoint = compute_deploys_checkpoint(

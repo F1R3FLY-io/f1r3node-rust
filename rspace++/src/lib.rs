@@ -1,4 +1,7 @@
-#![cfg_attr(test, feature(allocator_api, btreemap_alloc))]
+// Disabled by the merge of feature/cost-accounted-rho (DR-131): only the
+// removed host-work allocation tests (`CountAlloc` with `BTreeMap::new_in` in
+// `native_session/tests.rs`) used these features.
+// #![cfg_attr(test, feature(allocator_api, btreemap_alloc))]
 #![allow(
     clippy::type_complexity,
     clippy::ptr_arg,

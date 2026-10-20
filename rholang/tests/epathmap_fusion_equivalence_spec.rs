@@ -18,8 +18,12 @@
 //! [`QueryRunMode::TodayPath`] exercises the fused production path and the
 //! deterministic semantic/COMM-accounting assertions.
 //!
-//! Consensus accounting is ONE unit per committed COMM. Primitive,
+//! Consensus accounting charges each committed COMM and the storage bytes of
+//! each committed RSpace produce, consume and COMM event. Primitive,
 //! substitution, and structural-reduction events have zero consensus cost.
+//! (Changed by the merge of feature/cost-accounted-rho, finding R1-40: the old
+//! text said "Consensus accounting is ONE unit per committed COMM", the rule of
+//! `cf74b4d32`, which charged one COMM for each send and receive evaluation.)
 //! Their canonical rows remain in [`QueryObservation::diagnostic_trace`] only
 //! to prove that fusion preserves non-consensus diagnostics; this suite never
 //! treats their operation names or weights as pinned metering values.
@@ -33,9 +37,17 @@ use models::rust::utils::{new_elist_par, new_gstring_par};
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
-use rholang::rust::interpreter::accounting::BillableKind;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-40): the
+// observation installs a funded payer and checks the error variant.
+// use rholang::rust::interpreter::accounting::BillableKind;
+use rholang::rust::interpreter::accounting::{BillableKind, Sig};
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::test_utils::resources::with_runtime;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+// runtime below selects the CostV1 epoch.
+// use rholang::rust::interpreter::test_utils::resources::with_runtime;
+use rholang::rust::interpreter::test_utils::resources::with_runtime_for_epoch;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Run modes
@@ -80,12 +92,20 @@ struct QueryObservation {
     /// Interpreter errors, rendered `{:?}` (pins variants AND payloads —
     /// e.g. the exact `"Error: Multiple expressions given."` string).
     errors: Vec<String>,
-    /// Consensus consumed total (`EvaluateResult::cost.value`), equal to the
-    /// committed COMM count.
+    /// Consensus consumed total (`EvaluateResult::cost.value`): the weight of
+    /// the committed consensus events, or the whole budget when the run stops
+    /// at an out-of-phlogiston boundary. (Changed by the merge of
+    /// feature/cost-accounted-rho, finding R1-40: the old text said that this
+    /// total equals the committed COMM count.)
     consumed: i64,
-    /// Independently counted committed COMM events. This is the current
-    /// consensus accounting model; diagnostic event weights are excluded.
+    /// Independently counted committed COMM events. Diagnostic event weights
+    /// are excluded. (Changed by the merge of feature/cost-accounted-rho,
+    /// finding R1-40: the old text called this count the consensus model.)
     committed_comms: i64,
+    /// Added by the merge of feature/cost-accounted-rho (finding R1-40): the
+    /// committed consensus events in canonical order, each Comm, RSpaceProduce
+    /// and RSpaceConsume event with its weight.
+    consensus_events: Vec<(BillableKind, u64)>,
     /// Canonical non-consensus diagnostics. Dynamic fused-vs-fallback
     /// equality is useful, but these rows are not metering goldens.
     diagnostic_trace: Vec<String>,
@@ -150,8 +170,27 @@ async fn observe(
     }
 
     let program = program.to_string();
+    // Added by the merge of feature/cost-accounted-rho (finding R1-40): the
+    // budget of an out-of-phlogiston run is its consumed total.
+    let initial_phlo_value = initial_phlo.value;
     let channels: Vec<String> = channels.iter().map(|c| c.to_string()).collect();
-    with_runtime(prefix, move |runtime: RhoRuntimeImpl| async move {
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): these
+    // observations count accounted COMMs. Since the checkpoint merge aed9f4427, a
+    // Legacy runtime opens no COMM accounting scope (`LegacyEpochScope.v`), so the
+    // observation runs in CostV1, the protocol-6 cost epoch. The programs use no
+    // protocol-7 structure.
+    // with_runtime(prefix, move |runtime: RhoRuntimeImpl| async move {
+    let epoch = EventCodecEpoch::CostV1;
+    with_runtime_for_epoch(epoch, prefix, move |runtime: RhoRuntimeImpl| async move {
+        // Added by the merge of feature/cost-accounted-rho (finding R1-40): a
+        // COMM debits the authority of the deploy's payer. Without a funded
+        // signature the authority demand is empty, and the budget records no
+        // COMM event (`RuntimeBudget::reserve_canonical_authority_identity`).
+        // The upstream accounting specs install a payer in the same way.
+        runtime.cost().set_deploy_signature_funded(
+            b"epathmap-fusion-equivalence-deploy",
+            Sig::Ground(b"epathmap-fusion-equivalence-payer".to_vec()),
+        );
         let res = runtime
             .evaluate(&program, initial_phlo, HashMap::new(), fixed_rand())
             .await
@@ -166,6 +205,21 @@ async fn observe(
             .iter()
             .map(|event| render_diagnostic_event(&event.kind, event.weight))
             .collect::<Vec<_>>();
+        // Added by the merge of feature/cost-accounted-rho (finding R1-40).
+        let consensus_events = canonical_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    BillableKind::Comm | BillableKind::RSpaceProduce | BillableKind::RSpaceConsume
+                )
+            })
+            .map(|event| (event.kind.clone(), event.weight))
+            .collect::<Vec<_>>();
+        let consensus_weight = consensus_events
+            .iter()
+            .map(|(_, weight)| i64::try_from(*weight).expect("a consensus weight fits i64"))
+            .sum::<i64>();
 
         let mut channel_observations = Vec::with_capacity(channels.len());
         for channel_name in &channels {
@@ -198,10 +252,36 @@ async fn observe(
             });
         }
 
-        assert_eq!(
-            res.cost.value, committed_comms,
-            "consensus cost must equal the committed COMM count"
-        );
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-40):
+        // the merged rule charges each COMM and the storage bytes of each
+        // RSpace event. The consumed total is the weight of the committed
+        // consensus events. At an out-of-phlogiston boundary it is the whole
+        // budget, and the committed events fit in it
+        // (`RuntimeBudget::reconcile_lane`).
+        // assert_eq!(
+        //     res.cost.value, committed_comms,
+        //     "consensus cost must equal the committed COMM count"
+        // );
+        let out_of_phlo = res
+            .errors
+            .iter()
+            .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError));
+        match out_of_phlo {
+            true => {
+                assert_eq!(
+                    res.cost.value, initial_phlo_value,
+                    "an out-of-phlogiston run consumes its whole budget"
+                );
+                assert!(
+                    consensus_weight <= res.cost.value,
+                    "the committed consensus events must fit in the budget"
+                );
+            }
+            false => assert_eq!(
+                res.cost.value, consensus_weight,
+                "consensus cost must equal the weight of the committed consensus events"
+            ),
+        }
 
         QueryObservation {
             errors: res
@@ -211,6 +291,7 @@ async fn observe(
                 .collect(),
             consumed: res.cost.value,
             committed_comms,
+            consensus_events,
             diagnostic_trace,
             channels: channel_observations,
         }
@@ -353,9 +434,13 @@ fn single_observed_par(observation: &QueryObservation, channel_index: usize) -> 
 }
 
 /// Pin the intended production semantics independently of the dynamic
-/// fused-vs-fallback comparison, and pin the current accounting rule: each
-/// successful treatment shape consumes exactly its three COMMs while every
-/// non-COMM diagnostic event contributes zero.
+/// fused-vs-fallback comparison, and pin the merged accounting rule: each
+/// successful treatment shape commits exactly one COMM, the receive of the
+/// index map. Its consumed total is the weight of its committed COMM, produce
+/// and consume events, and every diagnostic event contributes zero.
+/// (Changed by the merge of feature/cost-accounted-rho, finding R1-40: the old
+/// rule charged one COMM for each send and receive evaluation, so each shape
+/// consumed three.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn today_path_has_expected_semantics_and_comm_accounting() {
     #[cfg(feature = "epathmap-fusion-differential")]
@@ -377,8 +462,16 @@ async fn today_path_has_expected_semantics_and_comm_accounting() {
             "{label}: unexpected errors: {:?}",
             observation.errors
         );
-        assert_eq!(observation.consumed, 3, "{label}: expected three COMMs");
-        assert_eq!(observation.committed_comms, 3);
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-40):
+        // the receive of the index map is the one COMM, and the storage bytes
+        // of the receive, the COMM and both sends add to the consumed total.
+        // assert_eq!(observation.consumed, 3, "{label}: expected three COMMs");
+        // assert_eq!(observation.committed_comms, 3);
+        assert_eq!(observation.committed_comms, 1, "{label}: expected one COMM");
+        assert!(
+            observation.consumed > observation.committed_comms,
+            "{label}: the storage bytes must add to the consumed total"
+        );
         observations.push(observation);
     }
 
@@ -428,11 +521,17 @@ async fn today_path_has_expected_semantics_and_comm_accounting() {
             Cost::unsafe_max(),
         )
         .await;
-        assert_eq!(observation.consumed, 1, "{label}: expected one send COMM");
-        assert_eq!(observation.committed_comms, 1);
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-40):
+        // the send fails before it reaches the tuple space, so no COMM and no
+        // storage byte commits. Finding R1-41: DR-128 raises the Nil-mid-chain
+        // error as ValueTypeError.
+        // assert_eq!(observation.consumed, 1, "{label}: expected one send COMM");
+        // assert_eq!(observation.committed_comms, 1);
+        assert_eq!(observation.consumed, 0, "{label}: expected no commit");
+        assert_eq!(observation.committed_comms, 0);
         assert_eq!(observation.errors.len(), 1);
         assert!(
-            observation.errors[0].contains("ReduceError")
+            observation.errors[0].contains("ValueTypeError")
                 && observation.errors[0].contains("Error: Multiple expressions given."),
             "{label}: wrong Nil-mid-chain error: {:?}",
             observation.errors
@@ -448,8 +547,12 @@ async fn today_path_has_expected_semantics_and_comm_accounting() {
         Cost::unsafe_max(),
     )
     .await;
-    assert_eq!(wrong_arity.consumed, 1);
-    assert_eq!(wrong_arity.committed_comms, 1);
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-40): the
+    // send fails before it reaches the tuple space, so nothing commits.
+    // assert_eq!(wrong_arity.consumed, 1);
+    // assert_eq!(wrong_arity.committed_comms, 1);
+    assert_eq!(wrong_arity.consumed, 0);
+    assert_eq!(wrong_arity.committed_comms, 0);
     assert_eq!(wrong_arity.errors.len(), 1);
     assert!(
         wrong_arity.errors[0].contains("MethodArgumentNumberMismatch")
@@ -493,15 +596,90 @@ async fn today_path_observations_are_deterministic() {
     }
 }
 
+/// Added by the merge of feature/cost-accounted-rho (finding R1-40): one
+/// budget of the COMM-boundary walk, and what a run at that budget commits.
+struct BudgetStep {
+    budget: i64,
+    /// The length of the canonical prefix of consensus events that commits.
+    committed_events: usize,
+    committed_comms: i64,
+    out_of_phlo: bool,
+    consumed: i64,
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-40): the
+/// budgets of the COMM-boundary walk, derived from an unbounded run.
+///
+/// Let `w_1, …, w_n` be the weights of the unbounded run's consensus events in
+/// canonical order, with `B_0 = 0` and `B_i = w_1 + … + w_i`. The walk takes
+/// the budget `0`, the budgets `B_i - 1` and `B_i` for each `i ≥ 1`, and
+/// `B_n + 1`. The canonical reconciliation commits the longest canonical prefix
+/// whose weight fits in the budget (`RuntimeBudget::reconcile_lane`). A run
+/// below `B_n` reports an out-of-phlogiston error and consumes its budget.
+fn budget_walk(unbounded: &QueryObservation) -> Vec<BudgetStep> {
+    let weights = unbounded
+        .consensus_events
+        .iter()
+        .map(|(_, weight)| i64::try_from(*weight).expect("a consensus weight fits i64"))
+        .collect::<Vec<_>>();
+    assert!(
+        weights.iter().all(|weight| *weight > 0),
+        "each consensus event must have a positive weight: {weights:?}"
+    );
+    let total = weights.iter().sum::<i64>();
+    let mut budgets = Vec::with_capacity(2 * weights.len() + 2);
+    budgets.push(0);
+    let mut boundary = 0;
+    for weight in &weights {
+        budgets.push(boundary + weight - 1);
+        boundary += weight;
+        budgets.push(boundary);
+    }
+    budgets.push(total + 1);
+    budgets.dedup();
+
+    budgets
+        .into_iter()
+        .map(|budget| {
+            let mut committed_events = 0;
+            let mut committed_comms = 0;
+            let mut prefix = 0;
+            for ((kind, _), weight) in unbounded.consensus_events.iter().zip(&weights) {
+                if prefix + weight > budget {
+                    break;
+                }
+                prefix += weight;
+                committed_events += 1;
+                if matches!(kind, BillableKind::Comm) {
+                    committed_comms += 1;
+                }
+            }
+            let out_of_phlo = budget < total;
+            BudgetStep {
+                budget,
+                committed_events,
+                committed_comms,
+                out_of_phlo,
+                consumed: match out_of_phlo {
+                    true => budget,
+                    false => total,
+                },
+            }
+        })
+        .collect()
+}
+
 /// The bounded-budget variant of the null differential — the COMM-boundary
 /// axis the fused-vs-fallback exhaustion differential walks.
 ///
 /// At budgets where parallel branches race for the last token, the losing
 /// branch aborts and can truncate the non-consensus diagnostic trace. The
 /// deterministic consensus projection is `(errors, consumed,
-/// committed_comms)`. The suite therefore asserts FULL observation
-/// equality at k∈{0,3,4} (empty commit / complete runs) and the projection
-/// at k∈{1,2}.
+/// committed_comms, consensus_events)`. The suite therefore asserts FULL
+/// observation equality at the budget 0 and at complete runs, and the
+/// projection at the other budgets. (Changed by the merge of
+/// feature/cost-accounted-rho, finding R1-40: the budgets come from
+/// [`budget_walk`]. The old walk was k∈{0,…,4}, one unit for each COMM.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn today_path_bounded_budget_observations_are_deterministic() {
     // Under the differential feature every test in this binary serializes
@@ -509,14 +687,36 @@ async fn today_path_bounded_budget_observations_are_deterministic() {
     #[cfg(feature = "epathmap-fusion-differential")]
     let _serial = fused_differentials::serialize_toggle_tests();
     let (label, program, channels) = &differential_programs()[3]; // sigma-chain
-    let expected = [
-        (0, true, 0),
-        (1, true, 1),
-        (2, true, 2),
-        (3, false, 3),
-        (4, false, 3),
-    ];
-    for (k, expect_oop, expected_comms) in expected {
+
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-40): the
+    // budgets come from the canonical consensus events of an unbounded run.
+    // let expected = [
+    //     (0, true, 0),
+    //     (1, true, 1),
+    //     (2, true, 2),
+    //     (3, false, 3),
+    //     (4, false, 3),
+    // ];
+    // for (k, expect_oop, expected_comms) in expected {
+    let unbounded = observe(
+        QueryRunMode::TodayPath,
+        &format!("epm-current-diffk-unbounded-{label}-"),
+        program,
+        channels,
+        Cost::unsafe_max(),
+    )
+    .await;
+    assert!(
+        unbounded.errors.is_empty(),
+        "{label}: the unbounded run must succeed: {:?}",
+        unbounded.errors
+    );
+    assert_eq!(
+        unbounded.committed_comms, 1,
+        "{label}: the walk must cross one COMM boundary"
+    );
+    for step in budget_walk(&unbounded) {
+        let k = step.budget;
         let first = observe(
             QueryRunMode::TodayPath,
             &format!("epm-current-diffk-a-{label}-{k}-"),
@@ -533,7 +733,10 @@ async fn today_path_bounded_budget_observations_are_deterministic() {
             Cost::create(k, "differential budget"),
         )
         .await;
-        if matches!(k, 1 | 2) {
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-40):
+        // the projection holds at every budget below a complete run except 0.
+        // if matches!(k, 1 | 2) {
+        if k != 0 && step.out_of_phlo {
             assert_eq!(
                 first.errors, second.errors,
                 "{label} k={k}: exhaustion errors must be deterministic"
@@ -546,20 +749,33 @@ async fn today_path_bounded_budget_observations_are_deterministic() {
                 first.committed_comms, second.committed_comms,
                 "{label} k={k}: committed COMM count must be deterministic"
             );
+            assert_eq!(
+                first.consensus_events, second.consensus_events,
+                "{label} k={k}: committed consensus events must be deterministic"
+            );
         } else {
             assert_eq!(
                 first, second,
                 "{label} k={k}: bounded-budget observation must be byte-deterministic"
             );
         }
-        assert_eq!(first.consumed, expected_comms, "{label} k={k}");
-        assert_eq!(first.committed_comms, expected_comms, "{label} k={k}");
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-40):
+        // the expected values come from the budget walk.
+        // assert_eq!(first.consumed, expected_comms, "{label} k={k}");
+        // assert_eq!(first.committed_comms, expected_comms, "{label} k={k}");
+        assert_eq!(first.consumed, step.consumed, "{label} k={k}");
+        assert_eq!(first.committed_comms, step.committed_comms, "{label} k={k}");
+        assert_eq!(
+            first.consensus_events.as_slice(),
+            &unbounded.consensus_events[..step.committed_events],
+            "{label} k={k}: the committed events must be the canonical prefix"
+        );
         assert_eq!(
             first
                 .errors
                 .iter()
                 .any(|error| error.contains("OutOfPhlogistons")),
-            expect_oop,
+            step.out_of_phlo,
             "{label} k={k}: wrong COMM-boundary verdict"
         );
     }
@@ -840,7 +1056,10 @@ mod fused_differentials {
             r#"@"out"!( {| ["a"] |}.readZipperAt(["zzz"]).toNextSibling().getLeaf() )"#,
             vec!["out"],
             true,
-            vec!["ReduceError", "Error: Multiple expressions given."],
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-41):
+            // DR-128 raises the Nil-mid-chain error as ValueTypeError.
+            // vec!["ReduceError", "Error: Multiple expressions given."],
+            vec!["ValueTypeError", "Error: Multiple expressions given."],
         ));
 
         // ── Nil sources + follow-on link ─────────────────────────────────
@@ -852,28 +1071,40 @@ mod fused_differentials {
             r#"@"nil"!( {| ["a", "x"] |}.readZipperAt(["a"]).getLeaf().pathExists() )"#,
             vec!["nil"],
             true,
-            vec!["ReduceError", "Error: Multiple expressions given."],
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-41):
+            // DR-128 raises the Nil-mid-chain error as ValueTypeError.
+            // vec!["ReduceError", "Error: Multiple expressions given."],
+            vec!["ValueTypeError", "Error: Multiple expressions given."],
         ));
         rows.push(error_row(
             "nil-descendFirst-no-children-then-getLeaf",
             r#"@"nil"!( {| ["a"] |}.readZipperAt(["a"]).descendFirst().getLeaf() )"#,
             vec!["nil"],
             true,
-            vec!["ReduceError", "Error: Multiple expressions given."],
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-41):
+            // DR-128 raises the Nil-mid-chain error as ValueTypeError.
+            // vec!["ReduceError", "Error: Multiple expressions given."],
+            vec!["ValueTypeError", "Error: Multiple expressions given."],
         ));
         rows.push(error_row(
             "nil-ascendOne-at-root-then-getLeaf",
             r#"@"nil"!( {| ["a"] |}.readZipper().ascendOne().getLeaf() )"#,
             vec!["nil"],
             true,
-            vec!["ReduceError", "Error: Multiple expressions given."],
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-41):
+            // DR-128 raises the Nil-mid-chain error as ValueTypeError.
+            // vec!["ReduceError", "Error: Multiple expressions given."],
+            vec!["ValueTypeError", "Error: Multiple expressions given."],
         ));
         rows.push(error_row(
             "nil-descendIndexedBranch-negative-then-getLeaf",
             r#"@"nil"!( {| ["a"] |}.readZipper().descendIndexedBranch(-1).getLeaf() )"#,
             vec!["nil"],
             true,
-            vec!["ReduceError", "Error: Multiple expressions given."],
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-41):
+            // DR-128 raises the Nil-mid-chain error as ValueTypeError.
+            // vec!["ReduceError", "Error: Multiple expressions given."],
+            vec!["ValueTypeError", "Error: Multiple expressions given."],
         ));
 
         // ── in-fusion error families beyond Nil ──────────────────────────
@@ -1020,7 +1251,10 @@ mod fused_differentials {
             r#"@"out"!( true and {| ["a"] |}.readZipper().ascendOne() )"#,
             vec!["out"],
             true,
-            vec!["ReduceError", "Error: Multiple expressions given."],
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-41):
+            // DR-128 raises the Nil-mid-chain error as ValueTypeError.
+            // vec!["ReduceError", "Error: Multiple expressions given."],
+            vec!["ValueTypeError", "Error: Multiple expressions given."],
         ));
         rows.push(row(
             // The EAnd conjunct route (eval_to_bool → eval_expr_to_expr).
@@ -1183,15 +1417,39 @@ mod fused_differentials {
     }
 
     /// Budget-exhaustion differential over the deterministic consensus
-    /// projection: errors, consumed units, and committed COMM count compare
-    /// exactly at every boundary. Full observations, including diagnostics,
-    /// compare only when the attempt multiset is schedule-independent.
+    /// projection: errors, consumed units, committed COMM count and committed
+    /// consensus events compare exactly at every boundary. Full observations,
+    /// including diagnostics, compare only when the attempt multiset is
+    /// schedule-independent. (Changed by the merge of
+    /// feature/cost-accounted-rho, finding R1-40: the budgets come from
+    /// [`budget_walk`]. The old walk was k∈{0,…,4}, one unit for each COMM.)
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fused_vs_unfused_exhaustion_at_index_k() {
         let _serial = serialize_toggle_tests();
 
         let (label, program, channels) = &differential_programs()[3]; // sigma-chain
-        for k in 0..=4i64 {
+
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-40):
+        // the budgets come from the canonical consensus events of an unbounded
+        // run, as in `today_path_bounded_budget_observations_are_deterministic`.
+        // for k in 0..=4i64 {
+        let (unbounded, _) = observe_with_hits(
+            QueryRunMode::FusedDisabled,
+            &format!("epm-fusion-exh-unbounded-{label}-"),
+            program,
+            channels,
+            Cost::unsafe_max(),
+        )
+        .await;
+        assert!(
+            unbounded.errors.is_empty(),
+            "{label}: the unbounded run must succeed: {:?}",
+            unbounded.errors
+        );
+        let mut budgets_without_the_chain = 0usize;
+        let mut budgets_with_the_chain = 0usize;
+        for step in budget_walk(&unbounded) {
+            let k = step.budget;
             let (unfused, _) = observe_with_hits(
                 QueryRunMode::FusedDisabled,
                 &format!("epm-fusion-exh-fd-{label}-{k}-"),
@@ -1222,8 +1480,16 @@ mod fused_differentials {
                 fused.committed_comms, unfused.committed_comms,
                 "{label} k={k}: committed COMM count must not move under fusion"
             );
+            // Added by the merge of feature/cost-accounted-rho (finding R1-40).
+            assert_eq!(
+                fused.consensus_events, unfused.consensus_events,
+                "{label} k={k}: committed consensus events must not move under fusion"
+            );
 
-            if !matches!(k, 1 | 2) {
+            // Changed by the merge of feature/cost-accounted-rho (finding
+            // R1-40): the budget 0 and complete runs are schedule-independent.
+            // if !matches!(k, 1 | 2) {
+            if k == 0 || !step.out_of_phlo {
                 // Schedule-independent ks: the FULL observation must match.
                 assert_eq!(
                     fused, unfused,
@@ -1231,24 +1497,45 @@ mod fused_differentials {
                 );
             }
 
-            // The chain only evaluates once the RESULT send's comm commits:
-            // eval_send reserves its comm BEFORE evaluating the send data
-            // (reduce.rs:1086 precedes the data eval), so at k ≤ 2 the third
-            // comm exhausts first and the chain never runs (0 hits); at
-            // k ≥ 3 the full program commits and the fused path must own the
-            // chain.
-            if k >= 3 {
+            // Changed by the merge of feature/cost-accounted-rho (finding
+            // R1-40): no reservation precedes the evaluation of the send data
+            // now. The chain is in the body of the receive, so it runs only
+            // when the COMM fires at run time, and that needs the budget of
+            // both introductions and the COMM. A canonical prefix can count the
+            // COMM while the run refused it, so the force-disabled run's
+            // per-link `method call` rows show whether the chain ran.
+            // The old rule:
+            // // The chain only evaluates once the RESULT send's comm commits:
+            // // eval_send reserves its comm BEFORE evaluating the send data
+            // // (reduce.rs:1086 precedes the data eval), so at k ≤ 2 the third
+            // // comm exhausts first and the chain never runs (0 hits); at
+            // // k ≥ 3 the full program commits and the fused path must own the
+            // // chain.
+            // if k >= 3 {
+            let chain_ran = unfused
+                .diagnostic_trace
+                .iter()
+                .any(|row| row.starts_with("prim(method call)"));
+            if chain_ran {
                 assert!(
                     fused_hits >= 1,
-                    "{label} k={k}: the σ-chain must fuse once the result send commits"
+                    "{label} k={k}: the σ-chain must fuse once the receive's body runs"
                 );
+                budgets_with_the_chain += 1;
             } else {
                 assert_eq!(
                     fused_hits, 0,
-                    "{label} k={k}: the chain must not evaluate before the result \
-                     send's comm commits"
+                    "{label} k={k}: the chain must not evaluate before the COMM fires"
                 );
+                budgets_without_the_chain += 1;
             }
         }
+        // Added by the merge of feature/cost-accounted-rho (finding R1-40):
+        // the walk must cross the budget at which the chain first runs.
+        assert!(
+            budgets_without_the_chain >= 1 && budgets_with_the_chain >= 1,
+            "{label}: the walk must cover budgets with and without the chain \
+             ({budgets_without_the_chain} without, {budgets_with_the_chain} with)"
+        );
     }
 }

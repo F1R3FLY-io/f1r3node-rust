@@ -290,6 +290,10 @@ impl DirHandleTable {
     /// either to `FSERR_QUOTA_EXCEEDED`.  Mirrors `FileHandleTable::
     /// insert` — same monotonicity + wrap-guard invariants; see that
     /// method's docstring for the aliasing-safety rationale.
+    // Added by the merge of feature/cost-accounted-rho (clippy gate): the
+    // sibling `FileHandleTable::insert` carries the same allow for the same
+    // `Result<u64, ()>` contract.
+    #[allow(clippy::result_unit_err)]
     pub async fn insert(&self, handle: DirHandle) -> Result<u64, ()> {
         let mut table = self.inner.table.write().await;
         if table.len() >= super::MAX_OPEN_FDS {
@@ -465,6 +469,9 @@ impl Default for DirHandleTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the tests that require a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
 
     fn mk_shadow(cmode: ConsensusMode, deploy: DeployScope) -> DirHandle {
         DirHandle::shadow(PathBuf::from("/root/dir"), cmode, deploy)
@@ -739,10 +746,19 @@ mod tests {
     /// disabling the aliasing protection.
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "requires at least 8 bytes of hash")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "requires at least 8 bytes of hash")]
     fn seed_from_short_hash_debug_asserts() {
+        let child = PanicChild::new(module_path!(), "seed_from_short_hash_debug_asserts");
+        if !child.is_child() {
+            child.expect_panic("requires at least 8 bytes of hash");
+            return;
+        }
         let short_hash = vec![0xffu8, 0x00, 0x00, 0x00];
         let t = DirHandleTable::new();
+        child.subject_reached();
         t.seed_next_fd_from_state_hash(&short_hash);
     }
 
@@ -807,9 +823,21 @@ mod tests {
     /// the same fail-loud invariant WalDeployScope::new_with_lock_sweep
     /// enforces at construction.
     #[tokio::test]
-    #[should_panic(expected = "sentinel scope")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "sentinel scope")]
     async fn close_all_for_deploy_panics_on_sentinel_scope() {
+        let child = PanicChild::new(
+            module_path!(),
+            "close_all_for_deploy_panics_on_sentinel_scope",
+        );
+        if !child.is_child() {
+            child.expect_panic("sentinel scope");
+            return;
+        }
         let table = DirHandleTable::new();
+        child.subject_reached();
         let _ = table.close_all_for_deploy(&[0u8; 32]).await;
     }
 

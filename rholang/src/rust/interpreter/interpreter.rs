@@ -4,8 +4,6 @@ use std::time::Instant;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
-use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use tokio::sync::RwLock;
 use tracing::{event, Level};
@@ -24,7 +22,6 @@ use super::accounting::{
 use super::compiler::compiler::Compiler;
 use super::errors::InterpreterError;
 use super::frontend::{prepare_program, PreparedProgram, ProgramFrontend};
-use super::host_work::HostWorkBudget;
 use super::metrics_constants::{
     INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC, INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
     INTERPRETER_METRICS_SOURCE,
@@ -81,7 +78,7 @@ pub struct InterpreterImpl {
 
 enum ProgramInput<'a> {
     Source(&'a str, HashMap<String, Par>),
-    Prepared(PreparedProgram, Option<u64>),
+    Prepared(PreparedProgram),
 }
 
 impl Interpreter for InterpreterImpl {
@@ -101,35 +98,12 @@ impl Interpreter for InterpreterImpl {
             rand,
             authority_allocation,
             None,
-            None,
         )
         .await
     }
 }
 
 impl InterpreterImpl {
-    pub async fn inj_attempt_with_host_work(
-        &self,
-        reducer: &ReducerCore,
-        term: &str,
-        initial_phlo: Cost,
-        normalizer_env: HashMap<String, Par>,
-        rand: Blake2b512Random,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        host_work: HostWorkBudget,
-    ) -> Result<EvaluateResult, InterpreterError> {
-        self.inj_attempt_inner(
-            reducer,
-            ProgramInput::Source(term, normalizer_env),
-            initial_phlo,
-            rand,
-            authority_allocation,
-            Some(host_work),
-            None,
-        )
-        .await
-    }
-
     pub async fn inj_attempt_with_native_phlo(
         &self,
         reducer: &ReducerCore,
@@ -139,14 +113,12 @@ impl InterpreterImpl {
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
         config: NativeRuntimeConfig,
     ) -> Result<EvaluateResult, InterpreterError> {
-        let host_work = config.host_work();
         self.inj_attempt_inner(
             reducer,
             ProgramInput::Source(term, normalizer_env),
             Cost::create(0, "native resource reservation"),
             rand,
             authority_allocation,
-            Some(host_work),
             Some(config),
         )
         .await
@@ -168,7 +140,6 @@ impl InterpreterImpl {
                     ProgramInput::Source(term, normalizer_env),
                     initial_phlo,
                     rand,
-                    None,
                     None,
                     None,
                 )
@@ -218,10 +189,9 @@ impl InterpreterImpl {
     ) -> Result<EvaluateResult, InterpreterError> {
         self.inj_attempt_inner(
             reducer,
-            ProgramInput::Prepared(prepared, None),
+            ProgramInput::Prepared(prepared),
             initial_phlo,
             rand,
-            None,
             None,
             None,
         )
@@ -232,19 +202,16 @@ impl InterpreterImpl {
         &self,
         reducer: &ReducerCore,
         prepared: PreparedProgram,
-        source_bytes: u64,
         rand: Blake2b512Random,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
         config: NativeRuntimeConfig,
     ) -> Result<EvaluateResult, InterpreterError> {
-        let host_work = config.host_work();
         self.inj_attempt_inner(
             reducer,
-            ProgramInput::Prepared(prepared, Some(source_bytes)),
+            ProgramInput::Prepared(prepared),
             Cost::create(0, "native resource reservation"),
             rand,
             authority_allocation,
-            Some(host_work),
             Some(config),
         )
         .await
@@ -257,7 +224,6 @@ impl InterpreterImpl {
         initial_phlo: Cost,
         rand: Blake2b512Random,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        host_work: Option<HostWorkBudget>,
         native: Option<NativeRuntimeConfig>,
     ) -> Result<EvaluateResult, InterpreterError> {
         // Using tracing events for async context
@@ -293,20 +259,9 @@ impl InterpreterImpl {
             // Phase: build-normalized-term — parse the source string into an AST.
             let source = match input {
                 ProgramInput::Source(term, normalizer_env) => {
-                    Self::parse_source(term, normalizer_env, host_work.as_ref())
+                    Self::parse_source(term, normalizer_env)
                 }
-                ProgramInput::Prepared(prepared, source_bytes) => (|| {
-                    let parsed = prepared.into_par();
-                    if let Some(host) = host_work.as_ref() {
-                        let bytes = source_bytes.ok_or_else(|| {
-                            InterpreterError::BugFoundError(
-                                "metered prepared program has no source-byte count".to_string(),
-                            )
-                        })?;
-                        Self::reserve_prepared_structure(&parsed, bytes, host)?;
-                    }
-                    Ok(parsed)
-                })(),
+                ProgramInput::Prepared(prepared) => Ok(prepared.into_par()),
             };
             let parsed = match source {
                 Ok(parsed) => parsed,
@@ -350,16 +305,8 @@ impl InterpreterImpl {
             let _comm_accounting_scope = self
                 .c
                 .enter_comm_accounting_scope_for_epoch(reducer.space.codec_epoch());
-            let (reduce_result, mut economic_failures) = reducer
-                .inj_with_observation(parsed, rand, host_work.clone())
-                .await;
-            let reduce_result = if host_work.as_ref().is_some_and(HostWorkBudget::is_rejected) {
-                economic_failures = economic_failures
-                    .union(EvaluationFailureSummary::single(PhloFailure::Platform));
-                Err(InterpreterError::HostWorkRejected)
-            } else {
-                reduce_result
-            };
+            let (reduce_result, economic_failures) =
+                reducer.inj_with_observation(parsed, rand).await;
             metrics::histogram!(
                 INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
                 "source" => INTERPRETER_METRICS_SOURCE
@@ -385,20 +332,7 @@ impl InterpreterImpl {
     pub fn parse_source(
         term: &str,
         normalizer_env: HashMap<String, Par>,
-        host: Option<&HostWorkBudget>,
     ) -> Result<Par, InterpreterError> {
-        if let Some(host) = host {
-            let bytes = u64::try_from(term.len()).map_err(|_| {
-                InterpreterError::BugFoundError(
-                    "structural source byte count does not fit in u64".to_owned(),
-                )
-            })?;
-            host.reserve(
-                HostWorkDimension::StructuralBytes,
-                HostWorkUnits::new(bytes),
-            )
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
         let phase_start = Instant::now();
         event!(
             Level::DEBUG,
@@ -425,52 +359,15 @@ impl InterpreterImpl {
             "source" => INTERPRETER_METRICS_SOURCE
         )
         .record(phase_start.elapsed().as_secs_f64());
-        let parsed = result?;
-        if let Some(host) = host {
-            Self::reserve_normalized_structure(&parsed, host)?;
-        }
-        Ok(parsed)
+        result
     }
 
-    fn reserve_normalized_structure(
-        parsed: &Par,
-        host: &HostWorkBudget,
-    ) -> Result<(), InterpreterError> {
-        let bytes = u64::try_from(parsed.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "normalized process byte count does not fit in u64".to_owned(),
-            )
-        })?;
-        let items = Self::structural_items(parsed)?;
-        host.reserve(
-            HostWorkDimension::StructuralBytes,
-            HostWorkUnits::new(bytes),
-        )
-        .and_then(|_| {
-            host.reserve(
-                HostWorkDimension::StructuralItems,
-                HostWorkUnits::new(items),
-            )
-        })
-        .map(|_| ())
-        .map_err(|_| InterpreterError::HostWorkRejected)
-    }
-
-    /// Reserve the exact source-then-normalized structural work for a program
-    /// produced by a checked frontend. Native replay uses this same entrypoint
-    /// before any history mutation, matching fresh prepared execution.
-    pub fn reserve_prepared_structure(
-        parsed: &Par,
-        source_bytes: u64,
-        host: &HostWorkBudget,
-    ) -> Result<(), InterpreterError> {
-        host.reserve(
-            HostWorkDimension::StructuralBytes,
-            HostWorkUnits::new(source_bytes),
-        )
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-        Self::reserve_normalized_structure(parsed, host)
-    }
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-19): the doc
+    // of `reserve_prepared_structure`, which the merge removed with the host-work
+    // budget (DR-131). As a doc comment, it documented `new`.
+    // /// Reserve the exact source-then-normalized structural work for a program
+    // /// produced by a checked frontend. Native replay uses this same entrypoint
+    // /// before any history mutation, matching fresh prepared execution.
 
     pub fn new(
         cost: RuntimeBudget,
@@ -479,33 +376,8 @@ impl InterpreterImpl {
         InterpreterImpl { c: cost, merge_chs }
     }
 
-    fn structural_items(par: &Par) -> Result<u64, InterpreterError> {
-        let counts = [
-            par.sends.len(),
-            par.receives.len(),
-            par.news.len(),
-            par.exprs.len(),
-            par.matches.len(),
-            par.unforgeables.len(),
-            par.bundles.len(),
-            par.connectives.len(),
-            par.conditionals.len(),
-            par.cost_signed_terms.len(),
-            par.cost_stacks.len(),
-        ];
-        let total = counts
-            .into_iter()
-            .try_fold(0usize, usize::checked_add)
-            .ok_or_else(|| {
-                InterpreterError::BugFoundError("structural item count overflow".to_string())
-            })?;
-        u64::try_from(total).map_err(|_| {
-            InterpreterError::BugFoundError("structural item count does not fit in u64".to_string())
-        })
-    }
-
     fn handle_error(&self, error: InterpreterError) -> Result<EvaluateResult, InterpreterError> {
-        let failures = classify_errors(std::slice::from_ref(&error), None)
+        let failures = classify_errors(std::slice::from_ref(&error))
             .unwrap_or_else(|_| EvaluationFailureSummary::single(PhloFailure::Platform));
         self.handle_observed_error(error, failures)
     }
@@ -524,10 +396,7 @@ impl InterpreterImpl {
         economic_failures: EvaluationFailureSummary,
         evidence: Option<NativeReplayAccountingSnapshot>,
     ) -> Result<EvaluateResult, InterpreterError> {
-        if matches!(
-            &error,
-            InterpreterError::ParserError(_) | InterpreterError::HostWorkRejected
-        ) {
+        if matches!(&error, InterpreterError::ParserError(_)) {
             return Ok(EvaluateResult {
                 cost: Cost::create(0, "parse failure"),
                 errors: vec![error],
@@ -573,16 +442,6 @@ impl InterpreterImpl {
         }
     }
 
-    pub(crate) fn host_rejected_result(
-        &self,
-        failures: EvaluationFailureSummary,
-    ) -> Result<EvaluateResult, InterpreterError> {
-        self.handle_observed_error(
-            InterpreterError::HostWorkRejected,
-            failures.union(EvaluationFailureSummary::single(PhloFailure::Platform)),
-        )
-    }
-
     fn capture_result(
         &self,
         errors: Vec<InterpreterError>,
@@ -592,7 +451,6 @@ impl InterpreterImpl {
     ) -> Result<EvaluateResult, InterpreterError> {
         // Changed by D-O4 (DR-89): rows are copied only without evidence.
         // self.c.reserve_native_result_backing()?;
-        self.c.reserve_native_result_backing(evidence.is_none())?;
         let (
             byte_observations,
             native_phlo_usage,
@@ -604,7 +462,7 @@ impl InterpreterImpl {
                 if self.c.native_event_codec_epoch()
                     == Some(rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::CostV2)
                 {
-                    return Err(InterpreterError::HostWorkRejected);
+                    return Err(InterpreterError::BugFoundError("CostV2 replay evidence requires the v3 journal".to_owned()));
                 }
                 let (recording, operations, observations) = evidence.into_parts();
                 (
@@ -635,7 +493,7 @@ impl InterpreterImpl {
                 )
             }
         };
-        let authority_byte_events = self.c.result_legacy_events(&byte_observations)?;
+        let authority_byte_events = byte_observations.legacy_events();
         let quantitative_byte_cost = authority_byte_events
             .iter()
             .try_fold(0_u64, |sum, event| sum.checked_add(event.amount))

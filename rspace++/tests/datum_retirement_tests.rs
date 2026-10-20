@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::{
@@ -17,30 +16,6 @@ struct Exact;
 impl Match<String, String, String> for Exact {
     fn get(&self, pattern: &String, datum: &String) -> Option<String> {
         (pattern == datum).then(|| datum.clone())
-    }
-
-    fn get_metered(
-        &self,
-        pattern: &String,
-        datum: &String,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<String>, RSpaceError> {
-        let scanned = pattern
-            .len()
-            .checked_add(datum.len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(2, scanned, datum.len())?;
-        Ok(self.get(pattern, datum))
-    }
-
-    fn check_commit_metered(
-        &self,
-        _: &String,
-        _: &[&String],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        Ok(true)
     }
 }
 
@@ -273,7 +248,12 @@ async fn denied_trigger_need_not_be_a_selected_comm_participant() {
             ),
         )
         .unwrap();
-    play.get_store().put_join(&channel, &channels);
+    // Changed by the merge of feature/cost-accounted-rho (compile blocker C3):
+    // `put_join` returns a `Result`, which this call dropped.
+    // play.get_store().put_join(&channel, &channels);
+    play.get_store()
+        .put_join(&channel, &channels)
+        .expect("the hot store accepts the join");
     let initial = play.create_checkpoint().await.unwrap();
     let capture = Arc::new(Capture {
         denied: true,

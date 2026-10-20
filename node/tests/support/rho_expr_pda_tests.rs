@@ -29,7 +29,16 @@ fn json(value: &RhoExpr) -> String {
 #[test]
 fn conversion_pda_matches_recursive_oracle_for_every_expr_variant() {
     let corpus = par_corpus::every_expr_instance();
-    assert_eq!(corpus.len(), 41, "corpus must cover every ExprInstance arm");
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // shared corpus holds one entry for each of the 42 `ExprInstance` variants,
+    // and the transcribed 41 was already one short at HEAD. The count now comes
+    // from the generated schema table, so it cannot go stale again.
+    // assert_eq!(corpus.len(), 41, "corpus must cover every ExprInstance arm");
+    assert_eq!(
+        corpus.len(),
+        models::rust::rholang::par_children::EXPR_INSTANCE_VARIANT_COUNT,
+        "corpus must cover every ExprInstance arm"
+    );
 
     for (name, instance) in corpus {
         let input = Expr {

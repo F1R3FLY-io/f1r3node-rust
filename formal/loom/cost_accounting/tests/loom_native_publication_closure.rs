@@ -2,6 +2,13 @@ use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::sync::Arc;
 use loom::thread;
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the negative controls below.
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
+use panic_child::PanicChild;
+
 #[path = "../../../../rspace++/src/rspace/replay_rspace/native_session/publication.rs"]
 mod production;
 
@@ -105,8 +112,17 @@ fn failure_closes_before_notifying_waiters_and_success_does_not_notify() {
 }
 
 #[test]
-#[should_panic(expected = "completion reopened failed session")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "completion reopened failed session")]
 fn successful_flag_reset_is_an_unsafe_control() {
+    let child = PanicChild::new(module_path!(), "successful_flag_reset_is_an_unsafe_control");
+    if !child.is_child() {
+        child.expect_panic("completion reopened failed session");
+        return;
+    }
+    child.subject_reached();
     model(|| {
         let closed = Arc::new(AtomicBool::new(false));
         let publishing = Arc::clone(&closed);

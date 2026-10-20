@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc a71560e938894dc16efcff7ed2219453ab89e1d089e67befe1b572661ab5bdd4 # shrinks to rejected = [true, true]
+cc 44dd6ab34a45b5ac7070147b35f363053b4332aaa8dda5dd3cb1b024c7ab3006 # shrinks to rejected = [true, true]

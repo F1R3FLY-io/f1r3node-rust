@@ -120,6 +120,10 @@ fn shared_lmdb_dir() -> &'static ProcessScratchDir {
 pub static SHARED_LMDB_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+// Added by the merge of feature/cost-accounted-rho (clippy gate): the
+// test-lane copy of this function (`casper/tests/util/rholang/resources.rs`)
+// carries the same allow. The two copies must not drift.
+#[allow(clippy::await_holding_lock)]
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS
         .get_or_init(|| Arc::new(Mutex::new(None)))
@@ -282,7 +286,10 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
     // mk_test_rnode_store_manager_with_scope. Reconciled with
     // casper/tests/util/rholang/resources.rs, which had already been raised from
     // 100 MB to 1 GB while this copy was left behind.
-    let limit_size = 1 * GB;
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `1 * GB` is `GB`.
+    // let limit_size = 1 * GB;
+    let limit_size = GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()

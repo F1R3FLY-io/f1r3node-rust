@@ -166,6 +166,12 @@ pub fn apply_wal_translated(
     .expect("test-driven WAL apply must not produce ApplierError");
 }
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the tests below that require a panic.
+#[cfg(test)]
+#[path = "../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
 #[cfg(test)]
 mod tests {
     //! X-5 D-14 (2026-09-12, branch-review-2026-09-11.md Track D):
@@ -182,6 +188,9 @@ mod tests {
     //! trees / WAL entries.
     use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp, WalOutcome};
 
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the tests that require a panic.
+    use super::panic_child::PanicChild;
     use super::*;
 
     /// D-14 pin 1: `assert_dir_trees_byte_identical` returns
@@ -190,18 +199,33 @@ mod tests {
     /// directory at the same rel path).
     #[test]
     fn d14_assert_dir_trees_byte_identical_panics_on_content_divergence() {
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+        // policy test): a child process runs the comparison, and this process checks the
+        // panic of the child.
+        let child = PanicChild::new(
+            module_path!(),
+            "d14_assert_dir_trees_byte_identical_panics_on_content_divergence",
+        );
+        if !child.is_child() {
+            child.expect_panic("byte divergence at");
+            return;
+        }
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         std::fs::write(a.path().join("f.bin"), b"leader-content").unwrap();
         std::fs::write(b.path().join("f.bin"), b"follower-content").unwrap();
-        let result = std::panic::catch_unwind(|| {
-            assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
-        });
-        assert!(
-            result.is_err(),
-            "D-14 regression: assert_dir_trees_byte_identical must panic \
-             on differing file contents"
-        );
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): the comparison ran behind an unwind interceptor.
+        // let result = std::panic::catch_unwind(|| {
+        //     assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
+        // });
+        // assert!(
+        //     result.is_err(),
+        //     "D-14 regression: assert_dir_trees_byte_identical must panic \
+        //      on differing file contents"
+        // );
+        child.subject_reached();
+        assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
     }
 
     #[test]
@@ -221,6 +245,17 @@ mod tests {
 
     #[test]
     fn d14_assert_dir_trees_byte_identical_panics_on_kind_divergence() {
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+        // policy test): a child process runs the comparison, and this process checks the
+        // panic of the child.
+        let child = PanicChild::new(
+            module_path!(),
+            "d14_assert_dir_trees_byte_identical_panics_on_kind_divergence",
+        );
+        if !child.is_child() {
+            child.expect_panic("kind divergence at");
+            return;
+        }
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         // Same relative path — `x` — is a file on side a, a
@@ -228,14 +263,18 @@ mod tests {
         // kind at collect() time would miss this.
         std::fs::write(a.path().join("x"), b"file-content").unwrap();
         std::fs::create_dir(b.path().join("x")).unwrap();
-        let result = std::panic::catch_unwind(|| {
-            assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
-        });
-        assert!(
-            result.is_err(),
-            "D-14 regression: kind divergence (file vs dir at the same \
-             rel path) must panic"
-        );
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): the comparison ran behind an unwind interceptor.
+        // let result = std::panic::catch_unwind(|| {
+        //     assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
+        // });
+        // assert!(
+        //     result.is_err(),
+        //     "D-14 regression: kind divergence (file vs dir at the same \
+        //      rel path) must panic"
+        // );
+        child.subject_reached();
+        assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
     }
 
     /// D-14 pin 2: `apply_wal_translated` on a WAL with a single
@@ -355,10 +394,19 @@ mod tests {
     /// refactor that routed the error through a `Result` without
     /// updating the dispatcher-side assumption.
     #[test]
-    #[should_panic(expected = "not rooted under leader_root")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "not rooted under leader_root")]
     fn translate_path_panics_on_out_of_tree_input() {
+        let child = PanicChild::new(module_path!(), "translate_path_panics_on_out_of_tree_input");
+        if !child.is_child() {
+            child.expect_panic("not rooted under leader_root");
+            return;
+        }
         let leader = Path::new("/leader");
         let follower = Path::new("/follower");
+        child.subject_reached();
         translate_path(leader, follower, Path::new("/other/path"));
     }
 
@@ -378,10 +426,23 @@ mod tests {
         std::fs::write(a.path().join("only-in-a.bin"), b"side").unwrap();
 
         // Without the ignore: tree layout differs → panics.
-        let unignored = std::panic::catch_unwind(|| {
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): a child process runs the unignored comparison,
+        // and this process checks the panic of the child.
+        // let unignored = std::panic::catch_unwind(|| {
+        //     assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
+        // });
+        // assert!(unignored.is_err(), "control: unignored run must panic");
+        let child = PanicChild::new(
+            module_path!(),
+            "assert_dir_trees_byte_identical_respects_exact_match_ignore",
+        );
+        if child.is_child() {
+            child.subject_reached();
             assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
-        });
-        assert!(unignored.is_err(), "control: unignored run must panic");
+            return;
+        }
+        child.expect_panic("tree layout differs");
 
         // With the exact-match ignore: run completes cleanly.
         assert_dir_trees_byte_identical(a.path(), b.path(), &["only-in-a.bin"]);
@@ -402,10 +463,23 @@ mod tests {
         std::fs::write(a.path().join("logs/nested/x.log"), b"inner").unwrap();
 
         // Without the ignore: tree layout differs → panics.
-        let unignored = std::panic::catch_unwind(|| {
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): a child process runs the unignored comparison,
+        // and this process checks the panic of the child.
+        // let unignored = std::panic::catch_unwind(|| {
+        //     assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
+        // });
+        // assert!(unignored.is_err(), "control: unignored run must panic");
+        let child = PanicChild::new(
+            module_path!(),
+            "assert_dir_trees_byte_identical_respects_subtree_prefix_ignore",
+        );
+        if child.is_child() {
+            child.subject_reached();
             assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
-        });
-        assert!(unignored.is_err(), "control: unignored run must panic");
+            return;
+        }
+        child.expect_panic("tree layout differs");
 
         // With `"logs"` ignore (prefix match on `logs/`): run
         // completes cleanly, skipping the entire subtree.

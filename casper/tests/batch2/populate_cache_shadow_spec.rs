@@ -8,11 +8,13 @@
 // buffered computations — no other key component separates the two paths.
 
 use casper::rust::casper::Casper;
-use casper::rust::util::construct_deploy;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -31,7 +33,9 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
-        let genesis = GenesisBuilder::new()
+        // Changed by DR-116 (gap G6): an offered-funded genesis.
+        // let genesis = GenesisBuilder::new()
+        let genesis = GenesisBuilder::offered_v6()
             .build_genesis_with_parameters(None)
             .await
             .expect("build genesis");

@@ -603,7 +603,11 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                 // Prioritize incoming responses over new requests for better flow
                 // Response stream processing (Scala: responseStream) - check FIRST for fairness
                 Some(message) = tuple_space_message_receiver.recv() => {
-                    let _ = tuple_space_queue_pending.fetch_update(
+                    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                    // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+                    // `try_update` has the same signature and semantics.
+                    // let _ = tuple_space_queue_pending.fetch_update(
+                    let _ = tuple_space_queue_pending.try_update(
                         Ordering::AcqRel,
                         Ordering::Acquire,
                         |curr| Some(curr.saturating_sub(1)),

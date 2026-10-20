@@ -4,11 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
@@ -24,66 +22,9 @@ use crate::rust::interpreter::accounting::costs::{
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::rho_runtime::RhoISpace;
 
 pub struct ChargingRSpace;
-
-/// Adapter for an already-installed native replay host-work lease. It does
-/// not choose an epoch or mint a budget; the adopted CostV2 policy must have
-/// installed the finite `RuntimeBudget` lease before this is constructed.
-pub(crate) struct NativeReplaySourceMeter(pub(crate) HostWorkBudget);
-
-pub(crate) fn finite_native_replay_meter(
-    host_work: HostWorkBudget,
-) -> Result<NativeReplaySourceMeter, RSpaceError> {
-    if host_work.is_rejected()
-        || HostWorkDimension::ALL.iter().any(|dimension| {
-            let cap = host_work.limits().get(*dimension).get();
-            cap == 0 || cap == u64::MAX
-        })
-    {
-        return Err(RSpaceError::HostWorkRejected);
-    }
-    Ok(NativeReplaySourceMeter(host_work))
-}
-
-impl SourceMeter for NativeReplaySourceMeter {
-    fn reserve(
-        &self,
-        operations: usize,
-        scanned: usize,
-        backing: usize,
-    ) -> Result<(), RSpaceError> {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, backing),
-        ] {
-            let units = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
-            self.0
-                .reserve(dimension, HostWorkUnits::new(units))
-                .map_err(|_| RSpaceError::HostWorkRejected)?;
-        }
-        Ok(())
-    }
-}
-
-pub(crate) fn native_replay_meter(
-    cost: &RuntimeBudget,
-) -> Result<NativeReplaySourceMeter, RSpaceError> {
-    if cost.native_event_codec_epoch() != Some(EventCodecEpoch::CostV2)
-        || !cost.native_execution_active()
-        || !cost.has_comm_accounting_scope()
-        || cost.is_unmetered()
-    {
-        return Err(RSpaceError::HostWorkRejected);
-    }
-    finite_native_replay_meter(
-        cost.native_host_work()
-            .ok_or(RSpaceError::HostWorkRejected)?,
-    )
-}
 
 #[derive(Clone)]
 pub enum TriggeredBy {
@@ -119,9 +60,7 @@ impl ChargingRSpace {
 
         #[async_trait]
         impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for ChargingRSpace {
-            fn codec_epoch(&self) -> EventCodecEpoch {
-                self.space.codec_epoch()
-            }
+            fn codec_epoch(&self) -> EventCodecEpoch { self.space.codec_epoch() }
 
             fn set_accounting_observer(
                 &self,
@@ -273,22 +212,6 @@ impl ChargingRSpace {
                 self.space.get_data(channel).await
             }
 
-            async fn get_data_metered(
-                &self,
-                channel: &Par,
-                meter: &(dyn SourceMeter + Sync),
-            ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-                self.space.get_data_metered(channel, meter).await
-            }
-
-            async fn get_data_cold_decode_metered(
-                &self,
-                channel: &Par,
-                meter: &(dyn SourceMeter + Sync),
-            ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-                self.space.get_data_cold_decode_metered(channel, meter).await
-            }
-
             async fn get_waiting_continuations(
                 &self,
                 channels: Vec<Par>,
@@ -387,16 +310,17 @@ impl ChargingRSpace {
 
             async fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.space.rig(log).await }
 
-            async fn rig_cost_v2_metered(
+            async fn rig_cost_v2(
                 &self,
                 start_root: Blake2b256Hash,
                 log: Log,
-                meter: &(dyn SourceMeter + Send + Sync),
             ) -> Result<(), RSpaceError> {
                 if self.cost.native_event_codec_epoch() != Some(EventCodecEpoch::CostV2) {
-                    return Err(RSpaceError::HostWorkRejected);
+                    return Err(RSpaceError::InterpreterError(
+                        "CostV2 replay requires the matching runtime epoch".to_owned(),
+                    ));
                 }
-                self.space.rig_cost_v2_metered(start_root, log, meter).await
+                self.space.rig_cost_v2(start_root, log).await
             }
 
             async fn check_replay_data(&self) -> Result<(), RSpaceError> {
@@ -507,19 +431,20 @@ fn refund_for_removing_produces(
 }
 
 #[cfg(test)]
-mod native_replay_meter_tests {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+mod runtime_adapter_tests {
     use models::rust::utils::new_gstring_par;
     use rspace_plus_plus::rspace::rspace::RSpace;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
     use super::*;
-    use crate::rust::interpreter::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
+    use crate::rust::interpreter::deterministic_reduction::{
+        DeterministicRSpace, ReductionCoordinator,
+    };
     use crate::rust::interpreter::matcher::r#match::Matcher;
 
     #[tokio::test]
-    async fn metered_cold_read_crosses_both_runtime_adapters() {
+    async fn cold_read_crosses_both_runtime_adapters() {
         let mut manager = InMemoryStoreManager::new();
         let store = manager.r_space_stores().await.unwrap();
         let raw = RSpace::create(store, Arc::new(Box::new(Matcher))).unwrap();
@@ -531,45 +456,7 @@ mod native_replay_meter_tests {
             budget.clone(),
         )));
         let charging = ChargingRSpace::charging_rspace(scheduled, budget);
-        let meter = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
         let channel = new_gstring_par("prepaid-receipt-test".into(), Vec::new(), false);
-        assert!(charging
-            .get_data_cold_decode_metered(&channel, &meter)
-            .await
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
-    fn finite_replay_meter_charges_all_three_dimensions_and_refuses_exhaustion() {
-        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(2)));
-        let meter = NativeReplaySourceMeter(host.clone());
-        meter.reserve(1, 2, 1).unwrap();
-        assert_eq!(
-            host.usage(HostWorkDimension::VerificationOperations).get(),
-            1
-        );
-        assert_eq!(host.usage(HostWorkDimension::VerificationBytes).get(), 2);
-        assert_eq!(host.usage(HostWorkDimension::SearchStateBytes).get(), 1);
-        assert!(matches!(
-            meter.reserve(0, 1, 0),
-            Err(RSpaceError::HostWorkRejected)
-        ));
-    }
-
-    #[test]
-    fn replay_meter_refuses_missing_or_unbounded_dimensions() {
-        assert!(
-            finite_native_replay_meter(HostWorkBudget::new(HostWorkLimits::uniform(
-                HostWorkLimit::new(0),
-            )))
-            .is_err()
-        );
-        assert!(
-            finite_native_replay_meter(HostWorkBudget::new(HostWorkLimits::uniform(
-                HostWorkLimit::new(u64::MAX),
-            )))
-            .is_err()
-        );
+        assert!(charging.get_data(&channel).await.unwrap().is_empty());
     }
 }

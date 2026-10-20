@@ -2348,54 +2348,6 @@ fn bincode_emit(field: &Field, index: usize) -> String {
     }
 }
 
-/// The same descriptor field and serde position as `bincode_emit`, rendered
-/// for a charge-before-write sink. This is a generated twin of the *one*
-/// positional program, not a separately maintained schema.
-fn bincode_emit_metered(field: &Field, index: usize) -> String {
-    let name = &field.rust_name;
-    let resume = index + 1;
-    match &field.shape {
-        Shape::Map { .. } => format!(
-            "{{ let m = &self.{name}; try_put_u64(out, m.len() as u64)?; \
-             if !m.is_empty() {{ return Ok(Descent::Map {{ resume: {resume}, map: m }}); }} }}"
-        ),
-        Shape::RepeatedMessage { .. } => format!(
-            "{{ let s = &self.{name}; let n = s.len(); try_put_u64(out, n as u64)?; \
-             if n != 0 {{ return Ok(Descent::Seq {{ resume: {resume}, len: n, seq: s }}); }} }}"
-        ),
-        Shape::RepeatedString => format!("try_put_str_seq(out, &self.{name})?"),
-        Shape::RepeatedBytes => format!("try_put_bytes_seq(out, &self.{name})?"),
-        Shape::Message { .. } => format!(
-            "match &self.{name} {{ \
-             Some(v) => {{ try_put_bool(out, true)?; \
-             return Ok(Descent::Node {{ resume: {resume}, node: v }}); }} \
-             None => try_put_bool(out, false)? }}"
-        ),
-        Shape::EmptyBytes => "try_put_empty_bytes(out)?".to_string(),
-        Shape::Oneof => format!(
-            "match &self.{name} {{ \
-             Some(v) => {{ try_put_bool(out, true)?; \
-             if let Some(node) = BincodeOneof::bincode_emit_metered(v, out)? {{ \
-             return Ok(Descent::Node {{ resume: {resume}, node }}); }} }} \
-             None => try_put_bool(out, false)? }}"
-        ),
-        Shape::Scalar(ty) => match ty {
-            Type::Bool => format!("try_put_bool(out, self.{name})?"),
-            Type::String => format!("try_put_str(out, &self.{name})?"),
-            Type::Bytes => format!("try_put_byte_vec(out, &self.{name})?"),
-            Type::Int32 | Type::Sint32 | Type::Sfixed32 => {
-                format!("try_put_i32(out, self.{name})?")
-            }
-            Type::Uint32 | Type::Fixed32 => format!("try_put_u32(out, self.{name})?"),
-            Type::Int64 | Type::Sint64 | Type::Sfixed64 => {
-                format!("try_put_i64(out, self.{name})?")
-            }
-            Type::Uint64 | Type::Fixed64 => format!("try_put_u64(out, self.{name})?"),
-            other => panic!("schema: metered bincode scalar {other:?} has no primitive"),
-        },
-    }
-}
-
 /// Render a message's bincode emissions, with the tail-call patch applied.
 ///
 /// ★ THE TAIL-CALL PATCH. A descending field that is the program's LAST needs no
@@ -2423,19 +2375,6 @@ fn bincode_program(msg_name: &str, fields: &[Field]) -> Vec<String> {
         .iter()
         .enumerate()
         .map(|(i, f)| bincode_emit(f, i).replace(&spent, "resume: NO_RESUME"))
-        .collect()
-}
-
-fn bincode_program_metered(msg_name: &str, fields: &[Field]) -> Vec<String> {
-    assert!(
-        fields.len() < u16::MAX as usize,
-        "schema: `{msg_name}` is too wide"
-    );
-    let spent = format!("resume: {}", fields.len());
-    fields
-        .iter()
-        .enumerate()
-        .map(|(i, field)| bincode_emit_metered(field, i).replace(&spent, "resume: NO_RESUME"))
         .collect()
 }
 
@@ -2540,14 +2479,10 @@ fn bincode_header(src: &mut String) {
          use crate::rhoapi::tagged_continuation::TaggedCont;\n\
          use crate::rhoapi::var::VarInstance;\n\
          use crate::rust::rhoapi_ext::EPathMap;\n\
-         use rspace_plus_plus::rspace::errors::RSpaceError;\n\
-         use rspace_plus_plus::rspace::hashing::stable_hash_provider::BincodeByteSink;\n\
          use crate::rust::rholang::bincode_schema::{\n\
          \x20   put_bool, put_bytes, put_bytes_seq, put_empty_bytes, put_i32, put_i64, put_str,\n\
          \x20   put_str_seq, put_u32, put_u64, Descent, FieldKind, VariantProgram, BincodeNode,\n\
-         \x20   BincodeOneof, NO_RESUME, try_put_bool, try_put_byte_vec, try_put_bytes_seq,\n\
-         \x20   try_put_empty_bytes, try_put_i32, try_put_i64, try_put_str, try_put_str_seq,\n\
-         \x20   try_put_u32, try_put_u64,\n\
+         \x20   BincodeOneof, NO_RESUME,\n\
          };\n\
          \n",
     );
@@ -2633,25 +2568,6 @@ fn emit_bincode_message(
     }
     src.push_str("    }\n");
 
-    src.push_str("    fn bincode_emit_metered(&self, from: usize, out: &mut dyn BincodeByteSink) -> Result<Descent<'_>, RSpaceError> {\n");
-    if fields.is_empty() {
-        src.push_str("        let _ = (from, out);\n        Ok(Descent::Done)\n");
-    } else {
-        let emits = bincode_program_metered(leaf_name, fields);
-        for (i, (field, emit)) in fields.iter().zip(&emits).enumerate() {
-            writeln!(
-                src,
-                "        if from < {} {{ {} }} // {}",
-                i + 1,
-                emit,
-                field.rust_name
-            )
-            .expect("write");
-        }
-        src.push_str("        Ok(Descent::Done)\n");
-    }
-    src.push_str("    }\n");
-
     // The legacy cold-store layout is a POSITIONAL serde struct layout, not
     // protobuf tag order. These are the only fields added after each node's
     // legacy layout. In particular TaggedContinuation's cost_authority
@@ -2692,19 +2608,6 @@ fn emit_bincode_message(
             .expect("write");
         }
         src.push_str("        Descent::Done\n    }\n");
-        let emits = bincode_program_metered(leaf_name, &legacy_fields);
-        src.push_str("    fn bincode_emit_legacy_metered(&self, from: usize, out: &mut dyn BincodeByteSink) -> Result<Descent<'_>, RSpaceError> {\n");
-        for (i, (field, emit)) in legacy_fields.iter().zip(&emits).enumerate() {
-            writeln!(
-                src,
-                "        if from < {} {{ {} }} // {}",
-                i + 1,
-                emit,
-                field.rust_name
-            )
-            .expect("write");
-        }
-        src.push_str("        Ok(Descent::Done)\n    }\n");
     }
     if leaf_name == "CostStack" {
         // Protocol v6 already had `cells`; only v7 appends `parallel_tail`.
@@ -2712,9 +2615,7 @@ fn emit_bincode_message(
         // nested cell can contain arbitrarily many positional bytes.
         src.push_str(
             "    fn bincode_emit_cost_v1(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {\n\
-                     self.bincode_emit_legacy(from, out)\n    }\n\
-                 fn bincode_emit_cost_v1_metered(&self, from: usize, out: &mut dyn BincodeByteSink) -> Result<Descent<'_>, RSpaceError> {\n\
-                     self.bincode_emit_legacy_metered(from, out)\n    }\n",
+                     self.bincode_emit_legacy(from, out)\n    }\n",
         );
     }
     src.push_str("}\n\n");
@@ -2795,48 +2696,7 @@ fn emit_bincode_oneof(src: &mut String, oneof: &Oneof) {
         .expect("write");
     }
     src.push_str("        }\n    }\n");
-    src.push_str("    fn bincode_emit_metered(&self, out: &mut dyn BincodeByteSink) -> Result<Option<&dyn BincodeNode>, RSpaceError> {\n        match self {\n");
-    for v in variants {
-        let payload = match v.ty {
-            Type::Message => format!("{{ try_put_u32(out, {})?; Ok(Some(v)) }}", v.index),
-            Type::Bool => format!(
-                "{{ try_put_u32(out, {})?; try_put_bool(out, *v)?; Ok(None) }}",
-                v.index
-            ),
-            Type::String => format!(
-                "{{ try_put_u32(out, {})?; try_put_str(out, v)?; Ok(None) }}",
-                v.index
-            ),
-            Type::Bytes => format!(
-                "{{ try_put_u32(out, {})?; try_put_byte_vec(out, v)?; Ok(None) }}",
-                v.index
-            ),
-            Type::Int32 | Type::Sint32 | Type::Sfixed32 => format!(
-                "{{ try_put_u32(out, {})?; try_put_i32(out, *v)?; Ok(None) }}",
-                v.index
-            ),
-            Type::Uint32 | Type::Fixed32 => format!(
-                "{{ try_put_u32(out, {})?; try_put_u32(out, *v)?; Ok(None) }}",
-                v.index
-            ),
-            Type::Int64 | Type::Sint64 | Type::Sfixed64 => format!(
-                "{{ try_put_u32(out, {})?; try_put_i64(out, *v)?; Ok(None) }}",
-                v.index
-            ),
-            Type::Uint64 | Type::Fixed64 => format!(
-                "{{ try_put_u32(out, {})?; try_put_u64(out, *v)?; Ok(None) }}",
-                v.index
-            ),
-            other => panic!("schema: metered oneof member has type {other:?} without a primitive"),
-        };
-        writeln!(
-            src,
-            "            {oneof_ty}::{}(v) => {payload},",
-            v.rust_ident
-        )
-        .expect("write");
-    }
-    src.push_str("        }\n    }\n}\n\n");
+    src.push_str("}\n\n");
 }
 
 /// Emit the registry the conformance probe iterates.
@@ -3716,7 +3576,7 @@ struct TermDriverSchema<'a, 'descriptor> {
 ///
 /// | rank | instrument | criterion |
 /// |---|---|---|
-/// | **primary** | `TERM_OPS_ARM` under `valgrind --tool=cachegrind --cache-sim=yes`, `fixture`-subtracted, per `Par` node | `Ir(driven) / Ir(derived)` ≤ **1.20** (measured **1.1079** at `CLONE_DESCEND_BUDGET = 3`) |
+/// | **primary** | `TERM_OPS_ARM` under `valgrind --tool=cachegrind --cache-sim=yes`, `fixture`-subtracted, per `Par` node | `Ir(driven) / Ir(derived)` ≤ **1.20** (measured **1.1109** at `CLONE_DESCEND_BUDGET = 3` after the merge of `feature/cost-accounted-rho`, **1.1079** before it) |
 /// | corroboration | the bench's paired median-of-repetition ratio | ≥ **0.90×**, a band the host can resolve |
 /// | corroboration | `perf stat -e instructions,cycles`, normalised on the **derived** arm | agrees with the primary to within 0.5% |
 ///
@@ -3734,6 +3594,7 @@ struct TermDriverSchema<'a, 'descriptor> {
 /// | form-B (walk elimination + leaf fast path) | **1.1519** | 0.954× → 0.885× (the WRONG way) |
 /// | re-measured at HEAD before the budget | **1.1510** | — |
 /// | `CLONE_DESCEND_BUDGET = 3` | **1.1079** | see below |
+/// | the merge of `feature/cost-accounted-rho`, `CLONE_DESCEND_BUDGET = 3` | **1.1109** | see the 2026-10-20 section |
 ///
 /// ⚠ The 1.1519 / 1.1510 pair is worth noting: the same mechanism, re-measured on
 /// a later toolchain and a later tree, moved **0.08%**. That is the reproducibility
@@ -3915,6 +3776,122 @@ struct TermDriverSchema<'a, 'descriptor> {
 /// resolve it, which is the same disposition form-B landed under, for the same
 /// reason, on the same host.
 ///
+/// ## ★★ MEASURED 2026-10-20 — the cost-accounting merge widened `Par`, `CloneVal` and `Step`
+///
+/// Added by the merge of feature/cost-accounted-rho (plan step 1.9, type-size pin
+/// test). The merge added two `Vec` fields to `Par`: `cost_signed_terms` and
+/// `cost_stacks`. It also brought two types that nest without bound,
+/// `CostSignature` and `CostStack`. So the clone cut set now has three members:
+/// `Par`, `CostSignature` and `CostStack`. Every figure in the two sections above
+/// comes from a 248-B `Par` and a one-member cut set. This section repeats the
+/// measurement on the merged tree, with the same recipe and the same 245,720 nodes.
+///
+/// ```text
+///   size_of, bytes                        before   merged   why
+///   Par                                      248      296   12 Vec fields and 1 bool (was 10 and 1)
+///   CostSignature                              —      304   its repr(C) oneof holds a whole Par
+///   CloneNode<'_>                              8       16   3 variants: a tag word and a reference
+///   CloneKont<'_>                             16       24   3 variants: a tag word, `src` and `base`
+///   CloneVal                                 248      304   as wide as CostSignature
+///   Step<'_, CloneTraversal>                  16       24   as wide as CloneKont
+///   Outcome<CloneVal, CloneNode<'_>>         256      312   CloneVal and one tag word
+/// ```
+///
+/// `cost_signature::Value` is `#[repr(C)]`: a 4-byte tag, padding to one word,
+/// then a union whose widest member is a whole `Par`. rustc stores `CloneVal`'s
+/// discriminant in unused values of that tag, so `CloneVal` adds nothing to
+/// `CostSignature`. In the same way, `Step`'s discriminant goes in unused values of
+/// `CloneKont`'s tag. `Outcome` has two arms that carry a `CloneVal` (`Value` and
+/// `Done`), so it cannot do this and adds a tag word, before and after the merge.
+/// `models/tests/drive_step_width_gate.rs` asserts every merged width in this table.
+///
+/// ```text
+///   per Par node, fixture-subtracted       Ir         Dr         Dw
+///   derived, both builds              3187.06     875.01     819.79    <-- the CONTROL
+///   driven, k=0                       3846.66    1098.10    1014.13
+///   driven, k=3 (shipped)             3540.60    1008.09     939.77
+///   ratio, k=0                         1.2070     1.2550     1.2371
+///   ratio, k=3                         1.1109     1.1521     1.1464
+///   driven Δ, k=3 against k=0          -7.96%     -8.20%     -7.33%
+/// ```
+///
+/// ★ The invariant control held again. The `derived` arm gave the same
+/// fixture-subtracted totals in both builds: 783,125,308 `Ir`, 215,007,980 `Dr`
+/// and 201,438,153 `Dw`.
+///
+/// ★★ **The primary criterion holds at the shipped budget.** At `k = 3` the `Ir`
+/// ratio is **1.1109**, 8.0% under the 1.20 ceiling. The 2026-07-30 value was
+/// 1.1079. At `k = 0` the merged ratio is **1.2070**, over the ceiling. So in the
+/// merged tree the criterion holds because of [`DESCEND_BUDGET`]. The budget
+/// also saves more than before: −7.96% `Ir` against −3.74% at 248 B.
+///
+/// ### Where the three moves went: out of `drive_with`, into `memcpy`
+///
+/// The 2026-07-29 section confirmed the three moves with one instrument:
+/// `drive_with`'s own `Dw` per node equals `3 × size / 8`, which gave 93.6
+/// against 93 at 248 B. At 304 B that instrument predicts 114. The merged `k = 0`
+/// build measures **33.65**. ⇒ **The instrument is REFUTED for the merged tree.**
+/// It counts inline 8-byte stores, and the moves are no longer inline.
+///
+/// ```text
+///   drive_with, own cost per node        Ir        Dr        Dw
+///   k=0, 2026-07-30 (Par 248 B)       159.9         —         —
+///   k=0, merged (CloneVal 304 B)     179.49     58.28     33.65
+///   k=3, 2026-07-30 (Par 248 B)        32.4         —         —
+///   k=3, merged (CloneVal 304 B)      33.18     10.09      6.86
+/// ```
+///
+/// The next hypothesis was that the compiler now copies each 304-B `CloneVal` with
+/// a call to `memcpy`. Two instruments confirm it:
+///
+/// ```text
+///   objdump, per drive_with copy     mov   movq   vmov*/movdq*   movups/movaps   memcpy calls
+///   2026-07-29, k=0, Par 248 B       280     30              0    not recorded   not recorded
+///   merged, k=0                      553     87              0              44              3
+///   merged, k=3                      501     21              0              44              5
+///
+///   callgrind, calls from drive_with      memcpy   per node   clone_rebuild_par
+///   merged, k=0                          614,300       2.50             245,720
+///   merged, k=3                          123,880      0.504              41,560
+/// ```
+///
+/// ★ At `k = 0`, `drive_with` makes **2.5 `memcpy` calls per node**, not 3.
+/// This record does not explain the difference. One call costs 64.9 `Ir`
+/// (39,849,460 `Ir` over 614,300 calls). Over the whole arm, against `derived`:
+///
+/// ```text
+///   __memcpy_avx_unaligned_erms, driven − derived     Ir/node    Dw/node
+///   2026-07-29, k=0, Par 248 B                          −160.9      −30.7
+///   merged, k=0                                        +101.02     +16.55
+///   merged, k=3                                         −39.27     −11.51
+/// ```
+///
+/// At `k = 3` the driven arm calls `memcpy` less than the derive again. That
+/// agrees with the `sret` paragraph below: above budget 0, `clone_rebuild_par`
+/// builds each child directly in the parent's `Vec` slot.
+///
+/// ### ⇒ The cost, and the decision
+///
+/// The merge costs **one word per work-stack level**: `Step` grew from 16 B to
+/// 24 B, which is +32 KiB of live heap at depth 4,096. The pin test predicted
+/// this on 2026-07-29: a third word in `CloneKont` exhausts the reference niche
+/// and grows `Step`. The user reviewed this cost on 2026-10-20 and chose to
+/// re-pin after this measurement. `models/tests/drive_step_width_gate.rs` now
+/// pins `Par` at 296 B, `CloneVal` at one word more than `Par`, and `Step` at three
+/// words. Its control node is one word wider, so a wider node still widens `Step`.
+///
+/// Recipe: the same as the 2026-07-29 section. Build the bench with
+/// `cargo bench --locked -p models --bench term_ops_bench --no-run`. Run each arm
+/// as `TERM_OPS_ARM=<arm> TERM_OPS_PASSES=20 taskset -c 16 valgrind
+/// --tool=cachegrind --cache-sim=yes <bench binary>`. For `k = 0`, set
+/// [`DESCEND_BUDGET`] to 0, build into a separate target directory, and restore
+/// this file. The call counts come from `valgrind --tool=callgrind` on the driven
+/// arm of each build. Host: AMD Ryzen Threadripper PRO 5975WX (Zen 3), governor
+/// `performance`, `rustc 1.100.0-nightly (2e2b193f8 2026-09-02)`, valgrind 3.25.1.
+/// The bench also printed its wall-clock section once per build, at a load
+/// average of 5 to 9. One run per configuration supports no throughput claim (see
+/// the 2026-07-30 section), so this record does not use those numbers.
+///
 /// ## ⚠⚠ CORRECTED: `Outcome::Tail` IS NOT THIS GAP'S FIX
 ///
 /// This comment used to say that closing the gap "requires … TOP-DOWN allocation
@@ -3951,6 +3928,11 @@ struct TermDriverSchema<'a, 'descriptor> {
 /// the ABI constructs **directly in the parent's `Vec` slot**. No `Vec<CloneVal>`
 /// round trip, and therefore no 248-byte move, for the `⌈D/(k+1)⌉ − 1` of every
 /// `D` levels that the budget covers. `memcpy` falls 379.4 → 329.5 Ir/node.
+///
+/// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+/// pin test): the widths in the last two paragraphs are from 2026-07-30. In the
+/// merged tree `size_of::<CloneVal>()` is 304 and `Step` is 24 B, because the
+/// cut set has three members. The 2026-10-20 section above gives the measurement.
 ///
 /// ⇒ Destination-passing descent — widening `Step::Descend` with a destination —
 /// remains the way to remove the *remaining* moves, i.e. the ones at the budget

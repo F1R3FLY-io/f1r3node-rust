@@ -591,7 +591,10 @@ enum Kind {
     CostSignedTerm,
     CostStack,
     CostRegion,
-    CostAuthority,
+    // Disabled by the merge of feature/cost-accounted-rho (lint fix): no code
+    // constructs this kind. A cost authority is optional and single, so the
+    // decoder pushes `Op::CostAuthorityStart` directly.
+    // CostAuthority,
 }
 
 impl Kind {
@@ -614,7 +617,8 @@ impl Kind {
             Kind::CostSignedTerm => Op::CostSignedTermStart,
             Kind::CostStack => Op::CostStackStart,
             Kind::CostRegion => Op::CostRegionStart,
-            Kind::CostAuthority => Op::CostAuthorityStart,
+            // Disabled with the `Kind::CostAuthority` variant above.
+            // Kind::CostAuthority => Op::CostAuthorityStart,
         }
     }
 }

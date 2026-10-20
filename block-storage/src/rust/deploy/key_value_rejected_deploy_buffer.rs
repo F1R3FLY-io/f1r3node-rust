@@ -8,14 +8,17 @@
 // Mirrors KeyValueDeployStorage in shape and storage backing.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::casper::DeployDataProto;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::casper::protocol::legacy_checked_deploy::CheckedLegacyDeploy;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeLimits, StoredDeployEnvelope};
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
@@ -23,10 +26,8 @@ use shared::rust::ByteString;
 #[derive(Clone)]
 pub struct KeyValueRejectedDeployBuffer {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
-    // Separate keyspace retains the exact old Signed bincode representation.
-    // A checked multi-signer retry is encoded as protobuf bytes and verified
-    // again on read; never deserialize an unchecked Cosigned value directly.
     checked_store: KeyValueTypedStoreImpl<ByteString, StoredCheckedLegacyDeploy>,
+    pub envelope_store: KeyValueTypedStoreImpl<ByteString, StoredDeployEnvelope>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -42,10 +43,28 @@ impl KeyValueRejectedDeployBuffer {
         let checked_kv_store = kvm
             .store("rejected_deploy_buffer_checked_v1".to_string())
             .await?;
+        let envelope_kv_store = kvm.store("rejected_envelope_buffer".to_string()).await?;
         Ok(Self {
             store: buffer_db,
             checked_store: KeyValueTypedStoreImpl::new(checked_kv_store),
+            envelope_store: KeyValueTypedStoreImpl::new(envelope_kv_store),
         })
+    }
+
+    /// Added by the merge of feature/cost-accounted-rho (finding R3-12): the
+    /// buffer over three existing stores, for a caller that has stores and no
+    /// store manager. The checked store stays private, so the caller passes
+    /// untyped stores.
+    pub fn from_stores(
+        store: Arc<dyn KeyValueStore>,
+        checked_store: Arc<dyn KeyValueStore>,
+        envelope_store: Arc<dyn KeyValueStore>,
+    ) -> Self {
+        Self {
+            store: KeyValueTypedStoreImpl::new(store),
+            checked_store: KeyValueTypedStoreImpl::new(checked_store),
+            envelope_store: KeyValueTypedStoreImpl::new(envelope_store),
+        }
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -126,9 +145,26 @@ impl KeyValueRejectedDeployBuffer {
 
     pub fn remove_by_sig(&mut self, sig: &[u8]) -> Result<bool, KvStoreError> {
         let key: ByteString = sig.to_vec();
-        let exists = self.contains_sig(sig)?;
+        let exists = self
+            .store
+            .contains(vec![key.clone()])?
+            .into_iter()
+            .next()
+            .unwrap_or(false)
+            || self
+                .checked_store
+                .contains(vec![key.clone()])?
+                .into_iter()
+                .next()
+                .unwrap_or(false);
         if !exists {
-            return Ok(false);
+            // Changed by DR-116 (gap G6): a lookup identity can also name a
+            // buffered protocol-6 envelope.
+            // return Ok(false);
+            return match DeployIdV6::try_from(sig) {
+                Ok(deploy_id) => self.remove_envelope_by_id(&deploy_id),
+                Err(_) => Ok(false),
+            };
         }
         self.store.delete(vec![key.clone()])?;
         self.checked_store.delete(vec![key])?;
@@ -148,7 +184,16 @@ impl KeyValueRejectedDeployBuffer {
                 .contains(vec![key])?
                 .into_iter()
                 .next()
-                .unwrap_or(false))
+                .unwrap_or(false)
+            || match DeployIdV6::try_from(sig) {
+                Ok(deploy_id) => self
+                    .envelope_store
+                    .contains(vec![deploy_id.as_ref().to_vec()])?
+                    .into_iter()
+                    .next()
+                    .unwrap_or(false),
+                Err(_) => false,
+            })
     }
 
     pub fn get_by_sig(&self, sig: &[u8]) -> Result<Option<Signed<DeployData>>, KvStoreError> {
@@ -169,7 +214,65 @@ impl KeyValueRejectedDeployBuffer {
     }
 
     pub fn non_empty(&self) -> Result<bool, KvStoreError> {
-        Ok(self.store.non_empty()? || self.checked_store.non_empty()?)
+        Ok(self.store.non_empty()?
+            || self.checked_store.non_empty()?
+            || self.envelope_store.non_empty()?)
+    }
+
+    /// Added by DR-116 (gap G6): buffers rejected protocol-6 offered envelopes
+    /// under their deploy identity. A put overwrites, so populate stays
+    /// idempotent.
+    pub fn add_envelopes(&mut self, envelopes: &[DeployEnvelope]) -> Result<(), KvStoreError> {
+        let mut entries = Vec::with_capacity(envelopes.len());
+        for envelope in envelopes {
+            let DeployLookupId::V6(deploy_id) = envelope.identity() else {
+                return Err(KvStoreError::InvalidArgument(
+                    "legacy deploys belong in the legacy rejected-deploy table".to_string(),
+                ));
+            };
+            let stored =
+                StoredDeployEnvelope::new(envelope).map_err(KvStoreError::SerializationError)?;
+            entries.push((deploy_id.as_ref().to_vec(), stored));
+        }
+        self.envelope_store.put(entries)
+    }
+
+    /// Added by DR-116: every buffered offered envelope, sorted by identity. A
+    /// row whose key differs from its envelope identity fails closed.
+    pub fn read_all_envelopes(
+        &self,
+        limits: DeployEnvelopeLimits,
+    ) -> Result<Vec<DeployEnvelope>, KvStoreError> {
+        let rows = self.envelope_store.to_map()?;
+        let mut envelopes = Vec::with_capacity(rows.len());
+        for (key, stored) in rows {
+            let deploy_id = DeployIdV6::try_from(key.as_slice())
+                .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+            let envelope = stored
+                .decode(&DeployLookupId::V6(deploy_id), limits)
+                .map_err(KvStoreError::SerializationError)?;
+            envelopes.push(envelope);
+        }
+        envelopes
+            .sort_by(|left, right| left.identity().as_bytes().cmp(right.identity().as_bytes()));
+        Ok(envelopes)
+    }
+
+    /// Added by DR-116: removes one buffered offered envelope and reports
+    /// whether it was present.
+    pub fn remove_envelope_by_id(&mut self, deploy_id: &DeployIdV6) -> Result<bool, KvStoreError> {
+        let key: ByteString = deploy_id.as_ref().to_vec();
+        let exists = self
+            .envelope_store
+            .contains(vec![key.clone()])?
+            .into_iter()
+            .next()
+            .unwrap_or(false);
+        if !exists {
+            return Ok(false);
+        }
+        self.envelope_store.delete(vec![key])?;
+        Ok(true)
     }
 }
 
@@ -246,7 +349,10 @@ mod tests {
 
     #[tokio::test]
     async fn checked_retry_store_fails_closed_on_malformed_or_mismatched_wire() {
-        let mut buffer = buffer().await;
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // the binding is never mutated.
+        // let mut buffer = buffer().await;
+        let buffer = buffer().await;
         buffer
             .checked_store
             .put_one(vec![9], StoredCheckedLegacyDeploy { wire: vec![0xff] })
@@ -309,5 +415,84 @@ mod tests {
         assert!(!buffer.remove_by_sig(&d1.sig).unwrap());
         assert!(!buffer.contains_sig(&d1.sig).unwrap());
         assert!(!buffer.non_empty().unwrap());
+    }
+
+    // DR-116 (gap G6): the envelope table of the buffer.
+    use crate::rust::deploy::key_value_deploy_storage::tests::{body_envelope, envelope_limits};
+
+    #[tokio::test]
+    async fn envelope_table_keeps_legacy_rows_and_round_trips_v6_envelopes() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let legacy = deploy(5);
+        buffer.add(vec![legacy.clone()]).unwrap();
+        let envelope = body_envelope();
+        let DeployLookupId::V6(id) = envelope.identity() else {
+            panic!("a body envelope has a v6 identity")
+        };
+        let id = *id;
+
+        buffer
+            .add_envelopes(std::slice::from_ref(&envelope))
+            .unwrap();
+        buffer
+            .add_envelopes(std::slice::from_ref(&envelope))
+            .unwrap();
+        assert_eq!(buffer.read_all_envelopes(envelope_limits()).unwrap(), vec![
+            envelope.clone()
+        ]);
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([legacy.clone()]));
+
+        let reopened = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        assert_eq!(
+            reopened.read_all_envelopes(envelope_limits()).unwrap(),
+            vec![envelope]
+        );
+        assert_eq!(
+            reopened.read_all().unwrap(),
+            HashSet::from([legacy.clone()])
+        );
+
+        assert!(buffer.remove_envelope_by_id(&id).unwrap());
+        assert!(!buffer.remove_envelope_by_id(&id).unwrap());
+        assert!(buffer
+            .read_all_envelopes(envelope_limits())
+            .unwrap()
+            .is_empty());
+        assert!(buffer.contains_sig(&legacy.sig).unwrap());
+    }
+
+    /// DR-116 (gap G6): the identity lookups take a deploy identity. A 32-byte
+    /// key names the envelope table.
+    #[tokio::test]
+    async fn the_identity_lookups_name_a_buffered_envelope_by_its_deploy_id() {
+        let mut buffer = buffer().await;
+        let legacy = deploy(5);
+        buffer.add(vec![legacy.clone()]).unwrap();
+        let envelope = body_envelope();
+        let DeployLookupId::V6(id) = envelope.identity() else {
+            panic!("a body envelope has a v6 identity")
+        };
+        let id = *id;
+        buffer
+            .add_envelopes(std::slice::from_ref(&envelope))
+            .unwrap();
+        assert!(buffer.contains_sig(id.as_ref()).unwrap());
+        assert!(!buffer.contains_sig(&[7; 32]).unwrap());
+        assert!(buffer.remove_by_sig(id.as_ref()).unwrap());
+        assert!(!buffer.contains_sig(id.as_ref()).unwrap());
+        assert!(!buffer.remove_by_sig(id.as_ref()).unwrap());
+        assert!(buffer.contains_sig(&legacy.sig).unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_envelope_stored_under_another_identity_fails_closed() {
+        let buffer = buffer().await;
+        let stored = StoredDeployEnvelope::new(&body_envelope()).unwrap();
+        buffer
+            .envelope_store
+            .put(vec![(vec![7; 32], stored)])
+            .unwrap();
+        assert!(buffer.read_all_envelopes(envelope_limits()).is_err());
     }
 }

@@ -2660,6 +2660,32 @@ Qed.
    calculus inherits these properties — there is no need to discover
    the bugs of PR #466 by trial and error in production.                 *)
 
+(* Amendment (DR-129, 2026-10-13). Bug 3 above describes the shuffle that
+   the Rust code once ran in play and in replay. The fix of PR #466 sorted
+   both by a hash, and DR-75 later gave play, directive replay and metered
+   native replay one canonical order. DR-129 restores dev's random shuffle in play only (user decision
+   2026-10-12). Replay does not shuffle: it follows the recorded COMM, and
+   native replay keeps the canonical order of DR-75 as its own internal
+   order. The corollary [cost_accounting_no_shuffle_nondeterminism] states
+   only the symmetry of parallel composition. It models no choice of a
+   candidate, so it neither needs nor proves a deterministic play order,
+   and it stays true. Agreement of play and replay on each pick rests on the
+   recorded identity, on E1 (a stable order by source hash for a channel
+   that a join names more than once) and on E3-a (the Stored check skips a
+   continuation whose commit can veto). See DR-129 in
+   docs/casper/theory/cost-accounting-decision-records.md. *)
+
+(* Amendment (complete guard search, 2026-10-16). On the F1R3Lang branch,
+   user decision 6 removes E3-a. Play and native replay both search every
+   assignment of a join, guard included, and each takes the first
+   admissible assignment in one order (defect D1, and Phase 11 of
+   docs/plans/where-clauses-and-match-guards-2026-04-29.md). So the Stored
+   check no longer skips a continuation whose commit can veto. Agreement of
+   play and replay on each pick rests on the recorded identity, on E1 and on
+   that one search order. The corollary
+   [cost_accounting_no_shuffle_nondeterminism] still models no choice of a
+   candidate, so it stays true. *)
+
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 13: Fuel-Bound Corollaries (Not Full Backward Reflection)
    ═══════════════════════════════════════════════════════════════════════════

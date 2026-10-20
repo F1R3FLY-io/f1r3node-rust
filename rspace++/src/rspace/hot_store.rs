@@ -10,10 +10,7 @@ use dashmap::DashMap;
 use proptest::prelude::*;
 #[cfg(test)]
 use rand::Rng;
-use shared::rust::clone_backing::CloneBacking;
 use tracing::warn;
-
-use super::hashing::native_source::SourceMeter;
 
 mod native;
 pub mod native_index;
@@ -78,10 +75,13 @@ pub fn shard_of<K: Hash>(k: &K) -> usize {
     (hasher.finish() as usize) % NUM_SHARDS
 }
 
+// Added by the merge of feature/cost-accounted-rho (finding R2-08): the doc
+// below restores HEAD's text without the host-work reservations, which DR-131
+// removed. HEAD said "after all fallible staging and host-work reservations".
 /// One-shot authorization at the resting-retirement transaction boundary.
-/// Called only after all fallible staging and host-work reservations, while
-/// the affected shard write guards are held. Implementations must not reenter
-/// the store; a successful return permits only infallible publication.
+/// Called only after all fallible staging, while the affected shard write
+/// guards are held. Implementations must not reenter the store; a successful
+/// return permits only infallible publication.
 pub trait RestingRetirementAuthorization {
     fn authorize(&mut self) -> Result<(), RSpaceError>;
 }
@@ -217,122 +217,47 @@ where
 // self.shard.get(&self.channel).map_or(&[], Vec::as_slice) } }
 
 /// A copy-free view of the cached data of one channel. It holds no lock
-/// (C2, DR-82). A view of the legacy store is an O(1) snapshot of the
-/// channel's shard and the channel key; a view of the digest-keyed store is
-/// the shared entry (D-C2c, DR-96).
+/// (C2, DR-82). It is the shared entry of the digest-keyed store (D-C2c,
+/// DR-96). Changed by DR-131 S6: the view of the legacy store's shard is
+/// deleted with the legacy native methods.
 pub struct NativeDataView<C, A: Clone> {
-    source: DataViewSource<C, A>,
-}
-
-enum DataViewSource<C, A: Clone> {
-    Shard {
-        shard: imbl::HashMap<C, Vec<Datum<A>>>,
-        channel: C,
-    },
-    Entry(Arc<native_index::NativeEntry<C, Vec<Datum<A>>>>),
+    entry: Arc<native_index::NativeEntry<C, Vec<Datum<A>>>>,
 }
 
 impl<C, A: Clone> NativeDataView<C, A> {
-    fn from_shard(shard: imbl::HashMap<C, Vec<Datum<A>>>, channel: C) -> Self {
-        Self {
-            source: DataViewSource::Shard { shard, channel },
-        }
-    }
-
     fn from_entry(entry: Arc<native_index::NativeEntry<C, Vec<Datum<A>>>>) -> Self {
-        Self {
-            source: DataViewSource::Entry(entry),
-        }
+        Self { entry }
     }
-}
 
-impl<C: Clone + Hash + Eq, A: Clone> NativeDataView<C, A> {
-    pub fn values(&self) -> &[Datum<A>] {
-        match &self.source {
-            DataViewSource::Shard { shard, channel } => {
-                shard.get(channel).map_or(&[], Vec::as_slice)
-            }
-            DataViewSource::Entry(entry) => entry.value.as_slice(),
-        }
-    }
+    pub fn values(&self) -> &[Datum<A>] { self.entry.value.as_slice() }
 }
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + Send {
-    fn get_data_with_reader(
-        &self,
-        channel: &C,
-        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking;
-    /// D-C4 (D-S5, DR-98): the metered data read that never fills the store.
-    /// A resident entry is copied as `get_data_with_reader` copies it.
-    /// Otherwise the values that `read` decodes from the history are returned
-    /// after their release is prepaid, and nothing is stored.
     fn get_data_uncached_with_reader(
         &self,
         channel: &C,
         read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking;
-    /// A copy-free view of the cached data of `channel` (C2, DR-82).
-    fn get_data_view_with_reader(
-        &self,
-        channel: &C,
-        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<NativeDataView<C, A>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking;
-    fn get_continuations_with_reader(
-        &self,
-        channels: &[C],
-        read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking;
+    ) -> Result<Vec<Datum<A>>, RSpaceError>;
     /// The continuations of `channels` as shared views, without copying a
     /// cached continuation (C1, DR-81).
     fn get_continuation_views_with_reader(
         &self,
         channels: &[C],
         read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking;
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError>;
     /// Read an installed index-0 continuation without probing the ordinary
     /// continuation cache or cold history. A resting commit can then select
     /// this exact installed candidate without inserting an empty cache row.
-    fn get_installed_continuation_view_metered(
+    fn get_installed_continuation_view(
         &self,
         channels: &[C],
-        meter: &dyn SourceMeter,
-    ) -> Result<Option<Arc<WaitingContinuation<P, K>>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking;
+    ) -> Result<Option<Arc<WaitingContinuation<P, K>>>, RSpaceError>;
     fn get_joins_with_reader(
         &self,
         channel: &C,
         read: &dyn Fn() -> Result<Vec<Vec<C>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Vec<C>>, RSpaceError>
-    where
-        C: CloneBacking;
+    ) -> Result<Vec<Vec<C>>, RSpaceError>;
     fn get_continuations(
         &self,
         channels: &[C],
@@ -348,103 +273,28 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         channels: &[C],
         wc: WaitingContinuation<P, K>,
     ) -> Result<bool, RSpaceError>;
-    fn store_consume_metered(
-        &self,
-        channels: &[C],
-        waiting: WaitingContinuation<P, K>,
-        meter: &dyn SourceMeter,
-    ) -> Result<(bool, usize), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking;
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()>;
-    fn install_continuation_metered(
-        &self,
-        channels: &[C],
-        wc: WaitingContinuation<P, K>,
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking;
     fn remove_continuation(&self, channels: &[C], index: i32) -> Result<Option<()>, RSpaceError>;
 
     fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError>;
     fn put_datum(&self, channel: &C, d: Datum<A>) -> Result<(), RSpaceError>;
-    fn put_datum_metered(
-        &self,
-        channel: &C,
-        datum: Datum<A>,
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking;
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;
-    fn retire_data_metered(
-        &self,
-        data: &[RSpaceResult<C, A>],
-        retirement: &[(usize, i32)],
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking;
-    fn retire_produce_match_metered(
+    fn retire_resting_match(
         &self,
         channels: &[C],
         continuation_index: i32,
         continuation_persistent: bool,
         data: &[RSpaceResult<C, A>],
         retirement: &[(usize, i32)],
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        A: CloneBacking,
-        K: CloneBacking;
-    fn retire_resting_match_metered(
-        &self,
-        channels: &[C],
-        continuation_index: i32,
-        continuation_persistent: bool,
-        data: &[RSpaceResult<C, A>],
-        retirement: &[(usize, i32)],
-        meter: &dyn SourceMeter,
         authorization: &mut dyn RestingRetirementAuthorization,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        A: CloneBacking,
-        K: CloneBacking;
+    ) -> Result<(), RSpaceError>;
 
     fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError>;
     fn put_join(&self, channel: &C, join: &[C]) -> Result<(), RSpaceError>;
     fn install_join(&self, channel: &C, join: &[C]) -> Option<()>;
-    fn install_join_metered(
-        &self,
-        channel: &C,
-        join: &[C],
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking;
     fn remove_join(&self, channel: &C, join: &[C]) -> Result<Option<()>, RSpaceError>;
 
     fn changes(&self) -> Vec<HotStoreAction<C, P, A, K>>;
-    fn changes_metered(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<HotStoreAction<C, P, A, K>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        A: CloneBacking,
-        K: CloneBacking;
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>>;
     fn snapshot(&self) -> HotStoreState<C, P, A, K>;
 
@@ -513,16 +363,6 @@ where
     P: Clone,
     K: Clone,
 {
-    pub fn snapshot_layout() -> (usize, usize) {
-        let bytes = std::mem::size_of::<
-            [imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>; NUM_SHARDS],
-        >() + std::mem::size_of::<
-            [imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>; NUM_SHARDS],
-        >() + std::mem::size_of::<[imbl::HashMap<C, Vec<Datum<A>>>; NUM_SHARDS]>() +
-            2 * std::mem::size_of::<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>();
-        (5 * NUM_SHARDS, bytes)
-    }
-
     // Builds a sharded HotStoreState from plain flat maps -- the shape
     // tests and other call sites naturally construct fixture data in.
     // Shards each flat map by key, same as the live ShardedMap would.
@@ -688,96 +528,61 @@ where
     A: Clone + Debug + Send + Sync,
     K: Clone + Debug + Send + Sync,
 {
-    fn get_data_with_reader(
-        &self,
-        channel: &C,
-        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking,
-    {
-        self.native_data(channel, read, meter)
-    }
-
     fn get_data_uncached_with_reader(
         &self,
         channel: &C,
         read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking,
-    {
-        self.native_data_uncached(channel, read, meter)
-    }
-
-    fn get_data_view_with_reader(
-        &self,
-        channel: &C,
-        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<NativeDataView<C, A>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking,
-    {
-        self.native_data_view(channel, read, meter)
-    }
-
-    fn get_continuations_with_reader(
-        &self,
-        channels: &[C],
-        read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking,
-    {
-        self.native_continuations(channels, read, meter)
+    ) -> Result<Vec<Datum<A>>, RSpaceError> {
+        self.data.get(channel).map_or_else(read, Ok)
     }
 
     fn get_continuation_views_with_reader(
         &self,
         channels: &[C],
         read: &dyn Fn() -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking,
-    {
-        self.native_continuation_views(channels, read, meter)
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError> {
+        {
+            let key = channels.to_vec();
+            let installed = self.installed_continuations.get(&key).map(Arc::new);
+            let mut result = Vec::with_capacity(usize::from(installed.is_some()));
+            result.extend(installed);
+            if let Some(values) = self.continuations.get(&key) {
+                result.extend(values);
+                return Ok(result);
+            }
+            let values: Vec<_> = read()?.into_iter().map(Arc::new).collect();
+            self.continuations.insert(key, values.clone());
+            result.extend(values);
+            Ok(result)
+        }
     }
 
-    fn get_installed_continuation_view_metered(
+    fn get_installed_continuation_view(
         &self,
         channels: &[C],
-        meter: &dyn SourceMeter,
-    ) -> Result<Option<Arc<WaitingContinuation<P, K>>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking,
-    {
-        self.native_installed_continuation_view(channels, meter)
+    ) -> Result<Option<Arc<WaitingContinuation<P, K>>>, RSpaceError> {
+        Ok(self
+            .installed_continuations
+            .get(&channels.to_vec())
+            .map(Arc::new))
     }
 
     fn get_joins_with_reader(
         &self,
         channel: &C,
         read: &dyn Fn() -> Result<Vec<Vec<C>>, RSpaceError>,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<Vec<C>>, RSpaceError>
-    where
-        C: CloneBacking,
-    {
-        self.native_joins(channel, read, meter)
+    ) -> Result<Vec<Vec<C>>, RSpaceError> {
+        {
+            let mut result = self.installed_joins.get(channel).unwrap_or_default();
+            if let Some(values) = self.joins.get(channel) {
+                result.extend(values);
+                return Ok(result);
+            }
+            let values = read()?;
+            self.joins.insert(channel.clone(), values.clone());
+            result.extend(values);
+            Ok(result)
+        }
     }
 
     fn snapshot(&self) -> HotStoreState<C, P, A, K> {
@@ -930,37 +735,9 @@ where
         Ok(inserted)
     }
 
-    fn store_consume_metered(
-        &self,
-        channels: &[C],
-        waiting: WaitingContinuation<P, K>,
-        meter: &dyn SourceMeter,
-    ) -> Result<(bool, usize), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking,
-    {
-        self.native_store_consume(channels, waiting, meter)
-    }
-
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()> {
         self.installed_continuations.insert(channels.to_vec(), wc);
         Some(())
-    }
-
-    fn install_continuation_metered(
-        &self,
-        channels: &[C],
-        wc: WaitingContinuation<P, K>,
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        K: CloneBacking,
-    {
-        self.native_install_continuation(channels, wc, meter)
     }
 
     fn remove_continuation(&self, channels: &[C], index: i32) -> Result<Option<()>, RSpaceError> {
@@ -1047,19 +824,6 @@ where
         Ok(())
     }
 
-    fn put_datum_metered(
-        &self,
-        channel: &C,
-        datum: Datum<A>,
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking,
-    {
-        self.native_put_datum(channel, datum, meter)
-    }
-
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
         self.data
             .with_entry(channel, |map| match map.get_mut(channel) {
@@ -1095,67 +859,21 @@ where
             })
     }
 
-    fn retire_data_metered(
-        &self,
-        data: &[RSpaceResult<C, A>],
-        retirement: &[(usize, i32)],
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking,
-    {
-        self.native_retire_data(data, retirement, meter)
-    }
-
-    fn retire_produce_match_metered(
+    fn retire_resting_match(
         &self,
         channels: &[C],
         continuation_index: i32,
         continuation_persistent: bool,
         data: &[RSpaceResult<C, A>],
         retirement: &[(usize, i32)],
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        A: CloneBacking,
-        K: CloneBacking,
-    {
-        self.native_retire_produce_match(
-            channels,
-            continuation_index,
-            continuation_persistent,
-            data,
-            retirement,
-            meter,
-        )
-    }
-
-    fn retire_resting_match_metered(
-        &self,
-        channels: &[C],
-        continuation_index: i32,
-        continuation_persistent: bool,
-        data: &[RSpaceResult<C, A>],
-        retirement: &[(usize, i32)],
-        meter: &dyn SourceMeter,
         authorization: &mut dyn RestingRetirementAuthorization,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        A: CloneBacking,
-        K: CloneBacking,
-    {
+    ) -> Result<(), RSpaceError> {
         self.native_retire_resting_match(
             channels,
             continuation_index,
             continuation_persistent,
             data,
             retirement,
-            meter,
             authorization,
         )
     }
@@ -1230,18 +948,6 @@ where
                 }
             });
         Some(())
-    }
-
-    fn install_join_metered(
-        &self,
-        channel: &C,
-        join: &[C],
-        meter: &dyn SourceMeter,
-    ) -> Result<(), RSpaceError>
-    where
-        C: CloneBacking,
-    {
-        self.native_install_join(channel, join, meter)
     }
 
     fn remove_join(&self, channel: &C, join: &[C]) -> Result<Option<()>, RSpaceError> {
@@ -1348,19 +1054,6 @@ where
             .collect();
 
         [continuations, data, joins].concat()
-    }
-
-    fn changes_metered(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Vec<HotStoreAction<C, P, A, K>>, RSpaceError>
-    where
-        C: CloneBacking,
-        P: CloneBacking,
-        A: CloneBacking,
-        K: CloneBacking,
-    {
-        self.native_changes(meter)
     }
 
     // Acquires `checkpoint_lock` for a consistent view of all five maps (see
@@ -1692,38 +1385,15 @@ impl HotStoreInstances {
         A: Default + Clone + Debug + Send + Sync + 'static,
         K: Default + Clone + Debug + Send + Sync + 'static,
     {
-        Self::create_with_cache_shards(cache, history_reader, None)
-    }
-
-    fn create_with_cache_shards<C, P, A, K>(
-        cache: HotStoreState<C, P, A, K>,
-        history_reader: Box<dyn HistoryReaderBase<C, P, A, K>>,
-        cache_shards: Option<usize>,
-    ) -> Box<dyn HotStore<C, P, A, K>>
-    where
-        C: Default + Clone + Debug + Eq + Hash + Send + Sync + 'static,
-        P: Default + Clone + Debug + Send + Sync + 'static,
-        A: Default + Clone + Debug + Send + Sync + 'static,
-        K: Default + Clone + Debug + Send + Sync + 'static,
-    {
-        let (history_cache_continuations, history_cache_datums, history_cache_joins) =
-            match cache_shards {
-                Some(shards) => (
-                    DashMap::with_shard_amount(shards),
-                    DashMap::with_shard_amount(shards),
-                    DashMap::with_shard_amount(shards),
-                ),
-                None => (DashMap::new(), DashMap::new(), DashMap::new()),
-            };
         let store = InMemHotStore {
             data: ShardedMap::from_shards(cache.data),
             continuations: ShardedMap::from_shards(cache.continuations),
             installed_continuations: ShardedMap::from_shards(cache.installed_continuations),
             joins: ShardedMap::from_shards(cache.joins),
             installed_joins: ShardedMap::from_shards(cache.installed_joins),
-            history_cache_continuations,
-            history_cache_datums,
-            history_cache_joins,
+            history_cache_continuations: DashMap::new(),
+            history_cache_datums: DashMap::new(),
+            history_cache_joins: DashMap::new(),
             history_cache_cont_items: AtomicUsize::new(0),
             history_cache_data_items: AtomicUsize::new(0),
             history_cache_joins_items: AtomicUsize::new(0),
@@ -1731,64 +1401,6 @@ impl HotStoreInstances {
             history_reader_base: history_reader,
         };
         Box::new(store)
-    }
-
-    pub(crate) fn native_cache_shards() -> Option<usize> {
-        std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            .checked_mul(4)?
-            .checked_next_power_of_two()
-    }
-
-    pub(crate) fn native_constructor_layout<C, P, A, K>(
-        cache_shards: usize,
-    ) -> Option<(usize, usize)>
-    where
-        C: Default + Clone + Debug + Eq + Hash + Send + Sync + 'static,
-        P: Default + Clone + Debug + Send + Sync + 'static,
-        A: Default + Clone + Debug + Send + Sync + 'static,
-        K: Default + Clone + Debug + Send + Sync + 'static,
-    {
-        let locked_shards = std::mem::size_of::<
-            [std::sync::RwLock<imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>>;
-                NUM_SHARDS],
-        >()
-        .checked_add(std::mem::size_of::<
-            [std::sync::RwLock<imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>>; NUM_SHARDS],
-        >())?
-        .checked_add(std::mem::size_of::<
-            [std::sync::RwLock<imbl::HashMap<C, Vec<Datum<A>>>>; NUM_SHARDS],
-        >())?
-        .checked_add(
-            2 * std::mem::size_of::<[std::sync::RwLock<imbl::HashMap<C, Vec<Vec<C>>>>; NUM_SHARDS]>(
-            ),
-        )?;
-        let cache_shard_bytes =
-            super::native_backing::dashmap_shard_bytes::<Vec<C>, Vec<WaitingContinuation<P, K>>>()
-                .checked_add(super::native_backing::dashmap_shard_bytes::<C, Vec<Datum<A>>>())?
-                .checked_add(super::native_backing::dashmap_shard_bytes::<C, Vec<Vec<C>>>())?;
-        let cache_bytes = cache_shards.checked_mul(cache_shard_bytes)?;
-        let bytes = locked_shards
-            .checked_add(cache_bytes)?
-            .checked_add(std::mem::size_of::<InMemHotStore<C, P, A, K>>())?;
-        let operations = 5usize
-            .checked_mul(NUM_SHARDS)?
-            .checked_add(cache_shards.checked_mul(3)?)?
-            .checked_add(1)?;
-        Some((operations, bytes))
-    }
-
-    pub(crate) fn create_from_hr_native<C, P, A, K>(
-        history_reader: Box<dyn HistoryReaderBase<C, P, A, K>>,
-        cache_shards: usize,
-    ) -> Box<dyn HotStore<C, P, A, K>>
-    where
-        C: Default + Clone + Debug + Eq + Hash + 'static + Send + Sync,
-        P: Default + Clone + Debug + 'static + Send + Sync,
-        A: Default + Clone + Debug + 'static + Send + Sync,
-        K: Default + Clone + Debug + 'static + Send + Sync,
-    {
-        Self::create_with_cache_shards(HotStoreState::default(), history_reader, Some(cache_shards))
     }
 
     pub fn create_from_hr<C, P, A, K>(
@@ -1807,29 +1419,6 @@ impl HotStoreInstances {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn native_constructor_cache_shard_layout_matches_dashmap() {
-        let continuations =
-            DashMap::<Vec<String>, Vec<WaitingContinuation<String, String>>>::with_shard_amount(4);
-        let datums = DashMap::<String, Vec<Datum<String>>>::with_shard_amount(4);
-        let joins = DashMap::<String, Vec<Vec<String>>>::with_shard_amount(4);
-        assert_eq!(
-            super::super::native_backing::dashmap_shard_bytes::<
-                Vec<String>,
-                Vec<WaitingContinuation<String, String>>,
-            >(),
-            std::mem::size_of_val(&continuations.shards()[0])
-        );
-        assert_eq!(
-            super::super::native_backing::dashmap_shard_bytes::<String, Vec<Datum<String>>>(),
-            std::mem::size_of_val(&datums.shards()[0])
-        );
-        assert_eq!(
-            super::super::native_backing::dashmap_shard_bytes::<String, Vec<Vec<String>>>(),
-            std::mem::size_of_val(&joins.shards()[0])
-        );
-    }
 
     // `HotStoreState`'s hand-written `Default` is load-bearing: a derived
     // impl would yield empty `Vec`s (pre-Box<[..; NUM_SHARDS]>) or fail to
@@ -1901,18 +1490,18 @@ mod behavior_tests {
 
     impl HistoryReaderBase<String, String, String, String> for RejectingHistoryReader {
         fn get_data_proj(&self, _: &String) -> Result<Vec<Datum<String>>, RSpaceError> {
-            Err(RSpaceError::HostWorkRejected)
+            Err(RSpaceError::ProduceCommitDenied)
         }
 
         fn get_continuations_proj(
             &self,
             _: &Vec<String>,
         ) -> Result<Vec<WaitingContinuation<String, String>>, RSpaceError> {
-            Err(RSpaceError::HostWorkRejected)
+            Err(RSpaceError::ProduceCommitDenied)
         }
 
         fn get_joins_proj(&self, _: &String) -> Result<Vec<Vec<String>>, RSpaceError> {
-            Err(RSpaceError::HostWorkRejected)
+            Err(RSpaceError::ProduceCommitDenied)
         }
     }
 
@@ -1921,18 +1510,24 @@ mod behavior_tests {
         let store = HotStoreInstances::create_from_hr(Box::new(RejectingHistoryReader));
         let channel = "channel".to_owned();
         let channels = vec![channel.clone()];
-        assert!(matches!(store.get_data(&channel), Err(RSpaceError::HostWorkRejected)));
+        assert!(matches!(store.get_data(&channel), Err(RSpaceError::ProduceCommitDenied)));
         assert!(matches!(
             store.put_datum(&channel, mk_datum("value")),
-            Err(RSpaceError::HostWorkRejected)
+            Err(RSpaceError::ProduceCommitDenied)
         ));
-        assert!(matches!(store.get_continuations(&channels), Err(RSpaceError::HostWorkRejected)));
+        assert!(matches!(
+            store.get_continuations(&channels),
+            Err(RSpaceError::ProduceCommitDenied)
+        ));
         assert!(matches!(
             store.put_continuation(&channels, mk_continuation("pattern")),
-            Err(RSpaceError::HostWorkRejected)
+            Err(RSpaceError::ProduceCommitDenied)
         ));
-        assert!(matches!(store.get_joins(&channel), Err(RSpaceError::HostWorkRejected)));
-        assert!(matches!(store.put_join(&channel, &channels), Err(RSpaceError::HostWorkRejected)));
+        assert!(matches!(store.get_joins(&channel), Err(RSpaceError::ProduceCommitDenied)));
+        assert!(matches!(
+            store.put_join(&channel, &channels),
+            Err(RSpaceError::ProduceCommitDenied)
+        ));
         let snapshot = store.snapshot();
         assert!(snapshot.data_flat().is_empty());
         assert!(snapshot.continuations_flat().is_empty());

@@ -12,7 +12,6 @@
 // composition and is fully deterministic.
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
@@ -20,6 +19,9 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use serial_test::serial;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -29,7 +31,9 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
-        let genesis = GenesisBuilder::new()
+        // Changed by DR-116 (gap G6): an offered-funded genesis.
+        // let genesis = GenesisBuilder::new()
+        let genesis = GenesisBuilder::offered_v6()
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
@@ -159,7 +163,9 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     // A genesis bonding the full default validator set would strand every
     // floor at genesis with only two nodes running.
     let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -711,10 +717,21 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             Some(shard_id.clone()),
         )
         .expect("build traffic deploy");
+        // Added by DR-116 (gap G6): a validator that is not the deploy-inclusion
+        // leader includes its own fresh offer through the fallback.
+        let traffic_sig = traffic.sig.clone();
         let block = nodes[proposer]
             .add_block_from_deploys(&[traffic])
             .await
             .expect("post-merge validator traffic must propose");
+        assert!(
+            block
+                .body
+                .deploys
+                .iter()
+                .any(|pd| pd.identity_bytes() == traffic_sig.as_ref()),
+            "validator {proposer} must include its own traffic deploy"
+        );
         observed_blocks.push(block.clone());
         assert_touched_integer_add_channels_single_valued(
             &nodes[proposer],

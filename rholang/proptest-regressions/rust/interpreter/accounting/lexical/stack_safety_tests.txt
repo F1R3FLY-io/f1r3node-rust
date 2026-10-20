@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bf2e49bf83ac6ddc519dbd78528975bd0d24d7e568a0a56188d846f9b5836389 # shrinks to shape = Bundle(New { names: 0, urns: [], body: QuotesInReceive(0, Nil) }), seed = [0]

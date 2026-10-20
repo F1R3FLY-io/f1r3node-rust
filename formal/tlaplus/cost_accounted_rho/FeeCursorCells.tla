@@ -1,12 +1,17 @@
 -------------------- MODULE FeeCursorCells --------------------
 EXTENDS Naturals, FiniteSets, Sequences
 
+\* Changed by DR-119 (bug 11004): FastPath adds the lock-free lookup of
+\* ensureCostCursor, which runs before the locked creation of a cursor.
+\* CONSTANTS Workers, Scopes, RecheckInitialization, CheckRevision,
+\*           RestoreActual, PublishPosition
 CONSTANTS Workers, Scopes, RecheckInitialization, CheckRevision,
-          RestoreActual, PublishPosition
+          RestoreActual, PublishPosition, FastPath
 ASSUME /\ Workers # {} /\ IsFiniteSet(Workers)
        /\ Scopes # {} /\ IsFiniteSet(Scopes)
        /\ RecheckInitialization \in BOOLEAN /\ CheckRevision \in BOOLEAN
        /\ RestoreActual \in BOOLEAN /\ PublishPosition \in BOOLEAN
+       /\ FastPath \in BOOLEAN
 
 VARIABLES selected, nextPosition, marker, revisionCells, positionCells,
           logical, fees, phase, held, payload, emitRevision, emitPosition
@@ -28,8 +33,23 @@ Init ==
     /\ emitRevision = [w \in Workers |-> FALSE]
     /\ emitPosition = [w \in Workers |-> FALSE]
 
-Initialize(w) ==
+\* Added by DR-119: the lock-free lookup. A worker whose scope already has a
+\* cursor goes to "waiting" with no lock and no creation. A worker that finds
+\* no cursor goes on to the locked creation.
+Peek(w) ==
+    /\ FastPath
     /\ phase[w] = "new"
+    /\ phase' = [phase EXCEPT ![w] = IF marker[selected[w]] THEN "waiting" ELSE "absent"]
+    /\ UNCHANGED <<selected, nextPosition, marker, revisionCells, positionCells,
+                    logical, fees, held, payload, emitRevision, emitPosition>>
+
+\* Changed by DR-119: the creation runs under the lock of the scope's bucket.
+\* After a lookup that found no cursor, the lookup can be stale, so the
+\* creation checks again under the lock (RecheckInitialization).
+\* Initialize(w) ==
+\*     /\ phase[w] = "new"
+Initialize(w) ==
+    /\ phase[w] = IF FastPath THEN "absent" ELSE "new"
     /\ LET create == ~marker[selected[w]] \/ ~RecheckInitialization
        IN /\ marker' = [marker EXCEPT ![selected[w]] = TRUE]
           /\ emitRevision' = [emitRevision EXCEPT ![w] = create]
@@ -84,7 +104,7 @@ Finish(w) ==
     /\ UNCHANGED <<selected, nextPosition, marker, revisionCells, positionCells,
                     logical, fees, held, payload, emitRevision, emitPosition>>
 
-Next == (\E w \in Workers : Initialize(w) \/ Acquire(w) \/ Finish(w)
+Next == (\E w \in Workers : Peek(w) \/ Initialize(w) \/ Acquire(w) \/ Finish(w)
                             \/ PublishRevision(w) \/ PublishCursorPosition(w))
      \/ (\E w \in Workers, abort \in BOOLEAN : Decide(w, abort))
 Spec == Init /\ [][Next]_vars

@@ -96,8 +96,14 @@ fn unterminated_bomb() -> Vec<u8> { vec![START; BOMB_BYTES] }
 fn terminated_nest(depth: usize) -> Vec<u8> {
     assert!(depth >= 1, "a nest needs at least the entered level");
     let mut bytes = Vec::with_capacity(2 * depth - 1);
-    bytes.extend(std::iter::repeat(START).take(depth - 1));
-    bytes.extend(std::iter::repeat(END).take(depth));
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `repeat_n` states the same bounded repetition.
+    // bytes.extend(std::iter::repeat(START).take(depth - 1));
+    bytes.extend(std::iter::repeat_n(START, depth - 1));
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `repeat_n` states the same bounded repetition.
+    // bytes.extend(std::iter::repeat(END).take(depth));
+    bytes.extend(std::iter::repeat_n(END, depth));
     bytes
 }
 

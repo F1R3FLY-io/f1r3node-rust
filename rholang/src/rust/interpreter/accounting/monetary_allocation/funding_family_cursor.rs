@@ -1,13 +1,8 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
-
 use super::funding_family::{push, split_hold_box, sum, vector, HoldBox};
 use super::funding_family_slice::{
     solve_funding_family_slice, FundingFamilySliceWitness, FundingResourceConstraint,
 };
 use super::*;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingOutcomeCursorTransition {
@@ -42,23 +37,12 @@ impl FundingFamilyPolicySelection {
     }
 }
 
-fn array<T: Clone>(
-    n: usize,
-    value: T,
-    budget: &HostWorkBudget,
-) -> Result<Vec<T>, FundingSearchError> {
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        n.checked_mul(size_of::<T>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    reserve_work(budget, HostWorkDimension::SearchCandidates, n)?;
+fn array<T: Clone>(n: usize, value: T) -> Result<Vec<T>, FundingSearchError> {
     filled_vec(n, value)
 }
 
-fn copy(values: &[u64], budget: &HostWorkBudget) -> Result<Vec<u64>, FundingSearchError> {
-    let mut output = vector(values.len(), budget)?;
+fn copy(values: &[u64]) -> Result<Vec<u64>, FundingSearchError> {
+    let mut output = vector(values.len())?;
     output.copy_from_slice(values);
     Ok(output)
 }
@@ -67,7 +51,6 @@ fn group_representatives(
     problem: FundingFamilyOptimizationProblem<'_>,
     groups: &[usize],
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<usize>, FundingFamilyError> {
     let n = problem.capacities.len();
     let k = problem.outcomes.len();
@@ -86,7 +69,7 @@ fn group_representatives(
     if groups.len() != k || groups[0] != 0 {
         return Err(FundingFamilyError::InvalidOutcomeGroups);
     }
-    let mut representatives = array(k, 0_usize, budget)?;
+    let mut representatives = array(k, 0_usize)?;
     let mut count = 0;
     for (i, case) in problem.outcomes.iter().enumerate() {
         let m = case.resources.obligations.len();
@@ -95,13 +78,6 @@ fn group_representatives(
                 FundingSearchError::from(FundingAssignmentError::TooManyObligations).into(),
             );
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            n.checked_mul(m.checked_add(3).ok_or(FundingSearchError::Overflow)?)
-                .and_then(|v| v.checked_add(m))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         if case.resources.capacities.len() != n
             || case.resources.eligible.len() != n
             || case.resources.eligible.iter().any(|row| row.len() != m)
@@ -130,25 +106,12 @@ fn group_representatives(
     Ok(representatives)
 }
 
-fn fill_cell(
-    bounds: &HoldBox,
-    total: u64,
-    budget: &HostWorkBudget,
-) -> Result<Option<Vec<u64>>, FundingSearchError> {
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchCandidates,
-        bounds
-            .lower
-            .len()
-            .checked_mul(3)
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
+fn fill_cell(bounds: &HoldBox, total: u64) -> Result<Option<Vec<u64>>, FundingSearchError> {
     let low = sum(&bounds.lower)?;
     if low > u128::from(total) || sum(&bounds.upper)? < u128::from(total) {
         return Ok(None);
     }
-    let mut draw = copy(&bounds.lower, budget)?;
+    let mut draw = copy(&bounds.lower)?;
     let mut remaining = u128::from(total) - low;
     for (value, upper) in draw.iter_mut().zip(&bounds.upper) {
         let add = u128::from(*upper - *value).min(remaining);
@@ -166,12 +129,11 @@ struct CursorContext<'a> {
     selected: &'a [&'a FundingOutcomeAllocation],
     ranks: &'a [Vec<u64>],
     limits: FundingFamilyLimits,
-    budget: &'a HostWorkBudget,
 }
 
 impl CursorContext<'_> {
     fn effective_capacities(&self, target: usize) -> Result<Vec<u64>, FundingSearchError> {
-        let mut caps = vector(self.problem.capacities.len(), self.budget)?;
+        let mut caps = vector(self.problem.capacities.len())?;
         for ((cap, common), local) in caps
             .iter_mut()
             .zip(self.problem.capacities)
@@ -188,8 +150,8 @@ impl CursorContext<'_> {
         draws: &[u64],
     ) -> Result<Option<FundingFamilySliceWitness>, FundingFamilyError> {
         let k = self.problem.outcomes.len();
-        let mut constraints = array(k, FundingResourceConstraint::Fixed(draws), self.budget)?;
-        let fees = array(k, None, self.budget)?;
+        let mut constraints = array(k, FundingResourceConstraint::Fixed(draws))?;
+        let fees = array(k, None)?;
         for (i, constraint) in constraints.iter_mut().enumerate() {
             *constraint = FundingResourceConstraint::Fixed(if i == target {
                 draws
@@ -198,14 +160,14 @@ impl CursorContext<'_> {
             });
         }
         if let Some(witness) =
-            solve_funding_family_slice(self.problem, &constraints, &fees, self.limits, self.budget)?
+            solve_funding_family_slice(self.problem, &constraints, &fees, self.limits)?
         {
             return Ok(Some(witness));
         }
         for (i, constraint) in constraints.iter_mut().enumerate().skip(target + 1) {
             *constraint = FundingResourceConstraint::Rank(&self.ranks[i]);
         }
-        solve_funding_family_slice(self.problem, &constraints, &fees, self.limits, self.budget)
+        solve_funding_family_slice(self.problem, &constraints, &fees, self.limits)
     }
 
     fn covers(
@@ -215,19 +177,7 @@ impl CursorContext<'_> {
         witness: &FundingFamilySliceWitness,
     ) -> Result<bool, FundingFamilyError> {
         let n = self.problem.capacities.len();
-        reserve_work(
-            self.budget,
-            HostWorkDimension::VerificationOperations,
-            n.checked_mul(
-                self.problem
-                    .outcomes
-                    .len()
-                    .checked_add(4)
-                    .ok_or(FundingSearchError::Overflow)?,
-            )
-            .ok_or(FundingSearchError::Overflow)?,
-        )?;
-        let mut others = vector(n, self.budget)?;
+        let mut others = vector(n)?;
         for (i, (draws, fees)) in witness.draws.iter().zip(&witness.fees).enumerate() {
             if i == target {
                 continue;
@@ -270,7 +220,6 @@ impl CursorContext<'_> {
                 case.obligations,
                 case.eligible,
                 self.limits.search,
-                self.budget
             )?,
             FundingDomainClassification::Unrestricted { .. }
         ))
@@ -287,13 +236,9 @@ impl CursorContext<'_> {
             case.resources.obligations,
             case.resources.eligible,
             self.limits.search,
-            self.budget,
         )? {
             FundingDomainClassification::Restricted { counterexample, .. } => {
-                return Ok(Some(copy(
-                    counterexample.view().contributions,
-                    self.budget,
-                )?))
+                return Ok(Some(copy(counterexample.view().contributions)?))
             }
             FundingDomainClassification::Infeasible { .. } => {
                 return Err(FundingSearchError::InvalidResult.into())
@@ -303,11 +248,6 @@ impl CursorContext<'_> {
         let Some(allowed) = case.unit_fee_eligible else {
             return Ok(None);
         };
-        reserve_work(
-            self.budget,
-            HostWorkDimension::VerificationOperations,
-            caps.len(),
-        )?;
         let capacity = caps
             .iter()
             .zip(allowed)
@@ -319,7 +259,7 @@ impl CursorContext<'_> {
         if capacity > u128::from(total) {
             return Ok(None);
         }
-        let mut draws = vector(caps.len(), self.budget)?;
+        let mut draws = vector(caps.len())?;
         let mut remaining = total;
         for (i, eligible) in allowed.iter().enumerate() {
             if *eligible {
@@ -353,28 +293,24 @@ impl CursorContext<'_> {
         if let Some(witness) = self.local_restriction(target, caps)? {
             return Ok(Some(witness));
         }
-        let mut upper = copy(caps, self.budget)?;
+        let mut upper = copy(caps)?;
         for value in &mut upper {
             *value = (*value).min(total);
         }
         let mut pending = Vec::new();
-        push(
-            &mut pending,
-            HoldBox {
-                lower: vector(caps.len(), self.budget)?,
-                upper,
-            },
-            self.budget,
-        )?;
+        push(&mut pending, HoldBox {
+            lower: vector(caps.len())?,
+            upper,
+        })?;
         while let Some(bounds) = pending.pop() {
-            let Some(draws) = fill_cell(&bounds, total, self.budget)? else {
+            let Some(draws) = fill_cell(&bounds, total)? else {
                 continue;
             };
             let Some(witness) = self.extension(target, &draws)? else {
                 return Ok(Some(draws));
             };
             if !self.covers(target, &bounds, &witness)? {
-                split_hold_box(bounds, &mut pending, self.budget)?;
+                split_hold_box(bounds, &mut pending)?;
             }
         }
         Ok(None)
@@ -383,12 +319,12 @@ impl CursorContext<'_> {
     fn fee_mask(&self, target: usize) -> Result<Vec<bool>, FundingFamilyError> {
         let n = self.problem.capacities.len();
         let k = self.problem.outcomes.len();
-        let mut mask = array(n, false, self.budget)?;
+        let mut mask = array(n, false)?;
         let Some(allowed) = self.problem.outcomes[target].unit_fee_eligible else {
             return Ok(mask);
         };
-        let mut constraints = array(k, FundingResourceConstraint::Fixed(&[]), self.budget)?;
-        let mut fees = array(k, None, self.budget)?;
+        let mut constraints = array(k, FundingResourceConstraint::Fixed(&[]))?;
+        let mut fees = array(k, None)?;
         for (i, constraint) in constraints.iter_mut().enumerate() {
             *constraint = FundingResourceConstraint::Fixed(
                 self.selected[i].resource_totals().source_debits(),
@@ -402,14 +338,8 @@ impl CursorContext<'_> {
                 continue;
             }
             fees[target] = Some(payer);
-            *possible = solve_funding_family_slice(
-                self.problem,
-                &constraints,
-                &fees,
-                self.limits,
-                self.budget,
-            )?
-            .is_some();
+            *possible = solve_funding_family_slice(self.problem, &constraints, &fees, self.limits)?
+                .is_some();
         }
         Ok(mask)
     }
@@ -425,7 +355,7 @@ fn one_group(
         ..outcome.resources
     };
     let cursor = context.problem.resource_cursor;
-    let mut fee_mask = array(caps.len(), false, context.budget)?;
+    let mut fee_mask = array(caps.len(), false)?;
     if let Some(allowed) = outcome.unit_fee_eligible {
         let selected = select_funding_with_unit_fee(
             resource,
@@ -433,7 +363,6 @@ fn one_group(
             cursor,
             context.problem.fee_cursor,
             context.limits.search,
-            context.budget,
         )?
         .ok_or(FundingSearchError::InvalidResult)?;
         if selected.resource_totals() != context.selected[0].resource_totals() {
@@ -450,7 +379,7 @@ fn one_group(
         ))
     } else {
         let FundingPolicyResult::Selected(selected) =
-            select_fixed_funding_policy(resource, cursor, context.limits.search, context.budget)?
+            select_fixed_funding_policy(resource, cursor, context.limits.search)?
         else {
             return Err(FundingSearchError::InvalidResult.into());
         };
@@ -469,40 +398,23 @@ pub fn select_funding_family_policy(
     problem: FundingFamilyOptimizationProblem<'_>,
     groups: &[usize],
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<FundingFamilyPolicySelection>, FundingFamilyError> {
-    let representatives = group_representatives(problem, groups, limits, budget)?;
-    let Some(allocation) = optimize_funding_family(problem, limits, budget)? else {
+    let representatives = group_representatives(problem, groups, limits)?;
+    let Some(allocation) = optimize_funding_family(problem, limits)? else {
         return Ok(None);
     };
     let k = representatives.len();
     let n = problem.capacities.len();
-    let mut outcomes = array(k, problem.outcomes[0], budget)?;
-    let mut selected = array(k, &allocation.outcomes()[0], budget)?;
-    let mut ranks = array(k, Vec::new(), budget)?;
+    let mut outcomes = array(k, problem.outcomes[0])?;
+    let mut selected = array(k, &allocation.outcomes()[0])?;
+    let mut ranks = array(k, Vec::new())?;
     for (group, index) in representatives.iter().copied().enumerate() {
         outcomes[group] = problem.outcomes[index];
         selected[group] = &allocation.outcomes()[index];
-        ranks[group] = copy(selected[group].resource_totals().source_debits(), budget)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchCandidates,
-            n.checked_mul(
-                n.checked_add(1)
-                    .ok_or(FundingSearchError::Overflow)?
-                    .ilog2() as usize
-                    + 1,
-            )
-            .ok_or(FundingSearchError::Overflow)?,
-        )?;
+        ranks[group] = copy(selected[group].resource_totals().source_debits())?;
         ranks[group].sort_unstable_by(|a, b| b.cmp(a));
     }
     for (index, group) in groups.iter().copied().enumerate() {
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            n.checked_mul(2).ok_or(FundingSearchError::Overflow)?,
-        )?;
         if allocation.outcomes()[index].resource_totals() != selected[group].resource_totals()
             || allocation.outcomes()[index].fee_debits() != selected[group].fee_debits()
         {
@@ -517,7 +429,6 @@ pub fn select_funding_family_policy(
         selected: &selected,
         ranks: &ranks,
         limits,
-        budget,
     };
     let empty = FundingOutcomeCursorTransition {
         resource_next_cursor: None,
@@ -526,7 +437,7 @@ pub fn select_funding_family_policy(
         resource_restriction_witness: None,
         possible_fee_payers: Vec::new(),
     };
-    let mut transitions = array(k, empty, budget)?;
+    let mut transitions = array(k, empty)?;
     for (target, transition) in transitions.iter_mut().enumerate() {
         let caps = context.effective_capacities(target)?;
         let total = selected[target].resource_totals().total();
@@ -548,17 +459,6 @@ pub fn select_funding_family_policy(
             let next = if total == 0 {
                 None
             } else if unrestricted {
-                reserve_work(
-                    budget,
-                    HostWorkDimension::SearchCandidates,
-                    n.checked_mul(69).ok_or(FundingSearchError::Overflow)?,
-                )?;
-                reserve_work(
-                    budget,
-                    HostWorkDimension::SearchStateBytes,
-                    n.checked_mul(size_of::<u64>())
-                        .ok_or(FundingSearchError::Overflow)?,
-                )?;
                 let capped = allocate_capped_max_min(
                     &caps,
                     total,
@@ -580,21 +480,10 @@ pub fn select_funding_family_policy(
             (unrestricted, next, context.fee_mask(target)?, excluded)
         };
         let fee_next = if outcomes[target].unit_fee_eligible.is_some() {
-            let mut fee_caps = vector(n, budget)?;
+            let mut fee_caps = vector(n)?;
             for (cap, allowed) in fee_caps.iter_mut().zip(&mask) {
                 *cap = u64::from(*allowed);
             }
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                n.checked_mul(size_of::<u64>())
-                    .ok_or(FundingSearchError::Overflow)?,
-            )?;
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchCandidates,
-                n.checked_mul(69).ok_or(FundingSearchError::Overflow)?,
-            )?;
             let fee =
                 allocate_capped_max_min(&fee_caps, 1, problem.fee_cursor, limits.search.source_cap)
                     .map_err(|_| FundingSearchError::InvalidResult)?;
@@ -620,10 +509,10 @@ pub fn select_funding_family_policy(
         resource_restriction_witness: None,
         possible_fee_payers: Vec::new(),
     };
-    let mut expanded = array(groups.len(), empty, budget)?;
+    let mut expanded = array(groups.len(), empty)?;
     for (entry, group) in expanded.iter_mut().zip(groups) {
         let value = &transitions[*group];
-        let mut mask = array(n, false, budget)?;
+        let mut mask = array(n, false)?;
         mask.copy_from_slice(&value.possible_fee_payers);
         *entry = FundingOutcomeCursorTransition {
             resource_next_cursor: value.resource_next_cursor,
@@ -632,7 +521,7 @@ pub fn select_funding_family_policy(
             resource_restriction_witness: value
                 .resource_restriction_witness
                 .as_deref()
-                .map(|draws| copy(draws, budget))
+                .map(|draws| copy(draws))
                 .transpose()?,
             possible_fee_payers: mask,
         };

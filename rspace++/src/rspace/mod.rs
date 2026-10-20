@@ -1,10 +1,8 @@
 pub mod hashing;
 pub mod candidate_order;
-pub mod closed_decode;
 pub mod history;
 pub mod hot_store;
 pub mod internal;
-pub(crate) mod native_backing;
 pub mod logging;
 pub mod rspace;
 mod space_matcher;

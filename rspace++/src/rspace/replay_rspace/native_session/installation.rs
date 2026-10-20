@@ -1,9 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::rspace::hashing::native_source::{self, SourceMeter};
+use crate::rspace::hashing::native_source::{self, GroupKeys};
 use crate::rspace::internal::WaitingContinuation;
-use crate::rspace::native_backing;
 
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
 where
@@ -12,9 +11,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -26,9 +24,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -37,9 +34,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -48,9 +44,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -67,19 +62,9 @@ where
                     .to_owned(),
             ));
         }
-        let meter =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         let count = channels.len();
-        meter.reserve(1, 0, backing::<A>(count)?)?;
-        let mut matched = Vec::new();
-        matched
-            .try_reserve_exact(count)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        meter.reserve(1, 0, backing::<(C, usize)>(count)?)?;
-        let mut chosen = Vec::new();
-        chosen
-            .try_reserve_exact(count)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        let mut matched = Vec::with_capacity(count);
+        let mut chosen: Vec<(C, usize)> = Vec::with_capacity(count);
         // D-C2c (D-S1, DR-96): the source and the channel keys come first,
         // so the data reads use the keys.
         let (source, channel_keys) = native_source::consume_keys_for_epoch(
@@ -88,12 +73,8 @@ where
             &install.patterns,
             &install.continuation,
             true,
-            &meter,
         )?;
-        let keys = crate::rspace::hashing::native_source::GroupKeys::from_channel_keys(
-            channel_keys,
-            &meter,
-        )?;
+        let keys = GroupKeys::from_channel_keys(channel_keys);
         let mut complete = true;
         for ((channel, pattern), channel_key) in
             channels.iter().zip(&install.patterns).zip(&keys.channels)
@@ -101,15 +82,16 @@ where
             // Changed by D-C2c (D-S1, DR-96): the store reads by the channel
             // key. let data = self.read_data_with(channel,
             // &meter)?;
-            let data = self.read_data_with(channel, *channel_key, &meter)?;
+            let data = self.read_data_with(channel, *channel_key)?;
             let mut found = false;
             for (index, datum) in data.iter().enumerate() {
                 let mut consumed = false;
                 if !datum.persist {
                     for (previous, selected) in &chosen {
-                        native_backing::inspect_blocks(channel, &meter)?;
-                        native_backing::inspect_blocks(previous, &meter)?;
-                        meter.reserve(1, 0, 0)?;
+                        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                        // once per enclosing block.
+                        // native_backing::inspect(channel, &meter)?;
+                        // native_backing::inspect(previous, &meter)?;
                         if previous == channel && *selected == index {
                             consumed = true;
                             break;
@@ -121,14 +103,16 @@ where
                 }
                 // Disabled by D-M1 (DR-88): get_metered reserves every read of
                 // the pattern and the datum; this walk read nothing.
-                // native_backing::inspect_blocks(pattern, &meter)?;
-                // native_backing::inspect_blocks(&datum.a, &meter)?;
-                let Some(value) = self.space.matcher.get_metered(pattern, &datum.a, &meter)? else {
+                // native_backing::inspect(pattern, &meter)?;
+                // native_backing::inspect(&datum.a, &meter)?;
+                let Some(value) = self.space.matcher.get(pattern, &datum.a) else {
                     continue;
                 };
                 matched.push(value);
                 if !datum.persist {
-                    native_backing::reserve_blocks_copy_and_cleanup(channel, &meter)?;
+                    // Changed by D-O1 (DR-108): block accounting charges inline bytes
+                    // once per enclosing block.
+                    // native_backing::reserve_copy_and_cleanup(channel, &meter)?;
                     chosen.push((channel.clone(), index));
                 }
                 found = true;
@@ -141,20 +125,16 @@ where
         if complete {
             // Disabled by D-M1 (DR-88): check_commit_metered reserves every
             // read of the continuation (its guard); this walk read nothing.
-            // native_backing::inspect_blocks(&install.continuation, &meter)?;
+            // native_backing::inspect(&install.continuation, &meter)?;
             // Changed by D-M6 (DR-88): the commit check reads the matched data
             // by reference.
-            meter.reserve(1, 0, backing::<&A>(count)?)?;
-            let mut matched_refs = Vec::new();
-            matched_refs
-                .try_reserve_exact(count)
-                .map_err(|_| RSpaceError::HostWorkRejected)?;
+            let mut matched_refs = Vec::with_capacity(count);
             matched_refs.extend(matched.iter());
-            if self.space.matcher.check_commit_metered(
-                &install.continuation,
-                &matched_refs,
-                &meter,
-            )? {
+            if self
+                .space
+                .matcher
+                .check_commit_by_reference(&install.continuation, &matched_refs)
+            {
                 return Err(RSpaceError::BugFoundError(
                     "native replay installation cannot execute a COMM".to_owned(),
                 ));
@@ -173,8 +153,8 @@ where
         // store.install_continuation_metered(
         //     &channels,
         //     WaitingContinuation {
-        //         patterns: install.patterns,
-        //         continuation: install.continuation,
+        //         patterns: Arc::new(install.patterns),
+        //         continuation: Arc::new(install.continuation),
         //         persist: true,
         //         peeks: BTreeSet::new(),
         //         source,
@@ -184,21 +164,16 @@ where
         // for channel in &channels {
         //     store.install_join_metered(channel, &channels, &meter)?;
         // }
-        self.store.install_continuation(
-            &channels,
-            &keys,
-            WaitingContinuation {
+        self.store
+            .install_continuation(&channels, &keys, WaitingContinuation {
                 patterns: Arc::new(install.patterns),
                 continuation: Arc::new(install.continuation),
                 persist: true,
                 peeks: BTreeSet::new(),
                 source,
-            },
-            &meter,
-        )?;
+            })?;
         for (channel, channel_key) in channels.iter().zip(&keys.channels) {
-            self.store
-                .install_join(channel, *channel_key, &channels, &meter)?;
+            self.store.install_join(channel, *channel_key, &channels)?;
         }
         Ok(())
     }

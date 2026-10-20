@@ -11,16 +11,18 @@
 //! remain different groups, as in the legacy store whose continuation key is
 //! the channel vector. A digest collision is handled by D-C2e.
 
+use std::io::Write;
+
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use serde::Serialize;
 
-use super::{
-    Output, Result, SourceMeter, channel_hash_for_epoch, serialize, sort, stable_output, vector,
-};
+use super::{Result, sort};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::stable_hash_provider::{EventCodecEpoch, StableHashSerialize};
+use crate::rspace::hashing::stable_hash_provider::{
+    EventCodecEpoch, StableHashSerialize, channel_hash_for_epoch,
+};
 
 /// The key of a channel, or of a channel group, in the native session store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,13 +31,13 @@ pub struct StoreKey(pub [u8; 32]);
 impl StoreKey {
     /// The key of a channel whose digest is already computed, such as
     /// `Produce::channel_hash`.
-    pub fn from_digest(digest: &Blake2b256Hash, meter: &impl SourceMeter) -> Result<Self> {
-        meter.reserve(1, 32, 0)?;
-        let bytes: [u8; 32] = digest
-            .0
-            .as_slice()
-            .try_into()
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
+    pub fn from_digest(digest: &Blake2b256Hash) -> Result<Self> {
+        let bytes: [u8; 32] = digest.0.as_slice().try_into().map_err(|_| {
+            RSpaceError::BugFoundError(format!(
+                "a store key digest has {} bytes, not 32",
+                digest.0.len()
+            ))
+        })?;
         Ok(Self(bytes))
     }
 
@@ -43,48 +45,39 @@ impl StoreKey {
     pub fn shard(&self) -> usize { usize::from(self.0[0]) }
 }
 
-fn finish(digest: Blake2b<U32>, meter: &impl SourceMeter) -> Result<StoreKey> {
-    meter.reserve(1, 32, 0)?;
+fn finish(digest: Blake2b<U32>) -> StoreKey {
     let mut bytes = [0; 32];
     bytes.copy_from_slice(&digest.finalize());
-    Ok(StoreKey(bytes))
+    StoreKey(bytes)
+}
+
+/// Changed by DR-131 S6: streams the bincode encoding into the digest, so
+/// that a channel key needs no heap copy of the encoding.
+struct DigestWriter(Blake2b<U32>);
+
+impl Write for DigestWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
 /// The key of a channel: the digest of its bincode encoding, with the bytes
-/// of `hash` (`native_source.rs`) but no heap copy.
-pub fn channel_key<C: Serialize + ?Sized>(
-    channel: &C,
-    meter: &impl SourceMeter,
-) -> Result<StoreKey> {
-    match serialize(channel, Output::Hash(Blake2b::<U32>::new()), meter)? {
-        Output::Hash(digest) => finish(digest, meter),
-        Output::Bytes { .. } => unreachable!(),
-    }
+/// of `stable_hash_provider::hash` but no heap copy.
+pub fn channel_key<C: Serialize + ?Sized>(channel: &C) -> Result<StoreKey> {
+    let mut writer = DigestWriter(Blake2b::<U32>::new());
+    bincode::serialize_into(&mut writer, channel)
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+    Ok(finish(writer.0))
 }
 
 pub fn channel_key_for_epoch<C: StableHashSerialize>(
     epoch: EventCodecEpoch,
     channel: &C,
-    meter: &impl SourceMeter,
 ) -> Result<StoreKey> {
-    let contains_cost = channel.stable_hash_contains_cost_metered(meter)?;
-    if contains_cost {
-        if epoch == EventCodecEpoch::Legacy {
-            return Err(RSpaceError::InterpreterError(
-                "cost-bearing channel is invalid in the Legacy codec epoch".into(),
-            ));
-        }
-        return StoreKey::from_digest(&channel_hash_for_epoch(epoch, channel, meter)?, meter);
-    }
-    match stable_output(
-        channel,
-        EventCodecEpoch::Legacy,
-        Output::Hash(Blake2b::<U32>::new()),
-        meter,
-    )? {
-        Output::Hash(digest) => finish(digest, meter),
-        Output::Bytes { .. } => unreachable!(),
-    }
+    StoreKey::from_digest(&channel_hash_for_epoch(epoch, channel)?)
 }
 
 /// The domain separator of group keys.
@@ -93,38 +86,30 @@ pub const GROUP_KEY_DOMAIN: &[u8] = b"f1r3fly native store channel group v1";
 /// The key of a channel group: the digest of the domain separator and the
 /// channel keys in channel order. The keys have a fixed width, so groups of
 /// different lengths hash different inputs.
-pub fn group_key(keys: &[StoreKey], meter: &impl SourceMeter) -> Result<StoreKey> {
-    meter.reserve(1, GROUP_KEY_DOMAIN.len(), 0)?;
+pub fn group_key(keys: &[StoreKey]) -> StoreKey {
     let mut digest = Blake2b::<U32>::new();
     digest.update(GROUP_KEY_DOMAIN);
     for key in keys {
-        meter.reserve(1, key.0.len(), 0)?;
         digest.update(key.0);
     }
-    finish(digest, meter)
+    finish(digest)
 }
 
 /// D-C2d (DR-96): the history projection of a channel group from the store
 /// keys of its channels. A channel's store key is the digest that
-/// `channels_hash` (`native_source.rs`) computes for the channel, so the
+/// `stable_hash_provider::hash_from_vec` computes for the channel, so the
 /// projection has the same bytes, and no channel is serialized again. The
 /// digests are sorted, so the projection does not depend on the channel order.
-pub fn channels_hash_from_keys(keys: &[StoreKey], meter: &impl SourceMeter) -> Result<[u8; 32]> {
-    let mut sorted = vector(keys.len(), meter)?;
-    for key in keys {
-        meter.reserve(1, key.0.len(), 0)?;
-        sorted.push(*key);
-    }
-    sort(&mut sorted, |key| &key.0[..], meter)?;
+pub fn channels_hash_from_keys(keys: &[StoreKey]) -> [u8; 32] {
+    let mut sorted = keys.to_vec();
+    sort(&mut sorted, |key| &key.0[..]);
     let mut digest = Blake2b::<U32>::new();
     for key in &sorted {
-        meter.reserve(1, key.0.len(), 0)?;
         digest.update(key.0);
     }
-    meter.reserve(1, 32, 0)?;
     let mut bytes = [0; 32];
     bytes.copy_from_slice(&digest.finalize());
-    Ok(bytes)
+    bytes
 }
 
 /// The keys of a channel group: the key of each channel, in channel order,
@@ -136,32 +121,31 @@ pub struct GroupKeys {
 }
 
 impl GroupKeys {
-    /// The group keys of channels whose keys are already computed, such as
-    /// the keys that `consume_keys` returns.
-    pub fn from_channel_keys(channels: Vec<StoreKey>, meter: &impl SourceMeter) -> Result<Self> {
-        let group = group_key(&channels, meter)?;
-        Ok(Self { channels, group })
-    }
-
-    /// The group keys of `channels`, with one digest per channel.
-    pub fn build<C: Serialize>(channels: &[C], meter: &impl SourceMeter) -> Result<Self> {
-        let mut keys = vector(channels.len(), meter)?;
-        for channel in channels {
-            keys.push(channel_key(channel, meter)?);
-        }
-        Self::from_channel_keys(keys, meter)
-    }
-
     pub fn build_for_epoch<C: StableHashSerialize>(
         epoch: EventCodecEpoch,
         channels: &[C],
-        meter: &impl SourceMeter,
     ) -> Result<Self> {
-        let mut keys = vector(channels.len(), meter)?;
+        let keys = channels
+            .iter()
+            .map(|channel| channel_key_for_epoch(epoch, channel))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self::from_channel_keys(keys))
+    }
+
+    /// The group keys of channels whose keys are already computed, such as
+    /// the keys that `consume_keys` returns.
+    pub fn from_channel_keys(channels: Vec<StoreKey>) -> Self {
+        let group = group_key(&channels);
+        Self { channels, group }
+    }
+
+    /// The group keys of `channels`, with one digest per channel.
+    pub fn build<C: Serialize>(channels: &[C]) -> Result<Self> {
+        let mut keys = Vec::with_capacity(channels.len());
         for channel in channels {
-            keys.push(channel_key_for_epoch(epoch, channel, meter)?);
+            keys.push(channel_key(channel)?);
         }
-        Self::from_channel_keys(keys, meter)
+        Ok(Self::from_channel_keys(keys))
     }
 }
 
@@ -173,23 +157,22 @@ pub struct OperationKeys {
 }
 
 impl OperationKeys {
-    /// One digest per channel per group, computed once for the operation.
-    pub fn build<C: Serialize>(joins: &[Vec<C>], meter: &impl SourceMeter) -> Result<Self> {
-        let mut groups = vector(joins.len(), meter)?;
-        for join in joins {
-            groups.push(GroupKeys::build(join, meter)?);
-        }
-        Ok(Self { groups })
-    }
-
     pub fn build_for_epoch<C: StableHashSerialize>(
         epoch: EventCodecEpoch,
         joins: &[Vec<C>],
-        meter: &impl SourceMeter,
     ) -> Result<Self> {
-        let mut groups = vector(joins.len(), meter)?;
+        let groups = joins
+            .iter()
+            .map(|join| GroupKeys::build_for_epoch(epoch, join))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { groups })
+    }
+
+    /// One digest per channel per group, computed once for the operation.
+    pub fn build<C: Serialize>(joins: &[Vec<C>]) -> Result<Self> {
+        let mut groups = Vec::with_capacity(joins.len());
         for join in joins {
-            groups.push(GroupKeys::build_for_epoch(epoch, join, meter)?);
+            groups.push(GroupKeys::build(join)?);
         }
         Ok(Self { groups })
     }

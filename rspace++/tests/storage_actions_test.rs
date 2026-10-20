@@ -2214,7 +2214,10 @@ async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
     assert!(
         rspace
             .get_store()
-            .get_continuations(&vec!["ch1".to_string(), "ch2".to_string()])
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // .get_continuations(&vec!["ch1".to_string(), "ch2".to_string()])
+            .get_continuations(&["ch1".to_string(), "ch2".to_string()])
             .expect("hot store read")
             .is_empty(),
         "★★ the refused consume installed a waiting continuation on [ch1, ch2]"

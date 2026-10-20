@@ -342,13 +342,20 @@ where V: Clone + Send + Sync + Unpin {
             }
             // Nothing above `floor` here: retry one level up, having excluded
             // everything at or below the byte we came from.
-            None => match zipper.path().last().copied() {
-                Some(byte) => {
-                    zipper.ascend_byte();
-                    floor = byte;
-                }
-                None => return None,
-            },
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // `?` operator returns `None` as the removed arm did.
+            // None => match zipper.path().last().copied() {
+            //     Some(byte) => {
+            //         zipper.ascend_byte();
+            //         floor = byte;
+            //     }
+            //     None => return None,
+            // },
+            None => {
+                let byte = zipper.path().last().copied()?;
+                zipper.ascend_byte();
+                floor = byte;
+            }
         }
     }
 }

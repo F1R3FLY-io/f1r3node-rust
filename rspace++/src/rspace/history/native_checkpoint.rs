@@ -1,5 +1,4 @@
 use std::borrow::Borrow;
-use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -12,11 +11,16 @@ use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use super::root_repository::RootRepository;
 use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{
-    GroupKeys, SourceMeter, channel_hash_for_epoch, channels_hash_from_keys, encode,
-    encode_for_epoch, sort,
+use crate::rspace::hashing::native_source::sort;
+use crate::rspace::hashing::stable_hash_provider::{
+    EventCodecEpoch, StableHashSerialize, channel_hash_for_epoch, channel_tuple_hash_for_epoch,
+    event_leg_bytes_for_epoch,
 };
-use crate::rspace::hashing::stable_hash_provider::{EventCodecEpoch, StableHashSerialize};
+// Changed by D-C3 (D-S3, DR-97): the preparation matches on export views.
+// use crate::rspace::hot_store_action::DeleteAction::{DeleteContinuations, DeleteData,
+// DeleteJoins}; use crate::rspace::hot_store_action::HotStoreAction;
+// use crate::rspace::hot_store_action::InsertAction::{InsertContinuations, InsertData,
+// InsertJoins};
 use crate::rspace::hot_store_action::{HotStoreAction, NativeExportAction, NativeExportView};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 
@@ -35,172 +39,73 @@ pub(crate) struct NativeCheckpointBacking {
     pub(crate) nodes: Arc<dyn KeyValueStore>,
 }
 
-fn vector<T>(count: usize, meter: &impl SourceMeter) -> Result<Vec<T>, RSpaceError> {
-    let backing = count
-        .checked_mul(size_of::<T>())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, 0, backing)?;
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(count)
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
-    Ok(values)
+/// Changed by DR-131 S6: the bincode encoding of `value`, as
+/// `bincode::serialize` gives it. An encoding error keeps the interpreter
+/// class that the encoder gave it before host work was removed.
+fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, RSpaceError> {
+    bincode::serialize(value).map_err(|error| RSpaceError::InterpreterError(error.to_string()))
 }
 
-fn records<T, M: SourceMeter>(
+/// Changed by DR-131 S6: the Blake2b-256 digest of the bincode encoding of
+/// `value`, as `stable_hash_provider::hash` computes it.
+fn digest<T: Serialize + ?Sized>(value: &T) -> Result<Blake2b256Hash, RSpaceError> {
+    Ok(Blake2b256Hash::new(&encode(value)?))
+}
+
+fn records<T>(
     items: &[T],
-    meter: &M,
-    encode_one: impl Fn(&T, &M) -> Result<Vec<u8>, RSpaceError>,
+    encode_one: impl Fn(&T) -> Result<Vec<u8>, RSpaceError>,
 ) -> Result<Vec<u8>, RSpaceError> {
-    let mut encoded = vector::<Vec<u8>>(items.len(), meter)?;
+    let mut encoded = Vec::with_capacity(items.len());
     for item in items {
-        encoded.push(encode_one(item, meter)?);
+        encoded.push(encode_one(item)?);
     }
-    sort(&mut encoded, |bytes| bytes, meter)?;
-    encode(&encoded, meter)
-}
-
-fn append(bytes: &mut Vec<u8>, tail: &[u8], meter: &impl SourceMeter) -> Result<(), RSpaceError> {
-    let total = bytes
-        .len()
-        .checked_add(tail.len())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(1, tail.len(), total)?;
-    bytes
-        .try_reserve_exact(tail.len())
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
-    bytes.extend_from_slice(tail);
-    Ok(())
+    sort(&mut encoded, |bytes| bytes);
+    encode(&encoded)
 }
 
 fn datum_record<A: Clone + StableHashSerialize>(
     epoch: EventCodecEpoch,
     datum: &Datum<A>,
-    meter: &impl SourceMeter,
 ) -> Result<Vec<u8>, RSpaceError> {
-    let mut bytes = encode_for_epoch(epoch, datum.a.as_ref(), meter)?;
-    append(&mut bytes, &encode(&(datum.persist, &datum.source), meter)?, meter)?;
+    let mut bytes = event_leg_bytes_for_epoch(epoch, datum.a.as_ref())?;
+    bytes.extend_from_slice(&encode(&(datum.persist, &datum.source))?);
     Ok(bytes)
 }
 
 fn continuation_record<P: Clone + StableHashSerialize, K: Clone + StableHashSerialize>(
     epoch: EventCodecEpoch,
     waiting: &WaitingContinuation<P, K>,
-    meter: &impl SourceMeter,
 ) -> Result<Vec<u8>, RSpaceError> {
-    let count = u64::try_from(waiting.patterns.len()).map_err(|_| RSpaceError::HostWorkRejected)?;
-    let mut bytes = encode(&count, meter)?;
+    let count = u64::try_from(waiting.patterns.len())
+        .map_err(|_| RSpaceError::InterpreterError("record length does not fit u64".into()))?;
+    let mut bytes = encode(&count)?;
     for pattern in waiting.patterns.iter() {
-        append(&mut bytes, &encode_for_epoch(epoch, pattern, meter)?, meter)?;
+        bytes.extend_from_slice(&event_leg_bytes_for_epoch(epoch, pattern)?);
     }
-    append(&mut bytes, &encode_for_epoch(epoch, waiting.continuation.as_ref(), meter)?, meter)?;
-    append(
-        &mut bytes,
-        &encode(&(waiting.persist, &waiting.peeks, &waiting.source), meter)?,
-        meter,
-    )?;
+    bytes.extend_from_slice(&event_leg_bytes_for_epoch(epoch, waiting.continuation.as_ref())?);
+    bytes.extend_from_slice(&encode(&(waiting.persist, &waiting.peeks, &waiting.source))?);
     Ok(bytes)
 }
 
 fn join_record<C: StableHashSerialize>(
     epoch: EventCodecEpoch,
     join: &Vec<C>,
-    meter: &impl SourceMeter,
 ) -> Result<Vec<u8>, RSpaceError> {
-    let count = u64::try_from(join.len()).map_err(|_| RSpaceError::HostWorkRejected)?;
-    let mut bytes = encode(&count, meter)?;
+    let count = u64::try_from(join.len())
+        .map_err(|_| RSpaceError::InterpreterError("record length does not fit u64".into()))?;
+    let mut bytes = encode(&count)?;
     for channel in join {
-        append(&mut bytes, &encode_for_epoch(epoch, channel, meter)?, meter)?;
+        bytes.extend_from_slice(&event_leg_bytes_for_epoch(epoch, channel)?);
     }
     Ok(bytes)
 }
 
-fn channel_projection<C: StableHashSerialize>(
-    epoch: EventCodecEpoch,
-    channel: &C,
-    meter: &impl SourceMeter,
-) -> Result<Blake2b256Hash, RSpaceError> {
-    channel_hash_for_epoch(epoch, channel, meter)
-}
-
-fn group_projection<C: StableHashSerialize>(
-    epoch: EventCodecEpoch,
-    channels: &[C],
-    meter: &impl SourceMeter,
-) -> Result<Blake2b256Hash, RSpaceError> {
-    let keys = GroupKeys::build_for_epoch(epoch, channels, meter)?;
-    meter.reserve(1, 32, 32)?;
-    Ok(Blake2b256Hash::from_bytes(channels_hash_from_keys(&keys.channels, meter)?.to_vec()))
-}
-
-fn leaf_hash<T: Serialize>(
-    leaf: &T,
-    meter: &impl SourceMeter,
-) -> Result<Blake2b256Hash, RSpaceError> {
-    let bytes = encode(leaf, meter)?;
-    meter.reserve(1, bytes.len(), 32)?;
-    Ok(Blake2b256Hash::new(&bytes))
-}
-
-fn history_key(
-    prefix: u8,
-    hash: &Blake2b256Hash,
-    meter: &impl SourceMeter,
-) -> Result<Vec<u8>, RSpaceError> {
-    let size = hash
-        .0
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(1, hash.0.len(), size)?;
-    let mut key = Vec::new();
-    key.try_reserve_exact(size)
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
+fn history_key(prefix: u8, hash: &Blake2b256Hash) -> Vec<u8> {
+    let mut key = Vec::with_capacity(hash.0.len() + 1);
     key.push(prefix);
     key.extend_from_slice(&hash.0);
-    Ok(key)
-}
-
-fn reserve_cold_commit(
-    actions: &[(Vec<u8>, Vec<u8>)],
-    meter: &dyn SourceMeter,
-) -> Result<(), RSpaceError> {
-    let count = actions.len();
-    let metadata = size_of::<Vec<u8>>()
-        .checked_add(size_of::<bool>())
-        .and_then(|bytes| bytes.checked_add(2 * size_of::<((Vec<u8>, Vec<u8>), bool)>()))
-        .and_then(|bytes| bytes.checked_add(size_of::<(Vec<u8>, Vec<u8>)>()))
-        .and_then(|bytes| bytes.checked_mul(count))
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(
-        count
-            .checked_mul(6)
-            .and_then(|n| n.checked_add(1))
-            .ok_or(RSpaceError::HostWorkRejected)?,
-        0,
-        metadata,
-    )?;
-    for (key, value) in actions {
-        let key_bytes = key
-            .len()
-            .checked_mul(2)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let backing = key_bytes
-            .checked_add(value.len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let scanned = key
-            .len()
-            .checked_mul(4)
-            .and_then(|bytes| {
-                value
-                    .len()
-                    .checked_mul(2)
-                    .and_then(|value| bytes.checked_add(value))
-            })
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(5, scanned, backing)?;
-    }
-    Ok(())
+    key
 }
 
 impl NativeCheckpoint {
@@ -211,10 +116,10 @@ impl NativeCheckpoint {
     //     meter: &dyn SourceMeter,
     // ) -> Result<Self, RSpaceError>
     // where
-    //     C: Clone + Serialize,
-    //     P: Clone + Serialize,
-    //     A: Clone + Serialize,
-    //     K: Clone + Serialize,
+    //     C: Clone + StableHashSerialize,
+    //     P: Clone + StableHashSerialize,
+    //     A: Clone + StableHashSerialize,
+    //     K: Clone + StableHashSerialize,
     // {
     //     let reserve = |operations, scanned, backing|
     // meter.reserve(operations, scanned, backing);
@@ -298,18 +203,17 @@ impl NativeCheckpoint {
 
     /// The checkpoint of owned actions. D-C3 (D-S3, DR-97): they are read
     /// through their views, so the owned and the borrowed exports share one
-    /// preparation, with the same reservations as before.
+    /// preparation.
     pub(crate) fn prepare<C, P, A, K>(
         actions: Vec<HotStoreAction<C, P, A, K>>,
-        meter: &dyn SourceMeter,
     ) -> Result<Self, RSpaceError>
     where
-        C: Clone + StableHashSerialize,
-        P: Clone + StableHashSerialize,
-        A: Clone + StableHashSerialize,
-        K: Clone + StableHashSerialize,
+        C: Clone + Serialize + StableHashSerialize,
+        P: Clone + Serialize + StableHashSerialize,
+        A: Clone + Serialize + StableHashSerialize,
+        K: Clone + Serialize + StableHashSerialize,
     {
-        Self::prepare_views(EventCodecEpoch::Legacy, &actions, meter)
+        Self::prepare_views(EventCodecEpoch::Legacy, &actions)
     }
 
     /// D-C3 (D-S3, DR-97): the checkpoint of the native export's changes,
@@ -317,7 +221,6 @@ impl NativeCheckpoint {
     pub(crate) fn prepare_borrowed<C, P, A, K>(
         epoch: EventCodecEpoch,
         actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
-        meter: &dyn SourceMeter,
     ) -> Result<Self, RSpaceError>
     where
         C: StableHashSerialize,
@@ -325,13 +228,12 @@ impl NativeCheckpoint {
         A: Clone + StableHashSerialize,
         K: Clone + StableHashSerialize,
     {
-        Self::prepare_views(epoch, actions, meter)
+        Self::prepare_views(epoch, actions)
     }
 
     fn prepare_views<C, P, A, K, W, T>(
         epoch: EventCodecEpoch,
         actions: &[T],
-        meter: &dyn SourceMeter,
     ) -> Result<Self, RSpaceError>
     where
         C: StableHashSerialize,
@@ -341,84 +243,76 @@ impl NativeCheckpoint {
         W: Borrow<WaitingContinuation<P, K>>,
         T: NativeExportView<C, A, W>,
     {
-        let reserve = |operations, scanned, backing| meter.reserve(operations, scanned, backing);
-        reserve.reserve(actions.len(), 0, 0)?;
         let inserts = actions
             .iter()
             .filter(|action| action.view().is_insert())
             .count();
-        let mut cold_actions = vector::<(Vec<u8>, Vec<u8>)>(inserts, &reserve)?;
-        let mut history_actions = vector::<HistoryAction>(actions.len(), &reserve)?;
+        let mut cold_actions = Vec::with_capacity(inserts);
+        let mut history_actions = Vec::with_capacity(actions.len());
         for action in actions {
             let (prefix, projection, leaf) = match action.view() {
                 NativeExportAction::InsertData { channel, data } => {
-                    let projection = channel_projection(epoch, channel, &reserve)?;
+                    let projection = channel_hash_for_epoch(epoch, channel)?;
                     let leaf = DataLeaf {
-                        bytes: records(data, &reserve, |datum, meter| {
-                            datum_record(epoch, datum, meter)
-                        })?,
+                        bytes: records(data, |datum| datum_record(epoch, datum))?,
                     };
-                    let hash = leaf_hash(&leaf, &reserve)?;
+                    let hash = digest(&leaf)?;
                     (PREFIX_DATUM, projection, Some((hash, PersistedData::Data(leaf))))
                 }
                 NativeExportAction::InsertContinuations {
                     channels,
                     continuations,
                 } => {
-                    let projection = group_projection(epoch, channels, &reserve)?;
+                    let projection = channel_tuple_hash_for_epoch(epoch, channels)?;
                     let leaf = ContinuationsLeaf {
-                        bytes: records(continuations, &reserve, |waiting, meter| {
-                            continuation_record(epoch, waiting.borrow(), meter)
+                        bytes: records(continuations, |waiting| {
+                            continuation_record(epoch, waiting.borrow())
                         })?,
                     };
-                    let hash = leaf_hash(&leaf, &reserve)?;
+                    let hash = digest(&leaf)?;
                     (PREFIX_KONT, projection, Some((hash, PersistedData::Continuations(leaf))))
                 }
                 NativeExportAction::InsertJoins { channel, joins } => {
-                    let projection = channel_projection(epoch, channel, &reserve)?;
+                    let projection = channel_hash_for_epoch(epoch, channel)?;
                     let leaf = JoinsLeaf {
-                        bytes: records(joins, &reserve, |join, meter| {
-                            join_record(epoch, join, meter)
-                        })?,
+                        bytes: records(joins, |join| join_record(epoch, join))?,
                     };
-                    let hash = leaf_hash(&leaf, &reserve)?;
+                    let hash = digest(&leaf)?;
                     (PREFIX_JOINS, projection, Some((hash, PersistedData::Joins(leaf))))
                 }
                 NativeExportAction::DeleteData { channel } => {
-                    (PREFIX_DATUM, channel_projection(epoch, channel, &reserve)?, None)
+                    (PREFIX_DATUM, channel_hash_for_epoch(epoch, channel)?, None)
                 }
                 NativeExportAction::DeleteContinuations { channels } => {
-                    (PREFIX_KONT, group_projection(epoch, channels, &reserve)?, None)
+                    (PREFIX_KONT, channel_tuple_hash_for_epoch(epoch, channels)?, None)
                 }
                 NativeExportAction::DeleteJoins { channel } => {
-                    (PREFIX_JOINS, channel_projection(epoch, channel, &reserve)?, None)
+                    (PREFIX_JOINS, channel_hash_for_epoch(epoch, channel)?, None)
                 }
             };
-            let key = history_key(prefix, &projection, &reserve)?;
+            let key = history_key(prefix, &projection);
             if let Some((hash, data)) = leaf {
-                cold_actions.push((encode(&hash, &reserve)?, encode(&data, &reserve)?));
+                cold_actions.push((encode(&hash)?, encode(&data)?));
                 history_actions.push(HistoryAction::Insert(InsertAction { key, hash }));
             } else {
                 history_actions.push(HistoryAction::Delete(DeleteAction { key }));
             }
         }
-        let mut keys = vector::<&[u8]>(history_actions.len(), &reserve)?;
+        let mut keys: Vec<&[u8]> = Vec::with_capacity(history_actions.len());
         for action in &history_actions {
             keys.push(match action {
                 HistoryAction::Insert(insert) => &insert.key,
                 HistoryAction::Delete(delete) => &delete.key,
             });
         }
-        sort(&mut keys, |key| key, &reserve)?;
+        sort(&mut keys, |key| key);
         for adjacent in keys.windows(2) {
-            reserve.reserve(1, adjacent[0].len().min(adjacent[1].len()), 0)?;
             if adjacent[0] == adjacent[1] {
                 return Err(RSpaceError::HistoryError(HistoryError::ActionError(
                     "Cannot process duplicate actions on one key.".to_owned(),
                 )));
             }
         }
-        reserve_cold_commit(&cold_actions, &reserve)?;
         Ok(Self {
             cold_actions,
             history_actions,
@@ -429,6 +323,9 @@ impl NativeCheckpoint {
     }
 }
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.4): HEAD's
+// epoch test without its host-work meter (DR-131). It is the only test that a
+// Legacy epoch refuses a cost channel before any action is staged.
 #[cfg(test)]
 mod epoch_tests {
     use super::*;
@@ -449,15 +346,13 @@ mod epoch_tests {
             String,
             Arc<WaitingContinuation<String, String>>,
         >; 1] = [NativeExportAction::DeleteData { channel: &channel }];
-        let meter = |_, _, _| Ok(());
-        assert!(
-            NativeCheckpoint::prepare_borrowed(EventCodecEpoch::Legacy, &actions, &meter).is_err()
-        );
+        assert!(NativeCheckpoint::prepare_borrowed(EventCodecEpoch::Legacy, &actions).is_err());
 
-        let prepared =
-            NativeCheckpoint::prepare_borrowed(EventCodecEpoch::CostV1, &actions, &meter).unwrap();
-        let digest = channel_hash_for_epoch(EventCodecEpoch::CostV1, &channel, &meter).unwrap();
-        let expected = history_key(PREFIX_DATUM, &digest, &meter).unwrap();
+        let prepared = NativeCheckpoint::prepare_borrowed(EventCodecEpoch::CostV1, &actions)
+            .expect("CostV1 prepares a cost channel");
+        let digest = channel_hash_for_epoch(EventCodecEpoch::CostV1, &channel)
+            .expect("CostV1 hashes a cost channel");
+        let expected = history_key(PREFIX_DATUM, &digest);
         assert!(
             matches!(&prepared.history_actions[0], HistoryAction::Delete(delete) if delete.key == expected)
         );

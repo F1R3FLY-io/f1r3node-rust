@@ -302,6 +302,35 @@ impl<'a> Iterator for PathFrames<'a> {
 #[doc(hidden)]
 pub fn eval_stable_par_for_test(par: &Par) -> bool { eval_stable_par(par) }
 
+pub struct PathMapCrateTypeMapper;
+
+impl PathMapCrateTypeMapper {
+    pub fn set_epathmap_to_rholang_set_pathmap(e_pathmap: &EPathMap) -> SetPathMapCreationResult {
+        let entries = e_pathmap.entry_trie();
+        SetPathMapCreationResult {
+            map: entries.set_trie().clone(),
+            connective_used: entries.any_connective_used() || e_pathmap.remainder.is_some(),
+            locally_free: entries.union_locally_free().to_vec(),
+        }
+    }
+
+    pub fn rholang_set_pathmap_to_set_epathmap(
+        map: &RholangSetPathMap,
+        connective_used: bool,
+        locally_free: &[u8],
+        remainder: Option<Var>,
+    ) -> EPathMap {
+        EPathMap::new(
+            EntryTrie::adopt_trie(map),
+            locally_free.to_vec(),
+            connective_used,
+            remainder,
+        )
+    }
+}
+
+// Moved here by the merge of feature/cost-accounted-rho (clippy gate):
+// a test module must be the last item of its file.
 #[cfg(test)]
 mod registry_value_tests {
     use super::{eval_stable_par, is_closed_registry_value};
@@ -405,32 +434,5 @@ mod registry_value_tests {
             nested = new_elist_par(vec![nested], vec![], false, None, vec![], false);
         }
         assert!(!is_closed_registry_value(&nested));
-    }
-}
-
-pub struct PathMapCrateTypeMapper;
-
-impl PathMapCrateTypeMapper {
-    pub fn set_epathmap_to_rholang_set_pathmap(e_pathmap: &EPathMap) -> SetPathMapCreationResult {
-        let entries = e_pathmap.entry_trie();
-        SetPathMapCreationResult {
-            map: entries.set_trie().clone(),
-            connective_used: entries.any_connective_used() || e_pathmap.remainder.is_some(),
-            locally_free: entries.union_locally_free().to_vec(),
-        }
-    }
-
-    pub fn rholang_set_pathmap_to_set_epathmap(
-        map: &RholangSetPathMap,
-        connective_used: bool,
-        locally_free: &[u8],
-        remainder: Option<Var>,
-    ) -> EPathMap {
-        EPathMap::new(
-            EntryTrie::adopt_trie(map),
-            locally_free.to_vec(),
-            connective_used,
-            remainder,
-        )
     }
 }

@@ -272,7 +272,10 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
         entries,
         Vec::new(),
         map.connective_used,
-        map.remainder.clone(),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `Option<Var>` is `Copy`.
+        // map.remainder.clone(),
+        map.remainder,
     )
 }
 
@@ -422,12 +425,18 @@ fn event_hash_goldens_produce() {
     check_pinned_hex(
         "INDEX_CHANNEL_HASH_HEX",
         pinned::INDEX_CHANNEL_HASH_HEX,
-        &hex::encode(&produce1.channel_hash.bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&produce1.channel_hash.bytes()),
+        &hex::encode(produce1.channel_hash.bytes()),
     );
     check_pinned_hex(
         "PRODUCE_INDEX_RS1_HASH_HEX",
         pinned::PRODUCE_INDEX_RS1_HASH_HEX,
-        &hex::encode(&produce1.hash.bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&produce1.hash.bytes()),
+        &hex::encode(produce1.hash.bytes()),
     );
 
     // Same pars, random_state differing in one byte ⇒ DIFFERENT hash: the
@@ -451,7 +460,10 @@ fn event_hash_goldens_produce() {
     check_pinned_hex(
         "PRODUCE_INDEX_RS2_HASH_HEX",
         pinned::PRODUCE_INDEX_RS2_HASH_HEX,
-        &hex::encode(&produce2.hash.bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&produce2.hash.bytes()),
+        &hex::encode(produce2.hash.bytes()),
     );
 
     // Persist participates too (hash_produce's third leg).
@@ -555,7 +567,11 @@ fn event_hash_goldens_consume() {
     };
     let consume = Consume::create_for_epoch(
         EventCodecEpoch::Legacy,
-        &vec![channel.clone()],
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+        // slice needs no `Vec`, and `slice::from_ref` makes the one-element
+        // slice without a clone.
+        // &vec![channel.clone()],
+        std::slice::from_ref(&channel),
         &patterns,
         &continuation,
         false,
@@ -566,14 +582,20 @@ fn event_hash_goldens_consume() {
     check_pinned_hex(
         "CONSUME_DISCOVERY_HASH_HEX",
         pinned::CONSUME_DISCOVERY_HASH_HEX,
-        &hex::encode(&consume.hash.bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&consume.hash.bytes()),
+        &hex::encode(consume.hash.bytes()),
     );
     // The consume's channel leg reuses the same stable channel hash as the
     // produce side (hash_vec over the singleton).
     check_pinned_hex(
         "INDEX_CHANNEL_HASH_HEX (consume leg)",
         pinned::INDEX_CHANNEL_HASH_HEX,
-        &hex::encode(&consume.channel_hashes[0].bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&consume.channel_hashes[0].bytes()),
+        &hex::encode(consume.channel_hashes[0].bytes()),
     );
 }
 
@@ -648,8 +670,14 @@ fn pre_cost_positional_codec_reproduces_committed_produce_and_consume_hashes() {
     );
     let routed_consume = Consume::create_for_epoch(
         EventCodecEpoch::Legacy,
-        &[channel.clone()],
-        &[pattern.clone()],
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `slice::from_ref` makes the one-element slice without a clone.
+        // &[channel.clone()],
+        std::slice::from_ref(&channel),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `slice::from_ref` makes the one-element slice without a clone.
+        // &[pattern.clone()],
+        std::slice::from_ref(&pattern),
         &continuation,
         false,
     )
@@ -704,12 +732,18 @@ fn event_hash_goldens_produce_with_filled_cell_splices_identically() {
     check_pinned_hex(
         "PRODUCE_INDEX_RS1_HASH_HEX (spliced)",
         pinned::PRODUCE_INDEX_RS1_HASH_HEX,
-        &hex::encode(&produce.hash.bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&produce.hash.bytes()),
+        &hex::encode(produce.hash.bytes()),
     );
     check_pinned_hex(
         "INDEX_CHANNEL_HASH_HEX (spliced)",
         pinned::INDEX_CHANNEL_HASH_HEX,
-        &hex::encode(&produce.channel_hash.bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&produce.channel_hash.bytes()),
+        &hex::encode(produce.channel_hash.bytes()),
     );
 }
 
@@ -738,7 +772,11 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
     };
     let consume = Consume::create_for_epoch(
         EventCodecEpoch::Legacy,
-        &vec![channel.clone()],
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+        // slice needs no `Vec`, and `slice::from_ref` makes the one-element
+        // slice without a clone.
+        // &vec![channel.clone()],
+        std::slice::from_ref(&channel),
         &patterns,
         &continuation,
         false,
@@ -747,7 +785,10 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
     check_pinned_hex(
         "CONSUME_DISCOVERY_HASH_HEX (trait plumbing)",
         pinned::CONSUME_DISCOVERY_HASH_HEX,
-        &hex::encode(&consume.hash.bytes()),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `hex::encode` takes the bytes through `AsRef`.
+        // &hex::encode(&consume.hash.bytes()),
+        &hex::encode(consume.hash.bytes()),
     );
 
     // Second: map-bearing pattern + continuation — spliced and direct
@@ -767,7 +808,11 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
     };
     let spliced = Consume::create_for_epoch(
         EventCodecEpoch::Legacy,
-        &vec![channel.clone()],
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+        // slice needs no `Vec`, and `slice::from_ref` makes the one-element
+        // slice without a clone.
+        // &vec![channel.clone()],
+        std::slice::from_ref(&channel),
         &map_pattern,
         &map_continuation,
         false,
@@ -791,7 +836,10 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
     };
     let direct = Consume::create_for_epoch(
         EventCodecEpoch::Legacy,
-        &vec![channel],
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+        // slice literal needs no `Vec`.
+        // &vec![channel],
+        &[channel],
         &direct_pattern,
         &direct_continuation,
         false,

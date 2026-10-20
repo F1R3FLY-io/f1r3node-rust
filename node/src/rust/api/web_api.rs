@@ -2950,7 +2950,16 @@ mod offered_tests {
             ))),
         })
         .unwrap();
-        assert!(matches!(&pathmap, RhoExpr::ExprList { data } if data.len() == 2));
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9):
+        // since ce4dfbe9c the JSON API keeps the mode of an `EPathMap`, so a
+        // set-mode map converts to `RhoPathMap::Set`, not to a plain list. The
+        // checkpoint merges updated the constructors of this upstream test but
+        // not its expected shapes.
+        // assert!(matches!(&pathmap, RhoExpr::ExprList { data } if data.len() == 2));
+        assert!(matches!(
+            &pathmap,
+            RhoExpr::ExprPathMap { data: RhoPathMap::Set { entries } } if entries.len() == 2
+        ));
 
         let zipper = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::EZipperBody(EZipper {
@@ -2968,7 +2977,13 @@ mod offered_tests {
         match &zipper {
             RhoExpr::ExprTuple { data } => {
                 assert_eq!(data.len(), 2);
-                assert!(matches!(&data[0], RhoExpr::ExprList { data } if data.len() == 1));
+                // Changed by the merge of feature/cost-accounted-rho (plan step
+                // 1.9): the zipper's map keeps its set mode (ce4dfbe9c).
+                // assert!(matches!(&data[0], RhoExpr::ExprList { data } if data.len() == 1));
+                assert!(matches!(
+                    &data[0],
+                    RhoExpr::ExprPathMap { data: RhoPathMap::Set { entries } } if entries.len() == 1
+                ));
                 assert!(matches!(&data[1], RhoExpr::ExprList { data }
                         if matches!(&data[0], RhoExpr::ExprBytes { data } if data == "aa")));
             }
@@ -2979,10 +2994,17 @@ mod offered_tests {
             expr_instance: Some(ExprInstance::EZipperBody(EZipper::default())),
         })
         .unwrap();
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): a
+        // zipper with no map converts its map to `RhoPathMap::Empty` (ce4dfbe9c).
+        // assert!(matches!(
+        //     &empty_zipper,
+        //     RhoExpr::ExprTuple { data }
+        //     if matches!(&data[0], RhoExpr::ExprList { data } if data.is_empty())
+        // ));
         assert!(matches!(
             &empty_zipper,
             RhoExpr::ExprTuple { data }
-            if matches!(&data[0], RhoExpr::ExprList { data } if data.is_empty())
+            if matches!(&data[0], RhoExpr::ExprPathMap { data: RhoPathMap::Empty })
         ));
     }
 

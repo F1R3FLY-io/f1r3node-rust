@@ -2338,3 +2338,78 @@ fn matching_byte_array_should_work() {
     assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
     assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
 }
+
+/// Added by the merge of feature/cost-accounted-rho (finding R3-17): the
+/// pattern `{x | 1}` is not one free variable, so `Matcher::get` matches it on
+/// the general path. The remainder binds the conditional, the cost-signed term
+/// or the cost stack of the datum.
+#[test]
+fn matcher_get_remainder_binds_conditional_and_cost_terms() {
+    use rholang::rust::interpreter::matcher::r#match::Matcher;
+    use rspace_plus_plus::rspace::r#match::Match as _;
+
+    for source in [
+        r#"if(true){ Nil } else { Nil }"#,
+        r#"{% Nil %}[ s ]"#,
+        r#"s :: ()"#,
+    ] {
+        let term = Compiler::source_to_adt(source).expect("the term compiles");
+        let mut target = term.clone();
+        target.exprs.push(new_gint_expr(1));
+        let mut pattern = vector_par(Vec::new(), true);
+        pattern.exprs = vec![new_freevar_expr(0), new_gint_expr(1)];
+        let bind = BindPattern {
+            patterns: vec![pattern],
+            remainder: None,
+            free_count: 1,
+        };
+        let datum = ListParWithRandom {
+            pars: vec![target],
+            ..Default::default()
+        };
+        let bound = Matcher
+            .get(&bind, &datum)
+            .expect("the pattern matches the datum");
+        assert_eq!(bound.pars, vec![term], "{source}");
+    }
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R3-17): a Rholang
+/// `match` with the pattern `{x | 1}` binds the `if` of its target.
+#[tokio::test]
+async fn rholang_match_remainder_binds_a_conditional() {
+    use std::collections::HashMap;
+
+    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+    use rholang::rust::interpreter::accounting::costs::Cost;
+    use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+    use rholang::rust::interpreter::test_utils::resources::with_runtime;
+
+    let program = r#"
+        match { 1 | if (true) { Nil } else { Nil } } {
+          { x | 1 } => { @"out"!(x) }
+        }
+    "#;
+    let (errors, data) = with_runtime("r3-17-match-", |runtime: RhoRuntimeImpl| async move {
+        let result = runtime
+            .evaluate(
+                program,
+                Cost::unsafe_max(),
+                HashMap::new(),
+                Blake2b512Random::create_from_bytes(&[]),
+            )
+            .await
+            .expect("the evaluation runs");
+        let data = runtime
+            .get_data(&new_gstring_par("out".to_string(), Vec::new(), false))
+            .await
+            .expect("the output query runs");
+        (result.errors, data)
+    })
+    .await;
+    assert!(errors.is_empty(), "{errors:?}");
+    let conditional =
+        Compiler::source_to_adt(r#"if(true){ Nil } else { Nil }"#).expect("the term compiles");
+    let outputs: Vec<_> = data.iter().map(|datum| datum.a.pars.clone()).collect();
+    assert_eq!(outputs, vec![vec![conditional]]);
+}

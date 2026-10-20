@@ -753,37 +753,45 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
     .unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let bad_rholang =
-                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
-            let deploy = construct_deploy::source_deploy_now_full(
-                bad_rholang.to_string(),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-
-            let result = compute_state(
-                &mut runtime_manager,
-                &genesis_context,
-                deploy,
-                &genesis_block.body.state.post_state_hash,
-            )
-            .await;
-
-            assert!(result.1.is_failed);
-            assert!(result.1.cost.cost == bad_rholang.len() as u64);
-        },
-    )
-    .await
-    .unwrap();
-}
+// Disabled by I6 (epic 8946, D3): legacy accounting is forbidden under v6.
+// This test asserted the legacy charge of the source length for a failed
+// legacy body-only deploy. Its term parses and fails at run time with
+// `OperatorExpectedError` (`1 + "hi"`). The offered forms are
+// `an_operator_error_after_a_join_is_published_as_a_charged_user_failure` and,
+// for a term that does not parse,
+// `a_term_that_does_not_parse_is_rejected_at_submission_without_charge` in
+// `casper/tests/api/offered_funded_api_test.rs`.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
+//     with_runtime_manager(
+//         |mut runtime_manager, genesis_context, genesis_block| async move {
+//             let bad_rholang =
+//                 r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
+//             let deploy = construct_deploy::source_deploy_now_full(
+//                 bad_rholang.to_string(),
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//             )
+//             .unwrap();
+//
+//             let result = compute_state(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 deploy,
+//                 &genesis_block.body.state.post_state_hash,
+//             )
+//             .await;
+//
+//             assert!(result.1.is_failed);
+//             assert!(result.1.cost.cost == bad_rholang.len() as u64);
+//         },
+//     )
+//     .await
+//     .unwrap();
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_state_should_charge_for_parsing_and_execution() {
@@ -1277,14 +1285,26 @@ async fn compute_state_should_charge_deploys_separately() {
 
             let matched_first = compound_deploy
                 .iter()
-                .find(|d| d.deploy == first_deploy[0].deploy)
+                // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the
+                // envelope of `ProcessedDeploy` is private, so the deploys are matched by
+                // their projections, which are the same signed deploys.
+                // .find(|d| d.deploy == first_deploy[0].deploy)
+                .find(|d| {
+                    d.legacy_execution_projection() == first_deploy[0].legacy_execution_projection()
+                })
                 .cloned()
                 .expect("Expected at least one matching deploy");
             assert_eq!(first_deploy_cost, deploy_cost(&[matched_first]));
 
             let matched_second = compound_deploy
                 .iter()
-                .find(|d| d.deploy == second_deploy[0].deploy)
+                // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the
+                // same projection match as above.
+                // .find(|d| d.deploy == second_deploy[0].deploy)
+                .find(|d| {
+                    d.legacy_execution_projection()
+                        == second_deploy[0].legacy_execution_projection()
+                })
                 .cloned()
                 .expect("Expected at least one matching deploy");
             assert_eq!(second_deploy_cost, deploy_cost(&[matched_second]));
@@ -2094,7 +2114,10 @@ async fn bridge_query_survives_multi_parent_merge() {
     let parents_a = vec![genesis_block.clone()];
     let deploys_a = proto_util::deploys(&block_a_raw)
         .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+        // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+        // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
         .collect();
     let snapshot_a = mk_snapshot(&genesis_hash);
     let checkpoint_a = compute_deploys_checkpoint(
@@ -2299,7 +2322,10 @@ in {{
     let parents_q = vec![block_a.clone(), block_b.clone()];
     let deploys_q = proto_util::deploys(&query_block_raw)
         .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+        // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+        // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
         .collect();
     let snapshot_q = mk_snapshot(&genesis_hash);
     let checkpoint_q = compute_deploys_checkpoint(
@@ -2488,7 +2514,10 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let parents_a = vec![genesis_block.clone()];
     let deploys_a = proto_util::deploys(&block_a_raw)
         .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+        // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+        // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
         .collect();
     let snapshot_a = mk_snapshot(&genesis_hash);
     let checkpoint_a = compute_deploys_checkpoint(
@@ -2560,7 +2589,10 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let parents_b = vec![genesis_block.clone()];
     let deploys_b = proto_util::deploys(&block_b_raw)
         .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+        // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+        // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+        .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
         .collect();
     let snapshot_b = mk_snapshot(&genesis_hash);
     let checkpoint_b = compute_deploys_checkpoint(
@@ -2735,6 +2767,26 @@ async fn concurrent_registry_inserts_should_not_conflict() {
                                     .map(|h| hex::encode(&h[..std::cmp::min(8, h.len())]))
                                     .collect::<Vec<_>>(),
                                 c.persistent,
+                            );
+                        }
+                    }
+                }
+                // Added by the merge of feature/cost-accounted-rho (finding R3-39):
+                // the F1R3Lang event set has the resting COMM, which commits data and
+                // a continuation that both already rested. It is traced like a COMM,
+                // through its ordered produces.
+                CasperEvent::RestingComm(resting) => {
+                    for p in &resting.ordered_produces {
+                        let ch = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(&p.channels_hash);
+                        if racing_channels.contains(&ch) {
+                            tracing::info!(
+                                "  A event[{}] RestingCOMM: produce_channel={}, peeks={:?}, persistent_consume={}",
+                                idx,
+                                hex::encode(
+                                    &p.channels_hash[..std::cmp::min(8, p.channels_hash.len())]
+                                ),
+                                resting.peeks,
+                                resting.consume.persistent,
                             );
                         }
                     }
@@ -3288,7 +3340,10 @@ new deployId(`rho:system:deployId`) in {
         vec![genesis_block.clone()],
         proto_util::deploys(&block_a_raw)
             .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+            // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+            // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
@@ -3354,7 +3409,10 @@ new deployId(`rho:system:deployId`) in {
         vec![genesis_block.clone()],
         proto_util::deploys(&block_b_raw)
             .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+            // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+            // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
@@ -3420,7 +3478,10 @@ new deployId(`rho:system:deployId`) in {
         vec![block_a.clone()],
         proto_util::deploys(&block_c_raw)
             .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+            // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+            // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
@@ -3480,7 +3541,10 @@ new deployId(`rho:system:deployId`) in {
         vec![block_b.clone()],
         proto_util::deploys(&block_d_raw)
             .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            // Changed by the merge of feature/cost-accounted-rho (finding R3-32): the envelope of
+            // `ProcessedDeploy` is private, and the projection is the same signed deploy.
+            // .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+            .map(|d| d.as_legacy().expect("legacy fixture").legacy_execution_projection())
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),

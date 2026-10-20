@@ -197,36 +197,39 @@ where
     }
 }
 
-// Legacy (digest, index) candidate order. Production now uses the canonical
-// (source hash, digest, index) order in `candidate_order::canonical_candidates`
-// (I1, DR-75), which digests only tie runs. This body stays as the test oracle
-// that `NativeCandidateDigestCache.v` and
-// `hash_once_order_equals_per_comparison_hash_order` cover.
-#[cfg(test)]
-pub(crate) fn deterministic_candidates<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
-    if data.len() <= 1 {
-        return data.into_iter().map(|datum| (datum, 0)).collect();
+fn order_repeated_channels<C, P, A>(
+    channel_pattern_pairs: &[(&C, &P)],
+    channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+) where
+    C: Clone + std::hash::Hash + Eq,
+    A: Clone,
+{
+    let compare = |(left, left_index): &(Datum<A>, i32), (right, right_index): &(Datum<A>, i32)| {
+        (*left_index != -1)
+            .cmp(&(*right_index != -1))
+            .then_with(|| left.source.hash.cmp(&right.source.hash))
+    };
+    for (position, &(channel, _)) in channel_pattern_pairs.iter().enumerate() {
+        let first = !channel_pattern_pairs[..position]
+            .iter()
+            .any(|(earlier, _)| *earlier == channel);
+        let repeated = channel_pattern_pairs[position + 1..]
+            .iter()
+            .any(|(later, _)| *later == channel);
+        if !(first && repeated) {
+            continue;
+        }
+        if let Some(data) = channel_to_indexed_data.get_mut(channel) {
+            if data
+                .windows(2)
+                .any(|pair| compare(&pair[0], &pair[1]) == std::cmp::Ordering::Greater)
+            {
+                rollback.push((channel.clone(), data.clone()));
+                data.sort_by(compare);
+            }
+        }
     }
-    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-    let hash =
-        |candidate: &D| Blake2b256Hash::new(&bincode::serialize(candidate).unwrap_or_default());
-    let mut indexed: Vec<_> = data
-        .into_iter()
-        .enumerate()
-        .map(|(index, datum)| {
-            let digest = hash(&datum);
-            (datum, index as i32, digest)
-        })
-        .collect();
-    indexed.sort_by(|(_, left_index, left_hash), (_, right_index, right_hash)| {
-        left_hash
-            .cmp(right_hash)
-            .then_with(|| left_index.cmp(right_index))
-    });
-    indexed
-        .into_iter()
-        .map(|(datum, index, _)| (datum, index))
-        .collect()
 }
 
 pub trait SpaceMatcher<C, P, A, K>
@@ -243,7 +246,7 @@ where
     /// here, and cannot be: a guard is a predicate over the bindings of EVERY
     /// bind of the receive, and this function sees exactly one channel. Guard
     /// participation in candidate *selection* is the job of
-    /// [`SpaceMatcher::extract_guarded_data_candidates`], which drives
+    /// [`SpaceMatcher::extract_prepared_data_candidates`], which drives
     /// [`SpaceMatcher::next_spatial_match`] directly so it can enumerate a
     /// channel's spatial matches one at a time.
     fn find_matching_data_candidate(
@@ -353,6 +356,7 @@ where
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
         rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
+        order_repeated_channels(channel_pattern_pairs, channel_to_indexed_data, rollback);
         let mut acc = Vec::with_capacity(channel_pattern_pairs.len());
 
         for &(channel, pattern) in channel_pattern_pairs {
@@ -394,7 +398,7 @@ where
     /// spatial question ("is anything here?"), it rejects any match rather than
     /// firing a COMM, and system continuations carry no guard. Every path that
     /// can actually FIRE a COMM goes through
-    /// [`SpaceMatcher::extract_guarded_data_candidates`] instead.
+    /// [`SpaceMatcher::extract_prepared_data_candidates`] instead.
     fn extract_data_candidates(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
@@ -410,130 +414,24 @@ where
         )
     }
 
-    /// THE candidate selector: the complete, guard-aware search for one datum
-    /// per bind of `continuation`.
-    ///
-    /// # What it computes
-    ///
-    /// Write the receive's binds as `(c_0, p_0) … (c_{l-1}, p_{l-1})` and let
-    /// `pool_j` be the candidate list of channel `c_j` at the moment bind `j`
-    /// is filled (the pool of `c_j` minus whatever earlier binds speculatively
-    /// removed from it). A **selection** assigns each bind `j` a position
-    /// `t_j` in `pool_j`. A selection is **admissible** when
-    ///
-    /// 1. every `pool_j[t_j]` matches `p_j` spatially, and
-    /// 2. `check_commit(continuation, matched_0 … matched_{l-1})` holds of the
-    ///    bind-transformed payloads the spatial matcher produced.
-    ///
-    /// This function returns the candidates of the **lexicographically least
-    /// admissible selection** under `(t_0, t_1, …, t_{l-1})`, or `None` when
-    /// there is none.
-    ///
-    /// # Why (defect D1)
-    ///
-    /// The predecessor of this function tested condition 2 at exactly ONE
-    /// selection per continuation — the one where every `t_j` is the least
-    /// spatial match — and on rejection abandoned the continuation entirely.
-    /// A guard was therefore candidate APPROVAL and never candidate SELECTION,
-    /// so a single rejected pick stranded a rendezvous that a different resting
-    /// datum would have satisfied: with `@"offer"!(55) | @"offer"!(42)` resting
-    /// and `for(@px <- @"offer" where px <= 45)` installed, the COMM fired only
-    /// when the pool order happened to present the 42 first. The rho calculus
-    /// admits no such stuck state — an enabled COMM is enabled — so the search
-    /// is completed here rather than the guard being weakened.
-    ///
-    /// The selection ORDER is unchanged by that completion: the first
-    /// admissible selection in the same lexicographic order is still the
-    /// answer. What changed is that the search no longer stops at the first
-    /// SPATIALLY admissible selection when the guard rejects it.
-    ///
-    /// # ★ The second, wider repair — read this before reviewing for consensus
-    ///
-    /// A search that backtracks is also complete in a way the predecessor was
-    /// not even without any guard. The predecessor filled the binds left to
-    /// right, each with its first spatial match, and abandoned the continuation
-    /// the moment a later bind found nothing — even when a different choice at
-    /// an earlier bind would have left that later bind satisfiable. For
-    /// `for(@x <- c; @"k" <- c)` with `c` holding `"k"` and `"other"`, the
-    /// wildcard bind can take the `"k"` and strand the receive, although
-    /// `(x = "other", "k")` is a perfectly good rendezvous. That is the same
-    /// defect wearing different clothes, and this search repairs it too.
-    ///
-    /// The two repairs have very different reach, and conflating them would be
-    /// the kind of quiet widening this codebase does not do:
-    ///
-    /// | repair | affects | counter |
-    /// |---|---|---|
-    /// | guard rejection ⇒ next datum (defect D1) | only receives that carry a `where` guard — new syntax, so no program written against the pre-guard language can change behaviour | `rspace.matcher.guard_backtrack` |
-    /// | spatial dead-end ⇒ next datum | ANY multi-bind receive whose earlier bind can swallow a datum a later bind needed — ordinary guard-free Rholang | `rspace.matcher.spatial_backtrack` |
-    ///
-    /// Both are consensus-visible: each makes a COMM fire that previously did
-    /// not. They are separated by [`SelectionOutcome`] and counted apart so the
-    /// second can be reviewed, and if consensus review decides to narrow the
-    /// change to defect D1 alone, one place decides it — refusing to advance
-    /// `cursor` in the shared candidate-walk automaton when the
-    /// subtree returned [`SelectionOutcome::NoSpatialMatch`] reproduces the
-    /// predecessor's behaviour exactly for guard-free receives.
-    ///
-    /// # Determinism
-    ///
-    /// The enumeration is a pure function of the pools as received, so the
-    /// selection is determined by the pool ORDER — which is
-    /// [`crate::rspace::candidate_order`]'s canonical order in the play space
-    /// and in the replay space alike. Replay additionally filters each pool
-    /// down to the produces the recorded COMM consumed; filtering removes
-    /// elements without reordering the survivors, so replay's pool is a
-    /// SUBSEQUENCE of play's. Let `S` be play's selection. `S` survives the
-    /// filter (its data are exactly the ones the COMM consumed). Any admissible
-    /// selection lexicographically smaller than `S` in the filtered pool is
-    /// also present, and admissible, in the unfiltered pool — where play would
-    /// have reached it first. There is none, so replay selects `S`. Play and
-    /// replay agree by construction rather than by the trace assertion.
-    ///
-    /// # Cost
-    ///
-    /// Every leaf reached is one `check_commit`. When the continuation carries
-    /// no guard the default `check_commit` accepts the FIRST leaf, so the work
-    /// is exactly the predecessor's — one spatial call per bind, stopping at
-    /// each bind's first match — and backtracking is never entered at all
-    /// unless a later bind finds nothing.
-    ///
-    /// With a guard, the bill is bounded by `Π_j |pool_j|` leaves and
-    /// `Σ_j Π_{i≤j} |pool_i|` calls to `Match::get`, reached only when the
-    /// guard refuses everything. Measured on this crate's test matcher by
-    /// `the_cost_of_a_complete_guarded_search_is_bounded_and_measured`
-    /// (wall time is the whole `consume`, candidate ordering included):
-    ///
-    /// | receive | store | `Match::get` | `check_commit` | release | debug |
-    /// |---|---|---|---|---|---|
-    /// | guarded, one bind, guard refuses all | 1000 on one channel | 1000 | 1000 | 1.01 ms | 17.0 ms |
-    /// | guarded, two binds, guard refuses all | 60 × 60 | 3660 | 3600 | 1.17 ms | 11.5 ms |
-    /// | UNGUARDED, two binds | 60 × 60 | 2 | 1 | 0.10 ms | 1.9 ms |
-    ///
-    /// A guarded receive over a thousand resting data thus costs about a
-    /// millisecond of matcher time in release, and the unguarded row — every
-    /// program that predates the `where` syntax — is one spatial call per bind.
-    ///
-    /// The single-bind row is the shape that carries almost every guard in
-    /// practice, and it is linear: `l = 1` makes the worst case the plain scan.
-    /// The two-bind row is the quadratic corner, and it is entered only by a
-    /// guarded join over two well-populated channels. The unguarded row is the
-    /// hot path of every existing program, and it is untouched.
-    fn extract_guarded_data_candidates(
-        &self,
-        matcher: &Box<dyn Match<P, A, K>>,
-        channel_pattern_pairs: &[(&C, &P)],
-        continuation: &K,
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
-    ) -> Option<Vec<ConsumeCandidate<C, A>>> {
-        self.extract_prepared_data_candidates(
-            matcher,
-            channel_pattern_pairs,
-            continuation,
-            channel_to_indexed_data,
-        )
-        .map(|(chosen, _)| chosen)
-    }
+    // Disabled by the merge of feature/cost-accounted-rho (lint fix, finding
+    // RT-08): no code calls this method, at HEAD or after the merge. Every path
+    // that can fire a COMM calls `extract_prepared_data_candidates` directly.
+    // fn extract_guarded_data_candidates(
+    //     &self,
+    //     matcher: &Box<dyn Match<P, A, K>>,
+    //     channel_pattern_pairs: &[(&C, &P)],
+    //     continuation: &K,
+    //     channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    // ) -> Option<Vec<ConsumeCandidate<C, A>>> {
+    //     self.extract_prepared_data_candidates(
+    //         matcher,
+    //         channel_pattern_pairs,
+    //         continuation,
+    //         channel_to_indexed_data,
+    //     )
+    //     .map(|(chosen, _)| chosen)
+    // }
 
     fn extract_prepared_data_candidates(
         &self,
@@ -542,6 +440,11 @@ where
         continuation: &K,
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Option<(Vec<ConsumeCandidate<C, A>>, PreparedCommit)> {
+        // DR-129 E1 orders each repeated channel before the complete search
+        // (defect D1). On failure the walker restores the ordered pools, and
+        // the rollback then restores the arrival order (risk R3).
+        let mut rollback = Vec::new();
+        order_repeated_channels(channel_pattern_pairs, channel_to_indexed_data, &mut rollback);
         let mut chosen: Vec<ConsumeCandidate<C, A>> =
             Vec::with_capacity(channel_pattern_pairs.len());
         let mut permit = None;
@@ -558,30 +461,45 @@ where
             SelectionOutcome::Admissible => {
                 Some((chosen, permit.expect("admissible prepared selection")))
             }
-            SelectionOutcome::GuardRejected | SelectionOutcome::NoSpatialMatch => None,
+            SelectionOutcome::GuardRejected | SelectionOutcome::NoSpatialMatch => {
+                for (channel, original) in rollback.into_iter().rev() {
+                    channel_to_indexed_data.insert(channel, original);
+                }
+                None
+            }
         }
     }
 
-    fn search_candidate_selection(
-        &self,
-        matcher: &Box<dyn Match<P, A, K>>,
-        channel_pattern_pairs: &[(&C, &P)],
-        continuation: &K,
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
-        level: usize,
-        chosen: &mut Vec<ConsumeCandidate<C, A>>,
-    ) -> SelectionOutcome {
-        self.search_prepared_candidate_selection(
-            matcher,
-            channel_pattern_pairs,
-            continuation,
-            channel_to_indexed_data,
-            level,
-            chosen,
-            &mut None,
-        )
-    }
+    // Disabled by the merge of feature/cost-accounted-rho (lint fix, finding
+    // RT-08): no code calls this method, at HEAD or after the merge. A
+    // committing caller goes through `extract_prepared_data_candidates`.
+    // /// The complete search without DR-129's E1 ordering. A committing caller
+    // /// must go through [`SpaceMatcher::extract_prepared_data_candidates`],
+    // /// which orders each repeated channel first.
+    // fn search_candidate_selection(
+    //     &self,
+    //     matcher: &Box<dyn Match<P, A, K>>,
+    //     channel_pattern_pairs: &[(&C, &P)],
+    //     continuation: &K,
+    //     channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    //     level: usize,
+    //     chosen: &mut Vec<ConsumeCandidate<C, A>>,
+    // ) -> SelectionOutcome {
+    //     self.search_prepared_candidate_selection(
+    //         matcher,
+    //         channel_pattern_pairs,
+    //         continuation,
+    //         channel_to_indexed_data,
+    //         level,
+    //         chosen,
+    //         &mut None,
+    //     )
+    // }
 
+    /// The complete search with its commit permit, without DR-129's E1
+    /// ordering. A committing caller must go through
+    /// [`SpaceMatcher::extract_prepared_data_candidates`], which orders each
+    /// repeated channel first.
     fn search_prepared_candidate_selection(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
@@ -692,14 +610,17 @@ where
     ///
     /// Selector and enumerator invoke the same explicit-frame automaton with
     /// different leaf callbacks: the selector stops at the first admissible
-    /// leaf; this callback records it and keeps scanning. They therefore agree
-    /// on the first element by construction — `out[0]` is the
-    /// lexicographically least admissible selection, i.e. the one a real
-    /// `consume` on this state would take.
-    /// That identity is the bridge between speculative enumeration and
-    /// ordinary execution, and it is asserted directly by
-    /// `the_enumeration_head_is_the_selector_choice` in `rspace++/tests/
-    /// enabled_rendezvous_spec.rs`.
+    /// leaf; this callback records it and keeps scanning. On the same pools
+    /// they therefore agree on the first element by construction — `out[0]`
+    /// is the lexicographically least admissible selection of those pools.
+    /// Changed by R2-04 (complete guard search, defect D1): play shuffles the
+    /// candidates of each channel before it selects (DR-129), so a real
+    /// `consume` on this state takes some member of `out`, not always
+    /// `out[0]`. That membership is the bridge between speculative
+    /// enumeration and ordinary execution.
+    /// `t1_every_selector_choice_is_an_enumerated_selection` in
+    /// `rspace++/tests/enabled_rendezvous_spec.rs` asserts it, and it asserts
+    /// that fresh runs take every member.
     ///
     /// The shared machine is the single source of candidate ordering,
     /// residual-pool mutation, rollback, and guard consultation. Only the leaf
@@ -778,7 +699,10 @@ where
     ///
     /// # ⚠ The head of a group's selections is NOT "what an ordinary run does"
     ///
-    /// It is what an ordinary **`consume` arriving at this state** does. An
+    /// Changed by R2-04 (complete guard search, defect D1): it is what a
+    /// **`consume` arriving at this state** does on canonically ordered pools.
+    /// Play shuffles the candidates of each channel first (DR-129), so an
+    /// ordinary `consume` takes some member of the set. An
     /// ordinary **`produce`** splices its arriving datum into the pool at index
     /// `-1` (`RSpace::extract_produce_candidate`), ahead of the canonical
     /// order, so the produce regime's least admissible selection is
@@ -898,47 +822,5 @@ where
             }
         }
         Ok(enabled)
-    }
-}
-
-#[cfg(test)]
-mod deterministic_candidates_tests {
-    use super::deterministic_candidates;
-    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-
-    fn per_comparison_hash_order<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
-        let hash = |candidate: &D| {
-            Blake2b256Hash::new(&bincode::serialize(candidate).expect("test candidate serializes"))
-        };
-        let mut indexed: Vec<(D, i32)> = data
-            .into_iter()
-            .enumerate()
-            .map(|(index, datum)| (datum, index as i32))
-            .collect();
-        indexed.sort_by(|(left, left_index), (right, right_index)| {
-            hash(left)
-                .cmp(&hash(right))
-                .then_with(|| left_index.cmp(right_index))
-        });
-        indexed
-    }
-
-    proptest::proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
-
-        /// Extracted from `NativeCandidateDigestCache.v`:
-        /// `cached_comparison_is_original_comparison` and
-        /// `caching_preserves_candidate_order`. Hashing each candidate once yields
-        /// the same order as hashing inside every comparison, including duplicate
-        /// candidates (index tie-break) and the `n <= 1` fast path.
-        #[test]
-        fn hash_once_order_equals_per_comparison_hash_order(
-            data in proptest::collection::vec((0u8..4, "[a-c]{0,3}"), 0..12),
-        ) {
-            proptest::prop_assert_eq!(
-                deterministic_candidates(data.clone()),
-                per_comparison_hash_order(data)
-            );
-        }
     }
 }

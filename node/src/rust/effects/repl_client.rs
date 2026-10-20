@@ -103,6 +103,74 @@ impl GrpcReplClient {
     }
 }
 
+#[async_trait::async_trait]
+impl ReplClientService for GrpcReplClient {
+    async fn run(&self, line: String) -> eyre::Result<String> {
+        let req = CmdRequest { line: line.into() };
+
+        // Call the RPC
+        match self.client.clone().run(req).await {
+            Ok(resp) => {
+                let ReplResponse { output } = resp.into_inner();
+                Ok(output)
+            }
+            Err(status) => Err(Self::process_error(status)),
+        }
+    }
+
+    async fn eval_files(
+        &self,
+        file_names: &Vec<String>,
+        print_unmatched_sends_only: bool,
+        language: String,
+    ) -> Vec<eyre::Result<String>> {
+        join_all(file_names.iter().map(|file_name| async {
+            self.eval_file(
+                file_name.clone(),
+                print_unmatched_sends_only,
+                language.clone(),
+            )
+            .await
+        }))
+        .await
+    }
+
+    async fn eval_file(
+        &self,
+        file_name: String,
+        print_unmatched_sends_only: bool,
+        language: String,
+    ) -> eyre::Result<String> {
+        let file_path = Path::new(&file_name);
+
+        if !file_path.exists() {
+            return Err(eyre::Report::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "File not found",
+            )));
+        }
+
+        let content = Self::read_content(file_path).await?;
+
+        let req = EvalRequest {
+            program: content,
+            print_unmatched_sends_only,
+            language,
+        };
+
+        // Call the RPC
+        match self.client.clone().eval(req).await {
+            Ok(resp) => {
+                let ReplResponse { output } = resp.into_inner();
+                Ok(output)
+            }
+            Err(status) => Err(Self::process_error(status)),
+        }
+    }
+}
+
+// Moved here by the merge of feature/cost-accounted-rho (clippy gate):
+// a test module must be the last item of its file.
 #[cfg(test)]
 mod eval_timeout_tests {
     use super::*;
@@ -211,71 +279,5 @@ mod eval_timeout_tests {
             .expect("server shuts down")
             .expect("server task joins")
             .expect("server succeeds");
-    }
-}
-
-#[async_trait::async_trait]
-impl ReplClientService for GrpcReplClient {
-    async fn run(&self, line: String) -> eyre::Result<String> {
-        let req = CmdRequest { line: line.into() };
-
-        // Call the RPC
-        match self.client.clone().run(req).await {
-            Ok(resp) => {
-                let ReplResponse { output } = resp.into_inner();
-                Ok(output)
-            }
-            Err(status) => Err(Self::process_error(status)),
-        }
-    }
-
-    async fn eval_files(
-        &self,
-        file_names: &Vec<String>,
-        print_unmatched_sends_only: bool,
-        language: String,
-    ) -> Vec<eyre::Result<String>> {
-        join_all(file_names.iter().map(|file_name| async {
-            self.eval_file(
-                file_name.clone(),
-                print_unmatched_sends_only,
-                language.clone(),
-            )
-            .await
-        }))
-        .await
-    }
-
-    async fn eval_file(
-        &self,
-        file_name: String,
-        print_unmatched_sends_only: bool,
-        language: String,
-    ) -> eyre::Result<String> {
-        let file_path = Path::new(&file_name);
-
-        if !file_path.exists() {
-            return Err(eyre::Report::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "File not found",
-            )));
-        }
-
-        let content = Self::read_content(file_path).await?;
-
-        let req = EvalRequest {
-            program: content,
-            print_unmatched_sends_only,
-            language,
-        };
-
-        // Call the RPC
-        match self.client.clone().eval(req).await {
-            Ok(resp) => {
-                let ReplResponse { output } = resp.into_inner();
-                Ok(output)
-            }
-            Err(status) => Err(Self::process_error(status)),
-        }
     }
 }

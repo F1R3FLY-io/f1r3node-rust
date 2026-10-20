@@ -1,18 +1,18 @@
-//! D-S1 (D-C2c, DR-96): tests of the digest-keyed native store. The legacy
-//! native store (`InMemHotStore`) is the oracle.
+//! D-S1 (D-C2c, DR-96): tests of the digest-keyed native store. Changed by
+//! DR-131 S6: dev's hot store (`InMemHotStore`) is the oracle, because the
+//! legacy native methods of that store are deleted with host work.
 
-use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 
-use proptest::prelude::*;
-
+// Disabled by the merge of feature/cost-accounted-rho (lint fix): `use super::*`
+// already brings this prelude from `hot_store.rs`, so this import is unused.
+// use proptest::prelude::*;
 use super::*;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::channel_key;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::history::native_checkpoint::NativeCheckpoint;
-use crate::rspace::history::native_reader::measure_allocations;
 use crate::rspace::hot_store_action::{
     DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, InsertAction, InsertContinuations,
     InsertData, InsertJoins, NativeExportAction,
@@ -24,69 +24,26 @@ type Store = NativeHotStore<String, String, String, String>;
 type Legacy = Box<dyn HotStore<String, String, String, String>>;
 type Waiting = WaitingContinuation<String, String>;
 
-struct EmptyReader;
+/// Changed by DR-131 S6: the history of the oracle returns what the fake
+/// reads of the native store return, because dev's hot store reads its own
+/// history.
+struct FixtureReader;
 
-impl HistoryReaderBase<String, String, String, String> for EmptyReader {
-    fn get_data_proj(
-        &self,
-        _: &String,
-    ) -> Result<Vec<Datum<String>>, crate::rspace::errors::RSpaceError> {
-        Ok(vec![])
+impl HistoryReaderBase<String, String, String, String> for FixtureReader {
+    fn get_data_proj(&self, channel: &String) -> Result<Vec<Datum<String>>, RSpaceError> {
+        Ok(history_data(channel))
     }
 
-    fn get_continuations_proj(
-        &self,
-        _: &Vec<String>,
-    ) -> Result<Vec<Waiting>, crate::rspace::errors::RSpaceError> {
-        Ok(vec![])
+    fn get_continuations_proj(&self, channels: &Vec<String>) -> Result<Vec<Waiting>, RSpaceError> {
+        Ok(history_continuations(channels))
     }
 
-    fn get_joins_proj(
-        &self,
-        _: &String,
-    ) -> Result<Vec<Vec<String>>, crate::rspace::errors::RSpaceError> {
-        Ok(vec![])
+    fn get_joins_proj(&self, channel: &String) -> Result<Vec<Vec<String>>, RSpaceError> {
+        Ok(history_joins(channel))
     }
 }
 
-fn legacy() -> Legacy { HotStoreInstances::create_from_hr(Box::new(EmptyReader)) }
-
-/// A meter that sums every charge and rejects the charge at index `reject`.
-#[derive(Default)]
-struct Meter {
-    calls: Cell<usize>,
-    reject: Option<usize>,
-    used: Cell<[usize; 3]>,
-}
-
-impl Meter {
-    fn rejecting(reject: usize) -> Self {
-        Self {
-            reject: Some(reject),
-            ..Self::default()
-        }
-    }
-}
-
-impl SourceMeter for Meter {
-    fn reserve(
-        &self,
-        operations: usize,
-        scanned: usize,
-        backing: usize,
-    ) -> Result<(), RSpaceError> {
-        let call = self.calls.get();
-        self.calls.set(call + 1);
-        if self.reject == Some(call) {
-            return Err(RSpaceError::HostWorkRejected);
-        }
-        let [o, s, b] = self.used.get();
-        self.used.set([o + operations, s + scanned, b + backing]);
-        Ok(())
-    }
-}
-
-fn free() -> Meter { Meter::default() }
+fn legacy() -> Legacy { HotStoreInstances::create_from_hr(Box::new(FixtureReader)) }
 
 #[test]
 fn concurrent_cold_data_views_share_the_winning_fill() {
@@ -101,19 +58,13 @@ fn concurrent_cold_data_views_share_the_winning_fill() {
                 let channel = &channel;
                 let both_reading = &both_reading;
                 scope.spawn(move || {
-                    let meter = free();
                     let view = store
-                        .data_view(
-                            channel,
-                            digest,
-                            &|| {
-                                // Neither thread can publish before both
-                                // have observed the same cold miss.
-                                both_reading.wait();
-                                Ok(history_data(channel))
-                            },
-                            &meter,
-                        )
+                        .data_view(channel, digest, &|| {
+                            // Neither thread can publish before both
+                            // have observed the same cold miss.
+                            both_reading.wait();
+                            Ok(history_data(channel))
+                        })
                         .expect("the losing fill uses the winner's entry");
                     assert_eq!(view.values().len(), 2);
                 })
@@ -132,11 +83,9 @@ fn channel(index: usize) -> String { CHANNELS[index % CHANNELS.len()].to_owned()
 
 fn group(indices: &[usize]) -> Vec<String> { indices.iter().map(|index| channel(*index)).collect() }
 
-fn key(channel: &String) -> StoreKey { channel_key(channel, &free()).expect("an unlimited meter") }
+fn key(channel: &String) -> StoreKey { channel_key(channel).expect("a channel key") }
 
-fn keys(channels: &[String]) -> GroupKeys {
-    GroupKeys::build(channels, &free()).expect("an unlimited meter")
-}
+fn keys(channels: &[String]) -> GroupKeys { GroupKeys::build(channels).expect("group keys") }
 
 /// The history of the cold reads: a few data, one continuation group and
 /// one join.
@@ -256,17 +205,17 @@ fn read_data(
     name: &String,
 ) -> (Result<Vec<Datum<String>>, RSpaceError>, Result<Vec<Datum<String>>, RSpaceError>) {
     let read = || Ok(history_data(name));
-    (store.data(name, key(name), &read, &free()), legacy.get_data_with_reader(name, &read, &free()))
+    (store.data(name, key(name), &read), legacy.get_data(name))
 }
 
 fn prefetch_group(store: &Store, legacy: &Legacy, channels: &[String]) {
     let read = || Ok(history_continuations(channels));
-    let _ = store.continuation_views(channels, &keys(channels), &read, &free());
-    let _ = legacy.get_continuation_views_with_reader(channels, &read, &free());
+    let _ = store.continuation_views(channels, &keys(channels), &read);
+    let _ = legacy.get_continuations(channels);
     for name in channels {
         let read = || Ok(history_joins(name));
-        let _ = store.joins(name, key(name), &read, &free());
-        let _ = legacy.get_joins_with_reader(name, &read, &free());
+        let _ = store.joins(name, key(name), &read);
+        let _ = legacy.get_joins(name);
     }
 }
 
@@ -298,6 +247,103 @@ fn retirement(
     (data, retirement)
 }
 
+/// DR-131 S6: the oracle of `store_consume`. Dev's space stores a waiting
+/// continuation with `put_continuation` and puts its join on each channel.
+/// The depth counts the continuations of the group, the installed one
+/// included.
+fn store_consume_oracle(legacy: &Legacy, channels: &[String], value: Waiting) -> (bool, usize) {
+    let inserted = legacy
+        .put_continuation(channels, value)
+        .expect("dev's put_continuation returns a value");
+    for name in channels {
+        legacy
+            .put_join(name, channels)
+            .expect("dev's put_join accepts the join");
+    }
+    (inserted, legacy.get_continuations(channels).unwrap().len())
+}
+
+/// DR-131 S6: the check of a data retirement against copies of the data.
+/// The native store retires all the data or none, so the oracle checks each
+/// index before it removes any datum.
+fn check_data_retirement(
+    legacy: &Legacy,
+    data: &[RSpaceResult<String, String>],
+    retirement: &[(usize, i32)],
+) -> Result<(), RSpaceError> {
+    let mut staged: Vec<(&String, Vec<Datum<String>>)> = Vec::with_capacity(retirement.len());
+    for (position, datum_index) in retirement {
+        let name = &data[*position].channel;
+        let found = staged
+            .iter()
+            .position(|(staged_name, _)| *staged_name == name);
+        let values = match found {
+            Some(found) => &mut staged[found].1,
+            None => {
+                staged.push((name, legacy.get_data(name)?));
+                &mut staged.last_mut().expect("a staged channel").1
+            }
+        };
+        let Some(index) = usize::try_from(*datum_index)
+            .ok()
+            .filter(|index| *index < values.len())
+        else {
+            return Err(RSpaceError::InterpreterError(
+                "native datum retirement index is invalid".to_owned(),
+            ));
+        };
+        values.remove(index);
+    }
+    Ok(())
+}
+
+/// DR-131 S6: the oracle of `retire_data`, dev's `remove_datum` for each
+/// retirement after the check.
+fn retire_data_oracle(
+    legacy: &Legacy,
+    data: &[RSpaceResult<String, String>],
+    retirement: &[(usize, i32)],
+) -> Result<(), RSpaceError> {
+    check_data_retirement(legacy, data, retirement)?;
+    for (position, datum_index) in retirement {
+        legacy.remove_datum(&data[*position].channel, *datum_index)?;
+    }
+    Ok(())
+}
+
+/// DR-131 S6: the oracle of `retire_produce_match`. It retires the data,
+/// removes the matched continuation with dev's `remove_continuation` unless
+/// the continuation persists, and calls dev's `remove_join` on each
+/// channel, which removes the join only when the group has no continuation
+/// left. The native store publishes all or nothing, so the oracle checks
+/// the data and the continuation index before it changes the store.
+fn retire_produce_match_oracle(
+    legacy: &Legacy,
+    channels: &[String],
+    continuation_index: i32,
+    continuation_persistent: bool,
+    data: &[RSpaceResult<String, String>],
+    retirement: &[(usize, i32)],
+) -> Result<(), RSpaceError> {
+    check_data_retirement(legacy, data, retirement)?;
+    if !continuation_persistent &&
+        legacy
+            .remove_continuation(channels, continuation_index)?
+            .is_none()
+    {
+        return Err(RSpaceError::InterpreterError(
+            "native continuation retirement index is invalid".to_owned(),
+        ));
+    }
+    for (position, datum_index) in retirement {
+        legacy.remove_datum(&data[*position].channel, *datum_index)?;
+    }
+    for name in channels {
+        legacy.remove_join(name, channels)?;
+    }
+    Ok(())
+}
+
 fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
     match op {
         Op::ReadData(index) => {
@@ -307,41 +353,33 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
         Op::ViewData(index) => {
             let name = channel(*index);
             let read = || Ok(history_data(&name));
-            let digest = store.data_view(&name, key(&name), &read, &free());
-            let oracle = legacy.get_data_view_with_reader(&name, &read, &free());
-            prop_assert_eq!(
-                digest.map(|view| view.values().to_vec()),
-                oracle.map(|view| view.values().to_vec())
-            );
+            let digest = store.data_view(&name, key(&name), &read);
+            prop_assert_eq!(digest.map(|view| view.values().to_vec()), legacy.get_data(&name));
         }
         Op::ReadJoins(index) => {
             let name = channel(*index);
             let read = || Ok(history_joins(&name));
-            prop_assert_eq!(
-                store.joins(&name, key(&name), &read, &free()),
-                legacy.get_joins_with_reader(&name, &read, &free())
-            );
+            prop_assert_eq!(store.joins(&name, key(&name), &read), legacy.get_joins(&name));
         }
         Op::ReadContinuations(indices) => {
             let channels = group(indices);
             let read = || Ok(history_continuations(&channels));
             prop_assert_eq!(
-                store.continuations(&channels, &keys(&channels), &read, &free()),
-                legacy.get_continuations_with_reader(&channels, &read, &free())
+                store.continuations(&channels, &keys(&channels), &read),
+                legacy.get_continuations(&channels)
             );
         }
         Op::ViewContinuations(indices) => {
             let channels = group(indices);
             let read = || Ok(history_continuations(&channels));
-            let digest = store.continuation_views(&channels, &keys(&channels), &read, &free());
-            let oracle = legacy.get_continuation_views_with_reader(&channels, &read, &free());
+            let digest = store.continuation_views(&channels, &keys(&channels), &read);
             let owned = |views: Vec<Arc<Waiting>>| {
                 views
                     .iter()
                     .map(|view| view.as_ref().clone())
                     .collect::<Vec<_>>()
             };
-            prop_assert_eq!(digest.map(owned), oracle.map(owned));
+            prop_assert_eq!(digest.map(owned), legacy.get_continuations(&channels));
         }
         Op::Consume {
             channels,
@@ -353,8 +391,8 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
             prefetch_group(store, legacy, &channels);
             let value = waiting(&channels, &format!("body-{body}"), *persist, *peek);
             prop_assert_eq!(
-                store.store_consume(&channels, &keys(&channels), value.clone(), &free()),
-                legacy.store_consume_metered(&channels, value, &free())
+                store.store_consume(&channels, &keys(&channels), value.clone()),
+                Ok(store_consume_oracle(legacy, &channels, value))
             );
         }
         Op::Put {
@@ -364,8 +402,8 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
         } => {
             let name = channel(*index);
             let read = || Ok(history_data(&name));
-            let _ = store.data_view(&name, key(&name), &read, &free());
-            let _ = legacy.get_data_view_with_reader(&name, &read, &free());
+            let _ = store.data_view(&name, key(&name), &read);
+            let _ = legacy.get_data(&name);
             let datum = Datum::create(&name, format!("v{value}"), *persist);
             // Changed by D-C2e (D-S1, DR-96): the publication passes the
             // channel for the collision check.
@@ -373,18 +411,18 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
             //     store.put_datum(key(&name), datum.clone(), &free()),
             //     legacy.put_datum_metered(&name, datum, &free())
             // );
-            prop_assert_eq!(
-                store.put_datum(&name, key(&name), datum.clone(), &free()),
-                legacy.put_datum_metered(&name, datum, &free())
-            );
+            prop_assert_eq!(store.put_datum(&name, key(&name), datum.clone()), Ok(()));
+            legacy
+                .put_datum(&name, datum)
+                .expect("dev's put_datum accepts the datum");
         }
         Op::RetireData { channel: index } => {
             let channels = vec![channel(*index)];
             let (data, retired) = retirement(store, legacy, &channels);
             let channel_keys = vec![key(&channels[0])];
             prop_assert_eq!(
-                store.retire_data(&data, &channel_keys, &retired, &free()),
-                legacy.retire_data_metered(&data, &retired, &free())
+                store.retire_data(&data, &channel_keys, &retired),
+                retire_data_oracle(legacy, &data, &retired)
             );
         }
         Op::RetireMatch {
@@ -393,14 +431,7 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
         } => {
             let channels = group(channels);
             prefetch_group(store, legacy, &channels);
-            let count = legacy
-                .get_continuation_views_with_reader(
-                    &channels,
-                    &|| Ok(history_continuations(&channels)),
-                    &free(),
-                )
-                .map(|views| views.len())
-                .unwrap_or_default();
+            let count = legacy.get_continuations(&channels).unwrap().len();
             if count == 0 {
                 return Ok(());
             }
@@ -416,26 +447,19 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
                     index,
                     *persistent,
                     &data,
-                    &retired,
-                    &free()
+                    &retired
                 ),
-                legacy.retire_produce_match_metered(
-                    &channels,
-                    index,
-                    *persistent,
-                    &data,
-                    &retired,
-                    &free()
-                )
+                retire_produce_match_oracle(legacy, &channels, index, *persistent, &data, &retired)
             );
         }
         Op::InstallContinuation { channels, body } => {
             let channels = group(channels);
             let value = waiting(&channels, &format!("installed-{body}"), true, false);
             prop_assert_eq!(
-                store.install_continuation(&channels, &keys(&channels), value.clone(), &free()),
-                legacy.install_continuation_metered(&channels, value, &free())
+                store.install_continuation(&channels, &keys(&channels), value.clone()),
+                Ok(())
             );
+            legacy.install_continuation(&channels, value);
         }
         Op::InstallJoin {
             channel: index,
@@ -443,10 +467,8 @@ fn apply(store: &Store, legacy: &Legacy, op: &Op) -> Result<(), TestCaseError> {
         } => {
             let name = channel(*index);
             let join = group(join);
-            prop_assert_eq!(
-                store.install_join(&name, key(&name), &join, &free()),
-                legacy.install_join_metered(&name, &join, &free())
-            );
+            prop_assert_eq!(store.install_join(&name, key(&name), &join), Ok(()));
+            legacy.install_join(&name, &join);
         }
     }
     Ok(())
@@ -463,9 +485,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     /// D-S1 (D-C2c, DR-96): for random operation sequences, the digest store
-    /// returns what the legacy native store returns (reads, duplicate
-    /// decisions and depths, publications, retirements, installations and
-    /// their errors), and the two exports are the same multiset.
+    /// returns what dev's store returns (reads, duplicate decisions and
+    /// depths, publications, retirements, installations and their errors),
+    /// and the two exports are the same multiset.
     #[test]
     fn digest_store_matches_legacy_store(ops in prop::collection::vec(op(), 0..24)) {
         let store = Store::new();
@@ -473,9 +495,7 @@ proptest! {
         for op in &ops {
             apply(&store, &legacy, op)?;
         }
-        let digest = store.changes(&free()).map(export_multiset);
-        let oracle = legacy.changes_metered(&free()).map(export_multiset);
-        prop_assert_eq!(digest, oracle);
+        prop_assert_eq!(export_multiset(store.changes()), export_multiset(legacy.changes()));
     }
 }
 
@@ -495,7 +515,7 @@ fn export_root(
     actions: Vec<HotStoreAction<String, String, String, String>>,
 ) -> Result<Option<Blake2b256Hash>, RSpaceError> {
     history
-        .prepare_native_checkpoint(actions, &free())
+        .prepare_native_checkpoint(actions)
         .map(|prepared| prepared.root)
 }
 
@@ -562,9 +582,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     /// D-S1 (D-C2d, DR-96): the digest store exports each map in digest
-    /// order, and the legacy store exports in the order of its hash shards.
-    /// The checkpoint sorts the history keys, so the two exports give the
-    /// same root, and the digest export reversed gives it too.
+    /// order, and dev's store exports in the order of its hash shards. The
+    /// checkpoint sorts the history keys, so the two exports give the same
+    /// root, and the digest export reversed gives it too.
     #[test]
     fn export_root_equals_legacy_export_root(
         ops in prop::collection::vec(op().prop_map(canonical), 0..24),
@@ -574,10 +594,10 @@ proptest! {
         for op in &ops {
             apply(&store, &legacy, op)?;
         }
-        let digest = store.changes(&free()).expect("the digest export");
+        let digest = store.changes();
         let positions: Vec<(u8, StoreKey)> = digest.iter().map(export_position).collect();
         prop_assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-        let oracle = legacy.changes_metered(&free()).expect("the legacy export");
+        let oracle = legacy.changes();
         let history = empty_history();
         let root = export_root(history.as_ref(), digest.clone());
         prop_assert!(root.is_ok());
@@ -599,21 +619,16 @@ fn permuted_groups_fail_both_exports_alike() {
         apply(&store, &legacy, &op).expect("the stores agree");
     }
     let history = empty_history();
-    let digest = export_root(history.as_ref(), store.changes(&free()).expect("the digest export"));
-    let oracle =
-        export_root(history.as_ref(), legacy.changes_metered(&free()).expect("the legacy export"));
+    let digest = export_root(history.as_ref(), store.changes());
+    let oracle = export_root(history.as_ref(), legacy.changes());
     assert!(digest.is_err());
     assert_eq!(digest, oracle);
     // D-C3 (D-S3, DR-97): the two groups are clean cold fills, so the dirty
     // export has no action and succeeds.
-    let dirty = store.dirty_entries(&free()).expect("a free meter");
-    let actions = dirty.actions(&free()).expect("a free meter");
+    let dirty = store.dirty_entries();
+    let actions = dirty.actions();
     assert!(actions.is_empty());
-    assert!(
-        history
-            .prepare_native_checkpoint_borrowed(&actions, &free())
-            .is_ok()
-    );
+    assert!(history.prepare_native_checkpoint_borrowed(&actions).is_ok());
 }
 
 /// The observable state of a store: its entry counts and its export.
@@ -622,15 +637,15 @@ fn permuted_groups_fail_both_exports_alike() {
 // fn observed(store: &Store) -> ([usize; 5], Result<Vec<String>, RSpaceError>)
 // {     (store.entry_counts(), store.changes(&free()).map(export_multiset))
 // }
-type Observed = ([usize; 5], Result<Vec<String>, RSpaceError>, Result<Vec<String>, RSpaceError>);
+type Observed = ([usize; 5], Vec<String>, Vec<String>);
 
 fn observed(store: &Store) -> Observed {
-    (store.entry_counts(), store.changes(&free()).map(export_multiset), dirty_keys(store))
+    (store.entry_counts(), export_multiset(store.changes()), dirty_keys(store))
 }
 
 /// The keys of the dirty entries of the exported maps, in export order.
-fn dirty_keys(store: &Store) -> Result<Vec<String>, RSpaceError> {
-    let dirty = store.dirty_entries(&free())?;
+fn dirty_keys(store: &Store) -> Vec<String> {
+    let dirty = store.dirty_entries();
     let mut keys = Vec::new();
     keys.extend(
         dirty
@@ -650,7 +665,7 @@ fn dirty_keys(store: &Store) -> Result<Vec<String>, RSpaceError> {
             .iter()
             .map(|entry| format!("joins {:?}", entry.key)),
     );
-    Ok(keys)
+    keys
 }
 
 /// A store with cached data, continuations and joins for the group
@@ -660,15 +675,15 @@ fn prepared() -> Store {
     let channels = group(&[0, 1]);
     let read = || Ok(history_continuations(&channels));
     store
-        .continuation_views(&channels, &keys(&channels), &read, &free())
-        .expect("a free meter");
+        .continuation_views(&channels, &keys(&channels), &read)
+        .expect("a cold fill");
     for name in &channels {
         store
-            .joins(name, key(name), &|| Ok(history_joins(name)), &free())
-            .expect("a free meter");
+            .joins(name, key(name), &|| Ok(history_joins(name)))
+            .expect("a cold fill");
         store
-            .data_view(name, key(name), &|| Ok(history_data(name)), &free())
-            .expect("a free meter");
+            .data_view(name, key(name), &|| Ok(history_data(name)))
+            .expect("a cold fill");
     }
     let installed = group(&[2]);
     store
@@ -676,33 +691,9 @@ fn prepared() -> Store {
             &installed,
             &keys(&installed),
             waiting(&installed, "installed", true, false),
-            &free(),
         )
-        .expect("a free meter");
+        .expect("an installation");
     store
-}
-
-/// A history read that hands over a prebuilt value without allocating.
-fn handover<T: Default>(value: &RefCell<T>) -> impl Fn() -> Result<T, RSpaceError> + '_ {
-    move || Ok(std::mem::take(&mut *value.borrow_mut()))
-}
-
-/// The inputs of one store method, built before the measured call.
-enum Call {
-    Data(String, StoreKey, RefCell<Vec<Datum<String>>>),
-    DataView(String, StoreKey, RefCell<Vec<Datum<String>>>),
-    Joins(String, StoreKey, RefCell<Vec<Vec<String>>>),
-    Continuations(Vec<String>, GroupKeys, RefCell<Vec<Waiting>>),
-    ContinuationViews(Vec<String>, GroupKeys, RefCell<Vec<Waiting>>),
-    StoreConsume(Vec<String>, GroupKeys, Waiting),
-    // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
-    // PutDatum(StoreKey, Datum<String>),
-    PutDatum(String, StoreKey, Datum<String>),
-    RetireData(Vec<RSpaceResult<String, String>>, Vec<StoreKey>, Vec<(usize, i32)>),
-    RetireMatch(Vec<String>, GroupKeys, Vec<RSpaceResult<String, String>>, Vec<(usize, i32)>),
-    InstallContinuation(Vec<String>, GroupKeys, Waiting),
-    InstallJoin(String, StoreKey, Vec<String>),
-    Changes,
 }
 
 fn result_of(name: &str, value: &str, persistent: bool) -> RSpaceResult<String, String> {
@@ -714,124 +705,6 @@ fn result_of(name: &str, value: &str, persistent: bool) -> RSpaceResult<String, 
     }
 }
 
-/// One call of each store method, on the state of `prepared`.
-fn calls() -> Vec<(&'static str, Call)> {
-    let a = channel(0);
-    let bb = channel(1);
-    let ccc = channel(2);
-    let pair = group(&[0, 1]);
-    vec![
-        ("data", Call::Data(ccc.clone(), key(&ccc), RefCell::new(history_data(&ccc)))),
-        ("data_view", Call::DataView(bb.clone(), key(&bb), RefCell::new(history_data(&bb)))),
-        ("data cold", Call::Data(a.clone(), key(&a), RefCell::new(Vec::new()))),
-        ("joins", Call::Joins(ccc.clone(), key(&ccc), RefCell::new(vec![group(&[2, 0])]))),
-        (
-            "continuations",
-            Call::Continuations(
-                group(&[1, 0]),
-                keys(&group(&[1, 0])),
-                RefCell::new(vec![waiting(&group(&[1, 0]), "cold", false, false)]),
-            ),
-        ),
-        (
-            "continuation_views",
-            Call::ContinuationViews(group(&[2]), keys(&group(&[2])), RefCell::new(Vec::new())),
-        ),
-        (
-            "store_consume",
-            Call::StoreConsume(pair.clone(), keys(&pair), waiting(&pair, "new", false, true)),
-        ),
-        // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
-        // ("put_datum", Call::PutDatum(key(&a), Datum::create(&a, "put".to_owned(), false))),
-        (
-            "put_datum",
-            Call::PutDatum(a.clone(), key(&a), Datum::create(&a, "put".to_owned(), false)),
-        ),
-        (
-            "retire_data",
-            Call::RetireData(vec![result_of("a", "h1", false)], vec![key(&a)], vec![(0, 0)]),
-        ),
-        (
-            "retire_produce_match",
-            Call::RetireMatch(
-                pair.clone(),
-                keys(&pair),
-                vec![result_of("a", "h1", false), result_of("bb", "h3", false)],
-                vec![(0, 0), (1, 0)],
-            ),
-        ),
-        (
-            "install_continuation",
-            Call::InstallContinuation(
-                pair.clone(),
-                keys(&pair),
-                waiting(&pair, "installed", true, false),
-            ),
-        ),
-        ("install_join", Call::InstallJoin(bb.clone(), key(&bb), group(&[1, 2]))),
-        ("changes", Call::Changes),
-    ]
-}
-
-fn run(store: &Store, call: Call, meter: &Meter) -> Result<(), RSpaceError> {
-    match call {
-        Call::Data(name, key, read) => store.data(&name, key, &handover(&read), meter).map(drop),
-        Call::DataView(name, key, read) => store
-            .data_view(&name, key, &handover(&read), meter)
-            .map(drop),
-        Call::Joins(name, key, read) => store.joins(&name, key, &handover(&read), meter).map(drop),
-        Call::Continuations(channels, keys, read) => store
-            .continuations(&channels, &keys, &handover(&read), meter)
-            .map(drop),
-        Call::ContinuationViews(channels, keys, read) => store
-            .continuation_views(&channels, &keys, &handover(&read), meter)
-            .map(drop),
-        Call::StoreConsume(channels, keys, value) => store
-            .store_consume(&channels, &keys, value, meter)
-            .map(drop),
-        // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
-        // Call::PutDatum(key, datum) => store.put_datum(key, datum, meter),
-        Call::PutDatum(name, key, datum) => store.put_datum(&name, key, datum, meter),
-        Call::RetireData(data, keys, retired) => store.retire_data(&data, &keys, &retired, meter),
-        Call::RetireMatch(channels, keys, data, retired) => {
-            store.retire_produce_match(&channels, &keys, 0, false, &data, &retired, meter)
-        }
-        Call::InstallContinuation(channels, keys, value) => {
-            store.install_continuation(&channels, &keys, value, meter)
-        }
-        Call::InstallJoin(name, key, join) => store.install_join(&name, key, &join, meter),
-        Call::Changes => store.changes(meter).map(drop),
-    }
-}
-
-/// D-S1 (D-C2c, DR-96): every reservation of every store method comes
-/// before the work it pays for. At each cut the method returns the host
-/// error, allocates at most the backing it reserved, and leaves the store
-/// unchanged.
-#[test]
-fn every_native_store_cut_preserves_state() {
-    let count = calls().len();
-    for index in 0..count {
-        let (name, call) = calls().swap_remove(index);
-        let baseline = Meter::default();
-        run(&prepared(), call, &baseline).unwrap_or_else(|error| panic!("{name}: {error:?}"));
-        let before = observed(&prepared());
-        for cut in 0..baseline.calls.get() {
-            let store = prepared();
-            let (_, call) = calls().swap_remove(index);
-            let meter = Meter::rejecting(cut);
-            let (result, allocated) = measure_allocations(|| run(&store, call, &meter));
-            assert_eq!(result, Err(RSpaceError::HostWorkRejected), "{name}, cut {cut}");
-            assert!(
-                allocated <= meter.used.get()[2],
-                "{name}, cut {cut}: allocated {allocated}, reserved {}",
-                meter.used.get()[2]
-            );
-            assert_eq!(observed(&store), before, "{name}, cut {cut}");
-        }
-    }
-}
-
 /// D-S1 (D-C2c, DR-96): a data view holds the entry it read. A later
 /// publication replaces the entry and leaves the view's values unchanged.
 #[test]
@@ -840,143 +713,22 @@ fn views_are_stable_entry_snapshots() {
     let name = channel(0);
     let read = || Ok(history_data(&name));
     let before = store
-        .data_view(&name, key(&name), &read, &free())
-        .expect("a free meter");
+        .data_view(&name, key(&name), &read)
+        .expect("a warm read");
     let values = before.values().to_vec();
     // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
     // store
     //     .put_datum(key(&name), Datum::create(&name, "later".to_owned(),
     // false), &free())     .expect("a free meter");
     store
-        .put_datum(&name, key(&name), Datum::create(&name, "later".to_owned(), false), &free())
-        .expect("a free meter");
+        .put_datum(&name, key(&name), Datum::create(&name, "later".to_owned(), false))
+        .expect("a publication");
     assert_eq!(before.values(), values.as_slice());
     let after = store
-        .data_view(&name, key(&name), &read, &free())
-        .expect("a free meter");
+        .data_view(&name, key(&name), &read)
+        .expect("a warm read");
     assert_eq!(after.values().len(), values.len() + 1);
     assert_eq!(after.values()[0].a.as_str(), "later");
-}
-
-/// Two channels whose keys share a shard.
-fn same_shard_channels() -> (String, String) {
-    let mut by_shard: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
-    for index in 0.. {
-        let name = format!("shared-{index}");
-        let shard = key(&name).shard();
-        if let Some(previous) = by_shard.insert(shard, name.clone()) {
-            return (previous, name);
-        }
-    }
-    unreachable!("the shard space is finite")
-}
-
-/// D-S1 (D-C2c, DR-96): the store's charges for one channel do not depend
-/// on how the operations on another channel in the same shard interleave.
-#[test]
-fn store_charges_are_schedule_independent() {
-    let (first, second) = same_shard_channels();
-    assert_eq!(key(&first).shard(), key(&second).shard());
-    let program = |store: &Store, name: &String, step: usize, meter: &Meter| match step {
-        0 | 2 => store
-            .data_view(name, key(name), &|| Ok(Vec::new()), meter)
-            .map(drop),
-        // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
-        // _ => store.put_datum(key(name), Datum::create(name, "v".to_owned(), false), meter),
-        _ => store.put_datum(name, key(name), Datum::create(name, "v".to_owned(), false), meter),
-    };
-    let run = |schedule: &[usize]| {
-        let store = Store::new();
-        let meter = Meter::default();
-        let mut steps = [0, 0];
-        for &which in schedule {
-            let name = if which == 0 { &first } else { &second };
-            program(&store, name, steps[which], &meter).expect("an unlimited meter");
-            steps[which] += 1;
-        }
-        meter.used.get()
-    };
-    let expected = run(&[0, 0, 0, 1, 1, 1]);
-    for schedule in [[0, 1, 0, 1, 0, 1], [1, 1, 1, 0, 0, 0], [0, 1, 1, 0, 1, 0], [1, 0, 0, 1, 0, 1]]
-    {
-        assert_eq!(run(&schedule), expected, "{schedule:?}");
-    }
-}
-
-/// The orders of `items`.
-fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
-    if items.len() <= 1 {
-        return vec![items.to_vec()];
-    }
-    let mut orders = Vec::new();
-    for (index, first) in items.iter().enumerate() {
-        let mut rest = items.to_vec();
-        rest.remove(index);
-        for mut order in permutations(&rest) {
-            order.insert(0, *first);
-            orders.push(order);
-        }
-    }
-    orders
-}
-
-/// D-S1 (D-C2e, DR-96): the five maps of a store share one key limit. A cold
-/// fill beyond the limit is rejected and changes nothing, in every order of
-/// the fills, so the set of distinct keys decides the rejection. A restore
-/// returns the count to the checkpoint.
-#[test]
-fn store_key_bound_rejects_deterministically() {
-    let a = channel(0);
-    let bb = channel(1);
-    let pair = group(&[0, 1]);
-    // Four cold fills of distinct keys in three maps.
-    let fill = |store: &Store, step: usize| -> Result<(), RSpaceError> {
-        match step {
-            0 => store
-                .data(&a, key(&a), &|| Ok(Vec::new()), &free())
-                .map(drop),
-            1 => store
-                .data(&bb, key(&bb), &|| Ok(Vec::new()), &free())
-                .map(drop),
-            2 => store
-                .joins(&a, key(&a), &|| Ok(Vec::new()), &free())
-                .map(drop),
-            _ => store
-                .continuations(&pair, &keys(&pair), &|| Ok(Vec::new()), &free())
-                .map(drop),
-        }
-    };
-    let orders = permutations(&[0, 1, 2, 3]);
-    assert_eq!(orders.len(), 24);
-    for order in &orders {
-        let store = Store::with_key_bound(3);
-        for (index, step) in order.iter().enumerate() {
-            let before = observed(&store);
-            if index < 3 {
-                assert_eq!(fill(&store, *step), Ok(()), "{order:?}");
-            } else {
-                assert_eq!(fill(&store, *step), Err(RSpaceError::HostWorkRejected), "{order:?}");
-                assert_eq!(observed(&store), before, "{order:?}");
-                assert_eq!(fill(&store, *step), Err(RSpaceError::HostWorkRejected), "{order:?}");
-            }
-        }
-        assert_eq!(store.keys_used(), 3);
-        assert_eq!(store.entry_counts().iter().sum::<usize>(), 3);
-        fill(&store, order[0]).expect("a warm read adds no key");
-        assert_eq!(store.keys_used(), 3);
-    }
-    let store = Store::with_key_bound(3);
-    fill(&store, 0).expect("room for the first key");
-    let checkpoint = store.snapshot();
-    fill(&store, 1).expect("room for the second key");
-    fill(&store, 2).expect("room for the third key");
-    assert_eq!(fill(&store, 3), Err(RSpaceError::HostWorkRejected));
-    store.restore(checkpoint);
-    assert_eq!(store.keys_used(), 1);
-    fill(&store, 3).expect("room after the restore");
-    fill(&store, 1).expect("room after the restore");
-    assert_eq!(fill(&store, 2), Err(RSpaceError::HostWorkRejected));
-    assert_eq!(store.keys_used(), 3);
 }
 
 /// D-S1 (D-C2e, DR-96): two channels with one digest are a collision. The
@@ -994,35 +746,30 @@ fn digest_collision_is_detected() {
     let single = group(&[0]);
     let store = Store::new();
     store
-        .data(&a, key(&a), &|| Ok(history_data(&a)), &free())
-        .expect("a free meter");
+        .data(&a, key(&a), &|| Ok(history_data(&a)))
+        .expect("a cold fill");
     store
-        .joins(&a, key(&a), &|| Ok(history_joins(&a)), &free())
-        .expect("a free meter");
+        .joins(&a, key(&a), &|| Ok(history_joins(&a)))
+        .expect("a cold fill");
     store
-        .install_join(&a, key(&a), &group(&[0, 1]), &free())
-        .expect("a free meter");
+        .install_join(&a, key(&a), &group(&[0, 1]))
+        .expect("an installation");
     store
-        .install_continuation(
-            &single,
-            &keys(&single),
-            waiting(&single, "installed", true, false),
-            &free(),
-        )
-        .expect("a free meter");
+        .install_continuation(&single, &keys(&single), waiting(&single, "installed", true, false))
+        .expect("an installation");
     // A group [ccc, bb] with one stored continuation and its joins.
     let pair = group(&[2, 1]);
     store
-        .continuations(&pair, &keys(&pair), &|| Ok(Vec::new()), &free())
-        .expect("a free meter");
+        .continuations(&pair, &keys(&pair), &|| Ok(Vec::new()))
+        .expect("a cold fill");
     for name in &pair {
         store
-            .joins(name, key(name), &|| Ok(Vec::new()), &free())
-            .expect("a free meter");
+            .joins(name, key(name), &|| Ok(Vec::new()))
+            .expect("a cold fill");
     }
     store
-        .store_consume(&pair, &keys(&pair), waiting(&pair, "stored", false, false), &free())
-        .expect("a free meter");
+        .store_consume(&pair, &keys(&pair), waiting(&pair, "stored", false, false))
+        .expect("a stored consume");
     let before = observed(&store);
 
     // `bb` with the digest of `a`, and the group [bb] with the digest of [a].
@@ -1033,55 +780,47 @@ fn digest_collision_is_detected() {
         group: keys(&single).group,
     };
     let empty_data = || Ok(Vec::new());
-    assert_eq!(store.data(&bb, forged, &empty_data, &free()).map(drop), collision());
-    assert_eq!(store.data_view(&bb, forged, &empty_data, &free()).map(drop), collision());
+    assert_eq!(store.data(&bb, forged, &empty_data).map(drop), collision());
+    assert_eq!(store.data_view(&bb, forged, &empty_data).map(drop), collision());
+    assert_eq!(store.joins(&bb, forged, &|| Ok(Vec::new())).map(drop), collision());
     assert_eq!(
         store
-            .joins(&bb, forged, &|| Ok(Vec::new()), &free())
+            .continuations(&lone, &forged_group, &|| Ok(Vec::new()))
             .map(drop),
         collision()
     );
     assert_eq!(
         store
-            .continuations(&lone, &forged_group, &|| Ok(Vec::new()), &free())
+            .continuation_views(&lone, &forged_group, &|| Ok(Vec::new()))
             .map(drop),
+        collision()
+    );
+    assert_eq!(
+        store.put_datum(&bb, forged, Datum::create(&bb, "v".to_owned(), false)),
         collision()
     );
     assert_eq!(
         store
-            .continuation_views(&lone, &forged_group, &|| Ok(Vec::new()), &free())
+            .store_consume(&lone, &forged_group, waiting(&lone, "w", false, false))
             .map(drop),
         collision()
     );
+    assert_eq!(store.install_join(&bb, forged, &lone), collision());
     assert_eq!(
-        store.put_datum(&bb, forged, Datum::create(&bb, "v".to_owned(), false), &free()),
-        collision()
-    );
-    assert_eq!(
-        store
-            .store_consume(&lone, &forged_group, waiting(&lone, "w", false, false), &free())
-            .map(drop),
-        collision()
-    );
-    assert_eq!(store.install_join(&bb, forged, &lone, &free()), collision());
-    assert_eq!(
-        store.install_continuation(&lone, &forged_group, waiting(&lone, "i", true, false), &free()),
+        store.install_continuation(&lone, &forged_group, waiting(&lone, "i", true, false)),
         collision()
     );
     let lone_result = vec![result_of("bb", "h3", false)];
-    assert_eq!(store.retire_data(&lone_result, &[forged], &[(0, 0)], &free()), collision());
+    assert_eq!(store.retire_data(&lone_result, &[forged], &[(0, 0)]), collision());
     assert_eq!(
-        store.retire_produce_match(&lone, &forged_group, 0, false, &lone_result, &[], &free()),
+        store.retire_produce_match(&lone, &forged_group, 0, false, &lone_result, &[]),
         collision()
     );
 
     // A key repeated inside one group: the data of [a, bb] retired with the
     // digest of `a` twice compares the two channels.
     let both = vec![result_of("a", "h1", false), result_of("bb", "h3", false)];
-    assert_eq!(
-        store.retire_data(&both, &[forged, forged], &[(0, 0), (1, 0)], &free()),
-        collision()
-    );
+    assert_eq!(store.retire_data(&both, &[forged, forged], &[(0, 0), (1, 0)]), collision());
     // The group [ccc, bb] with the digest of `ccc` twice: the consume and the
     // match retirement find the second channel in the first one's joins.
     let repeated = GroupKeys {
@@ -1090,15 +829,12 @@ fn digest_collision_is_detected() {
     };
     assert_eq!(
         store
-            .store_consume(&pair, &repeated, waiting(&pair, "again", false, false), &free())
+            .store_consume(&pair, &repeated, waiting(&pair, "again", false, false))
             .map(drop),
         collision()
     );
     let matched = vec![result_of("ccc", "x", true), result_of("bb", "y", true)];
-    assert_eq!(
-        store.retire_produce_match(&pair, &repeated, 0, false, &matched, &[], &free()),
-        collision()
-    );
+    assert_eq!(store.retire_produce_match(&pair, &repeated, 0, false, &matched, &[]), collision());
     assert_eq!(observed(&store), before);
 }
 
@@ -1129,7 +865,7 @@ fn fixture_history() -> Box<dyn HistoryRepository<String, String, String, String
         })),
     ];
     let prepared = history
-        .prepare_native_checkpoint(actions, &free())
+        .prepare_native_checkpoint(actions)
         .expect("the fixture checkpoint");
     history
         .commit_native_checkpoint(prepared)
@@ -1157,16 +893,13 @@ fn export_roots(
     store: &Store,
     history: &(dyn HistoryRepository<String, String, String, String> + Send + Sync),
 ) -> (Result<Blake2b256Hash, RSpaceError>, Result<Blake2b256Hash, RSpaceError>) {
-    let full = store
-        .changes(&free())
-        .and_then(|actions| history.prepare_native_checkpoint(actions, &free()))
+    let full = history
+        .prepare_native_checkpoint(store.changes())
         .map(|prepared| prepared.root.unwrap_or_else(|| history.root()));
-    let dirty = store
-        .dirty_entries(&free())
-        .and_then(|dirty| {
-            let actions = dirty.actions(&free())?;
-            history.prepare_native_checkpoint_borrowed(&actions, &free())
-        })
+    let dirty = store.dirty_entries();
+    let actions = dirty.actions();
+    let dirty = history
+        .prepare_native_checkpoint_borrowed(&actions)
         .map(|prepared| prepared.root.unwrap_or_else(|| history.root()));
     (full, dirty)
 }
@@ -1201,29 +934,11 @@ proptest! {
     }
 }
 
-/// A meter that records every reservation in order.
-#[derive(Default)]
-struct Recording(RefCell<Vec<(usize, usize, usize)>>);
-
-impl SourceMeter for Recording {
-    fn reserve(
-        &self,
-        operations: usize,
-        scanned: usize,
-        backing: usize,
-    ) -> Result<(), RSpaceError> {
-        self.0.borrow_mut().push((operations, scanned, backing));
-        Ok(())
-    }
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     /// D-S3 (D-C3, DR-97): owned actions and borrowed views with shared
-    /// continuations encode the same leaves with the same reservations, give
-    /// the same root, and the borrowed checkpoint allocates at most what it
-    /// reserved.
+    /// continuations encode the same leaves and give the same root.
     #[test]
     fn borrowed_export_encodes_identical_leaves(
         data in prop::collection::vec(("[a-c]{0,3}", any::<bool>()), 0..4),
@@ -1288,51 +1003,23 @@ proptest! {
                 NativeExportAction::InsertJoins { channel: &bb, joins: &joins }
             },
         ];
-        let owned_meter = Recording::default();
-        let borrowed_meter = Recording::default();
-        let from_owned =
-            NativeCheckpoint::prepare(owned.clone(), &owned_meter).expect("a free meter");
+        let from_owned = NativeCheckpoint::prepare(owned.clone()).expect("the owned preparation");
         let from_views =
-            NativeCheckpoint::prepare_borrowed(
-                crate::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy,
-                &views,
-                &borrowed_meter,
-            )
-            .expect("a free meter");
+            NativeCheckpoint::prepare_borrowed(crate::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy, &views).expect("the borrowed preparation");
         prop_assert_eq!(&from_owned.cold_actions, &from_views.cold_actions);
         prop_assert_eq!(
             format!("{:?}", from_owned.history_actions),
             format!("{:?}", from_views.history_actions)
         );
-        prop_assert_eq!(owned_meter.0.into_inner(), borrowed_meter.0.into_inner());
         let history = empty_history();
         let owned_root = history
-            .prepare_native_checkpoint(owned, &free())
+            .prepare_native_checkpoint(owned)
             .map(|prepared| prepared.root);
-        let meter = Meter::default();
-        let (borrowed_root, allocated) = measure_allocations(|| {
-            history
-                .prepare_native_checkpoint_borrowed(&views, &meter)
-                .map(|prepared| prepared.root)
-        });
+        let borrowed_root = history
+            .prepare_native_checkpoint_borrowed(&views)
+            .map(|prepared| prepared.root);
         prop_assert_eq!(owned_root, borrowed_root);
-        prop_assert!(allocated <= meter.used.get()[2]);
     }
-}
-
-/// A store with dirty entries: `prepared()`, a publication on "a", and a
-/// stored consume on ["a", "bb"].
-fn dirty_store() -> Store {
-    let store = prepared();
-    let a = channel(0);
-    store
-        .put_datum(&a, key(&a), Datum::create(&a, "put".to_owned(), false), &free())
-        .expect("a free meter");
-    let pair = group(&[0, 1]);
-    store
-        .store_consume(&pair, &keys(&pair), waiting(&pair, "new", false, true), &free())
-        .expect("a free meter");
-    store
 }
 
 /// D-S3 (D-C3, DR-97): a restore returns the dirty flags of its checkpoint,
@@ -1343,59 +1030,29 @@ fn restore_restores_dirty_flags() {
     let a = channel(0);
     let bb = channel(1);
     let pair = group(&[0, 1]);
-    assert_eq!(dirty_keys(&store), Ok(Vec::new()));
+    assert_eq!(dirty_keys(&store), Vec::<String>::new());
     let clean = store.snapshot();
     store
-        .put_datum(&a, key(&a), Datum::create(&a, "put".to_owned(), false), &free())
-        .expect("a free meter");
+        .put_datum(&a, key(&a), Datum::create(&a, "put".to_owned(), false))
+        .expect("a publication");
     let data_a = vec![format!("data {:?}", Arc::new(a.clone()))];
-    assert_eq!(dirty_keys(&store), Ok(data_a.clone()));
+    assert_eq!(dirty_keys(&store), data_a.clone());
     let written = store.snapshot();
     store
-        .store_consume(&pair, &keys(&pair), waiting(&pair, "new", false, true), &free())
-        .expect("a free meter");
-    let consumed = dirty_keys(&store).expect("a free meter");
+        .store_consume(&pair, &keys(&pair), waiting(&pair, "new", false, true))
+        .expect("a stored consume");
+    let consumed = dirty_keys(&store);
     assert!(consumed.contains(&format!("continuations {:?}", Arc::new(pair.clone()))));
     assert!(consumed.contains(&format!("joins {:?}", Arc::new(bb.clone()))));
     // The joins of "a" already held the group, so the consume left them clean.
     assert!(!consumed.contains(&format!("joins {:?}", Arc::new(a.clone()))));
     store.restore(written);
-    assert_eq!(dirty_keys(&store), Ok(data_a));
-    let dirty = store.dirty_entries(&free()).expect("a free meter");
+    assert_eq!(dirty_keys(&store), data_a);
+    let dirty = store.dirty_entries();
     assert_eq!(dirty.data.len(), 1);
     assert_eq!(dirty.data[0].value[0].a.as_str(), "put");
     store.restore(clean);
-    assert_eq!(dirty_keys(&store), Ok(Vec::new()));
-}
-
-/// D-S3 (D-C3, DR-97): the export by reference reserves before it
-/// allocates: at every reservation cut it returns the host error, allocates
-/// at most what it reserved, and leaves the store unchanged.
-#[test]
-fn every_dirty_export_cut_preserves_state() {
-    let history = empty_history();
-    let export = |store: &Store, meter: &Meter| -> Result<(), RSpaceError> {
-        let dirty = store.dirty_entries(meter)?;
-        let actions = dirty.actions(meter)?;
-        history
-            .prepare_native_checkpoint_borrowed(&actions, meter)
-            .map(drop)
-    };
-    let baseline = Meter::default();
-    export(&dirty_store(), &baseline).expect("a free meter");
-    let before = observed(&dirty_store());
-    for cut in 0..baseline.calls.get() {
-        let store = dirty_store();
-        let meter = Meter::rejecting(cut);
-        let (result, allocated) = measure_allocations(|| export(&store, &meter));
-        assert_eq!(result, Err(RSpaceError::HostWorkRejected), "cut {cut}");
-        assert!(
-            allocated <= meter.used.get()[2],
-            "cut {cut}: allocated {allocated}, reserved {}",
-            meter.used.get()[2]
-        );
-        assert_eq!(observed(&store), before, "cut {cut}");
-    }
+    assert_eq!(dirty_keys(&store), Vec::<String>::new());
 }
 
 /// D-S3 (D-C3, DR-97), negative control: the dirty export keeps the root only
@@ -1405,7 +1062,7 @@ fn every_dirty_export_cut_preserves_state() {
 #[test]
 fn dirty_export_needs_the_cold_fill_history() {
     let store = prepared();
-    assert_eq!(dirty_keys(&store), Ok(Vec::new()));
+    assert_eq!(dirty_keys(&store), Vec::<String>::new());
     let (full, dirty) = export_roots(&store, empty_history().as_ref());
     assert_ne!(full.expect("the full export"), dirty.expect("the dirty export"));
     let (full, dirty) = export_roots(&store, fixture_history().as_ref());

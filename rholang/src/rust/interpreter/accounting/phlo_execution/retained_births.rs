@@ -1,17 +1,11 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
 use prost::Message;
 use thiserror::Error;
 
 use super::{CanonicalPhloFundingCapture, CapturedPhloObligation, PhloObligationKey};
 use crate::rust::interpreter::accounting::authority::{
-    cost_signature_to_sig, reserve_authority_signature_tree, AuthorityBornStack, AuthorityError,
+    cost_signature_to_sig, AuthorityBornStack, AuthorityError,
 };
-use crate::rust::interpreter::accounting::monetary_allocation::{
-    filled_vec, reserve_work, FundingSearchError,
-};
-use crate::rust::interpreter::host_work::HostWorkBudget;
+use crate::rust::interpreter::accounting::monetary_allocation::{filled_vec, FundingSearchError};
 
 #[derive(Clone, Copy, Debug)]
 pub struct RetainedBirthFunding<'a> {
@@ -94,7 +88,6 @@ impl<'a> CanonicalPhloFundingCapture<'a> {
         &'c self,
         bindings: &[RetainedBirthFunding<'b>],
         limits: RetainedBirthFundingLimits,
-        budget: &HostWorkBudget,
     ) -> Result<CheckedRetainedBirthFunding<'c, 'a, 'b>, RetainedBirthFundingError> {
         let columns = self.obligations().len();
         if bindings.len() > limits.births || columns > limits.obligations {
@@ -112,23 +105,6 @@ impl<'a> CanonicalPhloFundingCapture<'a> {
                 .filter(|n| *n <= limits.cells)
                 .ok_or(RetainedBirthFundingError::Limit)?;
         }
-        let bytes = bindings
-            .len()
-            .checked_mul(size_of::<RetainedBirthFunding>())
-            .and_then(|n| {
-                columns
-                    .checked_mul(size_of::<u64>())
-                    .and_then(|m| n.checked_add(m))
-            })
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-        let work = bindings
-            .len()
-            .checked_mul(128 * (1 + bindings.len().checked_ilog2().unwrap_or(0) as usize))
-            .and_then(|n| n.checked_add(cell_count))
-            .and_then(|n| n.checked_add(columns))
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::VerificationOperations, work)?;
         let mut births = Vec::new();
         births
             .try_reserve_exact(bindings.len())
@@ -150,7 +126,6 @@ impl<'a> CanonicalPhloFundingCapture<'a> {
         }
         let mut quantities = filled_vec(columns, 0u64)?;
         let mut remaining_bytes = limits.authority_bytes;
-        let mut depth = 0;
         for binding in &births {
             for (cell, position) in binding.birth.cells.iter().zip(binding.obligation_positions) {
                 let obligation = self
@@ -160,13 +135,10 @@ impl<'a> CanonicalPhloFundingCapture<'a> {
                 let PhloObligationKey::RetainedResource(resource) = obligation.key() else {
                     return Err(RetainedBirthFundingError::NotRetained);
                 };
-                reserve_authority_signature_tree(cell, budget, &mut depth)?;
                 let bytes = cell.encoded_len();
                 remaining_bytes = remaining_bytes
                     .checked_sub(bytes)
                     .ok_or(RetainedBirthFundingError::Limit)?;
-                reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-                reserve_work(budget, HostWorkDimension::VerificationOperations, bytes)?;
                 if cost_signature_to_sig(cell)? != *resource.authority {
                     return Err(RetainedBirthFundingError::AuthorityMismatch);
                 }

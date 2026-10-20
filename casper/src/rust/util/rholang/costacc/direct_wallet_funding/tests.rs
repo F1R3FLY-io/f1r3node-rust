@@ -8,7 +8,6 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use models::rust::cost_deploy_data::DeployData;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_controls::PhloControlsV1;
 use models::rust::phlo_grant_creation::{
     PhloGrantCreationLimits, PhloGrantCreationTerms, PhloGrantCreationV1, VerifiedGrantCreationV1,
@@ -24,7 +23,6 @@ use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::SignatureChannel;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -112,10 +110,6 @@ fn private_purse_requires_only_its_own_resource_permissions_and_no_fee() {
         private_name_payer(&extra),
         Err(DirectWalletFundingError::AmbiguousOnchainAuthority)
     ));
-}
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)))
 }
 
 fn public_key(byte: u8) -> [u8; 65] {
@@ -247,14 +241,12 @@ fn offered_live_and_replay_share_checked_cost_par_bytes() {
         limits.envelope,
     )
     .expect("checked offered envelope");
-    let (live, live_bytes) =
+    let live =
         crate::rust::rholang::runtime::prepare_offered_source(&TrustedCostTestFrontend, &envelope)
             .expect("live preparation");
-    let (replay, replay_bytes) =
+    let replay =
         crate::rust::rholang::runtime::prepare_offered_source(&TrustedCostTestFrontend, &envelope)
             .expect("replay preparation");
-    assert_eq!(live_bytes, envelope.body().term.as_bytes().len() as u64);
-    assert_eq!(live_bytes, replay_bytes);
     assert_eq!(
         live.as_par().encode_to_vec(),
         replay.as_par().encode_to_vec()
@@ -353,9 +345,9 @@ async fn signed_v2_delegated_source_requires_its_root_and_envelope() {
     )
     .unwrap();
     let prepared = manager
-        .capture_offered_grant_issuance(original, &verified_creation, grant_limits, &budget())
+        .capture_offered_grant_issuance(original, &verified_creation, grant_limits)
         .unwrap()
-        .prepare_issuance(original, &verified_creation, grant_limits, &budget())
+        .prepare_issuance(original, &verified_creation, grant_limits)
         .unwrap();
     runtime
         .apply_offered_grant_transitions(&prepared, original, grant_limits)
@@ -371,13 +363,13 @@ async fn signed_v2_delegated_source_requires_its_root_and_envelope() {
         .unwrap();
     let offer = offered(&payer.custody_key, 1);
     let snapshot = manager
-        .capture_offered_grants_from_signed(root, &offer, grant_limits, &budget())
+        .capture_offered_grants_from_signed(root, &offer, grant_limits)
         .unwrap();
     assert!(snapshot
-        .verified_source_payers(original, &offer, 15, grant_limits, &budget())
+        .verified_source_payers(original, &offer, 15, grant_limits)
         .is_err());
     let verified = snapshot
-        .verified_source_payers(root, &offer, 15, grant_limits, &budget())
+        .verified_source_payers(root, &offer, 15, grant_limits)
         .unwrap();
     let funding_limits = DirectWalletFundingLimits {
         members: limits.envelope.members,

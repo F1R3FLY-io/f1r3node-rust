@@ -283,6 +283,34 @@ path = "tests/protobuf_encoder_space.rs"
 name = "bincode_schema_conformance"
 path = "tests/bincode_schema_conformance.rs"
 
+# Added by the merge of feature/cost-accounted-rho (finding R3-16): theirs adds
+# these six files and relies on automatic test discovery, which
+# `autotests = false` turns off here. Without these entries they run nowhere.
+# `tests/record_corpus/` stays a support module that four of them include.
+[[test]]
+name = "cold_store_decode_deep"
+path = "tests/cold_store_decode_deep.rs"
+
+[[test]]
+name = "cold_store_decode_roots"
+path = "tests/cold_store_decode_roots.rs"
+
+[[test]]
+name = "par_equality_test"
+path = "tests/par_equality_test.rs"
+
+[[test]]
+name = "record_decoder_differential"
+path = "tests/record_decoder_differential.rs"
+
+[[test]]
+name = "record_decoder_malformed"
+path = "tests/record_decoder_malformed.rs"
+
+[[test]]
+name = "record_decoder_shapes"
+path = "tests/record_decoder_shapes.rs"
+
 # The registry gate itself, which is what makes the list above self-checking.
 [[test]]
 name = "test_target_registry_gate"

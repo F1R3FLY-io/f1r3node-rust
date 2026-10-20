@@ -16,5 +16,6 @@ pub mod refund_deploy;
 pub mod slash_deploy;
 pub mod supply;
 pub mod supply_reader;
+pub mod v6_merge;
 pub mod vault_cost_deploy;
 pub mod vault_payer;

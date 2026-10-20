@@ -37,7 +37,10 @@ fn measure_result_time<T, E, F: FnOnce() -> Result<T, E>>(f: F) -> Result<(T, Du
 
 /// Compare two branches for deterministic ordering.
 /// Ordering for branches to ensure deterministic comparison.
-fn compare_branches<R: Ord>(a: &HashableSet<R>, b: &HashableSet<R>) -> std::cmp::Ordering {
+pub(crate) fn compare_branches<R: Ord>(
+    a: &HashableSet<R>,
+    b: &HashableSet<R>,
+) -> std::cmp::Ordering {
     // Compare by sorted elements
     let mut a_sorted: Vec<_> = a.0.iter().collect();
     let mut b_sorted: Vec<_> = b.0.iter().collect();
@@ -214,7 +217,10 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     for branch in &branches {
         for item in &branch.0 {
             let item_channels = mergeable_channels(item);
-            for (channel_hash, _) in item_channels.iter() {
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // the loop reads only the keys of the map.
+            // for (channel_hash, _) in item_channels.iter() {
+            for channel_hash in item_channels.keys() {
                 all_channel_keys_set.insert(channel_hash.clone());
             }
         }
@@ -769,7 +775,10 @@ impl LossProfile {
     }
 }
 
-fn branch_losses<R>(branch: &Branch<R>, prior_losses: &impl Fn(&R) -> u64) -> LossProfile {
+pub(crate) fn branch_losses<R>(
+    branch: &Branch<R>,
+    prior_losses: &impl Fn(&R) -> u64,
+) -> LossProfile {
     branch.0.iter().fold(LossProfile::default(), |acc, item| {
         let losses = prior_losses(item);
         acc.fold(LossProfile {

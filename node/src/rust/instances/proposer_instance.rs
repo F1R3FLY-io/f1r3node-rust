@@ -127,11 +127,18 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
             while let Some((casper, is_async, propose_id_sender, immediate_retry_count)) =
                 propose_requests_queue_rx.recv().await
             {
-                let _ = propose_queue_pending.fetch_update(
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                    |curr| Some(curr.saturating_sub(1)),
-                );
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+                // `try_update` has the same signature and semantics.
+                // let _ = propose_queue_pending.fetch_update(
+                //     Ordering::AcqRel,
+                //     Ordering::Acquire,
+                //     |curr| Some(curr.saturating_sub(1)),
+                // );
+                let _ =
+                    propose_queue_pending.try_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                        Some(curr.saturating_sub(1))
+                    });
                 metrics::gauge!(
                     PROPOSER_QUEUE_PENDING_METRIC,
                     "source" => VALIDATOR_METRICS_SOURCE
@@ -318,7 +325,11 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                             // Note: We drop _retry_receiver - retry results go through normal channels
                             // This is acceptable because retries are fire-and-forget optimization
                             let retry_reserved = propose_queue_pending
-                                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                                // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+                                // `try_update` has the same signature and semantics.
+                                // .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                                .try_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
                                     (curr < propose_queue_max_pending).then_some(curr + 1)
                                 })
                                 .is_ok();
@@ -338,7 +349,11 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                     ))
                                     .await
                                 {
-                                    let _ = propose_queue_pending.fetch_update(
+                                    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                                    // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+                                    // `try_update` has the same signature and semantics.
+                                    // let _ = propose_queue_pending.fetch_update(
+                                    let _ = propose_queue_pending.try_update(
                                         Ordering::AcqRel,
                                         Ordering::Acquire,
                                         |curr| Some(curr.saturating_sub(1)),

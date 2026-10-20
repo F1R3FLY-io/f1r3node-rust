@@ -42,11 +42,19 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-45): the
+// GUnforgeable probes below name the two new UnfInstance payload messages.
+// use models::rhoapi::{
+//     EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus,
+//     EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar,
+//     EZipper, Expr, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrivate, GSysAuthToken,
+//     GUnforgeable, KeyValuePair, Par, Var,
+// };
 use models::rhoapi::{
     EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus,
     EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar,
-    EZipper, Expr, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrivate, GSysAuthToken,
-    GUnforgeable, KeyValuePair, Par, Var,
+    EZipper, Expr, GAuthorityId, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId,
+    GPrivate, GSysAuthToken, GUnforgeable, KeyValuePair, Par, Var,
 };
 use models::rust::rhoapi_ext::EPathMap;
 use models::rust::rholang::bincode_schema::{BincodeOneof, Descent, FieldKind};
@@ -156,6 +164,15 @@ fn probes() -> Vec<Probe> {
             unscaled: vec![1],
             scale: 2,
         })),
+        // Added by the merge of feature/cost-accounted-rho (finding R1-45): the
+        // f32 and sized-integer grounds. Each one has no child `Par`, and
+        // `spatial_match` compares it by equality.
+        Probe::childless(ExprInstance::GFloat32(1.0f32.to_bits())),
+        Probe::childless(ExprInstance::GUint64(u64::MAX)),
+        Probe::childless(ExprInstance::GInt32(i32::MIN)),
+        Probe::childless(ExprInstance::GUint32(u32::MAX)),
+        Probe::childless(ExprInstance::GUint16(u16::MAX.into())),
+        Probe::childless(ExprInstance::GUint8(u8::MAX.into())),
         // ---- a variable is a `Var`, not a `Par` ----
         Probe::childless(ExprInstance::EVarBody(EVar {
             v: Some(Var::default()),
@@ -796,15 +813,24 @@ fn replace_second_child(instance: &ExprInstance, replacement: Par) -> Option<Exp
         ExprInstance::EMethodBody(_) => ExprInstance::EMethodBody(EMethod {
             method_name: "nth".to_string(),
             target: first,
-            arguments: vec![second.expect("replacement is Some")],
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // value is a local `Some`, so it is collected instead of unwrapped.
+            // arguments: vec![second.expect("replacement is Some")],
+            arguments: second.into_iter().collect(),
             ..Default::default()
         }),
         ExprInstance::EListBody(_) => ExprInstance::EListBody(EList {
-            ps: vec![first.expect("bound is Some"), second.expect("Some")],
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // value is a local `Some`, so it is collected instead of unwrapped.
+            // ps: vec![first.expect("bound is Some"), second.expect("Some")],
+            ps: first.into_iter().chain(second).collect(),
             ..Default::default()
         }),
         ExprInstance::ETupleBody(_) => ExprInstance::ETupleBody(ETuple {
-            ps: vec![first.expect("bound is Some"), second.expect("Some")],
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // value is a local `Some`, so it is collected instead of unwrapped.
+            // ps: vec![first.expect("bound is Some"), second.expect("Some")],
+            ps: first.into_iter().chain(second).collect(),
             ..Default::default()
         }),
         ExprInstance::EMapBody(_) => ExprInstance::EMapBody(EMap {
@@ -1042,6 +1068,23 @@ fn unf_probes() -> Vec<(UnfInstance, UnfInstance)> {
             // than by exception — see `unforgeables_of_different_variants_do_not_match`.
             UnfInstance::GSysAuthTokenBody(GSysAuthToken {}),
         ),
+        // Added by the merge of feature/cost-accounted-rho (finding R1-45): the
+        // authority and principal unforgeables. The second half of each pair
+        // changes only the payload bytes, so the inequality leg tests them.
+        (
+            UnfInstance::GAuthorityIdBody(GAuthorityId { id: vec![1] }),
+            UnfInstance::GAuthorityIdBody(GAuthorityId { id: vec![2] }),
+        ),
+        (
+            UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: 1,
+                public_key: vec![1],
+            }),
+            UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: 1,
+                public_key: vec![2],
+            }),
+        ),
     ]
 }
 
@@ -1218,7 +1261,10 @@ fn varint_at(bytes: &[u8], at: usize) -> (usize, usize) {
 
 /// Rewrite the varint at `at` (`width` bytes) to `value`, which must still fit
 /// in `width` bytes — true here because the new value is strictly smaller.
-fn put_varint(bytes: &mut Vec<u8>, at: usize, width: usize, value: usize) {
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// function only writes inside the buffer, so a slice is enough.
+// fn put_varint(bytes: &mut Vec<u8>, at: usize, width: usize, value: usize) {
+fn put_varint(bytes: &mut [u8], at: usize, width: usize, value: usize) {
     let mut encoded = Vec::with_capacity(width);
     let mut v = value;
     loop {
@@ -1251,7 +1297,11 @@ fn put_varint(bytes: &mut Vec<u8>, at: usize, width: usize, value: usize) {
 /// descends. Stops when no enclosing field remains — i.e. when `hole` is at the
 /// current level. Non-length-delimited fields are skipped by wire type, so the
 /// walk does not assume the schema's field order.
-fn repair_enclosing_lengths(bytes: &mut Vec<u8>, hole: usize, removed: usize) {
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// function only reads and rewrites bytes inside the buffer, so a slice is
+// enough now that `put_varint` takes one.
+// fn repair_enclosing_lengths(bytes: &mut Vec<u8>, hole: usize, removed: usize) {
+fn repair_enclosing_lengths(bytes: &mut [u8], hole: usize, removed: usize) {
     let mut start = 0usize;
     let mut end = bytes.len();
     let mut repaired = 0usize;
@@ -1558,9 +1608,9 @@ fn run_absent_child_probe_in_process(probe: &Probe) -> Option<()> {
 /// What it distinguishes, before and after: STRICTLY MORE. `Asserted` used to mean
 /// "something unwound"; it now additionally requires the child to have REACHED the
 /// descent (so a probe that died while building its own fixture can no longer be
-/// counted as a variant that asserts — a false positive this gate's `asserted.len()
-/// >= 16` floor would have absorbed silently), and it captures the fault text from the
-/// child's real stderr rather than from a downcast payload.
+/// counted as a variant that asserts — a false positive this gate's
+/// `asserted.len() >= 16` floor would have absorbed silently), and it captures the
+/// fault text from the child's real stderr rather than from a downcast payload.
 fn absent_child_outcome(probe: &Probe) -> (AbsentChildOutcome, String) {
     let exe = std::env::current_exe().expect("the test binary knows its own path");
     let output = std::process::Command::new(exe)

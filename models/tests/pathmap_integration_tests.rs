@@ -64,7 +64,10 @@ fn test_create_empty_pathmap() {
 #[test]
 fn test_create_pathmap_single_element() {
     let par = make_list_par(vec!["books", "fiction", "gatsby"]);
-    let result = create_set_pathmap_from_elements(&[par.clone()], None);
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `slice::from_ref` makes the one-element slice without a clone.
+    // let result = create_set_pathmap_from_elements(&[par.clone()], None);
+    let result = create_set_pathmap_from_elements(std::slice::from_ref(&par), None);
     assert!(!result.map.is_empty());
 }
 
@@ -659,17 +662,31 @@ fn the_corrected_law_separates_the_bare_element_from_the_singleton_list() {
     );
 
     // ── the DISCRIMINATING row: a bare argument names the bare entry ──
-    assert_eq!(
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `assert!` states a boolean check directly.
+    // assert_eq!(
+    //     map.get(&key_of_five).is_some(),
+    //     true,
+    //     "★ the bare argument must reach `5`, not the singleton list `[5]` that \
+    //      the same map also holds"
+    // );
+    assert!(
         map.get(&key_of_five).is_some(),
-        true,
         "★ the bare argument must reach `5`, not the singleton list `[5]` that \
          the same map also holds"
     );
 
     // ── the CONTROL: the split row, where the two laws agree, is unmoved ──
-    assert_eq!(
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `assert!` states a boolean check directly.
+    // assert_eq!(
+    //     map.get(&key_of_list_five).is_some(),
+    //     true,
+    //     "CONTROL: the split arm answers `[5]` under the corrected law exactly as \
+    //      it did under the retired one; a fix that moves this row is over-reaching"
+    // );
+    assert!(
         map.get(&key_of_list_five).is_some(),
-        true,
         "CONTROL: the split arm answers `[5]` under the corrected law exactly as \
          it did under the retired one; a fix that moves this row is over-reaching"
     );
@@ -1069,9 +1086,15 @@ fn witness_bare_elements_are_not_addressable_by_the_read_key() {
     // ALSO in this map. The read succeeds and returns the WRONG element.
     let bare_int_read_key = segments_to_key(&par_to_path(&elements[0]), true);
     assert_eq!(bare_int_read_key, vec![0x03, 0x02, 0x00]);
-    assert_eq!(
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `assert!` states a boolean check directly.
+    // assert_eq!(
+    //     map.get(&bare_int_read_key).is_some(),
+    //     true,
+    //     "★ asking for the bare `1` returns the singleton list `[1]`"
+    // );
+    assert!(
         map.get(&bare_int_read_key).is_some(),
-        true,
         "★ asking for the bare `1` returns the singleton list `[1]`"
     );
 
@@ -1123,10 +1146,18 @@ fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
     // kinds, and each reads back its own value.
     use models::rust::pathmap_integration::{cursor_entry_key, par_to_path, CursorKind};
     let segments = par_to_path(&elements[2]); // one segment: 04 01 61
-    assert_eq!(
+
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `assert!` states a boolean check directly.
+    // assert_eq!(
+    //     map.get(cursor_entry_key(&segments, CursorKind::Bare, &map))
+    //         .is_some(),
+    //     true,
+    //     "Bare names the bare entry \"a\""
+    // );
+    assert!(
         map.get(cursor_entry_key(&segments, CursorKind::Bare, &map))
             .is_some(),
-        true,
         "Bare names the bare entry \"a\""
     );
     assert_eq!(
@@ -1136,11 +1167,16 @@ fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
     );
     // PREFIX — what a child-segment navigation move produces — resolves to the
     // SHORTEST key PRESENT, which here is the bare entry.
-    assert_eq!(
-        map.get(cursor_entry_key(&segments, CursorKind::Prefix, &map))
-            .is_some(),
-        true
-    );
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `assert!` states a boolean check directly.
+    // assert_eq!(
+    //     map.get(cursor_entry_key(&segments, CursorKind::Prefix, &map))
+    //         .is_some(),
+    //     true
+    // );
+    assert!(map
+        .get(cursor_entry_key(&segments, CursorKind::Prefix, &map))
+        .is_some());
 
     // On a map with NO bare entry at that prefix, PREFIX is indistinguishable
     // from SPLIT — which is exactly why every navigation move can be PREFIX
@@ -1154,12 +1190,17 @@ fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
         cursor_entry_key(&segments, CursorKind::Prefix, &lists_only),
         cursor_entry_key(&segments, CursorKind::Split, &lists_only)
     );
-    assert_eq!(
-        lists_only
-            .get(cursor_entry_key(&segments, CursorKind::Prefix, &lists_only))
-            .is_some(),
-        true
-    );
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `assert!` states a boolean check directly.
+    // assert_eq!(
+    //     lists_only
+    //         .get(cursor_entry_key(&segments, CursorKind::Prefix, &lists_only))
+    //         .is_some(),
+    //     true
+    // );
+    assert!(lists_only
+        .get(cursor_entry_key(&segments, CursorKind::Prefix, &lists_only))
+        .is_some());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1327,7 +1368,10 @@ fn test_write_zipper_set_val() {
     let mut map = RholangSetPathMap::new();
 
     // Create a simple path and set a value
-    map.insert(b"test_path".to_vec(), ());
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `insert` takes the key through `AsRef`.
+    // map.insert(b"test_path".to_vec(), ());
+    map.insert(b"test_path", ());
 
     assert_eq!(map.val_count(), 1);
 }

@@ -16,9 +16,11 @@
 //!
 //! This trait is the contract surface for that obligation. The built-in
 //! [`DefaultResourceLogic`] delegates to the already-verified pure analyzer
-//! ([`super::delta_sigma::demand`] / [`super::delta_sigma::is_funded`]) — so the
-//! contract and the live D2 acceptance gate share ONE implementation and cannot
-//! diverge. A custom validator implements [`ResourceLogic`] to supply its own
+//! ([`super::delta_sigma::demand`] / [`super::delta_sigma::is_funded`]).
+//! Corrected by dedup (task 11415, D10): no live acceptance gate shares that
+//! implementation today. The merge `1d325b996` removed the D2 acceptance gate,
+//! and the check before execution of G1 (DR-123, DR-124) does not call
+//! `is_funded`. A custom validator implements [`ResourceLogic`] to supply its own
 //! proof checker; the `resource_logic_conformance` test module checks any
 //! implementation against the OSLF linear-logic laws the Rocq capstone proves:
 //! the judgment is the resource inequality, it is decidable, a funded demand is
@@ -192,8 +194,9 @@ impl ResourceSignature for Sig {
 }
 
 /// The built-in validator's proof checker: delegates to the verified pure
-/// `delta_sigma` analyzer the live D2 acceptance gate uses, so the contract and
-/// the gate cannot diverge.
+/// `delta_sigma` analyzer. Corrected by dedup (task 11415, D10): the merge
+/// `1d325b996` removed the D2 acceptance gate that used the same analyzer. No
+/// live gate calls this checker.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultResourceLogic;
 

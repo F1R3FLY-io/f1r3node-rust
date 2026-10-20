@@ -110,6 +110,13 @@ const ORACLE: &str = "rholang/tests/support/normalize_recursive.rs";
 /// extract `locally_free` with `mem::take`, and finally move that emptied
 /// `Par` into its parent. Rust E0509 forbids the cited partial-field moves.
 ///
+/// The merge of feature/cost-accounted-rho added six more entries, so the
+/// table now holds twelve (finding R1-47). Five confine the oracle to unsigned
+/// receive binds: the entry precondition, the dispatch, two unreachable bind
+/// arms and the removed signed-join recognizer. One passes the new
+/// clause-signature element of `pre_sort_binds`. The contract entry also gains
+/// the compile-forced `cost_signature: None,` line.
+///
 /// A clone-only spelling is not equivalent: it leaves a second cache inside
 /// the nested `Par` and changes canonical protobuf bytes. The differential
 /// gate caught exactly that error while this relocation was being validated.
@@ -244,6 +251,10 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
                  nested body before that body is moved. This is byte-identical to the cited \
                  partial move and legal for a Par with custom Drop.",
     },
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-47): the
+    // `to` text gains the line `cost_signature: None,`, which the merge forced
+    // into the oracle (d367bc11a added `ReceiveBind.cost_signature`), and the
+    // reason records it. The old `to` text lacked that line.
     Deviation {
         path: "normalizer/processes/p_contr_normalizer.rs",
         from: r#"    let body_result = normalize_ann_proc_recursive(
@@ -307,6 +318,7 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
             source: Some(name_match_result.par.clone()),
             remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
+            cost_signature: None,
         }],
         body: Some(body_result.par),
         persistent: true,
@@ -329,8 +341,15 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
         condition: None,
     };
 "#,
+        // reason: "the contract body cache and connective bit are read before the whole body Par is \
+        //          moved into Receive. `mem::take` preserves the cited cache transfer exactly.",
         reason: "the contract body cache and connective bit are read before the whole body Par is \
-                 moved into Receive. `mem::take` preserves the cited cache transfer exactly.",
+                 moved into Receive. `mem::take` preserves the cited cache transfer exactly. \
+                 The `cost_signature: None,` line is COMPILE-FORCED by \
+                 feature/cost-accounted-rho d367bc11a, which added `ReceiveBind.cost_signature` \
+                 (RhoTypes.proto field 5). A struct literal must name every field. A contract \
+                 bind has no clause signature, production's `p_contr_normalizer.rs` also writes \
+                 `None`, and `None` adds no protobuf bytes.",
     },
     Deviation {
         path: "normalizer/processes/p_input_normalizer.rs",
@@ -455,6 +474,182 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
 "#,
         reason: "the receive body cache is taken before the body Par is moved, preserving the \
                  cited partial-move semantics and preventing a duplicate serialized cache.",
+    },
+    // Added by the merge of feature/cost-accounted-rho (finding R1-47): the
+    // oracle is confined to unsigned receive binds, and the shared leaf
+    // `pre_sort_binds` takes the clause signature as a fifth element. The merge
+    // commit e5102e945 made these edits to the oracle and declared none of them.
+    Deviation {
+        path: "normalize.rs",
+        from: r#"    fn unary_exp<'ast>(
+"#,
+        to: r#"    // This historical differential oracle models ordinary Rholang lowering only.
+    // Signed per-clause receives have source-exact cost tests instead; admitting
+    // them here would silently discard their funding authority.
+    if let Proc::ForComprehension { receipts, .. } = &proc.proc {
+        assert!(
+            !receipts.iter().any(|receipt| receipt.binds.iter().any(|bind| matches!(bind, Bind::Signed { .. }))),
+            "recursive normalizer oracle requires unsigned receive binds; signed binds belong to cost tests"
+        );
+    }
+
+    fn unary_exp<'ast>(
+"#,
+        reason: "UNSIGNED-ONLY DOMAIN, the entry precondition. feature/cost-accounted-rho \
+                 d367bc11a deleted `desugar::strip_signed_binds`, which the cited signed-join \
+                 recognizer calls, so the cited signed path no longer compiles. The same commit \
+                 gave a signed bind a new lowering: the bind now becomes a `ReceiveBind` whose \
+                 `cost_signature` holds the clause signature. The cited recovery to a plain \
+                 join drops that signature, and a copy of the new lowering would adjust the \
+                 oracle to agree with the machine. The oracle therefore rejects a signed bind \
+                 loudly and does not model one. `normalize_differential` sends no signed bind \
+                 to the oracle, and `normalizer::cost_accounting::tests` covers the signed \
+                 lowering.",
+    },
+    Deviation {
+        path: "normalize.rs",
+        from: r#"        } => {
+            // W1 Phase 4: a `for` carrying any per-clause SIGNED bind
+            // `{% y <- x %}[s]` routes to signed-join recognition (validate each
+            // clause sig, recover the natural-arity plain join). Greg 2026-06-15:
+            // fuel is provisioned on `Σ⟦s⟧` and acquired by SEQUENTIAL per-atom
+            // gates — a fuel token is structurally incapable of entering the data
+            // join's `ReceiveBind` set, so fuel is NEVER folded into the join
+            // (recognition-only: no gate node; the reducer meters per-COMM by
+            // lane). An unsigned `for` lowers ordinarily.
+            use rholang_parser::ast::Bind;
+            let has_signed_bind = receipts.iter().any(|receipt| {
+                receipt
+                    .binds
+                    .iter()
+                    .any(|bind| matches!(bind, Bind::Signed { .. }))
+            });
+            if has_signed_bind {
+                recognize_signed_join_recursive(receipts, *continuation, proc.span, input, _env, parser)
+            } else {
+                normalize_p_input_recursive(receipts, continuation, input, _env, parser)
+            }
+        }
+"#,
+        to: r#"        } => normalize_p_input_recursive(receipts, continuation, input, _env, parser),
+"#,
+        reason: "UNSIGNED-ONLY DOMAIN, the dispatch. The cited `ForComprehension` arm calls the \
+                 deleted signed-join recognizer. Every `for` now lowers through \
+                 `normalize_p_input_recursive`, and the entry precondition above rejects a \
+                 signed bind first.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_input_normalizer.rs",
+        from: r#"                // Cost-accounted per-clause signed bind `{% y <- x %}[s]` (W1). The
+                // Phase-4 signed-JOIN dispatch (`normalize.rs` ForComprehension arm
+                // → `recognize_signed_join_recursive` → `strip_signed_binds`) demotes EVERY
+                // `Bind::Signed` to its linear bind BEFORE `normalize_p_input_recursive` sees
+                // it, so this arm is unreachable in normal operation (the
+                // `debug_assert` catches a dispatch regression). The release
+                // fallback treats it as its underlying LINEAR bind — identical
+                // receive shape / COMM count to the unsigned form, metered to the
+                // deploy envelope — so a dispatch bug degrades gracefully rather
+                // than miscompiling.
+                Bind::Signed { lhs, rhs, .. } => {
+                    debug_assert!(
+                        false,
+                        "Bind::Signed must be stripped by recognize_signed_join_recursive before \
+                         normalize_p_input_recursive (W1 Phase 4 dispatch)"
+                    );
+                    let names: Vec<_> = lhs.names.iter().collect();
+                    let remainder = &lhs.remainder;
+
+                    let source_name = match rhs {
+                        Source::Simple { name } => name,
+                        _ => {
+                            return Err(InterpreterError::ParserError(
+                                "Only simple sources supported in current implementation"
+                                    .to_string(),
+                            ))
+                        }
+                    };
+
+                    Ok(((names, remainder), source_name))
+                }
+"#,
+        to: r#"                Bind::Signed { .. } => unreachable!(
+                    "unsigned-only recursive oracle precondition rejects signed receive binds"
+                ),
+"#,
+        reason: "UNSIGNED-ONLY DOMAIN, the bind arm. The entry precondition in `normalize.rs` \
+                 makes this arm unreachable. The cited linear fallback drops the clause \
+                 signature, so the oracle must not run it.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_input_normalizer.rs",
+        from: r#"            // A cost-accounted signed bind is the linear-receive form (non-
+            // persistent, non-peek); the signature decorates, it does not change
+            // the COMM shape (W1, recognition-only in Phase 1).
+            Bind::Signed { .. } => (false, false),
+"#,
+        to: r#"            Bind::Signed { .. } => unreachable!(
+                "unsigned-only recursive oracle precondition rejects signed receive binds"
+            ),
+"#,
+        reason: "UNSIGNED-ONLY DOMAIN, the receive-mode arm. It is unreachable for the same \
+                 reason as the bind arm above.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_input_normalizer.rs",
+        from: r#"                .map(|((a, b, c, _), e)| (a, b, e, c))
+"#,
+        to: r#"                .map(|((a, b, c, _), e)| (a, b, e, c, None))
+"#,
+        reason: "COMPILE-FORCED by feature/cost-accounted-rho d367bc11a. The shared leaf \
+                 `pre_sort_binds` now takes a fifth tuple element, the clause \
+                 `Option<CostSignature>`. An unsigned bind passes `None`, which is the value \
+                 production passes for an unsigned bind, and `None` adds no protobuf bytes.",
+    },
+    Deviation {
+        path: "normalizer/cost_accounting/recognize.rs",
+        from: r#"
+
+/// `for(... {% y <- x %}[s] ...)`: a JOIN carrying one or more per-clause SIGNED
+/// binds (W1 Phase 4 / Axis-C). Recover the natural-arity plain join (Greg's rule:
+/// fuel is NEVER folded into the data join — [`desugar::strip_signed_binds`]),
+/// VALIDATE each clause signature, then lower the plain join through the ORDINARY
+/// dispatch. Per-clause lane attribution is the reducer's channel match (Phase 3);
+/// the continuation is NOT re-signed (one token per clause). Emits NO gate node, so
+/// the normalized `Par` of a signed join is the SAME as its unsigned-equivalent
+/// `for` (the double-metering avoidance, extended to joins).
+fn recognize_signed_join_recursive<'ast>(
+    receipts: &'ast Receipts<'ast>,
+    body: AnnProc<'ast>,
+    span: SourceSpan,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    // Strip every `Bind::Signed` back to its linear bind and collect the clause
+    // signatures (source order). The recovered `for` is the natural-arity data
+    // join — no fuel bind enters its `ReceiveBind` set.
+    let (plain_for, clause_sigs) = desugar::strip_signed_binds(receipts, body, span, parser);
+    debug_assert!(
+        !clause_sigs.is_empty(),
+        "recognize_signed_join_recursive is dispatched only when a Bind::Signed is present"
+    );
+    // VALIDATE each clause signature (rejects a wildcard `_`, a quoted-principal
+    // `@P` ground sig, or a bare lollipop in fundable position) — the same
+    // recognition `signature_to_native_sig_recursive` applies to a `{% P %}[s]` term. Phase
+    // 3's channel match attributes each clause's rendezvous COMM to its signer lane
+    // at the reducer; here recognition only validates + recovers the plain join.
+    for sig in &clause_sigs {
+        signature_to_native_sig_recursive(sig, &input.bound_map_chain, env, parser)?;
+    }
+    // Lower the recovered PLAIN join ordinarily: its binds are now linear, so it
+    // re-normalizes through `normalize_p_input_recursive` with NO signed-bind recursion.
+    normalize_ann_proc_recursive(&plain_for, input, env, parser)
+}"#,
+        to: "",
+        reason: "UNSIGNED-ONLY DOMAIN, the recognizer. Its body calls \
+                 `desugar::strip_signed_binds`, which feature/cost-accounted-rho d367bc11a \
+                 deleted. The `normalize.rs` entry precondition explains why the oracle does \
+                 not model a signed bind.",
     },
 ];
 
@@ -898,7 +1093,10 @@ const PP_NAMES: &[&str] = &[
 /// ★ Every difference between a cited block and its source, beyond
 /// [`pp_rename`], as DATA.
 ///
-/// **Twenty entries** across six functions. They fall into three groups, and
+/// **Twenty-two entries** across six functions (changed by the merge of
+/// feature/cost-accounted-rho, finding R1-47: the two sized-numeric entries at
+/// the end of GROUP 2b are new; the old text said "Twenty entries"). They fall
+/// into three groups, and
 /// keeping them in a table rather than as prose is what stops a seventh from
 /// appearing unannounced: [`no_undeclared_pretty_printer_deviations`] fails when
 /// an entry stops being needed, so the list cannot rot into a licence for drift
@@ -1005,6 +1203,49 @@ const PP_DEVIATIONS: &[Deviation] = &[
                  or key/value pairs, and returns the same element string consumed \
                  by the untouched pre-conversion remainder/bracketing logic. \
                  Appears twice — EPathmapBody and EZipperBody.",
+    },
+    // Added by the merge of feature/cost-accounted-rho (finding R1-47): the
+    // sized-integer and f32 arms that the exhaustive match must name. The merge
+    // commits e5102e945 (GFloat32) and aed9f4427 (sized integers) added these
+    // arms to the oracle and declared neither.
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: r#"                ExprInstance::GInt(i) => Ok(i.to_string()),
+"#,
+        to: r#"                ExprInstance::GInt(i) => Ok(i.to_string()),
+                ExprInstance::GUint64(i) => Ok(format!("{i}u64")),
+                ExprInstance::GInt32(i) => Ok(format!("{i}i32")),
+                ExprInstance::GUint32(i) => Ok(format!("{i}u32")),
+                ExprInstance::GUint16(i) => Ok(format!("{i}u16")),
+                ExprInstance::GUint8(i) => Ok(format!("{i}u8")),
+"#,
+        reason: "TYPE CHANGE in a dependency, which the compiler forced. dev added the sized \
+                 integer variants `GUint64`, `GInt32`, `GUint32`, `GUint16` and `GUint8` to \
+                 `ExprInstance` (e89088ee7 and 5056bfbde, dev PR #458, which entered this \
+                 branch at aed9f4427). The copied match has no wildcard arm, so it must name \
+                 each variant to compile. Each arm prints the value with its type suffix, which \
+                 is the byte form of the driver's `inline_expr` arm and of the dev printer.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: r#"                ExprInstance::GBigInt(bytes) => {
+"#,
+        to: r#"                ExprInstance::GFloat32(bits) => {
+                    let f = f32::from_bits(*bits);
+                    if f == f.floor() && f.is_finite() {
+                        Ok(format!("{:.1}f32", f))
+                    } else {
+                        Ok(format!("{}f32", f))
+                    }
+                }
+                ExprInstance::GBigInt(bytes) => {
+"#,
+        reason: "TYPE CHANGE in a dependency, which the compiler forced. dev added \
+                 `ExprInstance::GFloat32` (57d35ea99, dev PR #457, which entered this branch at \
+                 e5102e945). The copied match has no wildcard arm, so it must name the variant \
+                 to compile. The arm is the `GDouble` arm at f32 width with the `f32` suffix, \
+                 which is the byte form of the driver's `inline_expr` arm and of the dev \
+                 printer.",
     },
     // ── GROUP 3: the SEMANTIC deviations, each marked at its own site ─────
     //

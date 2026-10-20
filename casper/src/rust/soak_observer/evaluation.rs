@@ -510,6 +510,10 @@ fn work_report(
     }
 }
 
+// Added by the merge of feature/cost-accounted-rho (clippy gate): the new
+// clippy also applies `result_large_err` to async functions. The error
+// type `AuthorityFailure` is the same on both sides of the merge.
+#[allow(clippy::result_large_err)]
 pub async fn evaluate(
     endpoint: &CaptureEndpoint,
     binding: &ObserverBinding,

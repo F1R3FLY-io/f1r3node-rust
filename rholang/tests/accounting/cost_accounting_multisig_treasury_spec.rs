@@ -25,7 +25,11 @@ use models::rhoapi::{Expr, Par};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+// runtime below selects the CostV1 epoch.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rholang::rust::interpreter::test_utils::resources::create_runtimes_for_epoch;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -34,7 +38,13 @@ const TREASURY: &str = include_str!("../../../examples/multi_sig_treasury.rho");
 async fn fresh_runtime() -> RhoRuntimeImpl {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.expect("in-memory rspace stores");
-    let (runtime, _replay, _hist) = create_runtimes(store, false, &mut Vec::new()).await;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): this
+    // upstream test models protocol 6 (cost-accounted Rho), which F1R3Lang runs
+    // in the CostV1 epoch. A Legacy runtime opens no COMM accounting scope and
+    // refuses cost-bearing event legs.
+    // let (runtime, _replay, _hist) = create_runtimes(store, false, &mut Vec::new()).await;
+    let (runtime, _replay, _hist) =
+        create_runtimes_for_epoch(EventCodecEpoch::CostV1, store, false, &mut Vec::new()).await;
     runtime
 }
 

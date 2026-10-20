@@ -34,14 +34,23 @@ fn transfer_unforgeable_channel() -> models::rhoapi::Par {
         rng.next();
     }
     let unforgeable_bytes = rng.next();
-    models::rhoapi::Par {
-        unforgeables: vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: unforgeable_bytes.into_iter().map(|b| b as u8).collect(),
-            })),
-        }],
-        ..Default::default()
-    }
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-33): F1R3Lang
+    // gives `Par` an iterative `Drop`, so a struct-update literal cannot move the
+    // other fields out of `Default::default()` (E0509). The builder makes the
+    // same `Par`. The old literal was:
+    // models::rhoapi::Par {
+    //     unforgeables: vec![GUnforgeable {
+    //         unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+    //             id: unforgeable_bytes.into_iter().map(|b| b as u8).collect(),
+    //         })),
+    //     }],
+    //     ..Default::default()
+    // }
+    models::rhoapi::Par::default().with_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+            id: unforgeable_bytes.into_iter().map(|b| b as u8).collect(),
+        })),
+    }])
 }
 
 /// Build the per-batch `SingleReport` list (mirroring

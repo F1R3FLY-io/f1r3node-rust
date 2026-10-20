@@ -96,21 +96,11 @@ use models::rhoapi::{
     ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::canonical_path::decode_trie_path;
-use models::rust::par_map::ParMap;
-use models::rust::par_map_type_mapper::ParMapTypeMapper;
-use models::rust::par_set::ParSet;
-use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntries, OwnedEPathMapEntry};
-use models::rust::rholang::sorter::cost_accounting_sorter::{
-    sort_signature, sort_signature_metered,
-};
-use models::rust::rholang::sorter::metered::{SortDepthGuard, SorterMeter};
+use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
-use models::rust::sorted_par_hash_set::SortedParHashSet;
-use models::rust::sorted_par_map::SortedParMap;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::clone_backing::{self as clone_backing, BackingError, BackingMeter};
 
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -120,12 +110,6 @@ use super::substitute_combine::{
     missing_required_field, rebuild_bundle, rebuild_connective, rebuild_expr_instance, rebuild_if,
     rebuild_match, rebuild_match_case, rebuild_new, rebuild_par, rebuild_receive,
     rebuild_receive_bind, rebuild_send, set_bits_until, split_expr_instance, ConnArm, ExprArm,
-};
-use super::substitute_metered_combine::{
-    concat_metered, prepend_connective_metered, prepend_expr_metered, rebuild_par_metered,
-    reserve_collection_layout, reserve_entries, reserve_expr_entry, reserve_many,
-    reserve_missing_required, reserve_par_frame, reserve_pathmap_decode, reserve_pathmap_insert,
-    set_bits_until_metered, NativeOwnedMeter,
 };
 
 // ===========================================================================
@@ -190,77 +174,6 @@ impl<'e> EnvView<'e> {
             .get(&((self.root.level + self.shift(ctx)) - k - 1))
             .cloned()
     }
-
-    fn get_signature_metered(
-        &self,
-        ctx: SubCtx,
-        index: i32,
-        meter: &SorterMeter<'_>,
-    ) -> Result<Option<Par>, InterpreterError> {
-        let position = self
-            .root
-            .level
-            .checked_add(self.shift(ctx))
-            .and_then(|level| level.checked_sub(index))
-            .and_then(|level| level.checked_sub(1));
-        let Some(position) = position else {
-            return Ok(None);
-        };
-        let probes = self.root.env_map.capacity().max(1);
-        let scanned = probes
-            .checked_mul(std::mem::size_of::<i32>())
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        meter.reserve(probes, scanned, 0).map_err(host_rejected)?;
-        let Some(name) = self.root.env_map.get(&position) else {
-            return Ok(None);
-        };
-        meter.inspect(name).map_err(host_rejected)?;
-        meter
-            .reserve(
-                probes
-                    .checked_add(3)
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-                scanned,
-                0,
-            )
-            .map_err(host_rejected)?;
-        clone_backing::reserve_copy_and_cleanup(name, meter).map_err(host_rejected)?;
-        Ok(Some(name.clone()))
-    }
-
-    fn reserve_native_lookup(
-        &self,
-        ctx: SubCtx,
-        index: i32,
-        meter: &SorterMeter<'_>,
-    ) -> Result<(), InterpreterError> {
-        let position = self
-            .root
-            .level
-            .checked_add(self.shift(ctx))
-            .and_then(|level| level.checked_sub(index))
-            .and_then(|level| level.checked_sub(1));
-        let Some(position) = position else {
-            return Ok(());
-        };
-        let probes = self.root.env_map.capacity().max(1);
-        let scanned = probes
-            .checked_mul(std::mem::size_of::<i32>())
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        meter
-            .reserve(
-                probes
-                    .checked_add(3)
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-                scanned,
-                0,
-            )
-            .map_err(host_rejected)?;
-        if let Some(value) = self.root.env_map.get(&position) {
-            clone_backing::reserve_copy_and_cleanup(value, meter).map_err(host_rejected)?;
-        }
-        Ok(())
-    }
 }
 
 // ===========================================================================
@@ -290,10 +203,6 @@ pub(crate) enum SubWork {
     /// `unwrap_option_safe::<Par>` error the recursive form raises, at the
     /// identical point in the traversal.
     Par(Option<Par>, SubCtx),
-    /// Expression operands use `unwrap_option_safe` rather than the native
-    /// process helper's metered `required`; a missing slot has no cleanup
-    /// reservation on the source metered path.
-    ParExpr(Option<Par>, SubCtx),
     Expr(Expr, SubCtx),
     Send(Send, SubCtx),
     Receive(Receive, SubCtx),
@@ -306,23 +215,6 @@ pub(crate) enum SubWork {
     Signature(Option<CostSignature>, SubCtx),
     Signed(CostSignedTerm, SubCtx),
     Stack(CostStack, SubCtx),
-    /// Source `collect_metered` reservation at the exact pre-order boundary
-    /// between two field groups. It is a no-op in the unmetered driver.
-    MeterCollect {
-        count: usize,
-        element_size: usize,
-    },
-    MeterMany {
-        count: usize,
-        element_size: usize,
-    },
-    MeterEntries {
-        count: usize,
-    },
-    MeterShiftEnv {
-        ctx: SubCtx,
-        amount: i32,
-    },
     /// Incremental EPathMap substitution. The owned cursor and rebuilt trie
     /// remain compressed between entries; only the current key/value becomes
     /// ordinary `Par` work.
@@ -368,7 +260,6 @@ pub(crate) enum SubKont {
     PathMapSetK(Box<PathMapSubstitution>),
     PathMapMapK(Box<PathMapSubstitution>),
     ParK {
-        meter_depth: Option<SortDepthGuard>,
         unforgeables: Vec<GUnforgeable>,
         locally_free: Vec<u8>,
         connective_used: bool,
@@ -432,12 +323,9 @@ pub(crate) enum SubKont {
     },
     SignatureParK {
         quote: bool,
-        meter_depth: Option<SortDepthGuard>,
     },
     SignatureCompoundK {
         n: usize,
-        prepared: Option<Vec<CostSignature>>,
-        meter_depth: Option<SortDepthGuard>,
     },
     SignedK,
     StackK {
@@ -588,46 +476,11 @@ impl Substitute {
     /// `work`.
     ///
     /// A `?` abort discards `work` and `vals` — identical to the recursive
-    /// form's `?`, which discards its pending frames. The ordinary substitution
-    /// lane remains neutral (audit §8.2); the native signature lane reserves
-    /// host work at explicit pre/post-order events. Held `SortDepthGuard`s in
-    /// continuations reproduce the source meter's bounded-depth policy without
-    /// recursive calls or a separate metered traversal.
     pub(crate) fn sub_drive(
         &self,
         root: SubWork,
         env: &Env<Par>,
     ) -> Result<SubVal, InterpreterError> {
-        self.sub_drive_with_backing(root, env, None)
-    }
-
-    pub(crate) fn sub_drive_with_backing(
-        &self,
-        root: SubWork,
-        env: &Env<Par>,
-        backing: Option<&dyn BackingMeter>,
-    ) -> Result<SubVal, InterpreterError> {
-        let cleanup = |operations: usize, scanned: usize, bytes: usize| {
-            backing
-                .expect("metered worklist has a backing meter")
-                .reserve(
-                    operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                    scanned,
-                    bytes,
-                )
-        };
-        let meter = backing.map(|_| SorterMeter::new(&cleanup));
-        let par_cleanup = |operations: usize, scanned: usize, bytes: usize| {
-            meter
-                .as_ref()
-                .expect("metered Par has a signature meter")
-                .reserve(
-                    operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                    scanned,
-                    bytes,
-                )
-        };
-        let par_meter = meter.as_ref().map(|_| SorterMeter::new(&par_cleanup));
         let view = EnvView::new(env);
         let mut work: Vec<SubWork> = Vec::with_capacity(64);
         let mut vals: Vec<SubVal> = Vec::with_capacity(64);
@@ -639,23 +492,13 @@ impl Substitute {
                     let term = match slot {
                         Some(p) => p,
                         None => {
-                            if let Some(meter) = meter.as_ref() {
-                                reserve_missing_required::<Par>(meter)?;
-                            }
                             return Err(missing_required_field::<Par>());
                         }
                     };
-                    let meter_depth = par_meter.as_ref().map(reserve_par_frame).transpose()?;
-                    descend_par(term, ctx, view, &mut work, meter_depth);
+                    descend_par(term, ctx, view, &mut work);
                 }
-                SubWork::ParExpr(slot, ctx) => {
-                    let term = slot.ok_or_else(missing_required_field::<Par>)?;
-                    let meter_depth = par_meter.as_ref().map(reserve_par_frame).transpose()?;
-                    descend_par(term, ctx, view, &mut work, meter_depth);
-                }
-                SubWork::Expr(term, ctx) => {
-                    descend_expr(term, ctx, view, &mut work, meter.as_ref())?
-                }
+
+                SubWork::Expr(term, ctx) => descend_expr(term, ctx, view, &mut work)?,
                 SubWork::Send(term, ctx) => descend_send(term, ctx, view, &mut work),
                 SubWork::Receive(term, ctx) => descend_receive(term, ctx, view, &mut work),
                 SubWork::New(term, ctx) => descend_new(term, ctx, view, &mut work),
@@ -668,9 +511,6 @@ impl Substitute {
                     match term {
                         Some(signature) => signature,
                         None => {
-                            if let Some(meter) = meter.as_ref() {
-                                reserve_missing_required::<CostSignature>(meter)?;
-                            }
                             return Err(missing_required_field::<CostSignature>());
                         }
                     },
@@ -678,50 +518,17 @@ impl Substitute {
                     view,
                     &mut work,
                     &mut vals,
-                    meter.as_ref(),
                 )?,
                 SubWork::Signed(term, ctx) => descend_signed(term, ctx, &mut work),
                 SubWork::Stack(term, ctx) => descend_stack(term, ctx, &mut work),
-                SubWork::MeterCollect {
-                    count,
-                    element_size,
-                } => {
-                    if let Some(meter) = meter.as_ref() {
-                        reserve_collection_layout(count, element_size, meter)?;
-                    }
-                }
-                SubWork::MeterMany {
-                    count,
-                    element_size,
-                } => {
-                    if let Some(meter) = meter.as_ref() {
-                        reserve_many(count, element_size, meter)?;
-                    }
-                }
-                SubWork::MeterEntries { count } => {
-                    if let Some(meter) = meter.as_ref() {
-                        reserve_entries(count, meter)?;
-                    }
-                }
-                SubWork::MeterShiftEnv { ctx, amount } => {
-                    if let Some(meter) = meter.as_ref() {
-                        view.shift(ctx)
-                            .checked_add(amount)
-                            .ok_or(InterpreterError::HostWorkRejected)?;
-                        clone_backing::reserve_copy_and_cleanup(&env.env_map, meter)
-                            .map_err(host_rejected)?;
-                    }
-                }
-                SubWork::PathMap(state) => {
-                    step_pathmap(state, &mut work, &mut vals, meter.as_ref())?
-                }
+                SubWork::PathMap(state) => step_pathmap(state, &mut work, &mut vals)?,
                 SubWork::SubExp { rest, acc, ctx } => {
-                    step_sub_exp(rest, acc, ctx, view, &mut work, &mut vals, meter.as_ref())?
+                    step_sub_exp(rest, acc, ctx, view, &mut work, &mut vals)?
                 }
                 SubWork::SubConn { rest, acc, ctx } => {
-                    step_sub_conn(rest, acc, ctx, view, &mut work, &mut vals, meter.as_ref())?
+                    step_sub_conn(rest, acc, ctx, view, &mut work, &mut vals)?
                 }
-                SubWork::Combine(k) => combine(k, view, &mut work, &mut vals, meter.as_ref())?,
+                SubWork::Combine(k) => combine(k, view, &mut work, &mut vals)?,
             }
         }
 
@@ -737,13 +544,7 @@ impl Substitute {
 // is what makes an early `?` return the identical error.
 // ---------------------------------------------------------------------------
 
-fn descend_par(
-    term: Par,
-    ctx: SubCtx,
-    view: EnvView<'_>,
-    work: &mut Vec<SubWork>,
-    meter_depth: Option<SortDepthGuard>,
-) {
+fn descend_par(term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
     // Detach every owned field in O(1) before the generated iterative Par
     // destructor runs. Keep the source field order in the worklist below.
     let models::rust::rholang::par_children::ParOwnedParts {
@@ -771,7 +572,6 @@ fn descend_par(
     let n_stacks = cost_stacks.len();
 
     work.push(SubWork::Combine(SubKont::ParK {
-        meter_depth,
         unforgeables,
         locally_free,
         connective_used,
@@ -790,45 +590,20 @@ fn descend_par(
     // matches, conditionals, signed terms, stacks — source `Par`'s
     // statement order, which decides which `?` fires first.
     push_reversed(work, cost_stacks, |s| SubWork::Stack(s, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_stacks,
-        element_size: std::mem::size_of::<CostStack>(),
-    });
+
     push_reversed(work, cost_signed_terms, |s| SubWork::Signed(s, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_signed,
-        element_size: std::mem::size_of::<CostSignedTerm>(),
-    });
+
     push_reversed(work, conditionals, |i| SubWork::If(i, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_conditionals,
-        element_size: std::mem::size_of::<If>(),
-    });
+
     push_reversed(work, matches, |m| SubWork::Match(m, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_matches,
-        element_size: std::mem::size_of::<Match>(),
-    });
+
     push_reversed(work, news, |n| SubWork::New(n, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_news,
-        element_size: std::mem::size_of::<New>(),
-    });
+
     push_reversed(work, receives, |r| SubWork::Receive(r, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_receives,
-        element_size: std::mem::size_of::<Receive>(),
-    });
+
     push_reversed(work, bundles, |b| SubWork::Bundle(b, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_bundles,
-        element_size: std::mem::size_of::<Bundle>(),
-    });
+
     push_reversed(work, sends, |s| SubWork::Send(s, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_sends,
-        element_size: std::mem::size_of::<Send>(),
-    });
 
     let mut conn_rest = connectives;
     conn_rest.reverse();
@@ -853,88 +628,43 @@ fn descend_signature(
     view: EnvView<'_>,
     work: &mut Vec<SubWork>,
     vals: &mut Vec<SubVal>,
-    meter: Option<&SorterMeter<'_>>,
 ) -> Result<(), InterpreterError> {
-    let meter_depth = meter
-        .map(|meter| {
-            let guard = meter.enter().map_err(host_rejected)?;
-            meter
-                .reserve(1, std::mem::size_of::<CostSignature>(), 0)
-                .map_err(host_rejected)?;
-            Ok::<_, InterpreterError>(guard)
-        })
-        .transpose()?;
     let value = term.value.take().ok_or_else(|| {
         InterpreterError::UndefinedRequiredProtobufFieldError("CostSignature.value".to_string())
     })?;
     match value {
         CostSignatureValue::Quote(par) => {
-            work.push(SubWork::Combine(SubKont::SignatureParK {
-                quote: true,
-                meter_depth,
-            }));
+            work.push(SubWork::Combine(SubKont::SignatureParK { quote: true }));
             work.push(SubWork::Par(Some(par), ctx));
         }
         CostSignatureValue::Name(par) => {
-            work.push(SubWork::Combine(SubKont::SignatureParK {
-                quote: false,
-                meter_depth,
-            }));
+            work.push(SubWork::Combine(SubKont::SignatureParK { quote: false }));
             work.push(SubWork::Par(Some(par), ctx));
         }
         CostSignatureValue::Compound(compound) => {
-            let prepared = meter
-                .map(|meter| meter.vec::<CostSignature>(compound.elements.len()))
-                .transpose()
-                .map_err(host_rejected)?;
             work.push(SubWork::Combine(SubKont::SignatureCompoundK {
                 n: compound.elements.len(),
-                prepared,
-                meter_depth,
             }));
             push_reversed(work, compound.elements, |child| {
                 SubWork::Signature(Some(child), ctx)
             });
         }
         CostSignatureValue::BoundLevel(index) if ctx.depth == 0 => {
-            let replacement = match meter {
-                Some(meter) => view.get_signature_metered(ctx, index, meter)?,
-                None => view.get(ctx, index),
-            };
+            let replacement = view.get(ctx, index);
             let value = match replacement {
-                Some(name) => CostSignatureValue::Name(match meter {
-                    Some(meter) => {
-                        ParSortMatcher::sort_match_metered(&name, meter)
-                            .map_err(host_rejected)?
-                            .term
-                    }
-                    None => ParSortMatcher::sort_match(&name).term,
-                }),
+                Some(name) => CostSignatureValue::Name(ParSortMatcher::sort_match(&name).term),
                 None => CostSignatureValue::BoundLevel(index),
             };
-            vals.push(SubVal::Signature(finish_signature(value, meter)?));
+            vals.push(SubVal::Signature(finish_signature(value)?));
         }
-        value => vals.push(SubVal::Signature(finish_signature(value, meter)?)),
+        value => vals.push(SubVal::Signature(finish_signature(value)?)),
     }
     Ok(())
 }
 
-fn host_rejected(_: BackingError) -> InterpreterError { InterpreterError::HostWorkRejected }
-
-fn finish_signature(
-    value: CostSignatureValue,
-    meter: Option<&SorterMeter<'_>>,
-) -> Result<CostSignature, InterpreterError> {
+fn finish_signature(value: CostSignatureValue) -> Result<CostSignature, InterpreterError> {
     let signature = CostSignature { value: Some(value) };
-    match meter {
-        Some(meter) => {
-            meter.inspect(&signature).map_err(host_rejected)?;
-            Ok(sort_signature_metered(&signature, meter)
-                .map_err(host_rejected)?
-                .term)
-        }
-        None => Ok(sort_signature(&signature).term),
-    }
+    Ok(sort_signature(&signature).term)
 }
 
 fn descend_signed(term: CostSignedTerm, ctx: SubCtx, work: &mut Vec<SubWork>) {
@@ -948,12 +678,11 @@ fn descend_stack(mut term: CostStack, ctx: SubCtx, work: &mut Vec<SubWork>) {
         n: term.cells.len(),
         n_branches: term.parallel_tail.len(),
     }));
-    let count = term.cells.len();
-    push_reversed(work, std::mem::take(&mut term.cells), |cell| SubWork::Signature(Some(cell), ctx));
-    push_reversed(work, std::mem::take(&mut term.parallel_tail), |branch| SubWork::Stack(branch, ctx));
-    work.push(SubWork::MeterCollect {
-        count,
-        element_size: std::mem::size_of::<CostSignature>(),
+    push_reversed(work, std::mem::take(&mut term.cells), |cell| {
+        SubWork::Signature(Some(cell), ctx)
+    });
+    push_reversed(work, std::mem::take(&mut term.parallel_tail), |branch| {
+        SubWork::Stack(branch, ctx)
     });
 }
 
@@ -962,18 +691,11 @@ fn descend_expr(
     ctx: SubCtx,
     view: EnvView<'_>,
     work: &mut Vec<SubWork>,
-    meter: Option<&SorterMeter<'_>>,
 ) -> Result<(), InterpreterError> {
-    if let Some(meter) = meter {
-        reserve_expr_entry(&term, meter)?;
-    }
     let instance = super::unwrap_option_safe(term.expr_instance)?;
     if let ExprInstance::EPathmapBody(pathmap) = instance {
         let parts = pathmap.into_owned_parts();
-        let locally_free = match meter {
-            Some(meter) => set_bits_until_metered(parts.locally_free, view.shift(ctx), meter)?,
-            None => set_bits_until(parts.locally_free, view.shift(ctx)),
-        };
+        let locally_free = set_bits_until(parts.locally_free, view.shift(ctx));
         let result = EPathMap::new(
             EntryTrie::default(),
             locally_free,
@@ -987,40 +709,7 @@ fn descend_expr(
         })));
         return Ok(());
     }
-    let (arm, children) = match (instance, meter) {
-        (ExprInstance::ESetBody(eset), Some(meter)) => {
-            let owned = NativeOwnedMeter(meter);
-            let par_set =
-                ParSetTypeMapper::eset_to_par_set_metered(eset, &owned).map_err(host_rejected)?;
-            (
-                ExprArm::ESet {
-                    connective_used: par_set.connective_used,
-                    locally_free: par_set.locally_free,
-                    remainder: par_set.remainder,
-                },
-                par_set.ps.sorted_pars.into_iter().map(Some).collect(),
-            )
-        }
-        (ExprInstance::EMapBody(emap), Some(meter)) => {
-            let owned = NativeOwnedMeter(meter);
-            let par_map =
-                ParMapTypeMapper::emap_to_par_map_metered(emap, &owned).map_err(host_rejected)?;
-            let mut children = Vec::with_capacity(par_map.ps.sorted_list.len() * 2);
-            for (key, value) in par_map.ps.sorted_list {
-                children.push(Some(key));
-                children.push(Some(value));
-            }
-            (
-                ExprArm::EMap {
-                    connective_used: par_map.connective_used,
-                    locally_free: par_map.locally_free,
-                    remainder: par_map.remainder,
-                },
-                children,
-            )
-        }
-        (other, _) => split_expr_instance(other),
-    };
+    let (arm, children) = split_expr_instance(instance);
 
     // `unwrap_option_safe` fires per operand, interleaved with the descent — p1
     // is checked, substituted, THEN p2 is checked. The child list keeps absent
@@ -1030,10 +719,6 @@ fn descend_expr(
     // Pattern slots are visited at `depth + 1` (`EMatches::pattern` today).
     // Read before `arm` is moved into the continuation.
     let pattern_slots = expr_arm_pattern_slots(&arm);
-    let list_like = matches!(&arm, ExprArm::EList { .. } | ExprArm::ETuple { .. });
-    let method = matches!(&arm, ExprArm::EMethod { .. });
-    let set_like = matches!(&arm, ExprArm::ESet { .. });
-    let map_like = matches!(&arm, ExprArm::EMap { .. });
     work.push(SubWork::Combine(SubKont::ExprArmK {
         arm,
         n,
@@ -1042,26 +727,11 @@ fn descend_expr(
     // Reversed, so the slots pop in `split_expr_instance` order; the index is
     // the slot's ORIGINAL position, which is what `pattern_slots` names.
     for (slot, child) in children.into_iter().enumerate().rev() {
-        if method && slot == 0 {
-            work.push(SubWork::MeterMany {
-                count: n.saturating_sub(1),
-                element_size: std::mem::size_of::<Par>(),
-            });
-        }
         let slot_ctx = match pattern_slots.contains(&slot) {
             true => ctx.deeper(),
             false => ctx,
         };
-        work.push(SubWork::ParExpr(child, slot_ctx));
-    }
-    if list_like || set_like {
-        work.push(SubWork::MeterMany {
-            count: n,
-            element_size: std::mem::size_of::<Par>(),
-        });
-    }
-    if map_like {
-        work.push(SubWork::MeterEntries { count: n / 2 });
+        work.push(SubWork::Par(child, slot_ctx));
     }
     Ok(())
 }
@@ -1070,13 +740,9 @@ fn step_pathmap(
     mut state: Box<PathMapSubstitution>,
     work: &mut Vec<SubWork>,
     vals: &mut Vec<SubVal>,
-    meter: Option<&SorterMeter<'_>>,
 ) -> Result<(), InterpreterError> {
     match state.entries.next() {
         Some(OwnedEPathMapEntry::Set(key)) => {
-            if let Some(meter) = meter {
-                reserve_pathmap_decode(key.len(), meter)?;
-            }
             let entry =
                 decode_trie_path(&key).expect("set-mode EPathMap keys are canonical Par paths");
             let ctx = state.ctx;
@@ -1084,9 +750,6 @@ fn step_pathmap(
             work.push(SubWork::Par(Some(entry), ctx));
         }
         Some(OwnedEPathMapEntry::Map { key, value }) => {
-            if let Some(meter) = meter {
-                reserve_pathmap_decode(key.len(), meter)?;
-            }
             let entry_key =
                 decode_trie_path(&key).expect("map-mode EPathMap keys are canonical Par paths");
             let ctx = state.ctx;
@@ -1119,10 +782,7 @@ fn descend_send(term: Send, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWo
         shift: view.shift(ctx),
     }));
     push_reversed(work, data, |p| SubWork::Par(Some(p), ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_data,
-        element_size: std::mem::size_of::<Par>(),
-    });
+
     work.push(SubWork::Par(chan, ctx));
 }
 
@@ -1148,10 +808,7 @@ fn descend_bind(term: ReceiveBind, ctx: SubCtx, work: &mut Vec<SubWork>) {
     }
     let deeper = ctx.deeper();
     push_reversed(work, patterns, move |p| SubWork::Par(Some(p), deeper));
-    work.push(SubWork::MeterCollect {
-        count: n_patterns,
-        element_size: std::mem::size_of::<Par>(),
-    });
+
     work.push(SubWork::Par(source, ctx));
 }
 
@@ -1185,15 +842,8 @@ fn descend_receive(term: Receive, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec
         work.push(SubWork::Par(Some(c), shifted));
     }
     work.push(SubWork::Par(body, shifted));
-    work.push(SubWork::MeterShiftEnv {
-        ctx,
-        amount: bind_count,
-    });
+
     push_reversed(work, binds, |b| SubWork::Bind(b, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_binds,
-        element_size: std::mem::size_of::<ReceiveBind>(),
-    });
 }
 
 fn descend_new(term: New, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
@@ -1212,10 +862,6 @@ fn descend_new(term: New, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork
         shift: view.shift(ctx),
     }));
     work.push(SubWork::Par(p, ctx.shifted(bind_count)));
-    work.push(SubWork::MeterShiftEnv {
-        ctx,
-        amount: bind_count,
-    });
 }
 
 fn descend_case(term: MatchCase, ctx: SubCtx, _view: EnvView<'_>, work: &mut Vec<SubWork>) {
@@ -1238,10 +884,6 @@ fn descend_case(term: MatchCase, ctx: SubCtx, _view: EnvView<'_>, work: &mut Vec
     }
     work.push(SubWork::Par(pattern, ctx.deeper()));
     work.push(SubWork::Par(source, shifted));
-    work.push(SubWork::MeterShiftEnv {
-        ctx,
-        amount: free_count,
-    });
 }
 
 fn descend_match(term: Match, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
@@ -1265,10 +907,7 @@ fn descend_match(term: Match, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<Sub
         shift: view.shift(ctx),
     }));
     push_reversed(work, cases, |c| SubWork::Case(c, ctx));
-    work.push(SubWork::MeterCollect {
-        count: n_cases,
-        element_size: std::mem::size_of::<MatchCase>(),
-    });
+
     work.push(SubWork::Par(target, ctx));
 }
 
@@ -1310,7 +949,6 @@ fn step_sub_exp(
     view: EnvView<'_>,
     work: &mut Vec<SubWork>,
     vals: &mut Vec<SubVal>,
-    meter: Option<&SorterMeter<'_>>,
 ) -> Result<(), InterpreterError> {
     let Some(expr) = rest.pop() else {
         vals.push(SubVal::Par(acc));
@@ -1325,48 +963,14 @@ fn step_sub_exp(
             Err(missing_required_field::<ExprInstance>())
         }
         Some(ExprInstance::EVarBody(e)) => {
-            if let Some(meter) = meter {
-                clone_backing::reserve_copy_and_cleanup(&e.v, meter).map_err(host_rejected)?;
-                let var = match e.v.as_ref() {
-                    Some(var) => var,
-                    None => {
-                        reserve_missing_required::<Var>(meter)?;
-                        return Err(missing_required_field::<Var>());
-                    }
-                };
-                if ctx.depth == 0 {
-                    clone_backing::reserve_copy_and_cleanup(&var.var_instance, meter)
-                        .map_err(host_rejected)?;
-                    match var.var_instance.as_ref() {
-                        Some(VarInstance::BoundVar(index)) => {
-                            view.reserve_native_lookup(ctx, *index, meter)?;
-                        }
-                        Some(_) => {
-                            meter
-                                .reserve(2, std::mem::size_of::<Var>(), 256)
-                                .map_err(host_rejected)?;
-                        }
-                        None => {
-                            reserve_missing_required::<VarInstance>(meter)?;
-                            return Err(missing_required_field::<VarInstance>());
-                        }
-                    }
-                }
-            }
             let acc = match maybe_substitute_evar_view(e, ctx, view)? {
                 Either::Left(e) => {
                     let expr = Expr {
                         expr_instance: Some(ExprInstance::EVarBody(e)),
                     };
-                    match meter {
-                        Some(meter) => prepend_expr_metered(acc, expr, ctx.depth, meter)?,
-                        None => fold_prepend_expr(acc, expr, ctx.depth),
-                    }
+                    fold_prepend_expr(acc, expr, ctx.depth)
                 }
-                Either::Right(p) => match meter {
-                    Some(meter) => concat_metered(p, acc, meter)?,
-                    None => fold_concatenate_par(acc, p),
-                },
+                Either::Right(p) => fold_concatenate_par(acc, p),
             };
             work.push(SubWork::SubExp { rest, acc, ctx });
             Ok(())
@@ -1391,7 +995,6 @@ fn step_sub_conn(
     view: EnvView<'_>,
     work: &mut Vec<SubWork>,
     vals: &mut Vec<SubVal>,
-    meter: Option<&SorterMeter<'_>>,
 ) -> Result<(), InterpreterError> {
     let Some(conn) = rest.pop() else {
         vals.push(SubVal::Par(acc));
@@ -1406,11 +1009,6 @@ fn step_sub_conn(
 
     match instance {
         ConnectiveInstance::VarRefBody(v) => {
-            if v.depth == ctx.depth {
-                if let Some(meter) = meter {
-                    view.reserve_native_lookup(ctx, v.index, meter)?;
-                }
-            }
             let acc = match maybe_substitute_var_ref_view(v, ctx, view)? {
                 // `VarRef` is `Copy`, so rebuilding the connective from it is
                 // byte-identical to the original the recursive form prepends.
@@ -1418,17 +1016,9 @@ fn step_sub_conn(
                     let connective = Connective {
                         connective_instance: Some(ConnectiveInstance::VarRefBody(v)),
                     };
-                    match meter {
-                        Some(meter) => {
-                            prepend_connective_metered(acc, connective, ctx.depth, meter)?
-                        }
-                        None => fold_prepend_connective(acc, connective, ctx.depth),
-                    }
+                    fold_prepend_connective(acc, connective, ctx.depth)
                 }
-                Either::Right(new_par) => match meter {
-                    Some(meter) => concat_metered(new_par, acc, meter)?,
-                    None => fold_concatenate_par(acc, new_par),
-                },
+                Either::Right(new_par) => fold_concatenate_par(acc, new_par),
             };
             work.push(SubWork::SubConn { rest, acc, ctx });
         }
@@ -1464,10 +1054,7 @@ fn step_sub_conn(
             // `rebuild_connective` what its name says: the single place a
             // `Connective` is rebuilt from its arm, in both lanes.
             let connective = rebuild_connective(ConnArm::Ground(ground), Vec::new());
-            let acc = match meter {
-                Some(meter) => prepend_connective_metered(acc, connective, ctx.depth, meter)?,
-                None => fold_prepend_connective(acc, connective, ctx.depth),
-            };
+            let acc = fold_prepend_connective(acc, connective, ctx.depth);
             work.push(SubWork::SubConn { rest, acc, ctx });
         }
     }
@@ -1483,7 +1070,6 @@ fn push_conn_children(
     ctx: SubCtx,
 ) {
     let n = ps.len();
-    let collect = matches!(&arm, ConnArm::ConnAnd | ConnArm::ConnOr);
     work.push(SubWork::Combine(SubKont::SubConnResume {
         rest,
         acc,
@@ -1492,12 +1078,6 @@ fn push_conn_children(
         ctx,
     }));
     push_reversed(work, ps, |p| SubWork::Par(Some(p), ctx));
-    if collect {
-        work.push(SubWork::MeterCollect {
-            count: n,
-            element_size: std::mem::size_of::<Par>(),
-        });
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1509,15 +1089,11 @@ fn combine(
     _view: EnvView<'_>,
     work: &mut Vec<SubWork>,
     vals: &mut Vec<SubVal>,
-    meter: Option<&SorterMeter<'_>>,
 ) -> Result<(), InterpreterError> {
     match k {
         SubKont::SubExpResume { rest, acc, ctx } => {
             let e = pop_expr(vals);
-            let acc = match meter {
-                Some(meter) => prepend_expr_metered(acc, e, ctx.depth, meter)?,
-                None => fold_prepend_expr(acc, e, ctx.depth),
-            };
+            let acc = fold_prepend_expr(acc, e, ctx.depth);
             work.push(SubWork::SubExp { rest, acc, ctx });
         }
         SubKont::SubConnResume {
@@ -1529,90 +1105,19 @@ fn combine(
         } => {
             let children = pop_n_par(vals, n);
             let connective = rebuild_connective(arm, children);
-            let acc = match meter {
-                Some(meter) => prepend_connective_metered(acc, connective, ctx.depth, meter)?,
-                None => fold_prepend_connective(acc, connective, ctx.depth),
-            };
+            let acc = fold_prepend_connective(acc, connective, ctx.depth);
             work.push(SubWork::SubConn { rest, acc, ctx });
         }
         SubKont::ExprArmK { arm, n, shift } => {
             let children = pop_n_par(vals, n);
-            let instance = match (arm, meter) {
-                (
-                    ExprArm::ESet {
-                        connective_used,
-                        locally_free,
-                        remainder,
-                    },
-                    Some(meter),
-                ) => {
-                    let owned = NativeOwnedMeter(meter);
-                    let sorted = SortedParHashSet::create_from_vec_metered(children, &owned)
-                        .map_err(host_rejected)?;
-                    let locally_free = set_bits_until_metered(locally_free, shift, meter)?;
-                    ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset_prepaid(ParSet {
-                        ps: sorted,
-                        connective_used,
-                        locally_free,
-                        remainder,
-                    }))
-                }
-                (
-                    ExprArm::EMap {
-                        connective_used,
-                        locally_free,
-                        remainder,
-                    },
-                    Some(meter),
-                ) => {
-                    let mut entries = Vec::with_capacity(children.len() / 2);
-                    let mut children = children.into_iter();
-                    while let Some(key) = children.next() {
-                        entries.push((
-                            key,
-                            children.next().expect("EMap has paired key/value children"),
-                        ));
-                    }
-                    let owned = NativeOwnedMeter(meter);
-                    let sorted = SortedParMap::create_from_vec_metered(entries, &owned)
-                        .map_err(host_rejected)?;
-                    let locally_free = set_bits_until_metered(locally_free, shift, meter)?;
-                    ExprInstance::EMapBody(
-                        ParMapTypeMapper::par_map_to_emap_metered(
-                            ParMap {
-                                ps: sorted,
-                                connective_used,
-                                locally_free,
-                                remainder,
-                            },
-                            &owned,
-                        )
-                        .map_err(host_rejected)?,
-                    )
-                }
-                (arm, meter) => {
-                    if let Some(meter) = meter {
-                        match &arm {
-                            ExprArm::EList { locally_free, .. }
-                            | ExprArm::ETuple { locally_free, .. }
-                            | ExprArm::EMethod { locally_free, .. } => {
-                                let _ = set_bits_until_metered(locally_free.clone(), shift, meter)?;
-                            }
-                            _ => {}
-                        }
-                    }
-                    rebuild_expr_instance(arm, children, shift)
-                }
-            };
+            let instance = rebuild_expr_instance(arm, children, shift);
             vals.push(SubVal::Expr(Expr {
                 expr_instance: Some(instance),
             }));
         }
         SubKont::PathMapSetK(mut state) => {
             let entry = pop_par(vals);
-            if let Some(meter) = meter {
-                reserve_pathmap_insert(&entry, false, meter)?;
-            }
+
             state.result.insert_entry(entry);
             work.push(SubWork::PathMap(state));
         }
@@ -1620,9 +1125,7 @@ fn combine(
             let mut children = pop_n_par(vals, 2).into_iter();
             let key = children.next().expect("EPathMap map key result");
             let value = children.next().expect("EPathMap map value result");
-            if let Some(meter) = meter {
-                reserve_pathmap_insert(&key, true, meter)?;
-            }
+
             state
                 .result
                 .insert_map_entry(key, value)
@@ -1630,7 +1133,6 @@ fn combine(
             work.push(SubWork::PathMap(state));
         }
         SubKont::ParK {
-            meter_depth: _meter_depth,
             unforgeables,
             locally_free,
             connective_used,
@@ -1655,41 +1157,22 @@ fn combine(
             let sends = pop_n_send(vals, n_sends);
             let connectives_par = pop_par(vals);
             let exprs_par = pop_par(vals);
-            let par = match meter {
-                Some(meter) => rebuild_par_metered(
-                    exprs_par,
-                    connectives_par,
-                    sends,
-                    receives,
-                    news,
-                    matches,
-                    bundles,
-                    conditionals,
-                    cost_signed_terms,
-                    cost_stacks,
-                    unforgeables,
-                    locally_free,
-                    connective_used,
-                    shift,
-                    meter,
-                )?,
-                None => rebuild_par(
-                    exprs_par,
-                    connectives_par,
-                    sends,
-                    receives,
-                    news,
-                    matches,
-                    bundles,
-                    conditionals,
-                    cost_signed_terms,
-                    cost_stacks,
-                    unforgeables,
-                    locally_free,
-                    connective_used,
-                    shift,
-                ),
-            };
+            let par = rebuild_par(
+                exprs_par,
+                connectives_par,
+                sends,
+                receives,
+                news,
+                matches,
+                bundles,
+                conditionals,
+                cost_signed_terms,
+                cost_stacks,
+                unforgeables,
+                locally_free,
+                connective_used,
+                shift,
+            );
             vals.push(SubVal::Par(par));
         }
         SubKont::SendK {
@@ -1701,10 +1184,6 @@ fn combine(
         } => {
             let data = pop_n_par(vals, n_data);
             let chan = pop_par(vals);
-            let locally_free = match meter {
-                Some(meter) => set_bits_until_metered(locally_free, shift, meter)?,
-                None => locally_free,
-            };
             vals.push(SubVal::Send(rebuild_send(
                 chan,
                 data,
@@ -1748,10 +1227,6 @@ fn combine(
             };
             let body = pop_par(vals);
             let binds = pop_n_bind(vals, n_binds);
-            let locally_free = match meter {
-                Some(meter) => set_bits_until_metered(locally_free, shift, meter)?,
-                None => locally_free,
-            };
             vals.push(SubVal::Receive(rebuild_receive(
                 binds,
                 body,
@@ -1772,10 +1247,6 @@ fn combine(
             shift,
         } => {
             let body = pop_par(vals);
-            let locally_free = match meter {
-                Some(meter) => set_bits_until_metered(locally_free, shift, meter)?,
-                None => locally_free,
-            };
             vals.push(SubVal::New(rebuild_new(
                 body,
                 bind_count,
@@ -1804,10 +1275,6 @@ fn combine(
         } => {
             let cases = pop_n_case(vals, n_cases);
             let target = pop_par(vals);
-            let locally_free = match meter {
-                Some(meter) => set_bits_until_metered(locally_free, shift, meter)?,
-                None => locally_free,
-            };
             vals.push(SubVal::Match(rebuild_match(
                 target,
                 cases,
@@ -1824,10 +1291,6 @@ fn combine(
             let if_false = pop_par(vals);
             let if_true = pop_par(vals);
             let condition = pop_par(vals);
-            let locally_free = match meter {
-                Some(meter) => set_bits_until_metered(locally_free, shift, meter)?,
-                None => locally_free,
-            };
             vals.push(SubVal::If(rebuild_if(
                 condition,
                 if_true,
@@ -1841,43 +1304,20 @@ fn combine(
             let sub_bundle = pop_par(vals);
             vals.push(SubVal::Bundle(rebuild_bundle(shell, sub_bundle)));
         }
-        SubKont::SignatureParK {
-            quote,
-            meter_depth: _meter_depth,
-        } => {
+        SubKont::SignatureParK { quote } => {
             let par = pop_par(vals);
-            let par = match meter {
-                Some(meter) => {
-                    ParSortMatcher::sort_match_metered(&par, meter)
-                        .map_err(host_rejected)?
-                        .term
-                }
-                None => ParSortMatcher::sort_match(&par).term,
-            };
+            let par = ParSortMatcher::sort_match(&par).term;
             let value = if quote {
                 CostSignatureValue::Quote(par)
             } else {
                 CostSignatureValue::Name(par)
             };
-            vals.push(SubVal::Signature(finish_signature(value, meter)?));
+            vals.push(SubVal::Signature(finish_signature(value)?));
         }
-        SubKont::SignatureCompoundK {
-            n,
-            prepared,
-            meter_depth: _meter_depth,
-        } => {
-            let elements = if let Some(mut prepared) = prepared {
-                for _ in 0..n {
-                    prepared.push(pop_signature(vals));
-                }
-                prepared.reverse();
-                prepared
-            } else {
-                pop_n_signature(vals, n)
-            };
+        SubKont::SignatureCompoundK { n } => {
+            let elements = pop_n_signature(vals, n);
             vals.push(SubVal::Signature(finish_signature(
                 CostSignatureValue::Compound(CostSignatureCompound { elements }),
-                meter,
             )?));
         }
         SubKont::SignedK => {

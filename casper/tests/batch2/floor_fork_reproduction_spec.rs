@@ -74,12 +74,19 @@ fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
 }
 
 async fn string_datums(node: &TestNode, state_hash: &Bytes, name: &str) -> Vec<String> {
-    let channel = Par {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GString(name.to_string())),
-        }],
-        ..Default::default()
-    };
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-33): F1R3Lang
+    // gives `Par` an iterative `Drop`, so a struct-update literal cannot move the
+    // other fields out of `Default::default()` (E0509). The builder makes the
+    // same `Par`. The old literal was:
+    // let channel = Par {
+    //     exprs: vec![Expr {
+    //         expr_instance: Some(ExprInstance::GString(name.to_string())),
+    //     }],
+    //     ..Default::default()
+    // };
+    let channel = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GString(name.to_string())),
+    }]);
     node.runtime_manager
         .get_data(state_hash.clone(), &channel)
         .await

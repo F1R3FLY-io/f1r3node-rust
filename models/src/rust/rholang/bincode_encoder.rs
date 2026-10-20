@@ -119,14 +119,10 @@ use std::cell::RefCell;
 use std::collections::btree_map;
 use std::convert::Infallible;
 
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::BincodeByteSink;
-
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::bincode_schema::{
-    pathmap_snapshot, put_bytes, try_put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot,
-    NO_RESUME,
+    pathmap_snapshot, put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot, NO_RESUME,
 };
 
 /// Authenticated positional layouts. CostV1 preserves the protocol-v6
@@ -170,29 +166,6 @@ impl DriverSink for Vec<u8> {
     fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Infallible> {
         put_bytes(self, bytes);
         Ok(())
-    }
-}
-
-struct MeteredSink<'a>(&'a mut dyn BincodeByteSink);
-
-impl DriverSink for MeteredSink<'_> {
-    type Error = RSpaceError;
-
-    fn emit<'a>(
-        &mut self,
-        node: &'a dyn BincodeNode,
-        field: usize,
-        layout: BincodeLayout,
-    ) -> Result<Descent<'a>, RSpaceError> {
-        match layout {
-            BincodeLayout::Legacy => node.bincode_emit_legacy_metered(field, self.0),
-            BincodeLayout::CostV1 => node.bincode_emit_cost_v1_metered(field, self.0),
-            BincodeLayout::CostV2 => node.bincode_emit_metered(field, self.0),
-        }
-    }
-
-    fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), RSpaceError> {
-        try_put_bytes(self.0, bytes)
     }
 }
 
@@ -588,45 +561,6 @@ pub fn encode_cost_v1<T: BincodeNode>(value: &T) -> Vec<u8> {
     let mut out = Vec::with_capacity(OUT_CAPACITY);
     encode_cost_v1_into(value, &mut out);
     out
-}
-
-/// Stream either positional epoch layout through the same explicit worklist
-/// used by the Vec fast path. The caller authenticates the epoch and refuses
-/// cost-bearing values in Legacy before invoking this emitter.
-pub fn encode_metered_into<T: BincodeNode>(
-    value: &T,
-    legacy: bool,
-    sink: &mut dyn BincodeByteSink,
-) -> Result<(), RSpaceError> {
-    let mut machine = if legacy {
-        Machine::new_legacy()
-    } else {
-        Machine::new()
-    };
-    machine.ops.push(Op::Node {
-        node: value,
-        field: 0,
-    });
-    machine.run::<false, _>(&mut MeteredSink(sink))?;
-    debug_assert!(machine.map_iters.is_empty());
-    Ok(())
-}
-
-/// Fallible charge-before-write protocol-v6 cost layout. Validation of the
-/// complete canonical root (including encoded map keys) is performed before
-/// this call by the authenticated event/cold-store route.
-pub fn encode_cost_v1_metered_into<T: BincodeNode>(
-    value: &T,
-    sink: &mut dyn BincodeByteSink,
-) -> Result<(), RSpaceError> {
-    let mut machine = Machine::new_cost_v1();
-    machine.ops.push(Op::Node {
-        node: value,
-        field: 0,
-    });
-    machine.run::<false, _>(&mut MeteredSink(sink))?;
-    debug_assert!(machine.map_iters.is_empty());
-    Ok(())
 }
 
 /// Encode `value` into a fresh `Vec<u8>`.

@@ -264,11 +264,14 @@ impl LspGrpcServiceImpl {
                     .max(name_source_span.start.col + var_name.len()),
                 error.to_string(),
             ),
-            InterpreterError::UnexpectedReuseOfNameContextFree {
-                var_name: _,
-                second_use: _,
-                ..
-            } => {
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // `..` pattern already ignores the named fields.
+            // InterpreterError::UnexpectedReuseOfNameContextFree {
+            //     var_name: _,
+            //     second_use: _,
+            //     ..
+            // } => {
+            InterpreterError::UnexpectedReuseOfNameContextFree { .. } => {
                 let message =
                     "Receiving on the same channels is currently not allowed (at 0:0).".to_string();
                 // Use synthetic 0:0 position (1:1 in 1-based) for validation

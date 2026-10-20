@@ -16,7 +16,9 @@ use prost::Message;
 
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::matcher::has_locally_free::HasLocallyFree;
+// Disabled by the merge of feature/cost-accounted-rho: no method call in this
+// file resolves through the trait (HEAD has none either).
+// use super::matcher::has_locally_free::HasLocallyFree;
 use super::rho_type::{RhoExpression, RhoUnforgeable};
 
 pub mod address_tools;

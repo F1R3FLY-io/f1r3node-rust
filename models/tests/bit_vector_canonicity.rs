@@ -435,9 +435,38 @@ fn canonicalising_union_would_move_consensus_bytes() {
 fn the_bitset_construction_sites_are_enumerated_from_source() {
     /// (file, the function that owns the site, whether it can emit a trailing
     /// clear byte AFTER this change)
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // checkpoint merge e5102e945 brought six computed zero-filled vectors into
+    // `models/src`. Each one is in test code, and none of them makes a
+    // `locally_free` bitset. The two `threshold_envelope` helpers make cosigner
+    // presence bitmaps and set one bit for each selected signer. The other four
+    // sites make malformed or oversized inputs of a computed width for decoder
+    // tests. So none of the six can put a trailing clear byte into a term.
+    // const ATTRIBUTED: &[(&str, &str)] = &[
+    //     ("src/lib.rs", "create_bit_vector"),
+    //     ("src/rust/utils.rs", "union"),
+    // ];
     const ATTRIBUTED: &[(&str, &str)] = &[
         ("src/lib.rs", "create_bit_vector"),
         ("src/rust/utils.rs", "union"),
+        ("src/rust/normalizer_env.rs", "threshold_envelope"),
+        ("src/rust/signed_phlo_deploy/tests.rs", "threshold_envelope"),
+        (
+            "src/rust/phlo_wire/tests.rs",
+            "truncated_integer_reads_are_atomic_at_every_width",
+        ),
+        (
+            "src/rust/phlo_resource/tests.rs",
+            "phlo_resource_rejects_unknown_tags_wrong_widths_and_hidden_node_payloads",
+        ),
+        (
+            "src/rust/signed_phlo_deploy/offered_tests.rs",
+            "offered_processed_wire_preserves_signed_envelope_and_rejects_changed_cost",
+        ),
+        (
+            "src/rust/phlo_source/tests.rs",
+            "phlo_source_rejects_noncanonical_permissions_and_header_fields",
+        ),
     ];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

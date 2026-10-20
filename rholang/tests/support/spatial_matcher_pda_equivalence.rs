@@ -3,14 +3,26 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::connective::ConnectiveInstance::{ConnAndBody, ConnNotBody, ConnOrBody};
+// Changed by the merge of feature/cost-accounted-rho (finding R3-17): the corpus
+// also builds the three Par fields that the general path did not match.
+// use models::rhoapi::{
+//     Connective, ConnectiveBody, EPathMap, ETuple, Expr, KeyValuePair, New, Par, Receive,
+//     ReceiveBind, Send,
+// };
+// use models::rust::utils::{
+//     new_elist_par, new_emap_par, new_eset_par, new_etuple_par, new_freevar_expr, new_freevar_par,
+//     new_gint_par, new_gstring_par, new_wildcard_par,
+// };
+use models::rhoapi::cost_signature::Value as CostValue;
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
-    Connective, ConnectiveBody, EPathMap, ETuple, Expr, KeyValuePair, New, Par, Receive,
-    ReceiveBind, Send,
+    Connective, ConnectiveBody, CostSignature, CostSignedTerm, CostStack, EPathMap, ETuple, Expr,
+    If, KeyValuePair, New, Par, Receive, ReceiveBind, Send,
 };
 use models::rust::utils::{
     new_elist_par, new_emap_par, new_eset_par, new_etuple_par, new_freevar_expr, new_freevar_par,
-    new_gint_par, new_gstring_par, new_wildcard_par,
+    new_gbool_par, new_gint_expr, new_gint_par, new_gstring_par, new_wildcard_expr,
+    new_wildcard_par,
 };
 
 use super::recursive_oracle::spatial_matcher::{
@@ -412,6 +424,124 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         new_gstring_par("a".into(), Vec::new(), false),
         new_gstring_par("b".into(), Vec::new(), false),
     );
+
+    // Added by the merge of feature/cost-accounted-rho (finding R3-17): the
+    // three Par fields that both matchers dropped on the general path. Each
+    // kind has a closed term and a term with a free variable inside.
+    let ground = || CostSignature {
+        value: Some(CostValue::Ground(b"g".to_vec())),
+    };
+    let conditional = |condition: Par| If {
+        connective_used: condition.connective_used,
+        condition: Some(condition),
+        if_true: Some(one()),
+        if_false: Some(two()),
+        locally_free: Vec::new(),
+    };
+    let kinds = [
+        (
+            "conditional",
+            models::par_from_default! {
+                conditionals: vec![conditional(new_gbool_par(true, Vec::new(), false))],
+                ..Default::default()
+            },
+            models::par_from_default! {
+                conditionals: vec![conditional(free(0))],
+                connective_used: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "cost-signed term",
+            models::par_from_default! {
+                cost_signed_terms: vec![CostSignedTerm {
+                    body: Some(one()),
+                    signature: Some(ground()),
+                }],
+                ..Default::default()
+            },
+            models::par_from_default! {
+                cost_signed_terms: vec![CostSignedTerm {
+                    body: Some(free(0)),
+                    signature: Some(ground()),
+                }],
+                connective_used: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "cost stack",
+            models::par_from_default! {
+                cost_stacks: vec![CostStack {
+                    cells: vec![ground()],
+                    parallel_tail: vec![CostStack {
+                        cells: vec![ground()],
+                        parallel_tail: Vec::new(),
+                    }],
+                }],
+                ..Default::default()
+            },
+            models::par_from_default! {
+                cost_stacks: vec![CostStack {
+                    cells: Vec::new(),
+                    parallel_tail: vec![CostStack {
+                        cells: vec![CostSignature {
+                            value: Some(CostValue::Quote(free(0))),
+                        }],
+                        parallel_tail: Vec::new(),
+                    }],
+                }],
+                connective_used: true,
+                ..Default::default()
+            },
+        ),
+    ];
+    let with_one = |par: &Par| {
+        let mut par = par.clone();
+        par.exprs.push(new_gint_expr(1));
+        par
+    };
+    let with_expr = |par: &Par, expr: Expr| {
+        let mut par = par.clone();
+        par.exprs.push(expr);
+        par.connective_used = true;
+        par
+    };
+    let nil = Par::default();
+    let mut no_remainder = with_one(&nil);
+    no_remainder.connective_used = true;
+    for (kind, closed, open) in kinds {
+        compare(
+            &format!("{kind}: remainder binds the term"),
+            with_one(&closed),
+            with_expr(&with_one(&nil), new_freevar_expr(0)),
+        );
+        compare(
+            &format!("{kind}: pattern term without a target term"),
+            with_one(&nil),
+            with_expr(&closed, new_freevar_expr(0)),
+        );
+        compare(
+            &format!("{kind}: extra target term without a remainder"),
+            with_one(&closed),
+            no_remainder.clone(),
+        );
+        compare(
+            &format!("{kind}: free variable inside the term"),
+            closed.clone(),
+            open,
+        );
+        compare(
+            &format!("{kind}: equal term and a remainder"),
+            with_one(&closed),
+            with_expr(&closed, new_freevar_expr(0)),
+        );
+        compare(
+            &format!("{kind}: wildcard absorbs the term"),
+            with_one(&closed),
+            with_expr(&with_one(&nil), new_wildcard_expr()),
+        );
+    }
 }
 
 #[test]

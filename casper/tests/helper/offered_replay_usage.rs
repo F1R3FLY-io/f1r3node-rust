@@ -1,22 +1,20 @@
-//! DR-102: the replay budget of an offered deploy charges the same usage on its
-//! producer and on every validator. Each role charges its own acceptance work
-//! to a separate budget.
+//! DR-102: an offered block replays on its producer and on every validator.
+//! Changed by DR-131: the replays no longer charge host work, so the helper
+//! checks the replay records and the stored mergeable entries.
 
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::util::rholang::costacc::offered_acceptance::OfferedUsageKind;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::cost_protocol_limits::offered_funded_v6_limits;
-use models::rust::host_work::{HostWorkDimension, HostWorkUsages};
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 
-fn usages(
+fn records(
     node: &TestNode,
     kind: OfferedUsageKind,
     deploy_id: &[u8],
     pre_state_root: &[u8],
-) -> Vec<HostWorkUsages> {
+) -> usize {
     node.runtime_manager
         .offered_budget_usages()
         .into_iter()
@@ -25,34 +23,16 @@ fn usages(
                 && record.deploy_id == deploy_id
                 && record.pre_state_root == pre_state_root
         })
-        .map(|record| record.usages)
-        .collect()
-}
-
-fn publication_comparison_bound() -> u64 {
-    let protocol = offered_funded_v6_limits();
-    [
-        protocol.evidence.total_bytes,
-        protocol.deploy_log_bytes,
-        protocol.envelope.payload.deploy_bytes,
-        protocol.envelope.payload.signing.total_bytes,
-        protocol.envelope.payload.funding.wire.total_bytes,
-    ]
-    .into_iter()
-    .map(|bytes| u64::try_from(bytes).expect("a protocol bound fits u64"))
-    .sum()
+        .count()
 }
 
 /// Proposes `offer` on node 0 and decodes the block from its wire form, as a
 /// peer receives it. Every other node processes the block first, then node 0.
 /// The function checks that:
-/// - every node stores the producer's mergeable entry for the block;
-/// - the producer's self-replay and every validator replay charge the same
-///   usage in every host-work dimension;
-/// - the producer's acceptance work is the publication comparison alone;
-/// - every validator's acceptance work equals the work that the producer
-///   charged to its execution budget for the same mergeable entry.
-pub async fn propose_offer_with_identical_replay_usage(
+/// - every node accepts the block and stores the producer's mergeable entry;
+/// - the producer records one self-replay of the block;
+/// - every node replays the block as a validator.
+pub async fn propose_offer_replayed_by_every_role(
     nodes: &mut [TestNode],
     offer: models::casper::DeployDataProto,
     stage: &str,
@@ -98,103 +78,26 @@ pub async fn propose_offer_with_identical_replay_usage(
         "{stage}: the producer accepts its own block"
     );
 
-    let producer_replay = usages(
-        &nodes[0],
-        OfferedUsageKind::ProducerSelfReplay,
-        &deploy_id,
-        &pre_state_root,
-    );
     assert_eq!(
-        producer_replay.len(),
+        records(
+            &nodes[0],
+            OfferedUsageKind::ProducerSelfReplay,
+            &deploy_id,
+            &pre_state_root,
+        ),
         1,
         "{stage}: one producer self-replay"
     );
-    let producer_replay = producer_replay[0];
-    for dimension in [
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::SearchStateBytes,
-    ] {
-        assert!(
-            producer_replay.get(dimension).get() > 0,
-            "{stage}: the self-replay charges {dimension:?}"
-        );
-    }
     for (index, node) in nodes.iter().enumerate() {
-        let replays = usages(
-            node,
-            OfferedUsageKind::ValidatorReplay,
-            &deploy_id,
-            &pre_state_root,
-        );
         assert!(
-            !replays.is_empty(),
+            records(
+                node,
+                OfferedUsageKind::ValidatorReplay,
+                &deploy_id,
+                &pre_state_root,
+            ) > 0,
             "{stage}: node {index} replays the block"
         );
-        for replay in replays {
-            assert_eq!(
-                replay, producer_replay,
-                "{stage}: node {index} replay usage equals the producer self-replay"
-            );
-        }
-    }
-
-    let bound = publication_comparison_bound();
-    let producer_acceptance = usages(
-        &nodes[0],
-        OfferedUsageKind::ProducerAcceptance,
-        &deploy_id,
-        &pre_state_root,
-    );
-    assert_eq!(
-        producer_acceptance.len(),
-        1,
-        "{stage}: one producer acceptance"
-    );
-    for dimension in HostWorkDimension::ALL {
-        let expected = match dimension {
-            HostWorkDimension::VerificationBytes | HostWorkDimension::VerificationOperations => {
-                bound
-            }
-            _ => 0,
-        };
-        assert_eq!(
-            producer_acceptance[0].get(dimension).get(),
-            expected,
-            "{stage}: producer acceptance {dimension:?}"
-        );
-    }
-
-    let producer_mergeable = usages(
-        &nodes[0],
-        OfferedUsageKind::ProducerMergeableExecution,
-        &deploy_id,
-        &pre_state_root,
-    );
-    assert_eq!(
-        producer_mergeable.len(),
-        1,
-        "{stage}: one producer mergeable step"
-    );
-    assert!(
-        producer_mergeable[0]
-            .get(HostWorkDimension::SearchStateBytes)
-            .get()
-            > 0,
-        "{stage}: the producer charges its mergeable step"
-    );
-    for (index, node) in nodes.iter().enumerate() {
-        for acceptance in usages(
-            node,
-            OfferedUsageKind::ValidatorAcceptance,
-            &deploy_id,
-            &pre_state_root,
-        ) {
-            assert_eq!(
-                acceptance, producer_mergeable[0],
-                "{stage}: node {index} acceptance equals the producer's mergeable step"
-            );
-        }
     }
     wire
 }

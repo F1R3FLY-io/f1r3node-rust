@@ -455,7 +455,11 @@ async fn genesis_post_state_hash_is_identical_across_independent_builds() {
 #[tokio::test]
 async fn genesis_post_state_hash_is_identical_across_independent_rspace_scopes() {
     // (scope_id, post_state_hash, vault order) per build, so a failure names WHICH scope diverged.
-    let mut observed: Vec<(String, String, Vec<(String, u64)>)> = Vec::with_capacity(N_BUILDS);
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+    // type alias names the observation tuple.
+    // let mut observed: Vec<(String, String, Vec<(String, u64)>)> = Vec::with_capacity(N_BUILDS);
+    type BuildObservation = (String, String, Vec<(String, u64)>);
+    let mut observed: Vec<BuildObservation> = Vec::with_capacity(N_BUILDS);
 
     for i in 0..N_BUILDS {
         // ★ THE ONE VARIED VARIABLE. A fresh scope per build ⇒ fresh scoped LMDB database names,

@@ -6,15 +6,11 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use shared::rust::clone_backing::CloneBacking;
-use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::{Checkpoint, SoftCheckpoint};
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
-use super::hashing::native_source::SourceMeter;
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::history::history_repository::HistoryRepository;
 use super::hot_store::HotStore;
@@ -389,32 +385,6 @@ where
 
     async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
         self.replay_rspace.get_data(channel).await
-    }
-
-    async fn get_data_metered(
-        &self,
-        channel: &C,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned + ClosedDecode,
-    {
-        self.replay_rspace.get_data_metered(channel, meter).await
-    }
-
-    async fn get_data_cold_decode_metered(
-        &self,
-        channel: &C,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking,
-        A: CloneBacking + ColdStoreDecode,
-    {
-        self.replay_rspace
-            .get_data_cold_decode_metered(channel, meter)
-            .await
     }
 
     async fn get_waiting_continuations(

@@ -28,7 +28,11 @@ use rholang::rust::interpreter::rho_runtime::{
     create_replay_rho_runtime, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
 };
 use rholang::rust::interpreter::system_processes::Definition;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+// runtimes below select the CostV1 epoch.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rholang::rust::interpreter::test_utils::resources::create_runtimes_for_epoch;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -130,12 +134,22 @@ async fn create_runtimes_with_cost_log(
     let mut empty_vec = Vec::new();
     let additional_system_processes = additional_system_processes.unwrap_or(&mut empty_vec);
 
-    let hrstores =
-        RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
-            stores,
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): this
+    // upstream suite models protocol 6 (cost-accounted Rho), which F1R3Lang runs
+    // in the CostV1 epoch. A Legacy runtime opens no COMM accounting scope and
+    // refuses cost-bearing event legs.
+    // let hrstores =
+    //     RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
+    //         stores,
+    //         Arc::new(Box::new(Matcher)),
+    //     )
+    //     .unwrap();
+    let hrstores = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay_for_epoch(
+        EventCodecEpoch::CostV1,
+        stores,
+        Arc::new(Box::new(Matcher)),
+    )
+    .expect("CostV1 play and replay spaces");
 
     let (space, replay) = hrstores;
 
@@ -168,6 +182,10 @@ async fn create_runtimes_with_cost_log(
 async fn evaluate_and_replay(initial_phlo: Cost, term: String) -> (EvaluateResult, EvaluateResult) {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): play
+    // and replay run in the CostV1 epoch of protocol 6, as above. The old
+    // initializer was:
+    // ) = create_runtimes(store, false, &mut Vec::new()).await;
     let (mut runtime, mut replay_runtime, _): (
         RhoRuntimeImpl,
         RhoRuntimeImpl,
@@ -179,7 +197,7 @@ async fn evaluate_and_replay(initial_phlo: Cost, term: String) -> (EvaluateResul
                     + 'static,
             >,
         >,
-    ) = create_runtimes(store, false, &mut Vec::new()).await;
+    ) = create_runtimes_for_epoch(EventCodecEpoch::CostV1, store, false, &mut Vec::new()).await;
     install_test_payer(&runtime);
     install_test_payer(&replay_runtime);
 

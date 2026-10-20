@@ -283,8 +283,18 @@ macro_rules! probe_all {
 fn every_generated_type_matches_serdes_own_field_order() {
     use models::rhoapi::*;
 
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // checkpoint merge e5102e945 brought the six cost messages and the two
+    // principal identifiers into the schema. The registry grew, so the probe
+    // lists them too, in the order of their `.proto` declarations.
     let observed = probe_all!(
         Par,
+        CostSignature,
+        CostSignatureCompound,
+        CostSignedTerm,
+        CostRegion,
+        CostAuthority,
+        CostStack,
         TaggedContinuation,
         ParWithRandom,
         PCost,
@@ -341,6 +351,8 @@ fn every_generated_type_matches_serdes_own_field_order() {
         GDeployId,
         GDeployerId,
         GSysAuthToken,
+        GAuthorityId,
+        GPrincipalId,
     );
 
     // ★ Coverage against the GENERATED registry, not against this macro's list.
@@ -396,13 +408,26 @@ fn the_conformance_probe_can_go_red() {
         "the CONTROL must pass, or every rejection below is a statement about the judge"
     );
 
-    // MUTATION 1 — the exact historical bug: the two fields transposed.
+    // MUTATION 1 — the exact historical bug: the oneof placed at its first
+    // member's position, ahead of the plain fields.
+    //
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // checkpoint merge e5102e945 added the plain field `cost_authority` (tag 4)
+    // to `TaggedContinuation`. prost still writes every plain field before the
+    // oneof, so the true order is `guard, cost_authority, tagged_cont`, and the
+    // historical bug moves `tagged_cont` to the front.
+    // assert_eq!(
+    //     names,
+    //     &["guard", "tagged_cont"],
+    //     "the fixture must be the type whose order actually surprised the generator"
+    // );
+    // let transposed = ["tagged_cont", "guard"];
     assert_eq!(
         names,
-        &["guard", "tagged_cont"],
+        &["guard", "cost_authority", "tagged_cont"],
         "the fixture must be the type whose order actually surprised the generator"
     );
-    let transposed = ["tagged_cont", "guard"];
+    let transposed = ["tagged_cont", "guard", "cost_authority"];
     let why = conformance_verdict("TaggedContinuation", kinds, &transposed, &observed)
         .expect_err("a TRANSPOSED field order must be REJECTED");
     assert!(
@@ -412,8 +437,13 @@ fn the_conformance_probe_can_go_red() {
     );
 
     // MUTATION 2 — a dropped field.
-    let short = ["guard"];
-    let why = conformance_verdict("TaggedContinuation", &kinds[..1], &short, &observed)
+    //
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // type has three fields now, so the shortened program drops the last one.
+    // let short = ["guard"];
+    // let why = conformance_verdict("TaggedContinuation", &kinds[..1], &short, &observed)
+    let short = ["guard", "cost_authority"];
+    let why = conformance_verdict("TaggedContinuation", &kinds[..2], &short, &observed)
         .expect_err("a SHORTENED program must be REJECTED");
     assert!(
         why.contains("fields"),

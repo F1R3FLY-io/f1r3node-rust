@@ -1,226 +1,93 @@
-use std::cell::Cell;
-
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
 use proptest::prelude::*;
 
 use super::*;
-use crate::rspace::hashing::stable_hash_provider::{self, EventCodecEpoch, StableHashSerialize};
+use crate::rspace::hashing::stable_hash_provider::hash_from_vec;
 
-#[derive(Default)]
-struct Meter {
-    used: Cell<[usize; 3]>,
-    limit: Option<[usize; 3]>,
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-S1 (D-C2a, DR-96): `consume_keys` returns the source of
+    /// `Consume::create` and one key per channel in channel order, repeats
+    /// included.
+    #[test]
+    fn consume_keys_follow_channel_order(
+        channels in prop::collection::vec("[a-c]{0,3}", 1..6),
+        patterns in prop::collection::vec("[p-r]{0,3}", 1..6),
+        persistent in any::<bool>(),
+    ) {
+        let (source, keys) =
+            consume_keys(&channels, &patterns, &"body", persistent).expect("consume keys");
+        prop_assert_eq!(&source, &Consume::create(&channels, &patterns, &"body", persistent));
+        prop_assert_eq!(keys.len(), channels.len());
+        for (key, channel) in keys.iter().zip(&channels) {
+            prop_assert_eq!(*key, channel_key(channel).expect("channel key"));
+        }
+    }
+
+    /// D-S1 (D-C2a, DR-96): a channel key is the channel's history digest.
+    #[test]
+    fn channel_key_equals_hash(channel in "[a-z]{0,40}") {
+        let key = channel_key(&channel).expect("channel key");
+        let digest = hash(&channel);
+        prop_assert_eq!(key.0.as_slice(), digest.0.as_slice());
+        prop_assert_eq!(key, StoreKey::from_digest(&digest).expect("a 32-byte digest"));
+    }
 }
 
-impl SourceMeter for Meter {
-    fn reserve(&self, operations: usize, scanned: usize, backing: usize) -> Result<()> {
-        let old = self.used.get();
-        let add = [operations, scanned, backing];
-        let mut next = old;
-        for i in 0..3 {
-            next[i] = old[i]
-                .checked_add(add[i])
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            if self.limit.is_some_and(|limit| next[i] > limit[i]) {
-                return Err(RSpaceError::HostWorkRejected);
-            }
-        }
-        self.used.set(next);
-        Ok(())
-    }
+/// D-S1 (D-C2a, DR-96): a group key hashes the domain separator and the
+/// channel keys in channel order, so a reordered or repeated group has a
+/// different key; join groups keep their positions.
+#[test]
+fn group_key_preserves_order() {
+    let a = channel_key(&"a").expect("channel key");
+    let b = channel_key(&"b").expect("channel key");
+    let ab = group_key(&[a, b]);
+    assert_ne!(ab, group_key(&[b, a]));
+    assert_ne!(group_key(&[a]), group_key(&[a, a]));
+    let mut reference = Blake2b::<U32>::new();
+    reference.update(GROUP_KEY_DOMAIN);
+    reference.update(a.0);
+    reference.update(b.0);
+    assert_eq!(ab.0.as_slice(), &reference.finalize()[..]);
+    let built = GroupKeys::build(&["a", "b"]).expect("group keys");
+    assert_eq!(built.channels, vec![a, b]);
+    assert_eq!(built.group, ab);
+    let operation =
+        OperationKeys::build(&[vec!["b", "a"], vec!["a", "b"]]).expect("operation keys");
+    assert_eq!(operation.groups.len(), 2);
+    assert_eq!(operation.groups[0].channels, vec![b, a]);
+    assert_eq!(operation.groups[1].group, ab);
+    assert_ne!(operation.groups[0].group, operation.groups[1].group);
+}
+
+/// Changed by DR-131 S6: a digest that does not have 32 bytes is a broken
+/// invariant of the store keys.
+#[test]
+fn a_short_digest_is_a_broken_invariant() {
+    let short = Blake2b256Hash::from_bytes(vec![7; 31]);
+    assert!(matches!(StoreKey::from_digest(&short), Err(RSpaceError::BugFoundError(_))));
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
+    /// D-S1 (D-C2d, DR-96): the projection of a channel group from the store
+    /// keys of its channels has the bytes of `hash_from_vec`, for any order,
+    /// length and repetition of the channels. No channel is serialized.
     #[test]
-    fn constructors_preserve_legacy_source_identity_and_metadata(
-        channels in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..128), 0..16),
-        patterns in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..128), 0..16),
-        data in prop::collection::vec(any::<u8>(), 0..256),
-        persistent in any::<bool>(),
+    fn channels_hash_from_keys_matches_channels_hash(
+        channels in prop::collection::vec("[a-c]{0,3}", 0..12),
     ) {
-        let meter = Meter::default();
-        let actual = produce(&channels, &data, persistent, &meter).unwrap();
-        let expected = Produce::create(&channels, &data, persistent);
-        prop_assert_eq!(bincode::serialize(&actual).unwrap(), bincode::serialize(&expected).unwrap());
-        let actual = consume(&channels, &patterns, &data, persistent, &meter).unwrap();
-        prop_assert_eq!(actual, Consume::create(&channels, &patterns, &data, persistent));
+        let keys = GroupKeys::build(&channels).expect("group keys").channels;
+        let projection = channels_hash_from_keys(&keys);
+        let reference = hash_from_vec(&channels);
+        prop_assert_eq!(projection.as_slice(), reference.0.as_slice());
+        let mut reversed = keys.clone();
+        reversed.reverse();
+        prop_assert_eq!(channels_hash_from_keys(&reversed), projection);
     }
-
-    #[test]
-    fn all_three_budgets_reject_incomplete_construction_without_changing_inputs(
-        channels in prop::collection::vec(any::<u64>(), 1..16),
-        patterns in prop::collection::vec(any::<u64>(), 1..16),
-        data in prop::collection::vec(any::<u8>(), 1..256),
-        fraction in 0_usize..100,
-    ) {
-        let baseline = Meter::default();
-        consume(&channels, &patterns, &data, true, &baseline).unwrap();
-        let required = baseline.used.get();
-        let before = bincode::serialize(&(&channels, &patterns, &data)).unwrap();
-        for dimension in 0..3 {
-            let mut limits = [usize::MAX; 3];
-            limits[dimension] = required[dimension] * fraction / 100;
-            let meter = Meter { used: Cell::new([0; 3]), limit: Some(limits) };
-            prop_assert!(matches!(consume(&channels, &patterns, &data, true, &meter), Err(RSpaceError::HostWorkRejected)));
-            prop_assert!(meter.used.get()[dimension] <= limits[dimension]);
-        }
-        prop_assert_eq!(before, bincode::serialize(&(&channels, &patterns, &data)).unwrap());
-    }
-
-    #[test]
-    fn streaming_encoding_preserves_bincode_framing(
-        values in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..128), 0..32),
-    ) {
-        let meter = Meter::default();
-        let actual = encode(&values, &meter).unwrap();
-        prop_assert_eq!(&actual, &bincode::serialize(&values).unwrap());
-        prop_assert!(meter.used.get()[2] >= actual.len());
-    }
-}
-
-#[test]
-fn rejected_write_does_not_update_bytes_or_hash() {
-    for output in [
-        Output::Bytes {
-            bytes: Vec::new(),
-            paid: 0,
-        },
-        Output::Hash(Blake2b::<U32>::new()),
-    ] {
-        let meter = Meter {
-            used: Cell::new([0; 3]),
-            limit: Some([0; 3]),
-        };
-        let mut writer = Writer {
-            meter: &meter,
-            output,
-            error: None,
-        };
-        assert!(writer.write_all(&[1, 2, 3]).is_err());
-        match writer.output {
-            Output::Bytes { bytes, paid } => {
-                assert!(bytes.is_empty());
-                assert_eq!(paid, 0);
-            }
-            Output::Hash(hash) => assert_eq!(hash.finalize(), Blake2b::<U32>::new().finalize()),
-        }
-    }
-}
-
-#[test]
-fn returned_produce_clone_reserves_nested_payload_backing_before_copy() {
-    let source = Produce::create(&"channel", &"datum", false)
-        .mark_as_non_deterministic(vec![vec![1_u8; 17], vec![2_u8; 35]]);
-    let baseline = Meter::default();
-    let copied = clone_produce(&source, &baseline).unwrap();
-    assert_eq!(bincode::serialize(&copied).unwrap(), bincode::serialize(&source).unwrap());
-    let required = baseline.used.get();
-    assert!(required.iter().all(|amount| *amount > 0));
-    // Block-copy and block-release walks have different costs. Account for
-    // each independently rather than assuming cleanup doubles copy work.
-    let copy = Cell::new([0_usize; 3]);
-    let reference_meter = |operations: usize, scanned: usize, backing: usize| {
-        let [work, read, held] = copy.get();
-        copy.set([work + operations, read + scanned, held + backing]);
-        Ok(())
-    };
-    shared::rust::clone_backing::reserve_blocks(&source, &reference_meter).unwrap();
-    let copy_only = copy.get();
-    shared::rust::clone_backing::inspect_blocks(&source, &reference_meter).unwrap();
-    assert_eq!(required, copy.get());
-    assert!(required[0] > copy_only[0] && required[1] > copy_only[1]);
-    let (_, cloned_bytes) =
-        crate::rspace::history::native_reader::measure_allocations(|| source.clone());
-    assert!(cloned_bytes <= required[2]);
-    for dimension in 0..3 {
-        let mut limits = required;
-        limits[dimension] -= 1;
-        let meter = Meter {
-            used: Cell::new([0; 3]),
-            limit: Some(limits),
-        };
-        assert!(matches!(clone_produce(&source, &meter), Err(RSpaceError::HostWorkRejected)));
-        assert_eq!(bincode::serialize(&source).unwrap(), bincode::serialize(&copied).unwrap());
-    }
-}
-
-#[test]
-fn exact_budget_succeeds_and_one_less_rejects_each_dimension() {
-    let channels = vec![3_u64, 1, 3];
-    let patterns = vec![vec![2_u8], vec![], vec![2]];
-    let baseline = Meter::default();
-    let expected = consume(&channels, &patterns, &vec![5_u8; 257], false, &baseline).unwrap();
-    let required = baseline.used.get();
-    let exact = Meter {
-        used: Cell::new([0; 3]),
-        limit: Some(required),
-    };
-    assert_eq!(consume(&channels, &patterns, &vec![5_u8; 257], false, &exact).unwrap(), expected);
-    for dimension in 0..3 {
-        let mut limits = required;
-        limits[dimension] -= 1;
-        let meter = Meter {
-            used: Cell::new([0; 3]),
-            limit: Some(limits),
-        };
-        assert!(matches!(
-            consume(&channels, &patterns, &vec![5_u8; 257], false, &meter),
-            Err(RSpaceError::HostWorkRejected)
-        ));
-    }
-}
-
-#[test]
-fn serializer_cannot_suppress_a_rejected_write() {
-    struct Suppressed;
-    impl Serialize for Suppressed {
-        fn serialize<S: serde::Serializer>(
-            &self,
-            serializer: S,
-        ) -> std::result::Result<S::Ok, S::Error> {
-            use serde::ser::SerializeTuple;
-            let mut tuple = serializer.serialize_tuple(2)?;
-            let _ = tuple.serialize_element(&1_u8);
-            let _ = tuple.serialize_element(&2_u8);
-            tuple.end()
-        }
-    }
-    let calls = Cell::new(0);
-    let meter = |_: usize, _: usize, _: usize| {
-        let call = calls.get();
-        calls.set(call + 1);
-        if call == 1 {
-            Err(RSpaceError::HostWorkRejected)
-        } else {
-            Ok(())
-        }
-    };
-    assert!(matches!(encode(&Suppressed, &meter), Err(RSpaceError::HostWorkRejected)));
-    assert_eq!(calls.get(), 2);
-}
-
-#[test]
-fn rejected_growth_preserves_prior_buffer_and_paid_capacity() {
-    let meter = Meter {
-        used: Cell::new([0; 3]),
-        limit: Some([usize::MAX, usize::MAX, 8]),
-    };
-    let mut writer = Writer {
-        meter: &meter,
-        output: Output::Bytes {
-            bytes: Vec::new(),
-            paid: 0,
-        },
-        error: None,
-    };
-    writer.write_all(&[1; 8]).unwrap();
-    assert!(writer.write_all(&[2]).is_err());
-    let Output::Bytes { bytes, paid } = writer.output else {
-        panic!("byte writer changed kind")
-    };
-    assert_eq!(bytes, vec![1; 8]);
-    assert_eq!(paid, 8);
 }
 
 #[derive(serde::Serialize)]
@@ -231,197 +98,49 @@ impl StableHashSerialize for CostWire {
 }
 
 #[test]
-fn epoch_native_sources_match_value_constructors_and_legacy_meter_trace() {
-    let channel = "ordinary-channel".to_owned();
-    let data = "ordinary-data".to_owned();
-    let channels = vec![channel.clone(), "second-channel".to_owned()];
+fn epoch_native_sources_match_value_constructors() {
+    let channels = vec!["ordinary-channel".to_owned(), "second-channel".to_owned()];
     let patterns = vec!["one".to_owned(), "two".to_owned()];
-    let old_meter = Meter::default();
-    let old_produce = produce(&channel, &data, true, &old_meter).unwrap();
-    let epoch_meter = Meter::default();
-    let routed =
-        produce_for_epoch(EventCodecEpoch::Legacy, &channel, &data, true, &epoch_meter).unwrap();
-    assert_eq!(routed, old_produce);
-    assert_eq!(epoch_meter.used.get(), old_meter.used.get());
-    assert_eq!(
-        routed,
-        Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &data, true).unwrap()
-    );
-
-    let old_meter = Meter::default();
-    let old_consume = consume(&channels, &patterns, &data, false, &old_meter).unwrap();
-    let epoch_meter = Meter::default();
-    let routed = consume_for_epoch(
-        EventCodecEpoch::Legacy,
-        &channels,
-        &patterns,
-        &data,
-        false,
-        &epoch_meter,
-    )
-    .unwrap();
-    assert_eq!(routed, old_consume);
-    assert_eq!(epoch_meter.used.get(), old_meter.used.get());
-    assert_eq!(
-        routed,
-        Consume::create_for_epoch(EventCodecEpoch::Legacy, &channels, &patterns, &data, false,)
-            .unwrap()
-    );
-}
-
-#[test]
-fn cost_v1_native_channel_key_is_tagged_and_legacy_refuses_before_output() {
-    let cost = CostWire(13);
-    let ordinary = "ordinary-channel".to_owned();
-    let meter = Meter::default();
-    let cost_key = channel_hash_for_epoch(EventCodecEpoch::CostV1, &cost, &meter).unwrap();
-    assert_eq!(
-        cost_key,
-        stable_hash_provider::channel_hash_for_epoch(EventCodecEpoch::CostV1, &cost).unwrap()
-    );
-    assert_ne!(
-        cost_key,
-        stable_hash_provider::channel_hash_for_epoch(EventCodecEpoch::CostV1, &ordinary).unwrap()
-    );
-    assert_eq!(
-        channel_hash_for_epoch(EventCodecEpoch::CostV1, &ordinary, &meter).unwrap(),
-        stable_hash_provider::channel_hash_for_epoch(EventCodecEpoch::Legacy, &ordinary).unwrap()
-    );
-    let before = meter.used.get();
-    assert!(channel_hash_for_epoch(EventCodecEpoch::Legacy, &cost, &meter).is_err());
-    assert_eq!(meter.used.get(), before);
-
-    let native = produce_for_epoch(EventCodecEpoch::CostV1, &cost, &cost, true, &meter).unwrap();
-    let value = Produce::create_for_epoch(EventCodecEpoch::CostV1, &cost, &cost, true).unwrap();
-    assert_eq!(native, value);
-}
-
-#[test]
-fn cost_v2_preserves_every_preexisting_event_constructor_and_meter_trace() {
-    let channels = [CostWire(13), CostWire(14), CostWire(13)];
-    let patterns = ["first", "second", "third"];
-    let datum = CostWire(21);
-    for persistent in [false, true] {
-        let v1_meter = Meter::default();
-        let v2_meter = Meter::default();
-        let v1_produce = produce_for_epoch(
-            EventCodecEpoch::CostV1,
-            &channels[0],
-            &datum,
-            persistent,
-            &v1_meter,
-        )
-        .unwrap();
-        let v2_produce = produce_for_epoch(
-            EventCodecEpoch::CostV2,
-            &channels[0],
-            &datum,
-            persistent,
-            &v2_meter,
-        )
-        .unwrap();
-        assert_eq!(v1_produce, v2_produce);
-        assert_eq!(bincode::serialize(&v1_produce).unwrap(), bincode::serialize(&v2_produce).unwrap());
-        assert_eq!(v1_meter.used.get(), v2_meter.used.get());
+    let data = "ordinary-data".to_owned();
+    for epoch in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+        let (source, keys) = consume_keys_for_epoch(epoch, &channels, &patterns, &data, false)
+            .expect("epoch source");
         assert_eq!(
-            v1_produce,
-            Produce::create_for_epoch(EventCodecEpoch::CostV2, &channels[0], &datum, persistent)
-                .unwrap(),
+            source,
+            Consume::create_for_epoch(epoch, &channels, &patterns, &data, false)
+                .expect("value source")
         );
-
-        let v1_meter = Meter::default();
-        let v2_meter = Meter::default();
-        let v1_consume = consume_for_epoch(
-            EventCodecEpoch::CostV1,
-            &channels,
-            &patterns,
-            &datum,
-            persistent,
-            &v1_meter,
-        )
-        .unwrap();
-        let v2_consume = consume_for_epoch(
-            EventCodecEpoch::CostV2,
-            &channels,
-            &patterns,
-            &datum,
-            persistent,
-            &v2_meter,
-        )
-        .unwrap();
-        assert_eq!(v1_consume, v2_consume);
-        assert_eq!(bincode::serialize(&v1_consume).unwrap(), bincode::serialize(&v2_consume).unwrap());
-        assert_eq!(v1_meter.used.get(), v2_meter.used.get());
-        assert_eq!(
-            v1_consume,
-            Consume::create_for_epoch(
-                EventCodecEpoch::CostV2,
-                &channels,
-                &patterns,
-                &datum,
-                persistent,
-            )
-            .unwrap(),
-        );
+        assert_eq!(keys[0], channel_key(&channels[0]).expect("ordinary key"));
+        if epoch == EventCodecEpoch::Legacy {
+            assert_eq!(source, Consume::create(&channels, &patterns, &data, false));
+        }
     }
-
-    assert_eq!(
-        stable_hash_provider::event_leg_bytes_for_epoch(EventCodecEpoch::CostV1, &datum).unwrap(),
-        stable_hash_provider::event_leg_bytes_for_epoch(EventCodecEpoch::CostV2, &datum).unwrap(),
-    );
-    assert_eq!(
-        stable_hash_provider::channel_hash_for_epoch(EventCodecEpoch::CostV1, &channels[0]).unwrap(),
-        stable_hash_provider::channel_hash_for_epoch(EventCodecEpoch::CostV2, &channels[0]).unwrap(),
-    );
-    assert_eq!(
-        crate::rspace::trace::event::recorded_removal_for_epoch(
-            EventCodecEpoch::CostV1,
-            &channels[0],
-            &Produce::create_for_epoch(EventCodecEpoch::CostV1, &channels[0], &datum, false).unwrap(),
-            b"removal",
-        )
-        .unwrap(),
-        crate::rspace::trace::event::recorded_removal_for_epoch(
-            EventCodecEpoch::CostV2,
-            &channels[0],
-            &Produce::create_for_epoch(EventCodecEpoch::CostV2, &channels[0], &datum, false).unwrap(),
-            b"removal",
-        )
-        .unwrap(),
-    );
 }
 
 #[test]
 fn native_store_keys_follow_authenticated_epoch() {
-    let meter = Meter::default();
     let ordinary = "registry".to_owned();
     let cost = CostWire(13);
-    let legacy = channel_key_for_epoch(EventCodecEpoch::Legacy, &ordinary, &meter).unwrap();
-    let active = channel_key_for_epoch(EventCodecEpoch::CostV1, &ordinary, &meter).unwrap();
-    assert_eq!(legacy, active);
-    assert_eq!(legacy, channel_key(&ordinary, &meter).unwrap());
-    let routed_meter = Meter::default();
-    let original_meter = Meter::default();
-    channel_key_for_epoch(EventCodecEpoch::Legacy, &ordinary, &routed_meter).unwrap();
-    channel_key(&ordinary, &original_meter).unwrap();
-    assert_eq!(routed_meter.used.get(), original_meter.used.get());
-
-    let cost_key = channel_key_for_epoch(EventCodecEpoch::CostV1, &cost, &meter).unwrap();
-    assert_eq!(
-        cost_key.0.as_slice(),
-        channel_hash_for_epoch(EventCodecEpoch::CostV1, &cost, &meter)
-            .unwrap()
-            .0
-            .as_slice()
-    );
-    assert_ne!(cost_key, legacy);
-    assert!(channel_key_for_epoch(EventCodecEpoch::Legacy, &cost, &meter).is_err());
-
-    let group =
-        GroupKeys::build_for_epoch(EventCodecEpoch::CostV1, &[CostWire(13), CostWire(14)], &meter)
-            .unwrap();
-    assert_eq!(group.channels[0], cost_key);
-    assert_eq!(group.group, group_key(&group.channels, &meter).unwrap());
+    let legacy = channel_key_for_epoch(EventCodecEpoch::Legacy, &ordinary).expect("legacy key");
+    for epoch in [EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+        let active = channel_key_for_epoch(epoch, &ordinary).expect("ordinary active key");
+        assert_eq!(legacy, active);
+        assert_eq!(legacy, channel_key(&ordinary).expect("unversioned ordinary key"));
+        let cost_key = channel_key_for_epoch(epoch, &cost).expect("cost key");
+        assert_eq!(
+            cost_key.0.as_slice(),
+            channel_hash_for_epoch(epoch, &cost)
+                .expect("cost hash")
+                .0
+                .as_slice()
+        );
+        assert_ne!(cost_key, legacy);
+        let group =
+            GroupKeys::build_for_epoch(epoch, &[CostWire(13), CostWire(14)]).expect("epoch group");
+        assert_eq!(group.channels[0], cost_key);
+        assert_eq!(group.group, group_key(&group.channels));
+    }
+    assert!(channel_key_for_epoch(EventCodecEpoch::Legacy, &cost).is_err());
 }
 
 #[test]
@@ -429,142 +148,86 @@ fn epoch_consume_keys_reuse_source_channel_digests() {
     let channels = [CostWire(13), CostWire(14), CostWire(13)];
     let patterns = ["pattern"];
     let continuation = "body";
-    let source_meter = Meter::default();
-    let source = consume_for_epoch(
-        EventCodecEpoch::CostV1,
-        &channels,
-        &patterns,
-        &continuation,
-        false,
-        &source_meter,
-    )
-    .unwrap();
-    let keyed_meter = Meter::default();
-    let (keyed_source, keys) = consume_keys_for_epoch(
-        EventCodecEpoch::CostV1,
-        &channels,
-        &patterns,
-        &continuation,
-        false,
-        &keyed_meter,
-    )
-    .unwrap();
-    assert_eq!(keyed_source, source);
-    assert_eq!(keys[0], keys[2]);
-    assert_ne!(keys[0], keys[1]);
-    for (channel, key) in channels.iter().zip(&keys) {
+    for epoch in [EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+        let source = Consume::create_for_epoch(epoch, &channels, &patterns, &continuation, false)
+            .expect("epoch source");
+        let (keyed_source, keys) =
+            consume_keys_for_epoch(epoch, &channels, &patterns, &continuation, false)
+                .expect("keyed source");
+        assert_eq!(keyed_source, source);
+        assert_eq!(keys[0], keys[2]);
+        assert_ne!(keys[0], keys[1]);
+        for (channel, key) in channels.iter().zip(&keys) {
+            assert_eq!(*key, channel_key_for_epoch(epoch, channel).expect("epoch key"));
+        }
+    }
+}
+
+#[test]
+fn cost_v2_preserves_preexisting_event_constructors() {
+    use crate::rspace::hashing::stable_hash_provider::event_leg_bytes_for_epoch;
+    use crate::rspace::trace::event::{Produce, recorded_removal_for_epoch};
+    let channels = vec![CostWire(13), CostWire(14), CostWire(13)];
+    let patterns = vec!["first", "second", "third"];
+    let datum = CostWire(21);
+    for persistent in [false, true] {
+        let v1_produce =
+            Produce::create_for_epoch(EventCodecEpoch::CostV1, &channels[0], &datum, persistent)
+                .expect("v1 produce");
+        let v2_produce =
+            Produce::create_for_epoch(EventCodecEpoch::CostV2, &channels[0], &datum, persistent)
+                .expect("v2 produce");
+        assert_eq!(v1_produce, v2_produce);
         assert_eq!(
-            *key,
-            channel_key_for_epoch(EventCodecEpoch::CostV1, channel, &Meter::default()).unwrap()
+            bincode::serialize(&v1_produce).expect("v1 bytes"),
+            bincode::serialize(&v2_produce).expect("v2 bytes")
+        );
+        let v1_consume = Consume::create_for_epoch(
+            EventCodecEpoch::CostV1,
+            &channels,
+            &patterns,
+            &datum,
+            persistent,
+        )
+        .expect("v1 consume");
+        let v2_consume = Consume::create_for_epoch(
+            EventCodecEpoch::CostV2,
+            &channels,
+            &patterns,
+            &datum,
+            persistent,
+        )
+        .expect("v2 consume");
+        assert_eq!(v1_consume, v2_consume);
+        assert_eq!(
+            bincode::serialize(&v1_consume).expect("v1 bytes"),
+            bincode::serialize(&v2_consume).expect("v2 bytes")
         );
     }
-    let source_charge = source_meter.used.get();
-    let keyed_charge = keyed_meter.used.get();
-    assert_eq!(keyed_charge, [
-        source_charge[0] + 2 * channels.len() + 1,
-        source_charge[1] + 64 * channels.len(),
-        source_charge[2] + 32 * channels.len(),
-    ]);
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
-
-    /// D-S1 (D-C2a, DR-96): `consume_keys` returns the source of `consume`
-    /// and one key per channel in channel order, repeats included. Its only
-    /// extra charge is the key vector and one 32-byte copy per key.
-    #[test]
-    fn consume_keys_follow_channel_order(
-        channels in prop::collection::vec("[a-c]{0,3}", 1..6),
-        patterns in prop::collection::vec("[p-r]{0,3}", 1..6),
-        persistent in any::<bool>(),
-    ) {
-        let plain = Meter::default();
-        let source = consume(&channels, &patterns, &"body", persistent, &plain).unwrap();
-        let keyed = Meter::default();
-        let (keyed_source, keys) =
-            consume_keys(&channels, &patterns, &"body", persistent, &keyed).unwrap();
-        prop_assert_eq!(&keyed_source, &source);
-        prop_assert_eq!(&source, &Consume::create(&channels, &patterns, &"body", persistent));
-        prop_assert_eq!(keys.len(), channels.len());
-        for (key, channel) in keys.iter().zip(&channels) {
-            prop_assert_eq!(*key, channel_key(channel, &Meter::default()).unwrap());
-        }
-        let [plain_operations, plain_scanned, plain_backing] = plain.used.get();
-        let [operations, scanned, backing] = keyed.used.get();
-        let count = channels.len();
-        let vector_bytes = count * size_of::<StoreKey>();
-        prop_assert_eq!(operations - plain_operations, count + 1 + count);
-        prop_assert_eq!(scanned - plain_scanned, vector_bytes + 32 * count);
-        prop_assert_eq!(backing - plain_backing, vector_bytes);
-    }
-
-    /// D-S1 (D-C2a, DR-96): a channel key is the channel's history digest.
-    #[test]
-    fn channel_key_equals_hash(channel in "[a-z]{0,40}") {
-        let key = channel_key(&channel, &Meter::default()).unwrap();
-        let digest = hash(&channel, &Meter::default()).unwrap();
-        prop_assert_eq!(key.0.as_slice(), digest.0.as_slice());
-        prop_assert_eq!(key, StoreKey::from_digest(&digest, &Meter::default()).unwrap());
-    }
-}
-
-/// D-S1 (D-C2a, DR-96): a group key hashes the domain separator and the
-/// channel keys in channel order, so a reordered or repeated group has a
-/// different key; join groups keep their positions.
-#[test]
-fn group_key_preserves_order() {
-    let free = Meter::default();
-    let a = channel_key(&"a", &free).unwrap();
-    let b = channel_key(&"b", &free).unwrap();
-    let ab = group_key(&[a, b], &free).unwrap();
-    assert_ne!(ab, group_key(&[b, a], &free).unwrap());
-    assert_ne!(group_key(&[a], &free).unwrap(), group_key(&[a, a], &free).unwrap());
-    let mut reference = Blake2b::<U32>::new();
-    reference.update(GROUP_KEY_DOMAIN);
-    reference.update(a.0);
-    reference.update(b.0);
-    assert_eq!(ab.0.as_slice(), &reference.finalize()[..]);
-    let built = GroupKeys::build(&["a", "b"], &free).unwrap();
-    assert_eq!(built.channels, vec![a, b]);
-    assert_eq!(built.group, ab);
-    let operation = OperationKeys::build(&[vec!["b", "a"], vec!["a", "b"]], &free).unwrap();
-    assert_eq!(operation.groups.len(), 2);
-    assert_eq!(operation.groups[0].channels, vec![b, a]);
-    assert_eq!(operation.groups[1].group, ab);
-    assert_ne!(operation.groups[0].group, operation.groups[1].group);
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
-
-    /// D-S1 (D-C2d, DR-96): the projection of a channel group from the store
-    /// keys of its channels has the bytes of `channels_hash`, for any order,
-    /// length and repetition of the channels. Its charge is the key vector,
-    /// one copy per key, the sort of the keys, one digest update per key and
-    /// the result. No channel is serialized.
-    #[test]
-    fn channels_hash_from_keys_matches_channels_hash(
-        channels in prop::collection::vec("[a-c]{0,3}", 0..12),
-    ) {
-        let keys = GroupKeys::build(&channels, &Meter::default()).unwrap().channels;
-        let meter = Meter::default();
-        let projection = channels_hash_from_keys(&keys, &meter).unwrap();
-        let reference = channels_hash(&channels, &Meter::default()).unwrap();
-        prop_assert_eq!(projection.as_slice(), reference.0.as_slice());
-        let mut reversed = keys.clone();
-        reversed.reverse();
-        prop_assert_eq!(channels_hash_from_keys(&reversed, &Meter::default()).unwrap(), projection);
-        let count = keys.len();
-        let sort_meter = Meter::default();
-        let mut sorted = keys.clone();
-        sort(&mut sorted, |key| &key.0[..], &sort_meter).unwrap();
-        let [sort_operations, sort_scanned, sort_backing] = sort_meter.used.get();
-        let expected = [
-            (count + 1) + count + sort_operations + count + 1,
-            32 * count + 32 * count + sort_scanned + 32 * count + 32,
-            32 * count + sort_backing,
-        ];
-        prop_assert_eq!(meter.used.get(), expected);
-    }
+    assert_eq!(
+        event_leg_bytes_for_epoch(EventCodecEpoch::CostV1, &datum).expect("v1 leg"),
+        event_leg_bytes_for_epoch(EventCodecEpoch::CostV2, &datum).expect("v2 leg")
+    );
+    assert_eq!(
+        channel_hash_for_epoch(EventCodecEpoch::CostV1, &channels[0]).expect("v1 key"),
+        channel_hash_for_epoch(EventCodecEpoch::CostV2, &channels[0]).expect("v2 key")
+    );
+    assert_eq!(
+        recorded_removal_for_epoch(
+            EventCodecEpoch::CostV1,
+            &channels[0],
+            &Produce::create_for_epoch(EventCodecEpoch::CostV1, &channels[0], &datum, false)
+                .expect("v1 produce"),
+            b"removal"
+        )
+        .expect("v1 removal"),
+        recorded_removal_for_epoch(
+            EventCodecEpoch::CostV2,
+            &channels[0],
+            &Produce::create_for_epoch(EventCodecEpoch::CostV2, &channels[0], &datum, false)
+                .expect("v2 produce"),
+            b"removal"
+        )
+        .expect("v2 removal")
+    );
 }

@@ -1,7 +1,6 @@
 use futures::FutureExt;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUnits};
 use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
@@ -44,27 +43,6 @@ fn introduce(budget: &RuntimeBudget, source: &Produce) {
 }
 
 #[test]
-fn native_operation_start_meters_shallow_index_work() {
-    let budget = RuntimeBudget::new(Cost::unsafe_max());
-    let config = config(100, [0, 0, 1, 0]);
-    let host = config.host_work();
-    budget.reset_for_native_execution(config).unwrap();
-    let _accounting = budget.enter_comm_accounting_scope();
-    let channel = channel(1);
-    let source = Produce::create(&channel, &7u8, false);
-    scope(&budget, 0, || {
-        budget
-            .start_native_operation(
-                RSpaceOperationSource::Produce(&source),
-                std::slice::from_ref(&channel),
-                &[],
-            )
-            .unwrap();
-    });
-    assert!(host.usage(HostWorkDimension::VerificationBytes).get() < 1_000_000);
-}
-
-#[test]
 fn resting_comm_refuses_v1_native_journal_without_fabricating_introduction() {
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget
@@ -87,13 +65,15 @@ fn resting_comm_refuses_v1_native_journal_without_fabricating_introduction() {
                 std::slice::from_ref(&channel),
                 &[],
             ),
-            Err(InterpreterError::HostWorkRejected)
+            // Changed by the merge of feature/cost-accounted-rho: F1R3Lang's
+            // `InterpreterError` has a generated iterative `Drop`, so the
+            // pattern borrows the message instead of moving it out (E0509).
+            // Err(InterpreterError::ReduceError(message)) if message == "Resting source requires CostV2"
+            Err(InterpreterError::ReduceError(ref message)) if message == "Resting source requires CostV2"
         ));
     });
     let observer = crate::rust::interpreter::rho_runtime::test_accounting_observer(budget);
-    let identity = event
-        .cost_v2_identity_metered(&|_, _, _| Ok(()))
-        .expect("checked resting identity");
+    let identity = event.cost_v2_identity().expect("checked resting identity");
     assert!(matches!(
         observer.observe_resting_comm(
             &identity,
@@ -102,7 +82,8 @@ fn resting_comm_refuses_v1_native_journal_without_fabricating_introduction() {
             false,
             &[],
         ),
-        Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+        Err(rspace_plus_plus::rspace::errors::RSpaceError::InterpreterError(message))
+            if message == "resting COMM requires its authorized runtime and codec epoch"
     ));
 }
 
@@ -117,9 +98,7 @@ fn resting_comm_requires_local_capability_and_charges_before_publication() {
         ordered_data_indices: Vec::new(),
         peeks: Default::default(),
     };
-    let identity = event
-        .cost_v2_identity_metered(&|_, _, _| Ok(()))
-        .expect("checked resting identity");
+    let identity = event.cost_v2_identity().expect("checked resting identity");
     let observer = crate::rust::interpreter::rho_runtime::test_accounting_observer(budget.clone());
     let _accounting = budget.enter_comm_accounting_scope();
     assert!(matches!(
@@ -130,13 +109,12 @@ fn resting_comm_requires_local_capability_and_charges_before_publication() {
             false,
             &[],
         ),
-        Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+        Err(rspace_plus_plus::rspace::errors::RSpaceError::InterpreterError(message))
+            if message == "resting COMM requires its authorized runtime and codec epoch"
     ));
     assert_eq!(budget.total_cost().value, 0);
     drop(_accounting);
-    budget
-        .enable_standalone_resting_comm(HostWorkLimits::uniform(HostWorkLimit::new(1000)))
-        .unwrap();
+    budget.enable_standalone_resting_comm().unwrap();
     assert!(budget
         .reset_for_native_execution(config(100, [0, 0, 1, 0]))
         .is_err());
@@ -234,32 +212,6 @@ fn native_operation_recording_rejects_incomplete_duplicate_and_mismatched_lifecy
             "failure case {failure}"
         );
     }
-}
-
-#[test]
-fn native_completion_exhaustion_invalidates_recording_before_publication() {
-    let budget = RuntimeBudget::new(Cost::unsafe_max());
-    let config = config(100, [0, 0, 1, 0]);
-    let host = config.host_work();
-    budget.reset_for_native_execution(config).unwrap();
-    let _accounting = budget.enter_comm_accounting_scope();
-    let channel = channel(1);
-    let source = Produce::create(&channel, &7u8, false);
-    scope(&budget, 0, || {
-        let reference = RSpaceOperationSource::Produce(&source);
-        budget
-            .start_native_operation(reference, std::slice::from_ref(&channel), &[])
-            .unwrap();
-        introduce(&budget, &source);
-        let dimension = HostWorkDimension::VerificationOperations;
-        let remaining = host.limits().get(dimension).get() - host.usage(dimension).get();
-        host.reserve(dimension, HostWorkUnits::new(remaining))
-            .unwrap();
-        budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
-    });
-    assert!(host.is_rejected());
-    assert_eq!(budget.native_phlo_usage(), Some(1));
-    assert!(budget.native_operation_recording().is_err());
 }
 
 #[test]
@@ -445,9 +397,8 @@ proptest! {
         let records = budget.native_operation_recording().unwrap().unwrap();
         let charges = budget.native_budget_recording().unwrap().unwrap();
         with_contract(100, [0, 0, 1, 0], |contract| {
-            let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
             let checked = contract.check_operation_journal(
-                charges.session, &charges, Arc::clone(&records), journal_limits(), &host,
+                charges.session, &charges, Arc::clone(&records), journal_limits(),
             ).unwrap();
             assert_eq!(checked.total(), charges.used);
         });

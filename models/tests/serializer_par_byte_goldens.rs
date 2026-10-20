@@ -39,7 +39,7 @@
 //! | 1 | `New.injections: BTreeMap<String, Par>` | the ONLY `btree_map` field in `RhoTypes.proto`; serde emits a **map** (`u64` count, then key/value pairs), so a decoder must call `deserialize_map`, not `deserialize_seq` |
 //! | 2 | the 12 `serialize_with = serialize_as_empty_bytes` sites | WRITTEN as `serialize_bytes(&[])` (8 zero bytes), READ back as `Vec<u8>` through `deserialize_seq`. The asymmetry is deliberate (`models/src/rust/serde_helpers.rs`), and a decoder must read the stream's REAL length rather than assume zero |
 //! | 3 | `EPathMap` (`models/src/rust/rhoapi_ext.rs`) | **4** serde fields; the first is one EPM1 byte array carrying PathMap's compact ACTree03 topology and, in map mode, its generated-PDA value table. It is not a flattened `Vec<Par>`. `locally_free` is blanked on serialize ONLY, and the retained derived `Deserialize` reads the real bytes. |
-//! | 4 | the three oneofs (`ExprInstance` 36, `ConnectiveInstance` 9, `TaggedCont` 2) | an `Option` tag (1 byte) **then** a variant index (`u32`, 4 bytes fixint-LE) — two separate reads, not one |
+//! | 4 | the three oneofs (`ExprInstance` 42, `ConnectiveInstance` 9, `TaggedCont` 2) | an `Option` tag (1 byte) **then** a variant index (`u32`, 4 bytes fixint-LE) — two separate reads, not one |
 //!
 //! ## Blessing procedure
 //!
@@ -65,9 +65,18 @@ use models::rhoapi::{
 };
 use models::rust::rhoapi_ext::EPathMap;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{
+    event_leg_bytes_for_epoch, EventCodecEpoch,
+};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+// Legacy pins below also use the two epoch-selected leaf encoders.
+// use rspace_plus_plus::rspace::serializers::serializers::{
+//     encode_continuations, encode_datum, encode_datums,
+// };
 use rspace_plus_plus::rspace::serializers::serializers::{
-    encode_continuations, encode_datum, encode_datums,
+    encode_continuations, encode_continuations_for_epoch, encode_datum, encode_datums,
+    encode_datums_for_epoch,
 };
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
@@ -167,7 +176,7 @@ fn odd_shapes_par() -> Par {
             locally_free: vec![0x31, 0x32],
         }],
         exprs: vec![
-            // shape 4 — a HIGH oneof index (35 of 36); a decoder that read the
+            // shape 4 — a HIGH oneof index (35 of 42); a decoder that read the
             // index as a single byte, or that mis-ordered tag vs index, cannot
             // reproduce this.
             Expr {
@@ -460,29 +469,107 @@ mod pinned {
     //! shrank by exactly 423 bytes. The new SHA-256 values below were emitted by
     //! the blessing path under a 1 GiB RSS cap and are then checked in ordinary
     //! assertion mode.
+    //!
+    //! ★★ **Re-pin by the merge of feature/cost-accounted-rho (plan step 1.9):
+    //! these pins now hold the CostV2 layout.** The checkpoint merge `e5102e945`
+    //! (2026-10-07) brought the cost-accounting fields into the generated types,
+    //! for example `Par.cost_signed_terms` and `Par.cost_stacks`. The epoch-less
+    //! encoders pinned here write every serde field. That is the CostV2
+    //! cold-store layout: the CostV2 reader decodes it with `cold_decode_prefix`
+    //! (`rspace++/src/rspace/serializers/serializers.rs`). So the three encodings
+    //! grew by 515, 517 and 547 bytes, although every cost field of the fixtures
+    //! is empty.
+    //!
+    //! ⚠ This is a consensus change, and it applies to the CostV2 epoch only. A
+    //! shard seals its event codec epoch when it adopts its genesis policy, and no
+    //! term or stored event can select an epoch. CostV2 belongs to the
+    //! protocol-7 fresh-genesis policy
+    //! (`docs/casper/theory/cost-accounting-impl/genesis-resource-policy.md`).
+    //! Before the cost fields existed, these pins held the only layout, which is
+    //! now the Legacy layout. [`super::pinned_legacy`] keeps those bytes and
+    //! asserts them in every mode, so the history rows of a Legacy shard stay
+    //! pinned. The new values were emitted by the blessing path on 2026-10-20
+    //! and are checked in ordinary assertion mode.
 
     /// `encode_datum(fixture_datum())` — the models-typed cold-store leaf.
     /// Captured 2026-07-27 at `18419514` on the DERIVED encoder, before any
     /// line of `bincode_decoder.rs` existed; re-pinned 4,153 → 4,199 by
-    /// CBR-042 and 4,199 → 3,776 by CBR-044.
+    /// CBR-042, 4,199 → 3,776 by CBR-044, and 3,776 → 4,291 by the merge of
+    /// feature/cost-accounted-rho (CostV2 layout).
+    // pub const PAR_DATUM_LEN: usize = 3776;
+    // pub const PAR_DATUM_DIGEST_HEX: &str =
+    //     "f08ae1fe1e096865ac8d852c2cf4fcdd83936a1b102f41d39454589fb29c49c0";
+    pub const PAR_DATUM_LEN: usize = 4291;
+    pub const PAR_DATUM_DIGEST_HEX: &str =
+        "6ca83957a1b14f75b3abcd4df431e85a77b2fd3bcc984562807a8f3e5d3808bb";
+
+    /// `encode_datums([fixture_datum(), fixture_datum_persist()])`.
+    /// Re-pinned 4,285 → 4,331 by CBR-042, 4,331 → 3,908 by CBR-044, and
+    /// 3,908 → 4,425 by the merge of feature/cost-accounted-rho (CostV2 layout).
+    // pub const PAR_DATUMS_LEN: usize = 3908;
+    // pub const PAR_DATUMS_DIGEST_HEX: &str =
+    //     "66aae76545af74d6204766f46d6fd48e241845ad2aee01d3d930509946640c01";
+    pub const PAR_DATUMS_LEN: usize = 4425;
+    pub const PAR_DATUMS_DIGEST_HEX: &str =
+        "c1eec86f2a3e1ca2638d40ba4a085cdba002eabfda0f582980320d180c170ad1";
+
+    /// `encode_continuations([par_body, scala_ref])`.
+    /// Re-pinned 4,529 → 4,575 by CBR-042, 4,575 → 4,152 by CBR-044, and
+    /// 4,152 → 4,699 by the merge of feature/cost-accounted-rho (CostV2 layout).
+    // pub const PAR_CONTS_LEN: usize = 4152;
+    // pub const PAR_CONTS_DIGEST_HEX: &str =
+    //     "852dd38e7f0f1e3855bd9e4b18c12629016ec63508cd9e8357ca972e02eec4ce";
+    pub const PAR_CONTS_LEN: usize = 4699;
+    pub const PAR_CONTS_DIGEST_HEX: &str =
+        "8ac0943f573beb329a853e9cccdcedd3dd6b3292f421f6739a0daa1b073d9c6f";
+}
+
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9): the
+// checkpoint merge e5102e945 gave `Par` its two cost fields, so the current
+// layout writes more bytes than the pins of CBR-044. A shard in the Legacy codec
+// epoch still writes the old layout, and its history rows hold the old bytes.
+mod pinned_legacy {
+    //! ★ **The CBR-044 pins, kept for the Legacy codec epoch.**
+    //!
+    //! These are the values of [`super::pinned`] before the cost fields. The
+    //! Legacy layout must give them byte for byte, because the history rows of
+    //! a Legacy shard already hold them. Unlike [`super::pinned`], these pins
+    //! are never re-blessed.
+
+    /// The Legacy leaf of `fixture_datum()`.
     pub const PAR_DATUM_LEN: usize = 3776;
     pub const PAR_DATUM_DIGEST_HEX: &str =
         "f08ae1fe1e096865ac8d852c2cf4fcdd83936a1b102f41d39454589fb29c49c0";
 
-    /// `encode_datums([fixture_datum(), fixture_datum_persist()])`.
-    /// Re-pinned 4,285 → 4,331 by CBR-042 and 4,331 → 3,908 by CBR-044.
+    /// `encode_datums_for_epoch(Legacy, [fixture_datum(), fixture_datum_persist()])`.
     pub const PAR_DATUMS_LEN: usize = 3908;
     pub const PAR_DATUMS_DIGEST_HEX: &str =
         "66aae76545af74d6204766f46d6fd48e241845ad2aee01d3d930509946640c01";
 
-    /// `encode_continuations([par_body, scala_ref])`.
-    /// Re-pinned 4,529 → 4,575 by CBR-042 and 4,575 → 4,152 by CBR-044.
+    /// `encode_continuations_for_epoch(Legacy, [par_body, scala_ref])`.
     pub const PAR_CONTS_LEN: usize = 4152;
     pub const PAR_CONTS_DIGEST_HEX: &str =
         "852dd38e7f0f1e3855bd9e4b18c12629016ec63508cd9e8357ca972e02eec4ce";
 }
 
 fn bless() -> bool { std::env::var_os("PAR_GOLDEN_BLESS").is_some() }
+
+/// Asserts a Legacy pin in every mode. The bless mode does not apply here,
+/// because a Legacy pin records bytes that history rows already hold.
+fn assert_legacy_pin(label: &str, pinned_len: usize, pinned_digest: &str, bytes: &[u8]) {
+    assert_eq!(
+        bytes.len(),
+        pinned_len,
+        "{label}: the Legacy layout no longer gives the pinned LENGTH. The history rows of a \
+         Legacy shard hold these bytes, so this is a consensus change, not a test failure."
+    );
+    assert_eq!(
+        digest_hex(bytes),
+        pinned_digest,
+        "{label}: the Legacy layout no longer gives the pinned BYTES. The history rows of a \
+         Legacy shard hold these bytes, so this is a consensus change, not a test failure."
+    );
+}
 
 fn check(label: &str, pinned_len: usize, pinned_digest: &str, bytes: &[u8]) {
     if bless() {
@@ -537,6 +624,56 @@ fn par_continuations_encoding_pinned() {
             fixture_continuation_par_body(),
             fixture_continuation_scala_ref(),
         ]),
+    );
+}
+
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9): the three
+// Legacy pins. Each one encodes the same fixture as its current twin above.
+
+#[test]
+fn legacy_par_datum_encoding_reproduces_the_pre_cost_pin() {
+    let datum = fixture_datum();
+    let mut bytes = event_leg_bytes_for_epoch(EventCodecEpoch::Legacy, datum.a.as_ref())
+        .expect("the fixture datum has no cost field, so the Legacy epoch accepts it");
+    bytes.extend(
+        bincode::serialize(&(datum.persist, &datum.source))
+            .expect("bounded datum tail serialization"),
+    );
+    assert_legacy_pin(
+        "LEGACY_PAR_DATUM",
+        pinned_legacy::PAR_DATUM_LEN,
+        pinned_legacy::PAR_DATUM_DIGEST_HEX,
+        &bytes,
+    );
+}
+
+#[test]
+fn legacy_par_datums_encoding_reproduces_the_pre_cost_pin() {
+    let bytes = encode_datums_for_epoch(EventCodecEpoch::Legacy, &[
+        fixture_datum(),
+        fixture_datum_persist(),
+    ])
+    .expect("the fixture datums have no cost field, so the Legacy epoch accepts them");
+    assert_legacy_pin(
+        "LEGACY_PAR_DATUMS",
+        pinned_legacy::PAR_DATUMS_LEN,
+        pinned_legacy::PAR_DATUMS_DIGEST_HEX,
+        &bytes,
+    );
+}
+
+#[test]
+fn legacy_par_continuations_encoding_reproduces_the_pre_cost_pin() {
+    let bytes = encode_continuations_for_epoch(EventCodecEpoch::Legacy, &[
+        fixture_continuation_par_body(),
+        fixture_continuation_scala_ref(),
+    ])
+    .expect("the fixture continuations have no cost field, so the Legacy epoch accepts them");
+    assert_legacy_pin(
+        "LEGACY_PAR_CONTS",
+        pinned_legacy::PAR_CONTS_LEN,
+        pinned_legacy::PAR_CONTS_DIGEST_HEX,
+        &bytes,
     );
 }
 
@@ -644,7 +781,7 @@ fn fixture_carries_shape_3_both_epathmap_serialize_arms() {
 fn fixture_carries_shape_4_all_three_oneofs_including_high_indices() {
     let p = odd_shapes_par();
 
-    // ExprInstance: a high index (GFixedPoint = 35 of 36) and an absent oneof.
+    // ExprInstance: a high index (GFixedPoint = 35 of 42) and an absent oneof.
     let mut saw_high_expr = false;
     let mut saw_absent_expr = false;
     for e in &p.exprs {

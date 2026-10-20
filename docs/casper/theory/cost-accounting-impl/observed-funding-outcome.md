@@ -1311,6 +1311,16 @@ A guard veto permits Store even if another combination could pass.
 Produce evaluates the existing continuation-veto loop across current joins.
 A future accepted COMM binding does not prohibit Store before its data exists.
 
+**Amendment (DR-129, 2026-10-13).** Play shuffles its candidates at random again, as on `dev`.
+Only replay uses the deterministic order, and replay follows the recorded pick.
+A join that names one channel twice orders that channel by source hash in play and replay (E1).
+The Stored check skips a continuation whose commit can veto (E3-a), so a guard no longer decides a Store claim in replay.
+
+**Amendment (complete guard search, 2026-10-16).** On the F1R3Lang branch, user decision 6 removes E3-a, and user decision 4 restores the complete guard search.
+Play and native replay search every assignment of a join, and each takes the first admissible assignment in one order.
+Store validation therefore accepts a Store claim only when no assignment passes both the spatial patterns and the guard.
+Phase 11 of [the `where`-clause plan](../../../plans/where-clauses-and-match-guards-2026-04-29.md#8-implementation-phasing) records the decision and its tests.
+
 Pre-dispatch journal sources and post-dispatch trace metadata have different roles.
 Replay compares actual candidates with the complete pre-dispatch journal fields.
 Accepted-trace lookup compares logical source identity, channels, persistence, peeks, and repetition counts.

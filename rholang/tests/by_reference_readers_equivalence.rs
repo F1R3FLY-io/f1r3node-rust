@@ -62,12 +62,22 @@ use rholang::rust::interpreter::matcher::has_locally_free::{
     expr_locally_free_ref, HasLocallyFree,
 };
 
+// Changed by the merge of feature/cost-accounted-rho (finding R1-44): the
+// literal 36 did not follow RhoTypes.proto. It stayed 36 after GFloat32 and
+// the five sized integers arrived (the corpus holds 42 variants), so the guard
+// could not see a missing variant. Both counts now come from the generated
+// wire-schema table, as in `models/tests/sorter_canonical_golden.rs`. The
+// connective count stays 9.
+// const EXPR_INSTANCE_VARIANT_COUNT: usize = 36;
+// const CONNECTIVE_INSTANCE_VARIANT_COUNT: usize = 9;
 /// Every `ExprInstance` variant that `RhoTypes.proto` defines. If a variant is
 /// added to the proto and not added here, `all_expr_instance_variants_covered`
 /// fails — the corpus cannot silently fall behind the schema.
-const EXPR_INSTANCE_VARIANT_COUNT: usize = 36;
+const EXPR_INSTANCE_VARIANT_COUNT: usize =
+    models::rust::rholang::par_children::EXPR_INSTANCE_VARIANT_COUNT;
 /// Likewise for `ConnectiveInstance`.
-const CONNECTIVE_INSTANCE_VARIANT_COUNT: usize = 9;
+const CONNECTIVE_INSTANCE_VARIANT_COUNT: usize =
+    models::rust::rholang::par_children::CONNECTIVE_INSTANCE_VARIANT_COUNT;
 
 /// A `Par` carrying a distinctive cached `locally_free` / `connective_used`, so
 /// that a reader which returned the WRONG child's cached field (rather than no
@@ -310,7 +320,10 @@ fn evar_arm_threads_depth_exactly_like_the_by_value_trait() {
     ] {
         let expr = e(ExprInstance::EVarBody(EVar {
             v: Some(Var {
-                var_instance: Some(var_instance.clone()),
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // `VarInstance` is `Copy`.
+                // var_instance: Some(var_instance.clone()),
+                var_instance: Some(var_instance),
             }),
         }));
         for depth in [0i32, 1, 2, 3] {

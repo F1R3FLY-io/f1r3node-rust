@@ -23,14 +23,20 @@ use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
 
 use super::exports::*;
-use super::has_locally_free::HasLocallyFree;
+// Changed by the merge of feature/cost-accounted-rho (finding R3-17): the list
+// values of the three added Par fields read their flags by reference.
+// use super::has_locally_free::HasLocallyFree;
+use super::has_locally_free::{HasLocallyFree, HasLocallyFreeRef};
 #[cfg(test)]
 use super::lazy_relation::RelationalMatchStats;
 use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor};
-use super::list_match::aggregate_updates_metered;
+use super::list_match::aggregate_updates;
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
-use super::spatial_matcher::SpatialMatcherContext;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-51): the
+// list mergers below call the shared in-place remainder mergers.
+// use super::spatial_matcher::SpatialMatcherContext;
+use super::spatial_matcher::{merge_map_remainder, merge_set_remainder, SpatialMatcherContext};
 use super::sub_pars::sub_pars;
 
 pub(super) fn match_par(
@@ -195,34 +201,6 @@ enum MatchPair {
     CostStack(CostStack, CostStack),
 }
 
-impl MatchPair {
-    fn reserve_inspections(&self, context: &SpatialMatcherContext) -> Option<()> {
-        macro_rules! inspect {
-            ($target:expr, $pattern:expr) => {{
-                context.inspect_blocks($target)?;
-                context.inspect_blocks($pattern)
-            }};
-        }
-        match self {
-            Self::Par(target, pattern) => inspect!(target, pattern),
-            Self::ParPair(target, pattern) => inspect!(target, pattern),
-            Self::Connective(target, pattern) => inspect!(target, pattern),
-            Self::Bundle(target, pattern) => inspect!(target, pattern),
-            Self::Send(target, pattern) => inspect!(target, pattern),
-            Self::Receive(target, pattern) => inspect!(target, pattern),
-            Self::New(target, pattern) => inspect!(target, pattern),
-            Self::Expr(target, pattern) => inspect!(target, pattern),
-            Self::Match(target, pattern) => inspect!(target, pattern),
-            Self::Unforgeable(target, pattern) => inspect!(target, pattern),
-            Self::ReceiveBind(target, pattern) => inspect!(target, pattern),
-            Self::MatchCase(target, pattern) => inspect!(target, pattern),
-            Self::If(target, pattern) => inspect!(target, pattern),
-            Self::CostSignedTerm(target, pattern) => inspect!(target, pattern),
-            Self::CostStack(target, pattern) => inspect!(target, pattern),
-        }
-    }
-}
-
 fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
     drive_job(context, match_job(root))
 }
@@ -232,10 +210,7 @@ fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
 
     loop {
         job = match job {
-            Job::Match(pair) => {
-                pair.reserve_inspections(context)?;
-                evaluate_pair(context, *pair, &mut frames)
-            }
+            Job::Match(pair) => evaluate_pair(context, *pair, &mut frames),
             Job::ParConnectives(state) => step_par_connectives(context, *state, &mut frames),
             Job::ConnectiveCandidates(state) => {
                 step_connective_candidates(context, *state, &mut frames)
@@ -297,12 +272,6 @@ fn resume(
         }
         Frame::BindOnSuccess { level, value } => {
             if result {
-                if context
-                    .reserve_free_map_insert(context.free_map.len())
-                    .is_none()
-                {
-                    return Job::Return(false);
-                }
                 context.free_map.insert(level, *value);
             }
             Job::Return(result)
@@ -345,14 +314,6 @@ fn resume(
                 // The final fold already owns the attempt baseline. Retain
                 // only writes that differ from it instead of duplicating the
                 // complete FreeMap once per successful relation edge.
-                for _ in 0..produced.len() {
-                    if context
-                        .reserve_free_map_search(context.free_map.len())
-                        .is_none()
-                    {
-                        return Job::Return(false);
-                    }
-                }
                 produced.retain(|level, value| context.free_map.get(level) != Some(value));
                 let produced = if produced.is_empty() {
                     machine.relation.record_shared_success(
@@ -497,25 +458,17 @@ fn free_variable_level(pattern: &Par) -> Option<i32> {
     }
 }
 
-fn cost_stack_closed_metered(context: &SpatialMatcherContext, root: &CostStack) -> Option<bool> {
+fn cost_stack_closed(root: &CostStack) -> Option<bool> {
     use models::rhoapi::cost_signature::Value;
     enum Pending<'a> {
         Stack(&'a CostStack),
         Signature(&'a CostSignature),
     }
     let mut pending = Vec::new();
-    context.reserve_vec(&mut pending, 1)?;
     pending.push(Pending::Stack(root));
     while let Some(next) = pending.pop() {
-        context.reserve(1, 0, 0)?;
         match next {
             Pending::Stack(stack) => {
-                let Some(children) = stack.cells.len().checked_add(stack.parallel_tail.len())
-                else {
-                    return context
-                        .reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
-                };
-                context.reserve_vec(&mut pending, children)?;
                 pending.extend(stack.parallel_tail.iter().map(Pending::Stack));
                 pending.extend(stack.cells.iter().map(Pending::Signature));
             }
@@ -527,7 +480,6 @@ fn cost_stack_closed_metered(context: &SpatialMatcherContext, root: &CostStack) 
                     return Some(false)
                 }
                 Some(Value::Compound(compound)) => {
-                    context.reserve_vec(&mut pending, compound.elements.len())?;
                     pending.extend(compound.elements.iter().map(Pending::Signature));
                 }
                 _ => {}
@@ -537,7 +489,7 @@ fn cost_stack_closed_metered(context: &SpatialMatcherContext, root: &CostStack) 
     Some(true)
 }
 
-fn bind_field_owned<T: Clone + shared::rust::clone_backing::CloneBacking>(
+fn bind_field_owned<T: Clone>(
     context: &mut SpatialMatcherContext,
     values: Vec<T>,
     level: i32,
@@ -545,16 +497,13 @@ fn bind_field_owned<T: Clone + shared::rust::clone_backing::CloneBacking>(
     assign: impl Fn(&mut Par, Vec<T>),
 ) -> Option<()> {
     for value in &values {
-        context.inspect_blocks(value)?;
         if !closed(context, value)? {
             return None;
         }
     }
-    context.reserve_free_map_search(context.free_map.len())?;
     if let Some(bound) = context.free_map.get_mut(&level) {
         assign(bound, values);
     } else {
-        context.reserve_free_map_insert(context.free_map.len())?;
         let mut bound = Par::default();
         assign(&mut bound, values);
         context.free_map.insert(level, bound);
@@ -562,7 +511,7 @@ fn bind_field_owned<T: Clone + shared::rust::clone_backing::CloneBacking>(
     Some(())
 }
 
-fn bind_field_borrowed<T: Clone + shared::rust::clone_backing::CloneBacking>(
+fn bind_field_borrowed<T: Clone>(
     context: &mut SpatialMatcherContext,
     values: &[T],
     level: i32,
@@ -570,12 +519,10 @@ fn bind_field_borrowed<T: Clone + shared::rust::clone_backing::CloneBacking>(
     assign: impl Fn(&mut Par, Vec<T>),
 ) -> Option<()> {
     for value in values {
-        context.inspect_blocks(value)?;
         if !closed(context, value)? {
             return None;
         }
     }
-    context.reserve_blocks_slice_copy_and_cleanup(values)?;
     bind_field_owned(context, values.to_vec(), level, closed, assign)
 }
 
@@ -583,11 +530,7 @@ fn closed_by_value<T: Clone>(
     context: &SpatialMatcherContext,
     value: &T,
     check: impl Fn(&SpatialMatcherContext, T) -> Vec<u8>,
-) -> Option<bool>
-where
-    T: shared::rust::clone_backing::CloneBacking,
-{
-    context.reserve_blocks_copy_and_cleanup(value)?;
+) -> Option<bool> {
     Some(check(context, value.clone()).is_empty())
 }
 
@@ -639,10 +582,13 @@ fn bind_free_variable_owned(
         |c: &SpatialMatcherContext, value: &CostSignedTerm| closed_by_value(c, value, |c, v| c
             .locally_free(v, 0))
     );
-    field!(cost_stacks, |c: &SpatialMatcherContext,
-                         value: &CostStack| {
-        cost_stack_closed_metered(c, value)
-    });
+    // Changed by the merge of feature/cost-accounted-rho: the context carried
+    // only the meter of `cost_stack_closed_metered`, which DR-131 removed.
+    // field!(cost_stacks, |c: &SpatialMatcherContext,
+    //                      value: &CostStack| {
+    //     cost_stack_closed(value)
+    // });
+    field!(cost_stacks, |_, value: &CostStack| cost_stack_closed(value));
     Job::Return(true)
 }
 
@@ -686,10 +632,13 @@ pub(super) fn bind_free_variable_borrowed(
         |c: &SpatialMatcherContext, value: &CostSignedTerm| closed_by_value(c, value, |c, v| c
             .locally_free(v, 0))
     );
-    field!(cost_stacks, |c: &SpatialMatcherContext,
-                         value: &CostStack| {
-        cost_stack_closed_metered(c, value)
-    });
+    // Changed by the merge of feature/cost-accounted-rho: the context carried
+    // only the meter of `cost_stack_closed_metered`, which DR-131 removed.
+    // field!(cost_stacks, |c: &SpatialMatcherContext,
+    //                      value: &CostStack| {
+    //     cost_stack_closed(value)
+    // });
+    field!(cost_stacks, |_, value: &CostStack| cost_stack_closed(value));
     Some(())
 }
 
@@ -777,39 +726,31 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
     }))
 }
 
+// Changed by the merge of feature/cost-accounted-rho: the context carried only
+// the meter of this step (`reserve`, `reserve_blocks_copy_and_cleanup` and
+// `work`), which DR-131 removed. The step keeps the frame-stack signature.
+// fn step_par_connectives(
+//     context: &mut SpatialMatcherContext,
 fn step_par_connectives(
-    context: &mut SpatialMatcherContext,
+    _context: &mut SpatialMatcherContext,
     mut state: ParConnectiveState,
     frames: &mut FrameStack,
 ) -> Job {
     let Some(plan) = state.plans.get(state.next) else {
         return start_par_fields(state, frames);
     };
-    if context.reserve(1, 0, 0).is_none()
-        || context
-            .reserve_blocks_copy_and_cleanup(&plan.connective)
-            .is_none()
-    {
-        return Job::Return(false);
-    }
     let plan = plan.clone();
     state.next += 1;
-    let Some(work) = context.work() else {
-        return Job::Return(false);
-    };
     let Some(candidates) = sub_pars(
         &state.target,
         &plan.bounds.0,
         &plan.bounds.1,
         &plan.remainder_bounds.0,
         &plan.remainder_bounds.1,
-        work,
     ) else {
         return Job::Return(false);
     };
-    let Some(candidates): Option<Vec<_>> = candidates.collect() else {
-        return Job::Return(false);
-    };
+    let candidates: Vec<_> = candidates.collect();
     let free_map_is_unreachable = matches!(
         plan.connective.connective_instance,
         Some(ConnBool(_))
@@ -837,27 +778,9 @@ fn step_connective_candidates(
     let Some(pair) = state.candidates.get(state.next) else {
         return Job::Return(false);
     };
-    if context.reserve_blocks_copy_and_cleanup(&pair.0).is_none()
-        || context.reserve_blocks_copy_and_cleanup(&pair.1).is_none()
-    {
-        return Job::Return(false);
-    }
     let (candidate, remainder) = pair.clone();
     state.next += 1;
-    if !state.free_map_is_unreachable
-        && context
-            .reserve_blocks_copy_and_cleanup(&context.free_map)
-            .is_none()
-    {
-        return Job::Return(false);
-    }
     let snapshot = (!state.free_map_is_unreachable).then(|| context.free_map.clone());
-    if context
-        .reserve_blocks_copy_and_cleanup(&state.connective)
-        .is_none()
-    {
-        return Job::Return(false);
-    }
     let connective = state.connective.clone();
     frames.push(Frame::ConnectiveCandidate {
         state: Box::new(state),
@@ -961,6 +884,50 @@ fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
                 .map(MatchValue::Unforgeable)
                 .collect(),
             Merger::ParUnforgeables,
+            level,
+            wildcard,
+        ),
+        // Added by the merge of feature/cost-accounted-rho (finding R3-17):
+        // base and feature/cost-accounted-rho match all ten Par fields, in
+        // this order. Before, the PDA dropped the last three fields, so a
+        // pattern without them matched a target with them, and a remainder
+        // did not bind them.
+        ListRequest::new(
+            std::mem::take(&mut target.conditionals)
+                .into_iter()
+                .map(|value| MatchValue::If(Box::new(value)))
+                .collect(),
+            std::mem::take(&mut pattern.conditionals)
+                .into_iter()
+                .map(|value| MatchValue::If(Box::new(value)))
+                .collect(),
+            Merger::ParConditionals,
+            level,
+            wildcard,
+        ),
+        ListRequest::new(
+            std::mem::take(&mut target.cost_signed_terms)
+                .into_iter()
+                .map(MatchValue::CostSignedTerm)
+                .collect(),
+            std::mem::take(&mut pattern.cost_signed_terms)
+                .into_iter()
+                .map(MatchValue::CostSignedTerm)
+                .collect(),
+            Merger::ParCostSignedTerms,
+            level,
+            wildcard,
+        ),
+        ListRequest::new(
+            std::mem::take(&mut target.cost_stacks)
+                .into_iter()
+                .map(MatchValue::CostStack)
+                .collect(),
+            std::mem::take(&mut pattern.cost_stacks)
+                .into_iter()
+                .map(MatchValue::CostStack)
+                .collect(),
+            Merger::ParCostStacks,
             level,
             wildcard,
         ),
@@ -1398,40 +1365,20 @@ enum MatchValue {
     Bundle(Bundle),
     Unforgeable(GUnforgeable),
     ReceiveBind(ReceiveBind),
+    // Added by the merge of feature/cost-accounted-rho (finding R3-17): the
+    // values of the three Par fields that the general path did not match.
+    // `If` holds three `Par`s, so its variant is boxed. Inline, it would make
+    // each element of each list request about half again as large.
+    If(Box<If>),
+    CostSignedTerm(CostSignedTerm),
+    CostStack(CostStack),
 }
 
 impl MatchValue {
-    fn inspect(&self, context: &SpatialMatcherContext) -> Option<()> {
-        match self {
-            MatchValue::Par(value) => context.inspect_blocks(value),
-            MatchValue::ParPair(value) => context.inspect_blocks(value),
-            MatchValue::Send(value) => context.inspect_blocks(value),
-            MatchValue::Receive(value) => context.inspect_blocks(value),
-            MatchValue::New(value) => context.inspect_blocks(value),
-            MatchValue::Expr(value) => context.inspect_blocks(value),
-            MatchValue::Match(value) => context.inspect_blocks(value),
-            MatchValue::Bundle(value) => context.inspect_blocks(value),
-            MatchValue::Unforgeable(value) => context.inspect_blocks(value),
-            MatchValue::ReceiveBind(value) => context.inspect_blocks(value),
-        }
-    }
-
-    fn reserve_copy(&self, context: &SpatialMatcherContext) -> Option<()> {
-        match self {
-            MatchValue::Par(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::ParPair(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::Send(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::Receive(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::New(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::Expr(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::Match(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::Bundle(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::Unforgeable(value) => context.reserve_blocks_copy_and_cleanup(value),
-            MatchValue::ReceiveBind(value) => context.reserve_blocks_copy_and_cleanup(value),
-        }
-    }
-
-    fn connective_used(&self, _context: &SpatialMatcherContext) -> bool {
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-17): the
+    // three added variants read their flags through the context.
+    // fn connective_used(&self, _context: &SpatialMatcherContext) -> bool {
+    fn connective_used(&self, context: &SpatialMatcherContext) -> bool {
         match self {
             MatchValue::Par(value) => value.connective_used,
             MatchValue::ParPair((key, value)) => key.connective_used || value.connective_used,
@@ -1448,6 +1395,13 @@ impl MatchValue {
                     .expect("ReceiveBind.source")
                     .connective_used
             }
+            // Added by the merge of feature/cost-accounted-rho (finding
+            // R3-17): the rules of base's `HasLocallyFree`, which walk a cost
+            // stack's parallel tails too. These kinds can hold a connective,
+            // so the arms must not answer `false` as the Bundle arm does.
+            MatchValue::If(value) => context.connective_used_ref(value.as_ref()),
+            MatchValue::CostSignedTerm(value) => context.connective_used_ref(value),
+            MatchValue::CostStack(value) => context.connective_used_ref(value),
         }
     }
 
@@ -1463,6 +1417,11 @@ impl MatchValue {
             MatchValue::Bundle(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::Unforgeable(value) => context.locally_free(value.clone(), 0).is_empty(),
             MatchValue::ReceiveBind(value) => context.locally_free(value.clone(), 0).is_empty(),
+            // Added by the merge of feature/cost-accounted-rho (finding
+            // R3-17): the same rules, by reference.
+            MatchValue::If(value) => context.locally_free_is_empty(value.as_ref(), 0),
+            MatchValue::CostSignedTerm(value) => context.locally_free_is_empty(value, 0),
+            MatchValue::CostStack(value) => context.locally_free_is_empty(value, 0),
         }
     }
 
@@ -1497,6 +1456,18 @@ impl MatchValue {
             }
             (MatchValue::ReceiveBind(target), MatchValue::ReceiveBind(pattern)) => {
                 Some(MatchPair::ReceiveBind(target, pattern))
+            }
+            // Added by the merge of feature/cost-accounted-rho (finding R3-17):
+            // without these arms, the `_` arm below would make every pair of
+            // the three kinds fail, with no error.
+            (MatchValue::If(target), MatchValue::If(pattern)) => {
+                Some(MatchPair::If(*target, *pattern))
+            }
+            (MatchValue::CostSignedTerm(target), MatchValue::CostSignedTerm(pattern)) => {
+                Some(MatchPair::CostSignedTerm(target, pattern))
+            }
+            (MatchValue::CostStack(target), MatchValue::CostStack(pattern)) => {
+                Some(MatchPair::CostStack(target, pattern))
             }
             _ => None,
         }
@@ -1563,23 +1534,19 @@ enum Merger {
     ParMatches,
     ParBundles,
     ParUnforgeables,
+    // Added by the merge of feature/cost-accounted-rho (finding R3-17).
+    ParConditionals,
+    ParCostSignedTerms,
+    ParCostStacks,
     ESet,
     EMap,
 }
 
 impl Merger {
-    /// Prepare a complete replacement field before changing an existing
-    /// binding. No metering refusal can observe a partially assigned Par.
-    fn merge_in_place(
-        self,
-        par: &mut Par,
-        values: Vec<MatchValue>,
-        work: &super::spatial_matcher::MatcherWork<'_>,
-    ) -> Option<()> {
+    fn merge_in_place(self, par: &mut Par, values: Vec<MatchValue>) -> Option<()> {
         macro_rules! typed {
             ($variant:ident) => {{
                 let mut collected = Vec::new();
-                work.reserve_vec(&mut collected, values.len())?;
                 for value in values {
                     collected.push(match value {
                         MatchValue::$variant(value) => value,
@@ -1599,63 +1566,69 @@ impl Merger {
             Merger::ParMatches => par.matches = typed!(Match),
             Merger::ParBundles => par.bundles = typed!(Bundle),
             Merger::ParUnforgeables => par.unforgeables = typed!(Unforgeable),
-            Merger::ESet => {
-                let mut unique = Vec::new();
-                for element in typed!(Par) {
-                    work.inspect_blocks(&element)?;
-                    work.inspect_blocks(&unique)?;
-                    if !unique.contains(&element) {
-                        work.reserve_vec(&mut unique, 1)?;
-                        unique.push(element);
-                    }
-                }
-                let mut exprs = Vec::new();
-                work.reserve_vec(&mut exprs, 1)?;
-                exprs.push(Expr {
-                    expr_instance: Some(ESetBody(ESet {
-                        ps: unique,
-                        locally_free: Vec::new(),
-                        connective_used: false,
-                        remainder: None,
-                    })),
-                });
-                par.exprs = exprs;
+            // Added by the merge of feature/cost-accounted-rho (finding R3-17).
+            Merger::ParConditionals => {
+                par.conditionals = typed!(If).into_iter().map(|value| *value).collect()
             }
-            Merger::EMap => {
-                let mut unique = Vec::new();
-                for (key, value) in typed!(ParPair) {
-                    work.inspect_blocks(&key)?;
-                    work.inspect_blocks(&unique)?;
-                    if let Some(index) = unique
-                        .iter()
-                        .position(|(prior, _): &(Par, Par)| prior == &key)
-                    {
-                        unique[index].1 = value;
-                    } else {
-                        work.reserve_vec(&mut unique, 1)?;
-                        unique.push((key, value));
-                    }
-                }
-                let mut kvs = Vec::new();
-                work.reserve_vec(&mut kvs, unique.len())?;
-                for (key, value) in unique {
-                    kvs.push(KeyValuePair {
-                        key: Some(key),
-                        value: Some(value),
-                    });
-                }
-                let mut exprs = Vec::new();
-                work.reserve_vec(&mut exprs, 1)?;
-                exprs.push(Expr {
-                    expr_instance: Some(EMapBody(EMap {
-                        kvs,
-                        locally_free: Vec::new(),
-                        connective_used: false,
-                        remainder: None,
-                    })),
-                });
-                par.exprs = exprs;
-            }
+            Merger::ParCostSignedTerms => par.cost_signed_terms = typed!(CostSignedTerm),
+            Merger::ParCostStacks => par.cost_stacks = typed!(CostStack),
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-51): this
+            // arm duplicated `merge_set_remainder`, theirs' D-D1b (DR-103) in-place
+            // merge. The duplicate left that function without a production caller,
+            // and `remainder_merge_matches_legacy_copy_merge` pinned only the dead
+            // copy. The result is the same. Only the `Vec` capacity differs.
+            // Merger::ESet => {
+            //     let mut unique = Vec::new();
+            //     for element in typed!(Par) {
+            //         if !unique.contains(&element) {
+            //             unique.push(element);
+            //         }
+            //     }
+            //     let mut exprs = Vec::new();
+            //     exprs.push(Expr {
+            //         expr_instance: Some(ESetBody(ESet {
+            //             ps: unique,
+            //             locally_free: Vec::new(),
+            //             connective_used: false,
+            //             remainder: None,
+            //         })),
+            //     });
+            //     par.exprs = exprs;
+            // }
+            Merger::ESet => merge_set_remainder(par, typed!(Par)),
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-51): this
+            // arm duplicated `merge_map_remainder` (see the `ESet` arm above).
+            // Merger::EMap => {
+            //     let mut unique = Vec::new();
+            //     for (key, value) in typed!(ParPair) {
+            //         if let Some(index) = unique
+            //             .iter()
+            //             .position(|(prior, _): &(Par, Par)| prior == &key)
+            //         {
+            //             unique[index].1 = value;
+            //         } else {
+            //             unique.push((key, value));
+            //         }
+            //     }
+            //     let mut kvs = Vec::new();
+            //     for (key, value) in unique {
+            //         kvs.push(KeyValuePair {
+            //             key: Some(key),
+            //             value: Some(value),
+            //         });
+            //     }
+            //     let mut exprs = Vec::new();
+            //     exprs.push(Expr {
+            //         expr_instance: Some(EMapBody(EMap {
+            //             kvs,
+            //             locally_free: Vec::new(),
+            //             connective_used: false,
+            //             remainder: None,
+            //         })),
+            //     });
+            //     par.exprs = exprs;
+            // }
+            Merger::EMap => merge_map_remainder(par, typed!(ParPair)),
         }
         Some(())
     }
@@ -1752,13 +1725,6 @@ fn init_list(
     }
     if pattern_len == 0 {
         if let Some(level) = request.remainder {
-            if request
-                .targets
-                .iter()
-                .any(|value| value.reserve_copy(context).is_none())
-            {
-                return Job::Return(false);
-            }
             if !request
                 .targets
                 .iter()
@@ -1766,19 +1732,10 @@ fn init_list(
             {
                 return Job::Return(false);
             }
-            let Some(work) = context.work() else {
-                return Job::Return(false);
-            };
-            if work
-                .reserve_free_map_search(context.free_map.len())
-                .is_none()
-            {
-                return Job::Return(false);
-            }
             if let Some(prior) = context.free_map.get_mut(&level) {
                 if request
                     .merger
-                    .merge_in_place(prior, request.targets, &work)
+                    .merge_in_place(prior, request.targets)
                     .is_none()
                 {
                     return Job::Return(false);
@@ -1787,11 +1744,8 @@ fn init_list(
                 let mut prior = vector_par(Vec::new(), false);
                 if request
                     .merger
-                    .merge_in_place(&mut prior, request.targets, &work)
+                    .merge_in_place(&mut prior, request.targets)
                     .is_none()
-                    || work
-                        .reserve_free_map_insert(context.free_map.len())
-                        .is_none()
                 {
                     return Job::Return(false);
                 }
@@ -2021,41 +1975,41 @@ fn step_list(
     }
 }
 
-/// Legacy projection law: retain every original occurrence whose VALUE is
-/// equal to one of the index-distinct targets assigned to a remainder row.
-/// This runs only after the complete relation has been selected; it never
-/// prunes an alternative edge during search.
-fn project_remainder_value_closed(
-    context: &SpatialMatcherContext,
-    targets: &[MatchValue],
-    remainder_target_indices: &[bool],
-) -> Option<Vec<MatchValue>> {
-    if targets.len() != remainder_target_indices.len() {
-        return context.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
-    }
-    let mut projected = Vec::new();
-    for target in targets {
-        let mut selected = false;
-        for (matched_index, matched) in targets.iter().enumerate() {
-            if !remainder_target_indices[matched_index] {
-                continue;
-            }
-            context.reserve(1, 0, 0)?;
-            target.inspect(context)?;
-            matched.inspect(context)?;
-            if target == matched {
-                selected = true;
-                break;
-            }
-        }
-        if selected {
-            target.reserve_copy(context)?;
-            context.reserve_vec(&mut projected, 1)?;
-            projected.push(target.clone());
-        }
-    }
-    Some(projected)
-}
+// Disabled by the merge of feature/cost-accounted-rho: `finish_list` again
+// keeps the positional remainder of CBR-052 (406506646), so this value
+// closure has no caller. It gave a remainder every target equal to a
+// selected one, which `par_remainder_preserves_the_exact_multiplicity_of_identical_sends`
+// refuses.
+// /// Legacy projection law: retain every original occurrence whose VALUE is
+// /// equal to one of the index-distinct targets assigned to a remainder row.
+// /// This runs only after the complete relation has been selected; it never
+// /// prunes an alternative edge during search.
+// fn project_remainder_value_closed(
+//     _context: &SpatialMatcherContext,
+//     targets: &[MatchValue],
+//     remainder_target_indices: &[bool],
+// ) -> Option<Vec<MatchValue>> {
+//     if targets.len() != remainder_target_indices.len() {
+//         return None;
+//     }
+//     let mut projected = Vec::new();
+//     for target in targets {
+//         let mut selected = false;
+//         for (matched_index, matched) in targets.iter().enumerate() {
+//             if !remainder_target_indices[matched_index] {
+//                 continue;
+//             }
+//             if target == matched {
+//                 selected = true;
+//                 break;
+//             }
+//         }
+//         if selected {
+//             projected.push(target.clone());
+//         }
+//     }
+//     Some(projected)
+// }
 
 fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job {
     let ListMachine {
@@ -2089,25 +2043,28 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
             remainder_target_indices[*target_index] = true;
         }
     }
-    let Some(remainder_sorted) =
-        project_remainder_value_closed(context, &targets, &remainder_target_indices)
-    else {
-        return Job::Return(false);
-    };
+    // Changed by the merge of feature/cost-accounted-rho: the checkpoint merge
+    // aed9f4427 replaced the positional remainder of 406506646 (CBR-052) with
+    // a value closure, so one duplicate that the remainder selected expanded
+    // to every equal target. The remainder again holds only the positions that
+    // the assignment gives to the remainder row.
+    // let Some(remainder_sorted) =
+    //     project_remainder_value_closed(context, &targets, &remainder_target_indices)
+    // else {
+    //     return Job::Return(false);
+    // };
+    let remainder_sorted = targets
+        .iter()
+        .enumerate()
+        .filter(|(target_index, _)| remainder_target_indices[*target_index])
+        .map(|(_, target)| target)
+        .cloned()
+        .collect::<Vec<_>>();
     let maps = ordered
         .into_iter()
         .map(|(_, assignment)| assignment.free_map.into_owned())
         .collect::<Vec<_>>();
-    let Some(work) = context.work() else {
-        return Job::Return(false);
-    };
-    if context
-        .reserve_blocks_copy_and_cleanup(&context.free_map)
-        .is_none()
-    {
-        return Job::Return(false);
-    }
-    let Some(mut updated) = aggregate_updates_metered(context.free_map.clone(), maps, &work) else {
+    let Some(mut updated) = aggregate_updates(context.free_map.clone(), maps) else {
         return Job::Return(false);
     };
 
@@ -2121,22 +2078,15 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
             Job::Return(false)
         }
         Some(level) => {
-            if work.reserve_free_map_search(updated.len()).is_none() {
-                return Job::Return(false);
-            }
             if let Some(prior) = updated.get_mut(&level) {
-                if merger
-                    .merge_in_place(prior, remainder_sorted, &work)
-                    .is_none()
-                {
+                if merger.merge_in_place(prior, remainder_sorted).is_none() {
                     return Job::Return(false);
                 }
             } else {
                 let mut prior = vector_par(Vec::new(), false);
                 if merger
-                    .merge_in_place(&mut prior, remainder_sorted, &work)
+                    .merge_in_place(&mut prior, remainder_sorted)
                     .is_none()
-                    || work.reserve_free_map_insert(updated.len()).is_none()
                 {
                     return Job::Return(false);
                 }
@@ -2512,29 +2462,10 @@ fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job
         maps.push(assignment.free_map);
     }
 
-    let Some(work) = context.work() else {
-        return Job::Return(false);
-    };
-    if context
-        .reserve_blocks_copy_and_cleanup(&context.free_map)
-        .is_none()
-    {
-        return Job::Return(false);
-    }
-    let Some(updated) = aggregate_updates_metered(context.free_map.clone(), maps, &work) else {
+    let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
         return Job::Return(false);
     };
     if let PathRemainder::Free(level) = machine.remainder {
-        if context.reserve_free_map_search(updated.len()).is_none()
-            || context.reserve_free_map_insert(updated.len()).is_none()
-        {
-            return Job::Return(false);
-        }
-        if let Some(existing) = updated.get(&level) {
-            if context.reserve_blocks_copy_and_cleanup(existing).is_none() {
-                return Job::Return(false);
-            }
-        }
         let bound = updated
             .get(&level)
             .cloned()
@@ -2718,83 +2649,38 @@ mod layout_tests {
         assert_eq!(free_variable_level(&free_pattern(3)), Some(3));
     }
 
-    #[test]
-    fn in_place_remainder_refusal_preserves_existing_binding() {
-        let calls = std::cell::Cell::new(0usize);
-        let reject = |_: usize, _: usize, _: usize| {
-            let next = calls.get() + 1;
-            calls.set(next);
-            if next <= 2 {
-                Ok(())
-            } else {
-                Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
-            }
-        };
-        let context = SpatialMatcherContext::with_meter(&reject).expect("context construction");
-        let mut prior = Par::default();
-        prior.exprs.push(Expr {
-            expr_instance: Some(GInt(7)),
-        });
-        let snapshot = prior.clone();
-        let work = context.work().expect("work lease");
-        assert!(Merger::ESet
-            .merge_in_place(&mut prior, vec![MatchValue::Par(Par::default())], &work,)
-            .is_none());
-        assert_eq!(prior, snapshot);
-    }
-
-    proptest::proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
-
-        #[test]
-        fn remainder_projection_is_value_closure_with_original_multiplicity(
-            source in proptest::collection::vec((proptest::prelude::any::<i8>(), proptest::prelude::any::<bool>()), 0..24),
-        ) {
-            let targets: Vec<_> = source.iter().map(|(value, _)| {
-                MatchValue::Expr(Expr { expr_instance: Some(GInt(i64::from(*value))) })
-            }).collect();
-            let selected: Vec<_> = source.iter().map(|(_, selected)| *selected).collect();
-            let expected: Vec<_> = source.iter()
-                .filter(|(value, _)| source.iter().any(|(candidate, selected)| *selected && candidate == value))
-                .map(|(value, _)| i64::from(*value))
-                .collect();
-            let context = SpatialMatcherContext::new();
-            let actual = project_remainder_value_closed(&context, &targets, &selected)
-                .expect("unmetered projection")
-                .into_iter()
-                .map(|value| match value {
-                    MatchValue::Expr(Expr { expr_instance: Some(GInt(number)) }) => number,
-                    _ => panic!("numeric projection changed variant"),
-                })
-                .collect::<Vec<_>>();
-            proptest::prop_assert_eq!(actual, expected);
-        }
-    }
-
-    #[test]
-    fn remainder_projection_refuses_before_partial_publication() {
-        let calls = std::cell::Cell::new(0usize);
-        let meter = |_: usize, _: usize, _: usize| {
-            let next = calls.get() + 1;
-            calls.set(next);
-            if next == 1 {
-                Ok(())
-            } else {
-                Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
-            }
-        };
-        let context = SpatialMatcherContext::with_meter(&meter).expect("context reserve");
-        let targets = vec![MatchValue::Expr(Expr {
-            expr_instance: Some(GInt(7)),
-        })];
-        let before = context.free_map.clone();
-        assert!(project_remainder_value_closed(&context, &targets, &[true]).is_none());
-        assert_eq!(context.free_map, before);
-        assert_eq!(
-            context.take_error(),
-            Some(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
-        );
-    }
+    // Disabled by the merge of feature/cost-accounted-rho: this property pins
+    // the value closure of the checkpoint merge aed9f4427, which `finish_list`
+    // no longer uses. The positional rule of CBR-052 is pinned by
+    // `par_remainder_preserves_the_exact_multiplicity_of_identical_sends` and
+    // by the "Par remainder over byte-identical sends" corpus case.
+    // proptest::proptest! {
+    //     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+    //
+    //     #[test]
+    //     fn remainder_projection_is_value_closure_with_original_multiplicity(
+    //         source in proptest::collection::vec((proptest::prelude::any::<i8>(), proptest::prelude::any::<bool>()), 0..24),
+    //     ) {
+    //         let targets: Vec<_> = source.iter().map(|(value, _)| {
+    //             MatchValue::Expr(Expr { expr_instance: Some(GInt(i64::from(*value))) })
+    //         }).collect();
+    //         let selected: Vec<_> = source.iter().map(|(_, selected)| *selected).collect();
+    //         let expected: Vec<_> = source.iter()
+    //             .filter(|(value, _)| source.iter().any(|(candidate, selected)| *selected && candidate == value))
+    //             .map(|(value, _)| i64::from(*value))
+    //             .collect();
+    //         let context = SpatialMatcherContext::new();
+    //         let actual = project_remainder_value_closed(&context, &targets, &selected)
+    //             .expect("unmetered projection")
+    //             .into_iter()
+    //             .map(|value| match value {
+    //                 MatchValue::Expr(Expr { expr_instance: Some(GInt(number)) }) => number,
+    //                 _ => panic!("numeric projection changed variant"),
+    //             })
+    //             .collect::<Vec<_>>();
+    //         proptest::prop_assert_eq!(actual, expected);
+    //     }
+    // }
 
     #[test]
     fn sized_numeric_grounds_never_mark_connectives() {
@@ -2830,5 +2716,781 @@ mod layout_tests {
             "Frame grew to {} bytes",
             std::mem::size_of::<Frame>()
         );
+        // Added by the merge of feature/cost-accounted-rho (finding R3-17):
+        // the boxed `If` variant keeps a list value no larger than a receive,
+        // which holds two `Par`s and was the largest variant before the
+        // change. An inline `If` holds three `Par`s.
+        assert!(
+            std::mem::size_of::<MatchValue>() <= std::mem::size_of::<Receive>() + 8,
+            "MatchValue grew to {} bytes",
+            std::mem::size_of::<MatchValue>()
+        );
+    }
+
+    // Added by the merge of feature/cost-accounted-rho: that branch tests the
+    // free-variable fast path (D-D3, DR-105) and the by-reference reads (D-D2,
+    // DR-104) on its recursive matcher. The PDA has both optimizations, so
+    // these ports test the same claims on the PDA entries. The general path is
+    // `drive_job(context, evaluate_par(..))`. It skips the fast-path check of
+    // `evaluate_pair`, as the `LEGACY_FREE_VARIABLE_PATH` flag of that branch
+    // did.
+
+    fn free_variable(level: i32, locally_free: Vec<u8>) -> Par {
+        let mut par = new_freevar_par(level, Vec::new());
+        par.connective_used = true;
+        par.locally_free = locally_free;
+        par
+    }
+
+    fn locally(open: bool) -> Vec<u8> {
+        if open {
+            vec![1]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn body(open: bool) -> Option<Par> {
+        Some(models::par_from_default! {
+            locally_free: locally(open),
+            ..Par::default()
+        })
+    }
+
+    fn open_or_closed_expr(open: bool) -> Expr {
+        if open {
+            new_boundvar_expr(0)
+        } else {
+            new_gint_expr(3)
+        }
+    }
+
+    /// A cost stack that is closed, open in a root cell, or open only in a
+    /// parallel tail. F1R3Lang's `CostStack` nests through its tails, so the
+    /// port adds the third shape to the two shapes of the original test.
+    fn cost_stack(shape: u8) -> CostStack {
+        let open_cell = || CostSignature {
+            value: Some(CostValue::BoundLevel(0)),
+        };
+        match shape {
+            0 => CostStack {
+                cells: Vec::new(),
+                parallel_tail: Vec::new(),
+            },
+            1 => CostStack {
+                cells: vec![open_cell()],
+                parallel_tail: Vec::new(),
+            },
+            _ => CostStack {
+                cells: Vec::new(),
+                parallel_tail: vec![CostStack {
+                    cells: vec![open_cell()],
+                    parallel_tail: Vec::new(),
+                }],
+            },
+        }
+    }
+
+    /// A target whose ten fields hold closed or open elements, with a random
+    /// shell. An open element has a locally free variable.
+    fn free_variable_target() -> impl proptest::strategy::Strategy<Value = Par> {
+        use proptest::strategy::Strategy;
+
+        let field = || proptest::collection::vec(proptest::prelude::any::<bool>(), 0..3);
+        (
+            (field(), field(), field(), field(), field()),
+            (field(), field(), field(), field()),
+            proptest::collection::vec(0u8..3, 0..3),
+            proptest::prelude::any::<bool>(),
+            proptest::collection::vec(0u8..2, 0..3),
+        )
+            .prop_map(
+                |(
+                    (sends, receives, news, exprs, matches),
+                    (bundles, unforgeables, conditionals, signed),
+                    stacks,
+                    connective_used,
+                    locally_free,
+                )| {
+                    models::par_from_default! {
+                        sends: sends
+                            .into_iter()
+                            .map(|open| Send {
+                                locally_free: locally(open),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        receives: receives
+                            .into_iter()
+                            .map(|open| Receive {
+                                locally_free: locally(open),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        news: news
+                            .into_iter()
+                            .map(|open| New {
+                                locally_free: locally(open),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        exprs: exprs.into_iter().map(open_or_closed_expr).collect(),
+                        matches: matches
+                            .into_iter()
+                            .map(|open| Match {
+                                locally_free: locally(open),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        bundles: bundles
+                            .into_iter()
+                            .map(|open| Bundle {
+                                body: body(open),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        unforgeables: unforgeables
+                            .into_iter()
+                            .map(|_| GUnforgeable::default())
+                            .collect(),
+                        conditionals: conditionals
+                            .into_iter()
+                            .map(|open| If {
+                                condition: body(open),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        cost_signed_terms: signed
+                            .into_iter()
+                            .map(|open| CostSignedTerm {
+                                body: body(open),
+                                signature: None,
+                            })
+                            .collect(),
+                        cost_stacks: stacks.into_iter().map(cost_stack).collect(),
+                        locally_free,
+                        connective_used,
+                        ..Par::default()
+                    }
+                },
+            )
+    }
+
+    /// A stored binding with a shell that the merge never writes.
+    fn shell_binding() -> Par {
+        models::par_from_default! {
+            exprs: vec![new_gint_expr(9)],
+            locally_free: vec![1, 0],
+            connective_used: true,
+            connectives: vec![Connective::default()],
+            ..Par::default()
+        }
+    }
+
+    /// The owned entry, with the fast path or with the general path.
+    fn run_owned(
+        target: &Par,
+        pattern: &Par,
+        free_map: &FreeMap,
+        general: bool,
+    ) -> (Option<()>, FreeMap) {
+        let mut context = SpatialMatcherContext::new();
+        context.free_map = free_map.clone();
+        let result = if general {
+            drive_job(&mut context, evaluate_par(target.clone(), pattern.clone()))
+        } else {
+            match_par(&mut context, target.clone(), pattern.clone())
+        };
+        (result, context.free_map)
+    }
+
+    /// The borrowed entry. It has only the fast path.
+    fn run_borrowed(
+        target: &Par,
+        pattern: &Par,
+        free_map: &FreeMap,
+    ) -> (Option<Vec<Par>>, FreeMap) {
+        use super::super::fold_match::FoldMatch;
+
+        let mut context = SpatialMatcherContext::new();
+        context.free_map = free_map.clone();
+        let result = context.fold_match(
+            std::slice::from_ref(target),
+            std::slice::from_ref(pattern),
+            None,
+        );
+        (result, context.free_map)
+    }
+
+    /// Ported from feature/cost-accounted-rho (D-D3, DR-105): the predicate
+    /// accepts exactly one free variable.
+    #[test]
+    fn free_variable_level_accepts_only_one_free_variable() {
+        assert_eq!(free_variable_level(&free_variable(2, vec![1])), Some(2));
+        let mut not_connective = free_variable(2, Vec::new());
+        not_connective.connective_used = false;
+        assert_eq!(free_variable_level(&not_connective), None);
+        let mut wildcard = new_wildcard_par(Vec::new(), true);
+        wildcard.connective_used = true;
+        assert_eq!(free_variable_level(&wildcard), None);
+        let mut two = free_variable(0, Vec::new());
+        two.exprs.push(new_freevar_expr(1));
+        assert_eq!(free_variable_level(&two), None);
+        let mut with_wildcard = free_variable(0, Vec::new());
+        with_wildcard.exprs.push(new_wildcard_expr());
+        assert_eq!(free_variable_level(&with_wildcard), None);
+        let mut bound = free_variable(0, Vec::new());
+        bound.exprs = vec![new_boundvar_expr(0)];
+        assert_eq!(free_variable_level(&bound), None);
+        for extend in [
+            |p: &mut Par| p.sends.push(Send::default()),
+            |p: &mut Par| p.receives.push(Receive::default()),
+            |p: &mut Par| p.news.push(New::default()),
+            |p: &mut Par| p.matches.push(Match::default()),
+            |p: &mut Par| p.unforgeables.push(GUnforgeable::default()),
+            |p: &mut Par| p.bundles.push(Bundle::default()),
+            |p: &mut Par| p.connectives.push(Connective::default()),
+            |p: &mut Par| p.conditionals.push(If::default()),
+            |p: &mut Par| p.cost_signed_terms.push(CostSignedTerm::default()),
+            |p: &mut Par| p.cost_stacks.push(CostStack::default()),
+        ] {
+            let mut pattern = free_variable(0, Vec::new());
+            extend(&mut pattern);
+            assert_eq!(free_variable_level(&pattern), None);
+        }
+    }
+
+    /// Ported from feature/cost-accounted-rho (D-D3, DR-105): a field with a
+    /// locally free element stops the binding, and the fields before it stay
+    /// merged, as on the general path. The Par/Par order puts bundles before
+    /// unforgeables.
+    #[test]
+    fn free_variable_failure_leaves_the_general_partial_binding() {
+        let level = 1;
+        let pattern = free_variable(level, Vec::new());
+        let target = models::par_from_default! {
+            sends: vec![Send::default()],
+            exprs: vec![new_gint_expr(4)],
+            bundles: vec![Bundle {
+                body: body(true),
+                ..Default::default()
+            }],
+            unforgeables: vec![GUnforgeable::default()],
+            ..Par::default()
+        };
+        let mut expected = vector_par(Vec::new(), false);
+        expected.sends = target.sends.clone();
+        expected.exprs = target.exprs.clone();
+        let expected_map: FreeMap = [(level, expected)].into_iter().collect();
+        for general in [true, false] {
+            let (result, free_map) = run_owned(&target, &pattern, &FreeMap::new(), general);
+            assert!(result.is_none());
+            assert_eq!(free_map, expected_map, "owned, general {general}");
+        }
+        let (result, free_map) = run_borrowed(&target, &pattern, &FreeMap::new());
+        assert!(result.is_none());
+        assert_eq!(free_map, expected_map, "borrowed");
+        let first_open = models::par_from_default! {
+            sends: vec![Send {
+                locally_free: vec![1],
+                ..Default::default()
+            }],
+            exprs: vec![new_gint_expr(4)],
+            ..Par::default()
+        };
+        let existing: FreeMap = [(level, shell_binding())].into_iter().collect();
+        for general in [true, false] {
+            assert_eq!(
+                run_owned(&first_open, &pattern, &existing, general),
+                (None, existing.clone()),
+                "owned, general {general}"
+            );
+        }
+        assert_eq!(
+            run_borrowed(&first_open, &pattern, &existing),
+            (None, existing.clone()),
+            "borrowed"
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Ported from feature/cost-accounted-rho (D-D3, DR-105): on the owned
+        /// and the borrowed entry, the fast path for a free-variable pattern
+        /// gives the result and the free map of the general path. This also
+        /// holds when a field has a locally free element, and with or without
+        /// a stored binding at the level. The borrowed entry has no general
+        /// path of its own, so the test compares it with the owned general
+        /// path, as the original test does.
+        #[test]
+        fn free_variable_fast_path_equals_general_path(
+            level in 0i32..4,
+            target in free_variable_target(),
+            pattern_locally_free in proptest::collection::vec(0u8..2, 0..3),
+            existing in proptest::prelude::any::<bool>(),
+            others in proptest::collection::vec(0i64..3, 0..3),
+        ) {
+            let pattern = free_variable(level, pattern_locally_free);
+            let mut free_map = FreeMap::new();
+            for (offset, value) in others.into_iter().enumerate() {
+                free_map.insert(level + 1 + offset as i32, models::par_from_default! {
+                    exprs: vec![new_gint_expr(value)],
+                    ..Par::default()
+                });
+            }
+            if existing {
+                free_map.insert(level, shell_binding());
+            }
+            let general = run_owned(&target, &pattern, &free_map, true);
+            proptest::prop_assert_eq!(run_owned(&target, &pattern, &free_map, false), general.clone());
+            let borrowed = run_borrowed(&target, &pattern, &free_map);
+            proptest::prop_assert_eq!(&borrowed.1, &general.1);
+            proptest::prop_assert_eq!(borrowed.0.is_some(), general.0.is_some());
+        }
+
+        /// Ported from feature/cost-accounted-rho (D-D2, DR-104): a fold that
+        /// compares ground pairs by reference gives the result and the free map
+        /// of the walk that copies every pair into the owned entry.
+        #[test]
+        fn fold_match_by_reference_equals_cloned_pair_walk(
+            targets in proptest::collection::vec((0i64..3, 1usize..3), 0..5),
+            patterns in proptest::collection::vec((proptest::prelude::any::<bool>(), 0i64..3, 1usize..3), 0..5),
+        ) {
+            use super::super::fold_match::FoldMatch;
+
+            let targets: Vec<Par> = targets
+                .into_iter()
+                .map(|(value, size)| models::par_from_default! {
+                    exprs: vec![new_gint_expr(value); size],
+                    ..Par::default()
+                })
+                .collect();
+            let patterns: Vec<Par> = patterns
+                .into_iter()
+                .enumerate()
+                .map(|(level, (free, value, size))| {
+                    if free {
+                        free_variable(level as i32, Vec::new())
+                    } else {
+                        models::par_from_default! {
+                            exprs: vec![new_gint_expr(value); size],
+                            ..Par::default()
+                        }
+                    }
+                })
+                .collect();
+            let mut by_reference = SpatialMatcherContext::new();
+            let folded = by_reference.fold_match(&targets, &patterns, None);
+            let mut copied = SpatialMatcherContext::new();
+            let walked = (|| {
+                for (target, pattern) in targets.iter().zip(&patterns) {
+                    match_par(&mut copied, target.clone(), pattern.clone())?;
+                }
+                (targets.len() == patterns.len()).then(Vec::new)
+            })();
+            proptest::prop_assert_eq!(folded, walked);
+            proptest::prop_assert_eq!(by_reference.free_map, copied.free_map);
+        }
+    }
+
+    fn ground_par(size: usize) -> Par {
+        models::par_from_default! {
+            exprs: vec![new_gint_expr(7); size],
+            ..Par::default()
+        }
+    }
+
+    fn large_string_par(length: usize) -> Par {
+        models::par_from_default! {
+            exprs: vec![new_gstring_expr("s".repeat(length))],
+            ..Par::default()
+        }
+    }
+
+    /// Ported from feature/cost-accounted-rho, where DR-131 kept the check
+    /// without its charge: a ground pattern matches only an equal target, on
+    /// the borrowed entry and on the owned entry.
+    #[test]
+    fn ground_comparison_matches_only_an_equal_target() {
+        let pattern = ground_par(3);
+        for size in [1usize, 3, 4_096] {
+            let mut borrowed = SpatialMatcherContext::new();
+            assert_eq!(
+                borrowed
+                    .spatial_match_par_ref(&ground_par(size), &pattern)
+                    .is_some(),
+                size == 3,
+                "borrowed {size}"
+            );
+            let mut owned = SpatialMatcherContext::new();
+            assert_eq!(
+                match_par(&mut owned, ground_par(size), pattern.clone()).is_some(),
+                size == 3,
+                "owned {size}"
+            );
+        }
+    }
+
+    /// Ported from feature/cost-accounted-rho, where DR-131 kept the checks
+    /// without their charges. A string connective matches a target whose only
+    /// expression is a string. It does not match a target with two
+    /// expressions. A variable-reference connective does not match.
+    #[test]
+    fn scalar_connective_tests_only_a_single_expression() {
+        let target = large_string_par(4_096);
+        let string = Connective {
+            connective_instance: Some(ConnString(true)),
+        };
+        let mut context = SpatialMatcherContext::new();
+        assert_eq!(
+            match_connective(&mut context, target.clone(), string.clone()),
+            Some(())
+        );
+        let two = models::par_from_default! {
+            exprs: vec![new_gstring_expr("a".to_owned()); 2],
+            ..Par::default()
+        };
+        let mut context = SpatialMatcherContext::new();
+        assert_eq!(match_connective(&mut context, two, string), None);
+        let reference = Connective {
+            connective_instance: Some(VarRefBody(VarRef::default())),
+        };
+        let mut context = SpatialMatcherContext::new();
+        assert_eq!(match_connective(&mut context, target, reference), None);
+    }
+
+    /// Ported from feature/cost-accounted-rho (D-D2, DR-104): the in-place
+    /// filter allocates nothing. The merge keeps the filter `retain_no_frees`
+    /// in `models/src/rust/utils.rs`, where `MatcherReadsByReference.v` binds
+    /// it, but its tests lived in the recursive matcher that the explicit
+    /// frame stack replaces (name audit, plan step 1.7).
+    #[test]
+    fn retain_no_frees_allocates_nothing() {
+        let mut exprs: Vec<Expr> = (0..32)
+            .map(|index| {
+                if index % 3 == 0 {
+                    new_gint_expr(index)
+                } else {
+                    Expr {
+                        expr_instance: Some(EVarBody(EVar {
+                            v: Some(Var {
+                                var_instance: Some(FreeVar(index as i32)),
+                            }),
+                        })),
+                    }
+                }
+            })
+            .collect();
+        let ((), allocated) = crate::rust::interpreter::accounting::measured_allocations(|| {
+            retain_no_frees(&mut exprs)
+        });
+        assert_eq!(allocated, 0);
+        assert_eq!(exprs.len(), 11);
+    }
+
+    fn free_or_ground_expr() -> impl proptest::strategy::Strategy<Value = Expr> {
+        use proptest::strategy::Strategy;
+
+        (0usize..6, 0i32..4).prop_map(|(variant, index)| {
+            let v = match variant {
+                0 => {
+                    return Expr {
+                        expr_instance: Some(GInt(index as i64)),
+                    }
+                }
+                1 => None,
+                2 => Some(Var { var_instance: None }),
+                3 => Some(Var {
+                    var_instance: Some(BoundVar(index)),
+                }),
+                4 => Some(Var {
+                    var_instance: Some(FreeVar(index)),
+                }),
+                _ => Some(Var {
+                    var_instance: Some(Wildcard(WildcardMsg {})),
+                }),
+            };
+            Expr {
+                expr_instance: Some(EVarBody(EVar { v })),
+            }
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Ported from feature/cost-accounted-rho (D-D2, DR-104): the in-place
+        /// filter keeps the expressions that `no_frees_exprs` keeps, in the
+        /// same order.
+        #[test]
+        fn retained_no_frees_equals_cloned_filter(
+            exprs in proptest::collection::vec(free_or_ground_expr(), 0..12),
+        ) {
+            let expected = no_frees_exprs(&exprs);
+            let mut retained = exprs;
+            retain_no_frees(&mut retained);
+            proptest::prop_assert_eq!(retained, expected);
+        }
+    }
+
+    // Added by the merge of feature/cost-accounted-rho (finding R3-17): the
+    // general path matches the conditionals, the cost-signed terms and the
+    // cost stacks. Base, dev and feature/cost-accounted-rho match an element
+    // of these kinds only against an equal element.
+
+    fn ground_signature() -> CostSignature {
+        CostSignature {
+            value: Some(CostValue::Ground(b"g".to_vec())),
+        }
+    }
+
+    /// For each kind: its name, a Par that holds one closed term of the kind,
+    /// and a Par that holds one term of the kind with a free variable inside.
+    fn closed_and_open_terms() -> [(&'static str, Par, Par); 3] {
+        let one = || new_gint_par(1, Vec::new(), false);
+        let two = || new_gint_par(2, Vec::new(), false);
+        let free = || new_freevar_par(0, Vec::new());
+        let conditional = |condition: Par| If {
+            connective_used: condition.connective_used,
+            condition: Some(condition),
+            if_true: Some(one()),
+            if_false: Some(two()),
+            locally_free: Vec::new(),
+        };
+        let signed = |body: Par| CostSignedTerm {
+            body: Some(body),
+            signature: Some(ground_signature()),
+        };
+        let stack = |cell: CostSignature| CostStack {
+            cells: vec![cell],
+            parallel_tail: Vec::new(),
+        };
+        [
+            (
+                "conditional",
+                models::par_from_default! {
+                    conditionals: vec![conditional(new_gbool_par(true, Vec::new(), false))],
+                    ..Par::default()
+                },
+                models::par_from_default! {
+                    conditionals: vec![conditional(free())],
+                    connective_used: true,
+                    ..Par::default()
+                },
+            ),
+            (
+                "cost-signed term",
+                models::par_from_default! {
+                    cost_signed_terms: vec![signed(one())],
+                    ..Par::default()
+                },
+                models::par_from_default! {
+                    cost_signed_terms: vec![signed(free())],
+                    connective_used: true,
+                    ..Par::default()
+                },
+            ),
+            (
+                "cost stack",
+                models::par_from_default! {
+                    cost_stacks: vec![stack(ground_signature())],
+                    ..Par::default()
+                },
+                models::par_from_default! {
+                    cost_stacks: vec![stack(CostSignature {
+                        value: Some(CostValue::Quote(free())),
+                    })],
+                    connective_used: true,
+                    ..Par::default()
+                },
+            ),
+        ]
+    }
+
+    /// `par` with the ground expression `1` added.
+    fn with_one(par: &Par) -> Par {
+        let mut par = par.clone();
+        par.exprs.push(new_gint_expr(1));
+        par
+    }
+
+    /// `par` with the free variable at level 0 added.
+    fn with_free_variable(par: &Par) -> Par {
+        let mut par = par.clone();
+        par.exprs.push(new_freevar_expr(0));
+        par.connective_used = true;
+        par
+    }
+
+    fn run_general_path(target: Par, pattern: Par) -> (Option<()>, FreeMap) {
+        let mut context = SpatialMatcherContext::new();
+        let result = match_par(&mut context, target, pattern);
+        (result, context.free_map)
+    }
+
+    /// Test (1): the pattern `{x | 1}` against `{1 | T}` binds `x` to `T`.
+    #[test]
+    fn general_path_remainder_binds_conditional_and_cost_terms() {
+        for (kind, closed, _) in closed_and_open_terms() {
+            let pattern = with_free_variable(&with_one(&Par::default()));
+            let expected: FreeMap = [(0, closed.clone())].into_iter().collect();
+            assert_eq!(
+                run_general_path(with_one(&closed), pattern),
+                (Some(()), expected),
+                "{kind}"
+            );
+        }
+    }
+
+    /// Test (2): a pattern that holds `T` and a free variable does not match
+    /// a target without `T`.
+    #[test]
+    fn general_path_requires_the_conditional_and_cost_terms_of_the_pattern() {
+        for (kind, closed, _) in closed_and_open_terms() {
+            let target = with_one(&Par::default());
+            assert_eq!(
+                run_general_path(target, with_free_variable(&closed)).0,
+                None,
+                "{kind}"
+            );
+        }
+    }
+
+    /// Test (3): a pattern with `connective_used` and no remainder does not
+    /// match a target with one extra `T`. Without the extra `T`, it matches.
+    #[test]
+    fn general_path_without_a_remainder_refuses_an_extra_conditional_or_cost_term() {
+        let seven = new_gint_par(7, Vec::new(), false);
+        let pattern = new_elist_par(
+            vec![new_freevar_par(0, Vec::new())],
+            Vec::new(),
+            true,
+            None,
+            Vec::new(),
+            true,
+        );
+        let target = new_elist_par(
+            vec![seven.clone()],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let expected: FreeMap = [(0, seven)].into_iter().collect();
+        assert_eq!(
+            run_general_path(target.clone(), pattern.clone()),
+            (Some(()), expected)
+        );
+        for (kind, closed, _) in closed_and_open_terms() {
+            let mut extra = target.clone();
+            extra.conditionals = closed.conditionals.clone();
+            extra.cost_signed_terms = closed.cost_signed_terms.clone();
+            extra.cost_stacks = closed.cost_stacks.clone();
+            assert_eq!(run_general_path(extra, pattern.clone()).0, None, "{kind}");
+        }
+    }
+
+    /// Test (4): an element of the three kinds matches only an equal element,
+    /// as base's rule gives. A pattern term of the kind of `T`, with a free
+    /// variable inside, therefore does not bind against `T`. A pattern term
+    /// equal to `T` matches `T`.
+    #[test]
+    fn general_path_matches_conditional_and_cost_terms_by_equality() {
+        for (kind, closed, open) in closed_and_open_terms() {
+            assert_eq!(
+                run_general_path(closed.clone(), open).0,
+                None,
+                "{kind} with a free variable inside"
+            );
+            let expected: FreeMap = [(0, with_one(&Par::default()))].into_iter().collect();
+            assert_eq!(
+                run_general_path(with_one(&closed), with_free_variable(&closed)),
+                (Some(()), expected),
+                "{kind} equal to the target"
+            );
+        }
+    }
+
+    /// Test (5): `{_ | 1}` matches `{1 | T}`.
+    #[test]
+    fn general_path_wildcard_absorbs_conditional_and_cost_terms() {
+        let mut pattern = with_one(&Par::default());
+        pattern.exprs.push(new_wildcard_expr());
+        pattern.connective_used = true;
+        for (kind, closed, _) in closed_and_open_terms() {
+            assert_eq!(
+                run_general_path(with_one(&closed), pattern.clone()),
+                (Some(()), FreeMap::new()),
+                "{kind}"
+            );
+        }
+    }
+
+    // Added by the merge of feature/cost-accounted-rho (finding R1-35): this
+    // property replaces the value-closure property that is commented out
+    // above. A Par remainder keeps exactly the targets that the pattern terms
+    // leave (CBR-052, `MatcherRemainderClosure.positions_partition_the_targets`).
+    fn integer_par(values: &[i64]) -> Par {
+        let mut par = Par::default();
+        par.exprs = values.iter().map(|value| new_gint_expr(*value)).collect();
+        par
+    }
+
+    fn is_subsequence(kept: &[i64], original: &[i64]) -> bool {
+        let mut rest = original.iter();
+        kept.iter()
+            .all(|value| rest.any(|candidate| candidate == value))
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// The pattern holds the values at the taken positions and a free
+        /// variable. The remainder must hold the other values, with their
+        /// multiplicity and in target order. Few distinct values make
+        /// duplicates common, so a pattern term and the remainder often
+        /// split equal targets. The value closure fails on such a split.
+        #[test]
+        fn par_remainder_binds_the_unmatched_occurrences_in_target_order(
+            cells in proptest::collection::vec(
+                (0i64..3, proptest::prelude::any::<bool>()),
+                0..10,
+            ),
+        ) {
+            let values: Vec<i64> = cells.iter().map(|(value, _)| *value).collect();
+            let taken: Vec<i64> = cells
+                .iter()
+                .filter(|(_, take)| *take)
+                .map(|(value, _)| *value)
+                .collect();
+            let mut expected: Vec<i64> = cells
+                .iter()
+                .filter(|(_, take)| !*take)
+                .map(|(value, _)| *value)
+                .collect();
+            let pattern = with_free_variable(&integer_par(&taken));
+            let (result, free_map) = run_general_path(integer_par(&values), pattern);
+            proptest::prop_assert_eq!(result, Some(()));
+            let remainder = free_map.get(&0).expect("the remainder binds level 0");
+            let mut bound: Vec<i64> = remainder
+                .exprs
+                .iter()
+                .map(|expr| match expr.expr_instance {
+                    Some(GInt(value)) => value,
+                    _ => panic!("the remainder holds only the target integers"),
+                })
+                .collect();
+            proptest::prop_assert!(
+                is_subsequence(&bound, &values),
+                "the remainder {:?} is not in the order of the targets {:?}",
+                bound,
+                values
+            );
+            bound.sort_unstable();
+            expected.sort_unstable();
+            proptest::prop_assert_eq!(bound, expected);
+        }
     }
 }

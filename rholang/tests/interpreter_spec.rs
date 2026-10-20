@@ -9,7 +9,8 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::storage::storage_printer;
-use rholang::rust::interpreter::test_utils::resources::with_runtime;
+use rholang::rust::interpreter::test_utils::resources::{with_runtime, with_runtime_for_epoch};
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 
 async fn storage_contents(runtime: &RhoRuntimeImpl) -> String {
     storage_printer::pretty_print(runtime).await
@@ -293,7 +294,12 @@ async fn interpreter_should_capture_parsing_errors_without_token_charge() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interpreter_should_enforce_the_exact_weighted_rspace_budget() {
-    with_runtime("metered-comm-spec-", |mut runtime| async move {
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): this
+    // upstream test asserts the protocol-6 COMM budget, which F1R3Lang applies in
+    // the CostV1 epoch. A Legacy runtime opens no COMM accounting scope.
+    // with_runtime("metered-comm-spec-", |mut runtime| async move {
+    let epoch = EventCodecEpoch::CostV1;
+    with_runtime_for_epoch(epoch, "metered-comm-spec-", |mut runtime| async move {
         runtime.cost.set_deploy_signature_funded(
             b"interpreter-metered-comm-deploy",
             Sig::Ground(b"interpreter-metered-comm-payer".to_vec()),

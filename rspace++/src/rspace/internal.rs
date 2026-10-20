@@ -86,8 +86,6 @@ pub struct WaitingContinuation<P: Clone, K: Clone> {
     /// the record (`TaggedContinuation` carrying the receive body).
     pub continuation: Arc<K>,
     pub persist: bool,
-    // D-S2 (DR-95): the tree-set tag lets the metered history decoder charge
-    // the set's node allocations; bincode ignores it on the wire.
     pub peeks: BTreeSet<i32>,
     pub source: Consume,
 }
@@ -189,12 +187,6 @@ where
     pub fn empty() -> Self {
         MultisetMultiMap {
             map: DashMap::new(),
-        }
-    }
-
-    pub(crate) fn empty_with_shard_amount(shards: usize) -> Self {
-        MultisetMultiMap {
-            map: DashMap::with_shard_amount(shards),
         }
     }
 

@@ -1,10 +1,5 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
-use models::rust::phlo_schedule::{
-    PhloResourceClassV1, PhloScheduleError, PhloScheduleLimits, PhloScheduleV1,
-};
+use models::rust::phlo_schedule::{PhloScheduleError, PhloScheduleLimits, PhloScheduleV1};
 use thiserror::Error;
 
 use super::{
@@ -12,7 +7,7 @@ use super::{
     NativePhloRuleError, NativePhloRules,
 };
 use crate::rust::interpreter::accounting::monetary_allocation::{
-    canonical_funding_key_order, filled_vec, reserve_work, FundingSearchError,
+    canonical_funding_key_order, filled_vec, FundingSearchError,
 };
 use crate::rust::interpreter::accounting::phlo_controls::{
     CheckedPhloControls, PhloSchedule, PhloScheduleBinding,
@@ -20,7 +15,6 @@ use crate::rust::interpreter::accounting::phlo_controls::{
 use crate::rust::interpreter::accounting::phlo_execution::{
     PhloObligationError, PhloResource, PhloResourceAmount,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativePhloAcquisitionLimits {
@@ -76,26 +70,11 @@ impl NativePhloLocatedDemands<'_> {
         binding: &'a PhloScheduleBinding<'_>,
         terms: &'a [u8],
         limits: NativePhloAcquisitionLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativePhloAcquisitionDemand<'a>, NativePhloAcquisitionError> {
         let schedule_limits = PhloScheduleLimits {
             classes: limits.schedule.classes.min(NativePhloDimension::ALL.len()),
             ..limits.schedule
         };
-        reserve_work(budget, HostWorkDimension::VerificationBytes, terms.len())?;
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            terms.len(),
-        )?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            schedule_limits
-                .classes
-                .checked_mul(2 * size_of::<PhloResourceClassV1<'_>>() + 128)
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let descriptor = PhloScheduleV1::decode(terms, schedule_limits)?;
         if &descriptor != binding.descriptor() {
             return Err(NativePhloAcquisitionError::TermsMismatch);
@@ -149,17 +128,9 @@ impl NativePhloLocatedDemands<'_> {
         // })
         let classes = NativePhloDimension::ALL.len();
         let purse_count = self.binding_count();
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            purse_count
-                .checked_mul(size_of::<usize>())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let mut rank_of = filled_vec(purse_count, usize::MAX)?;
         let mut occurrences = 0_usize;
         for located in self.occurrences() {
-            reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
             occurrences = occurrences
                 .checked_add(1)
                 .ok_or(FundingSearchError::Overflow)?;
@@ -172,22 +143,6 @@ impl NativePhloLocatedDemands<'_> {
             }
             rank_of[located.purse().ordinal()] = 0;
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            purse_count,
-        )?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            purse_count
-                .checked_mul(
-                    size_of::<Vec<u8>>()
-                        + size_of::<&[u8]>()
-                        + 2 * size_of::<&NativePhloPurse<'_>>(),
-                )
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let mut identities = Vec::new();
         identities
             .try_reserve_exact(purse_count)
@@ -207,7 +162,7 @@ impl NativePhloLocatedDemands<'_> {
                     acquisition_terms: &[],
                     authority: purse.authority(),
                 }
-                .encoded_obligation_key(limits.key, budget)?,
+                .encoded_obligation_key(limits.key)?,
             );
             owners.push(purse);
         }
@@ -216,7 +171,7 @@ impl NativePhloLocatedDemands<'_> {
             .try_reserve_exact(identities.len())
             .map_err(|_| FundingSearchError::AllocationFailed)?;
         references.extend(identities.iter().map(Vec::as_slice));
-        let order = canonical_funding_key_order(&references, budget)?;
+        let order = canonical_funding_key_order(&references)?;
         let mut representatives: Vec<&NativePhloPurse<'_>> = Vec::new();
         representatives
             .try_reserve_exact(owners.len())
@@ -225,18 +180,7 @@ impl NativePhloLocatedDemands<'_> {
         for index in order {
             let identity = references[index];
             let fresh = match previous {
-                Some(prior) => {
-                    reserve_work(
-                        budget,
-                        HostWorkDimension::VerificationOperations,
-                        prior
-                            .len()
-                            .min(identity.len())
-                            .checked_add(1)
-                            .ok_or(FundingSearchError::Overflow)?,
-                    )?;
-                    prior != identity
-                }
+                Some(prior) => prior != identity,
                 None => true,
             };
             if fresh {
@@ -249,30 +193,14 @@ impl NativePhloLocatedDemands<'_> {
             .len()
             .checked_mul(classes)
             .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            slots
-                .checked_mul(size_of::<u64>() + size_of::<usize>())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-        reserve_work(budget, HostWorkDimension::VerificationOperations, slots)?;
         let mut slot_quantity = filled_vec(slots, 0_u64)?;
         let mut slot_entry = filled_vec(slots, usize::MAX)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            occurrences
-                .checked_mul(size_of::<usize>())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let mut occurrence_entries = Vec::new();
         occurrence_entries
             .try_reserve_exact(occurrences)
             .map_err(|_| FundingSearchError::AllocationFailed)?;
         let mut entries = 0_usize;
         for located in self.occurrences() {
-            reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
             let measured = located.demand().measurement();
             let slot = rank_of[located.purse().ordinal()]
                 .checked_mul(classes)
@@ -290,14 +218,6 @@ impl NativePhloLocatedDemands<'_> {
                 .ok_or(NativePhloAcquisitionError::QuantityOverflow)?;
             occurrence_entries.push(slot);
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            entries
-                .checked_mul(size_of::<PhloResourceAmount<'_>>())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-        reserve_work(budget, HostWorkDimension::VerificationOperations, slots)?;
         let mut resources = Vec::new();
         resources
             .try_reserve_exact(entries)
@@ -318,11 +238,6 @@ impl NativePhloLocatedDemands<'_> {
                 quantity: slot_quantity[slot],
             });
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            occurrences,
-        )?;
         for entry in &mut occurrence_entries {
             *entry = slot_entry[*entry];
         }

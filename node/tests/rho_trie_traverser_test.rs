@@ -27,7 +27,14 @@ fn byte_array_to_nybbles_fits_a_small_stack_at_depth_twenty_thousand() {
             let nybbles =
                 RhoTrieTraverser::byte_array_to_nybble_list(&byte_array, 0, 20_000, Vec::new());
             assert_eq!(nybbles.len(), 40_000);
-            assert!(nybbles.chunks_exact(2).all(|pair| pair == [11, 10]));
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // `as_chunks` gives fixed-size chunks and drops the same remainder.
+            // assert!(nybbles.chunks_exact(2).all(|pair| pair == [11, 10]));
+            assert!(nybbles
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|pair| *pair == [11, 10]));
         })
         .expect("spawn nybble stack gate")
         .join()

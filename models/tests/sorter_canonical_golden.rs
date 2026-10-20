@@ -70,9 +70,32 @@
 //! So this bless does not move a signature; it removes a disagreement between a
 //! signature and the score that was supposed to explain it.
 //!
+//! ### ★ Blessing log — the merge of feature/cost-accounted-rho (14 lines)
+//!
+//! Added by the merge of feature/cost-accounted-rho (plan step 1.9). The
+//! checkpoint merge `e5102e945` (2026-10-07) changed the generated types in two
+//! ways, and this bless records both:
+//!
+//! * **12 lines were added, and no existing hex or score column moved.** The six
+//!   sized numeric variants (`GFloat32`, `GUint64`, `GInt32`, `GUint32`,
+//!   `GUint16`, `GUint8`) entered `RhoTypes.proto`, so the corpus now covers them,
+//!   each with an `expr/` line and a `par-of-expr/` line. Their score trees have
+//!   the shapes of upstream's `expr_sort_matcher.rs` at `75de2dc39`. Only
+//!   `GFloat32` also has upstream's first atom (19). The five integer variants
+//!   have 24 to 28 here and 18 and 20 to 23 upstream (see the corpus comment in
+//!   `expr_instance_corpus`).
+//! * **2 lines changed in the `Debug` column only.** `bind/remainder` and
+//!   `bind/no-remainder` print the sorted `ReceiveBind` with `{:?}`, because a
+//!   `ReceiveBind` needs a wrapper to be encoded on its own (see `line_debug`).
+//!   Each of its three `Par`s now prints `cost_signed_terms: []` and
+//!   `cost_stacks: []`, and the bind prints `cost_signature: None`. The score
+//!   column of both lines did not change.
+//!
+//! So this bless adds coverage and moves no signed byte.
+//!
 //! ## What the corpus must reach, and why
 //!
-//! * **Every `ExprInstance` variant** (all 36) — an arm that is never exercised
+//! * **Every `ExprInstance` variant** (all 42) — an arm that is never exercised
 //!   is an arm whose transcription is unchecked. [`corpus_covers_every_expr_instance_variant`]
 //!   fails if the schema grows past what is covered here.
 //! * **Multi-sibling terms.** A `Combine` that pops its children in the wrong
@@ -374,6 +397,24 @@ fn expr_instance_corpus() -> Vec<(&'static str, ExprInstance)> {
                 scale: 3,
             }),
         ),
+        // Added by the merge of feature/cost-accounted-rho (plan step 1.9): the
+        // checkpoint merge e5102e945 brought the six sized numeric variants into
+        // `RhoTypes.proto`. Their arms in `sort_combine.rs` give the same score
+        // tree shapes as upstream's `expr_sort_matcher.rs` at 75de2dc39. The first
+        // atom is the same for `GFloat32` only (19). This line gives the five
+        // integer variants 24 to 28 (`score_tree.rs`), and upstream gives them 18
+        // and 20 to 23. The checkpoint merges 29b729551 and aed9f4427 made that
+        // change. Upstream's table gives 13 to both `AUTHORITY_ID` and `EPATHMAP`,
+        // and 14 to both `PRINCIPAL_ID` and `DOUBLE`. This line's table has no
+        // duplicate value.
+        // (Corrected in the same merge: an earlier version of this comment said
+        // that the score trees were the same as upstream's.)
+        ("GFloat32", ExprInstance::GFloat32(0x4049_0fdb)),
+        ("GUint64", ExprInstance::GUint64(u64::MAX - 1)),
+        ("GInt32", ExprInstance::GInt32(-7)),
+        ("GUint32", ExprInstance::GUint32(4_000_000_000)),
+        ("GUint16", ExprInstance::GUint16(65_000)),
+        ("GUint8", ExprInstance::GUint8(200)),
         (
             "EVarBody/bound",
             ExprInstance::EVarBody(EVar {

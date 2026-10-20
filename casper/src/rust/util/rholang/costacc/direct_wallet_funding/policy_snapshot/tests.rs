@@ -2,7 +2,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -227,17 +226,9 @@ impl SupplyReader for Reader {
         })
     }
 
-    fn read_purse<'a>(
-        &'a self,
-        _: &'a CostSignature,
-        _: &'a HostWorkBudget,
-    ) -> ReadResult<'a, PurseInventory> {
+    fn read_purse<'a>(&'a self, _: &'a CostSignature) -> ReadResult<'a, PurseInventory> {
         panic!("unexpected purse query")
     }
-}
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)))
 }
 
 #[tokio::test]
@@ -255,8 +246,7 @@ async fn cursor_pair_preserves_presence_roles_and_bounded_parallelism() {
                     [1; 32],
                     [[3; 32], [4; 32]],
                     count,
-                    NonZeroUsize::new(parallel).unwrap(),
-                    &budget()
+                    NonZeroUsize::new(parallel).unwrap()
                 )
                 .await
                 .unwrap(),
@@ -274,44 +264,20 @@ async fn cursor_pair_rejects_wrong_roots_collisions_bad_positions_and_read_failu
     let count = NonZeroUsize::new(2).unwrap();
     let reader = Reader::new([None, None]);
     assert!(matches!(
-        read_cursor_pair(
-            &reader,
-            [9; 32],
-            [[3; 32], [4; 32]],
-            count,
-            count,
-            &budget()
-        )
-        .await,
+        read_cursor_pair(&reader, [9; 32], [[3; 32], [4; 32]], count, count).await,
         Err(DirectWalletPolicySnapshotError::Wallet(
             DirectWalletSnapshotError::WrongPreState
         ))
     ));
     assert!(matches!(
-        read_cursor_pair(
-            &reader,
-            [1; 32],
-            [[3; 32], [3; 32]],
-            count,
-            count,
-            &budget()
-        )
-        .await,
+        read_cursor_pair(&reader, [1; 32], [[3; 32], [3; 32]], count, count).await,
         Err(DirectWalletPolicySnapshotError::ScopeCollision)
     ));
     assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
     let mut changed = Reader::new([None, None]);
     changed.change_after_read = true;
     assert!(matches!(
-        read_cursor_pair(
-            &changed,
-            [1; 32],
-            [[3; 32], [4; 32]],
-            count,
-            count,
-            &budget()
-        )
-        .await,
+        read_cursor_pair(&changed, [1; 32], [[3; 32], [4; 32]], count, count).await,
         Err(DirectWalletPolicySnapshotError::Wallet(
             DirectWalletSnapshotError::WrongPreState
         ))
@@ -320,15 +286,7 @@ async fn cursor_pair_rejects_wrong_roots_collisions_bad_positions_and_read_failu
         let mut failed = Reader::new([None, None]);
         failed.failure = Some(index);
         assert!(matches!(
-            read_cursor_pair(
-                &failed,
-                [1; 32],
-                [[3; 32], [4; 32]],
-                count,
-                count,
-                &budget()
-            )
-            .await,
+            read_cursor_pair(&failed, [1; 32], [[3; 32], [4; 32]], count, count).await,
             Err(DirectWalletPolicySnapshotError::Read(_))
         ));
         assert_eq!(failed.active.load(Ordering::SeqCst), 0);
@@ -340,46 +298,11 @@ async fn cursor_pair_rejects_wrong_roots_collisions_bad_positions_and_read_failu
                 [1; 32],
                 [[3; 32], [4; 32]],
                 count,
-                count,
-                &budget()
+                count
             )
             .await,
             Err(DirectWalletPolicySnapshotError::Cursor(_))
         ));
-    }
-}
-
-#[tokio::test]
-async fn cursor_pair_reserves_both_reads_before_querying() {
-    let count = NonZeroUsize::new(2).unwrap();
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        for limit in [0, 1, 2] {
-            let reader = Reader::new([None, Some(MonetaryCursor::INITIAL)]);
-            let mut limits = budget().limits();
-            limits.set(dimension, HostWorkLimit::new(limit));
-            let result = read_cursor_pair(
-                &reader,
-                [1; 32],
-                [[3; 32], [4; 32]],
-                count,
-                count,
-                &HostWorkBudget::new(limits),
-            )
-            .await;
-            if limit == 2 {
-                assert_eq!(result.unwrap(), reader.values);
-                assert_eq!(reader.calls.load(Ordering::SeqCst), 2);
-            } else {
-                assert!(matches!(
-                    result,
-                    Err(DirectWalletPolicySnapshotError::HostWork(_))
-                ));
-                assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
-            }
-        }
     }
 }
 
@@ -397,7 +320,7 @@ proptest! {
         let reader = Reader::new(values);
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let actual = runtime.block_on(read_cursor_pair(&reader, [1; 32], [[3; 32], [4; 32]], n,
-            NonZeroUsize::new(parallel).unwrap(), &budget())).unwrap();
+            NonZeroUsize::new(parallel).unwrap())).unwrap();
         prop_assert_eq!(actual, values);
     }
 
@@ -413,7 +336,7 @@ proptest! {
         let mut shuffled: Vec<&[u8]> = keys.iter().map(|key| key.as_slice()).collect();
         shuffled.rotate_left(rotation % count);
         if reverse { shuffled.reverse(); }
-        let order = canonical_funding_key_order(&shuffled, &budget()).unwrap();
+        let order = canonical_funding_key_order(&shuffled).unwrap();
         let sorted: Vec<&[u8; 32]> = order.iter().map(|index| shuffled[*index].try_into().unwrap()).collect();
         let resource = monetary_scope_for_custodies(&resource_policy_context(), sorted.iter().copied());
         let fee = monetary_scope_for_custodies(&native_fee_policy_context(), sorted.iter().copied());
@@ -421,4 +344,52 @@ proptest! {
         prop_assert_eq!(resource, monetary_scope_for_custodies(&resource_policy_context(), keys.iter()));
         prop_assert_eq!(fee, monetary_scope_for_custodies(&native_fee_policy_context(), keys.iter()));
     }
+}
+
+/// DR-119 (bug 11004): the SystemVault creation bucket of a cursor scope. It is
+/// the first byte of keccak256 over `scope.toByteArray()`, the protobuf encoding
+/// of the scope's ByteArray (reduce.rs:3707-3754). The settlement passes the
+/// scope as that ByteArray (vault_cost_deploy.rs:369-384).
+fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 {
+    use prost::Message;
+    let encoded = rholang::rust::interpreter::rho_type::RhoByteArray::create_par(scope.to_vec())
+        .encode_to_vec();
+    crypto::rust::hash::keccak256::Keccak256::hash(encoded)[0]
+}
+
+/// DR-119: the restore precondition of the dev tests that settle the
+/// DEFAULT_SEC and DEFAULT_SEC2 cohorts in sibling blocks. Their four cursor
+/// scopes (the resource scope and the fee scope of each owner-direct cohort)
+/// fall in four distinct buckets, so two concurrent first uses never share a
+/// creation lock.
+#[test]
+fn default_cohort_cursor_scopes_fall_in_distinct_buckets() {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rhoapi::cost_signature::Value;
+    use rholang::rust::interpreter::accounting::principal_ground_v61;
+
+    use crate::rust::util::construct_deploy::{DEFAULT_SEC, DEFAULT_SEC2};
+    use crate::rust::util::rholang::costacc::vault_payer::vault_payer;
+
+    let mut buckets = Vec::with_capacity(4);
+    for secret in [&*DEFAULT_SEC, &*DEFAULT_SEC2] {
+        let public = Secp256k1.to_public(secret);
+        let signature = CostSignature {
+            value: Some(Value::Ground(principal_ground_v61(&public.bytes))),
+        };
+        let custody = vault_payer(&signature)
+            .expect("a principal signature has a vault payer")
+            .custody_key;
+        for context in [resource_policy_context(), native_fee_policy_context()] {
+            let scope = monetary_scope_for_custodies(&context, std::iter::once(&custody));
+            buckets.push(cost_cursor_bucket(&scope));
+        }
+    }
+    let distinct: std::collections::BTreeSet<u8> = buckets.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        buckets.len(),
+        "two default cohort scopes share a creation bucket: {buckets:?}"
+    );
 }

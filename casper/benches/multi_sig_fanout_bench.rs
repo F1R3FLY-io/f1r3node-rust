@@ -29,6 +29,12 @@ fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
         time_stamp: 1700000000000,
+        // Added by the merge of feature/cost-accounted-rho (finding R3-31): the
+        // dev merge 1d325b996 restored these two fields, and the checkpoint
+        // merges 29b729551 and e5102e945 took them. The values are the
+        // `construct_deploy` defaults. The parameter above stays ignored.
+        phlo_price: 1,
+        phlo_limit: 90000,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,

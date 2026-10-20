@@ -46,7 +46,10 @@ pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + 
     }
 
     let buffer_dag = this.casper_buffer_storage.to_doubly_linked_dag();
-    for (child_hash, _) in buffer_dag.child_to_parent_adjacency_list.iter() {
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // the loop reads only the keys of the map.
+    // for (child_hash, _) in buffer_dag.child_to_parent_adjacency_list.iter() {
+    for child_hash in buffer_dag.child_to_parent_adjacency_list.keys() {
         candidate_hashes.insert(BlockHash::from(child_hash.0.clone()));
     }
 

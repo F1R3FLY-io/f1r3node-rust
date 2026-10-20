@@ -1,15 +1,11 @@
 use std::cell::Cell;
-use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use models::rust::host_work::HostWorkDimension;
-
-use super::index::{reserve_vector, NativeIndex, OccurrenceKey, PreparedInsert};
+use super::index::{NativeIndex, OccurrenceKey, PreparedInsert};
 use super::*;
-use crate::rust::interpreter::accounting::monetary_allocation::reserve_work;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
-    observation_comparison_bytes, NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
+    NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
 };
 
 #[derive(Clone, Debug)]
@@ -72,10 +68,6 @@ pub(super) struct NativeBudgetRecorder {
     accepted: NativeIndex<(NativeAttemptStage, [u8; 32]), usize>,
     pub(super) invalid: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
-    attempt_capacity: usize,
-    retry_capacity: usize,
-    #[cfg(test)]
-    pub(super) fail_allocation_after: Option<usize>,
 }
 
 pub(in crate::rust::interpreter::accounting) struct NativeObservationPreparation {
@@ -84,7 +76,6 @@ pub(in crate::rust::interpreter::accounting) struct NativeObservationPreparation
     pub(super) occurrence_key: OccurrenceKey,
     pub(super) observation: Arc<ByteObservation>,
     pub(super) charge: Option<PreparedNativePhloCharge>,
-    pub(super) comparison_bytes: usize,
     pub(super) ticket: NativePreparationTicket,
 }
 
@@ -101,7 +92,11 @@ impl NativeBudgetRecorder {
     ) -> Result<NativePreparationTicket, InterpreterError> {
         if self
             .pending
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+            // `try_update` has the same signature and semantics.
+            // .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1).filter(|next| *next <= limit)
             })
             .is_err()
@@ -142,26 +137,6 @@ pub(super) fn recording_error(message: &str) -> InterpreterError {
     InterpreterError::ReduceError(message.to_owned())
 }
 
-pub(super) fn work(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), InterpreterError> {
-    reserve_work(budget, dimension, amount).map_err(|_| InterpreterError::HostWorkRejected)
-}
-
-fn copy_occurrence(value: &RecordedOccurrence) -> Result<RecordedOccurrence, InterpreterError> {
-    let mut path = Vec::new();
-    path.try_reserve_exact(value.path.len())
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    path.extend_from_slice(&value.path);
-    Ok(RecordedOccurrence {
-        session: value.session,
-        path,
-        stage: value.stage,
-    })
-}
-
 impl NativeRuntimeConfig {
     fn reserve_record(
         &mut self,
@@ -196,20 +171,10 @@ impl NativeRuntimeConfig {
         //         .and_then(|count| count.checked_add(34))
         //         .ok_or(InterpreterError::HostWorkRejected)?,
         // )?;
-        work(
-            &self.host_work,
-            HostWorkDimension::VerificationOperations,
-            prepared
-                .occurrence
-                .path
-                .len()
-                .checked_add(34)
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )?;
         if self
             .recording
             .occurrences
-            .get(&prepared.occurrence_key, &self.host_work)?
+            .get(&prepared.occurrence_key)
             .is_some()
         {
             return Err(recording_error(
@@ -224,37 +189,11 @@ impl NativeRuntimeConfig {
         //     .checked_mul(size_of::<(u64, u64)>())
         //     .and_then(|bytes| bytes.checked_mul(2))
         //     .ok_or(InterpreterError::HostWorkRejected)?;
-        let bytes = prepared
-            .occurrence
-            .path
-            .len()
-            .checked_mul(size_of::<(u64, u64)>())
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        work(&self.host_work, HostWorkDimension::SearchStateBytes, bytes)?;
-        #[cfg(test)]
-        if self.recording.fail_allocation_after == Some(self.recording.occurrences.len()) {
-            return Err(InterpreterError::HostWorkRejected);
-        }
-        reserve_vector(
-            &mut self.recording.attempts,
-            &mut self.recording.attempt_capacity,
-            1,
-            &self.host_work,
-        )?;
-        reserve_vector(
-            &mut self.recording.retries,
-            &mut self.recording.retry_capacity,
-            1,
-            &self.host_work,
-        )?;
         // Changed by C7a (DR-85): the key is the fixed-size occurrence key.
         // let key = copy_occurrence(&prepared.occurrence)?;
         let key = prepared.occurrence_key;
-        let insertion = self
-            .recording
-            .occurrences
-            .prepare_insert(key, (), &self.host_work)?;
-        Ok((insertion, copy_occurrence(&prepared.occurrence)?))
+        let insertion = self.recording.occurrences.prepare_insert(key, ())?;
+        Ok((insertion, prepared.occurrence.clone()))
     }
 
     pub(super) fn record_charge(
@@ -276,19 +215,22 @@ impl NativeRuntimeConfig {
         let accepted = self.recording.accepted.prepare_insert(
             (prepared.occurrence.stage, prepared.observation.event_id),
             index,
-            &self.host_work,
         )?;
         let decision = match &prepared.charge {
             Some(charge) => self.reservation.reserve(charge),
             None => Err(NativePhloExecutionError::Overflow),
         };
+        // Added by DR-113: the class of an exhaustion follows the bound source.
+        let source = self.reservation.bound_source();
         if decision.as_ref().is_err_and(|error| {
             !matches!(
                 error,
                 NativePhloExecutionError::Overflow | NativePhloExecutionError::BoundExceeded
             )
         }) {
-            return decision.map_err(native_error);
+            // Changed by DR-113: exhaustion takes the class of the bound source.
+            // return decision.map_err(native_error);
+            return decision.map_err(|error| native_error(error, source));
         }
         self.recording.occurrences.commit(key);
         self.recording.attempts.push(RecordedAttempt {
@@ -306,7 +248,9 @@ impl NativeRuntimeConfig {
             decision.is_ok(),
         );
         prepared.ticket.published.set(true);
-        decision.map_err(native_error)
+        // Changed by DR-113: exhaustion takes the class of the bound source.
+        // decision.map_err(native_error)
+        decision.map_err(|error| native_error(error, source))
     }
 
     pub(super) fn record_retry(
@@ -327,24 +271,10 @@ impl NativeRuntimeConfig {
         let index = self
             .recording
             .accepted
-            .get(
-                &(prepared.occurrence.stage, prepared.observation.event_id),
-                &self.host_work,
-            )?
+            .get(&(prepared.occurrence.stage, prepared.observation.event_id))
             .copied()
             .ok_or_else(|| recording_error("native retry has no accepted charge"))?;
         let original = &self.recording.attempts[index];
-        let accepted_bytes = observation_comparison_bytes(&original.observation, &self.host_work)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
-        let comparison_bytes = prepared
-            .comparison_bytes
-            .checked_add(accepted_bytes)
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        work(
-            &self.host_work,
-            HostWorkDimension::VerificationBytes,
-            comparison_bytes,
-        )?;
         if !Arc::ptr_eq(&original.observation, &prepared.observation)
             && original.observation != prepared.observation
         {
@@ -373,7 +303,6 @@ impl NativeRuntimeConfig {
         if self.replay_bound
             || self.recording.pending.load(Ordering::Acquire) != 0
             || self.recording.invalid.load(Ordering::Acquire)
-            || self.host_work.is_rejected()
         {
             return Err(recording_error("native budget recording is incomplete"));
         }
@@ -382,14 +311,6 @@ impl NativeRuntimeConfig {
 
     pub(super) fn capture_recording(&self) -> Result<NativeBudgetRecording, InterpreterError> {
         self.ensure_recording_complete()?;
-        let count = self.recording.occurrences.len();
-        work(
-            &self.host_work,
-            HostWorkDimension::VerificationOperations,
-            count
-                .checked_add(1)
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )?;
         // Changed by C7b (DR-86): the captured occurrences name trie nodes, so
         // no path is copied. capture_paths charges the trie it builds.
         // let path_bytes = self
@@ -412,17 +333,8 @@ impl NativeRuntimeConfig {
         //     HostWorkDimension::VerificationBytes,
         //     path_bytes,
         // )?;
-        let bytes = size_of::<NativeBudgetAttempt>()
-            .checked_add(size_of::<NativeBudgetRetry>())
-            .and_then(|record_bytes| count.checked_mul(record_bytes))
-            .and_then(|bytes| bytes.checked_mul(2))
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        work(&self.host_work, HostWorkDimension::SearchStateBytes, bytes)?;
         let paths = self.capture_paths()?;
-        let mut attempts = Vec::new();
-        attempts
-            .try_reserve_exact(self.recording.attempts.len())
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        let mut attempts = Vec::with_capacity(self.recording.attempts.len());
         for (row, path) in self.recording.attempts.iter().zip(&paths.attempts) {
             attempts.push(NativeBudgetAttempt {
                 occurrence: NativeBudgetOccurrence {
@@ -434,10 +346,7 @@ impl NativeRuntimeConfig {
                 granted: row.granted,
             });
         }
-        let mut retries = Vec::new();
-        retries
-            .try_reserve_exact(self.recording.retries.len())
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        let mut retries = Vec::with_capacity(self.recording.retries.len());
         for (row, path) in self.recording.retries.iter().zip(&paths.retries) {
             retries.push(NativeBudgetRetry {
                 occurrence: NativeBudgetOccurrence {
@@ -457,66 +366,5 @@ impl NativeRuntimeConfig {
             used: self.reservation.used(),
             paths: Arc::new(paths.trie),
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-
-    use super::*;
-    use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
-    use crate::rust::interpreter::accounting::costs::Cost;
-    use crate::rust::interpreter::accounting::native_runtime::tests::{
-        authority, config, with_operation,
-    };
-
-    #[test]
-    fn record_growth_reserves_storage_before_debit() {
-        let budget = RuntimeBudget::new(Cost::unsafe_max());
-        budget
-            .reset_for_native_execution(config(100, [0, 0, 1, 0]))
-            .unwrap();
-        loop {
-            let observation = Arc::new(ByteObservation {
-                event_id: [9; 32],
-                kind: AuthorityByteEventKind::ProduceIntroduction,
-                authority: authority(1),
-                measurement: Some(ByteCharge {
-                    transfer_bytes: 1,
-                    ..ByteCharge::default()
-                }),
-                legacy_amount: None,
-            });
-            let prepared =
-                with_operation(&budget, || budget.prepare_native_observation(&observation))
-                    .unwrap()
-                    .unwrap();
-            let mut state = budget.authority_state.lock().unwrap();
-            let native = state.native.as_mut().unwrap();
-            let recorder = &native.recording;
-            let count = recorder.occurrences.len();
-            let capacity = recorder.occurrences.capacity();
-            if count != 0 && count == capacity {
-                let incoming = prepared.occurrence.path.len() * 2 * size_of::<(u64, u64)>();
-                let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-                limits.set(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkLimit::new(incoming as u64),
-                );
-                native.host_work = HostWorkBudget::new(limits);
-                assert!(matches!(
-                    native.record_charge(&prepared),
-                    Err(InterpreterError::HostWorkRejected)
-                ));
-                assert!(native.host_work.is_rejected());
-                assert_eq!(native.recording.occurrences.capacity(), capacity);
-                assert_eq!(native.recording.occurrences.len(), count);
-                assert_eq!(native.recording.attempts.len(), count);
-                assert_eq!(native.reservation.used(), count as u64);
-                break;
-            }
-            native.record_charge(&prepared).unwrap();
-        }
     }
 }

@@ -143,6 +143,99 @@ impl HasLocallyFree<GUnforgeable> for SpatialMatcherContext {
     fn locally_free(&self, _s: GUnforgeable, _depth: i32) -> Vec<u8> { Default::default() }
 }
 
+// Added by the merge of feature/cost-accounted-rho (finding R3-17): base's
+// rules for the three Par fields that the oracle did not match (base
+// `has_locally_free.rs`, at `dd03e0f0c`). F1R3Lang's cost stack also has
+// parallel tails, so the stack rules walk the tails too. The oracle stays
+// recursive by design.
+fn signature_locally_free(signature: &CostSignature) -> Vec<u8> {
+    use models::rhoapi::cost_signature::Value;
+
+    match &signature.value {
+        Some(Value::BoundLevel(level)) if *level >= 0 => create_bit_vector(&[*level as usize]),
+        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.locally_free.clone(),
+        Some(Value::Compound(compound)) => compound
+            .elements
+            .iter()
+            .map(signature_locally_free)
+            .fold(Vec::new(), union),
+        _ => Vec::new(),
+    }
+}
+
+fn signature_connective_used(signature: &CostSignature) -> bool {
+    use models::rhoapi::cost_signature::Value;
+
+    match &signature.value {
+        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.connective_used,
+        Some(Value::Compound(compound)) => compound.elements.iter().any(signature_connective_used),
+        _ => false,
+    }
+}
+
+fn stack_connective_used(stack: &CostStack) -> bool {
+    stack.cells.iter().any(signature_connective_used)
+        || stack.parallel_tail.iter().any(stack_connective_used)
+}
+
+fn stack_locally_free(stack: &CostStack) -> Vec<u8> {
+    let cells = stack
+        .cells
+        .iter()
+        .map(signature_locally_free)
+        .fold(Vec::new(), union);
+    stack
+        .parallel_tail
+        .iter()
+        .map(stack_locally_free)
+        .fold(cells, union)
+}
+
+impl HasLocallyFree<If> for SpatialMatcherContext {
+    fn connective_used(&self, source: If) -> bool {
+        source.condition.as_ref().is_some_and(|p| p.connective_used)
+            || source.if_true.as_ref().is_some_and(|p| p.connective_used)
+            || source.if_false.as_ref().is_some_and(|p| p.connective_used)
+    }
+
+    fn locally_free(&self, source: If, _depth: i32) -> Vec<u8> {
+        [source.condition, source.if_true, source.if_false]
+            .into_iter()
+            .flatten()
+            .map(take_par_locally_free)
+            .fold(Vec::new(), union)
+    }
+}
+
+impl HasLocallyFree<CostSignedTerm> for SpatialMatcherContext {
+    fn connective_used(&self, source: CostSignedTerm) -> bool {
+        source.body.as_ref().is_some_and(|p| p.connective_used)
+            || source
+                .signature
+                .as_ref()
+                .is_some_and(signature_connective_used)
+    }
+
+    fn locally_free(&self, source: CostSignedTerm, _depth: i32) -> Vec<u8> {
+        union(
+            source.body.map(take_par_locally_free).unwrap_or_default(),
+            source
+                .signature
+                .as_ref()
+                .map(signature_locally_free)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+impl HasLocallyFree<CostStack> for SpatialMatcherContext {
+    fn connective_used(&self, source: CostStack) -> bool { stack_connective_used(&source) }
+
+    fn locally_free(&self, source: CostStack, _depth: i32) -> Vec<u8> {
+        stack_locally_free(&source)
+    }
+}
+
 impl HasLocallyFree<Expr> for SpatialMatcherContext {
     fn connective_used(&self, e: Expr) -> bool {
         match e.expr_instance {

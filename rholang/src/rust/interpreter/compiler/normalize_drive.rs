@@ -261,6 +261,11 @@ impl NormVal {
 // work
 // ===========================================================================
 
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// `Own` variant has no producer since d367bc11a deleted
+// `desugar::strip_signed_binds`, so it is commented out below, together
+// with its arms in `normalizer/cost_accounting/sig.rs`. Restore them with
+// the next producer that owns its signatures.
 /// A surface signature, borrowed from the arena where possible and owned where
 /// the producer already owns it.
 ///
@@ -273,7 +278,7 @@ impl NormVal {
 /// compound **moves** out of its boxes; no clone happens on either path.
 pub(crate) enum SigInput<'ast> {
     Ref(&'ast Signature<'ast>),
-    Own(Signature<'ast>),
+    // Own(Signature<'ast>),
 }
 
 /// A pending unit of work.

@@ -1616,11 +1616,19 @@ impl BlockDagKeyValueStorage {
                 // high, and every later propagate at or under it would skip the
                 // scan that raises them. Lowering early can only cost one
                 // unnecessary scan.
-                let _ = self.ft_lower_bound.fetch_update(
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                    |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
-                );
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+                // `try_update` has the same signature and semantics.
+                // let _ = self.ft_lower_bound.fetch_update(
+                //     Ordering::Relaxed,
+                //     Ordering::Relaxed,
+                //     |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
+                // );
+                let _ =
+                    self.ft_lower_bound
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                            (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits())
+                        });
 
                 let mut block_metadata_index_guard = self.block_metadata_index.write();
                 block_metadata_index_guard.record_finalized(

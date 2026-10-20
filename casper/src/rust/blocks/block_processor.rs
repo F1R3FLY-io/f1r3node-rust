@@ -1528,11 +1528,20 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
 
         // Reserve the budget slot atomically: check-then-increment as two
         // steps lets concurrent admissions overshoot the documented bound.
-        let Ok(reserved) = self.settled_admissions.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |admitted| (admitted < SETTLED_ADMISSION_BUDGET).then(|| admitted + 1),
-        ) else {
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+        // `try_update` has the same signature and semantics.
+        // let Ok(reserved) = self.settled_admissions.fetch_update(
+        //     Ordering::Relaxed,
+        //     Ordering::Relaxed,
+        //     |admitted| (admitted < SETTLED_ADMISSION_BUDGET).then(|| admitted + 1),
+        // ) else {
+        let Ok(reserved) =
+            self.settled_admissions
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |admitted| {
+                    (admitted < SETTLED_ADMISSION_BUDGET).then(|| admitted + 1)
+                })
+        else {
             return Ok(false);
         };
 

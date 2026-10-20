@@ -375,16 +375,23 @@ fn m2b_control_the_well_formed_pair_matches() {
 
 use std::collections::HashMap;
 
-use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// crate alias `RhoHistoryRepository` names the history type below.
+// use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::grpc_client_service::GrpcClientService;
 use rholang::rust::interpreter::ollama_service::OllamaService;
 use rholang::rust::interpreter::openai_service::create_noop_openai_service;
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// crate alias `RhoHistoryRepository` names the history type below.
+// use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
-use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// crate alias `RhoHistoryRepository` names the history type below.
+// use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, RestingCOMM};
@@ -493,18 +500,22 @@ fn truncated_protobuf_payload() -> Vec<u8> { vec![0x0A, 0x02, 0x08] }
 async fn drive_m4(label: &str, program: &str, payload: Vec<u8>) -> Vec<String> {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.expect("in-memory rspace store");
-    let (mut play, replay, _h): (
-        RhoRuntimeImpl,
-        RhoRuntimeImpl,
-        std::sync::Arc<
-            Box<
-                dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        >,
-    ) = create_runtimes_with_services(store, false, &mut Vec::new(), ollama_services()).await;
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+    // crate alias `RhoHistoryRepository` names the history type below.
+    // let (mut play, replay, _h): (
+    //     RhoRuntimeImpl,
+    //     RhoRuntimeImpl,
+    //     std::sync::Arc<
+    //         Box<
+    //             dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+    //                 + Send
+    //                 + Sync
+    //                 + 'static,
+    //         >,
+    //     >,
+    // ) = create_runtimes_with_services(store, false, &mut Vec::new(), ollama_services()).await;
+    let (mut play, replay, _h): (RhoRuntimeImpl, RhoRuntimeImpl, RhoHistoryRepository) =
+        create_runtimes_with_services(store, false, &mut Vec::new(), ollama_services()).await;
 
     let phlo = Cost::create(i64::MAX, "m4".to_string());
     let rand =

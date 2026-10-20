@@ -1,5 +1,3 @@
-use shared::rust::clone_backing::CloneBacking;
-
 use super::*;
 use crate::rspace::striped_locks::ChannelLockGuard;
 
@@ -10,9 +8,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -24,9 +21,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -35,9 +31,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -46,9 +41,8 @@ where
         + Default
         + Serialize
         + StableHashSerialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -58,45 +52,29 @@ where
         &self,
         channels: impl IntoIterator<Item = &'a C>,
         count: usize,
-    ) -> Result<Vec<u64>, RSpaceError> {
-        self.epoch.reserve_work(
-            count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?,
-            backing::<u64>(count)?,
-        )?;
-        let mut hashes = Vec::new();
-        hashes
-            .try_reserve_exact(count)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
+    ) -> Vec<u64> {
+        let mut hashes = Vec::with_capacity(count);
         for channel in channels {
-            if hashes.len() == count {
-                return Err(RSpaceError::HostWorkRejected);
-            }
-            crate::rspace::native_backing::inspect_blocks_slice(
-                std::slice::from_ref(channel),
-                &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
-            )?;
+            // Changed by D-O1 (DR-108): block accounting charges inline bytes
+            // once per enclosing block. The channel is read through a
+            // reference, as at the other lock sites.
+            // crate::rspace::native_backing::inspect_slice(
+            //     std::slice::from_ref(channel),
+            //     &|operations, scanned, backing| {
+            //         self.history_reserve(operations, scanned, backing)
+            //     },
+            // )?;
             hashes.push(striped_locks::channel_hash(channel));
         }
-        Ok(hashes)
+        hashes
     }
 
     pub(super) async fn consume_lock(
         &self,
         hashes: &[u64],
     ) -> Result<(ChannelLockGuard, ChannelLockGuard), RSpaceError> {
-        self.consume_lock_with(hashes, |operations, bytes| {
-            self.epoch.reserve_work(operations, bytes)
-        })
-        .await
-    }
-
-    pub(super) async fn consume_lock_with(
-        &self,
-        hashes: &[u64],
-        reserve: impl Fn(usize, usize) -> Result<(), RSpaceError> + Send + Sync,
-    ) -> Result<(ChannelLockGuard, ChannelLockGuard), RSpaceError> {
-        let first = striped_locks::native::prepare(&self.space.phase_a_locks, hashes, &reserve)?;
-        let second = striped_locks::native::prepare(&self.space.phase_b_locks, hashes, &reserve)?;
+        let first = striped_locks::native::prepare(&self.space.phase_a_locks, hashes)?;
+        let second = striped_locks::native::prepare(&self.space.phase_b_locks, hashes)?;
         Ok((first.acquire().await, second.acquire().await))
     }
 
@@ -105,25 +83,24 @@ where
         channel: &C,
         key: crate::rspace::hashing::native_source::StoreKey,
     ) -> Result<(ChannelLockGuard, ChannelLockGuard), RSpaceError> {
-        self.epoch.reserve_work(1, 0)?;
-        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
-            self.history_reserve(operations, scanned, backing)
-        })?;
+        // Changed by D-O1 (DR-108): block accounting charges inline bytes
+        // once per enclosing block.
+        // crate::rspace::native_backing::inspect(
+        //     channel,
+        //     &|operations, scanned, backing| {
+        //         self.history_reserve(operations, scanned, backing)
+        //     },
+        // )?;
         let hash = [striped_locks::channel_hash(channel)];
-        let reserve = |operations, bytes| self.epoch.reserve_work(operations, bytes);
-        let first = striped_locks::native::prepare(&self.space.phase_a_locks, &hash, reserve)?
+        let first = striped_locks::native::prepare(&self.space.phase_a_locks, &hash)?
             .acquire()
             .await;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
         // let joins = self.read_joins(channel)?;
         let joins = self.read_joins(channel, key)?;
-        self.epoch.reserve_work(joins.len(), 0)?;
-        let count = joins
-            .iter()
-            .try_fold(0usize, |count, join| count.checked_add(join.len()))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let hashes = self.channel_hashes(joins.iter().flatten(), count)?;
-        let second = striped_locks::native::prepare(&self.space.phase_b_locks, &hashes, reserve)?
+        let count = joins.iter().map(Vec::len).sum();
+        let hashes = self.channel_hashes(joins.iter().flatten(), count);
+        let second = striped_locks::native::prepare(&self.space.phase_b_locks, &hashes)?
             .acquire()
             .await;
         Ok((first, second))

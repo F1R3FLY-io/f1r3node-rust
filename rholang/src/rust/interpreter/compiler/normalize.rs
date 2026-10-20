@@ -1036,7 +1036,10 @@ mod tests {
             inputs.par.clone(),
             Expr {
                 expr_instance: Some(ExprInstance::EMinusBody(EMinus {
-                    p1: Some(new_boundvar_par(2, create_bit_vector(&vec![2]), false)),
+                    // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+                    // slice literal needs no `Vec`.
+                    // p1: Some(new_boundvar_par(2, create_bit_vector(&vec![2]), false)),
+                    p1: Some(new_boundvar_par(2, create_bit_vector(&[2]), false)),
                     p2: Some(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::EMultBody(EMult {

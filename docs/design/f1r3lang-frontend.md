@@ -56,6 +56,27 @@ inputs, not substitutes for a source pin. The initial engine lockfile predates
 its checked-in dependency declarations; offline reconciliation is required
 before a locked build can succeed.
 
+#### Changed by the merge of `feature/cost-accounted-rho` (finding R1-49)
+
+On 2026-10-19 the project owner retired the snapshot gate
+`live_pinned_sources_and_abi_witnesses_match`. MeTTaIL and the node are
+developed and released together as F1R3Lang. The node builds the live MeTTaIL
+checkout (`node/Cargo.toml:20`), so a frozen copy of MeTTaIL contradicts that
+intent. The gate first failed on the node side at `70186668f` (2026-09-10). On
+the MeTTaIL side, it failed when MeTTaIL moved past `f2fa50a45`.
+
+The retirement changes what the table above establishes:
+
+- **Approved node base:** the ancestry check still runs. No test checks the
+  digests of the baseline source blobs now.
+- **Current engine boundary**, **MeTTaIL development snapshot** and
+  **Specification sources:** no test checks these rows now.
+- **Source-route inventory:** the check still runs.
+
+The two paragraphs above, about the fixed engine revision and the MeTTaIL
+development snapshot, describe the retired gate. The fixture keeps its snapshot
+and ABI entries, because `check_contract` still validates their shape.
+
 ## Existing execution boundary
 
 The current public evaluation route is
@@ -367,3 +388,12 @@ Keep verification logs and compiler artifacts under `target/`. Run one heavy
 verification job at a time. Compile individual Rocq proof modules under a
 1 GiB hard limit with swap disabled; do not run the complete proof collection
 as part of this focused admission check.
+
+#### Changed by the merge of `feature/cost-accounted-rho` (finding R1-49)
+
+The command above no longer runs the snapshot gate, because the project owner
+retired it (see "Artifact identity and reproducibility"). The command runs the
+six other baseline tests, and they read none of the four `F1R3LANG_*_ROOT`
+variables. The paragraph that starts "The baseline suite checks" still
+describes the source, ABI-witness and engine-identity checks of the retired
+gate.

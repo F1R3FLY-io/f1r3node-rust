@@ -300,12 +300,23 @@ impl TestFixture {
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
         let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
-        let rejected_buffer_typed_store =
-            KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(rejected_buffer_store);
-        let rejected_deploy_buffer =
-            Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
-                store: rejected_buffer_typed_store,
-            }));
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-12): the
+        // buffer has a private checked store, so the test builds it with
+        // `KeyValueRejectedDeployBuffer::from_stores`.
+        // let rejected_buffer_typed_store =
+        //     KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(rejected_buffer_store);
+        // let rejected_deploy_buffer =
+        //     Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
+        //         store: rejected_buffer_typed_store,
+        //         envelope_store: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
+        //     }));
+        let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
+            KeyValueRejectedDeployBuffer::from_stores(
+                rejected_buffer_store,
+                Arc::new(MockKeyValueStore::new()),
+                Arc::new(MockKeyValueStore::new()),
+            ),
+        ));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
         let estimator = Estimator::apply();

@@ -1,9 +1,6 @@
 use std::cmp::Ordering;
-use std::mem::size_of;
 
-use models::rust::host_work::HostWorkDimension;
-
-use super::funding_feasibility::{filled_vec, reserve_work};
+use super::funding_feasibility::filled_vec;
 use super::funding_policy::{
     canonical_assignment, select_restricted_candidate, RestrictedFundingCandidate,
 };
@@ -13,7 +10,6 @@ use super::{
     FundingDomainClassification, FundingMinimaxProblem, FundingPolicyFragment, FundingPolicyResult,
     FundingSearchError, FundingSearchLimits, MonetaryAllocation,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingFeeSelection {
@@ -39,25 +35,7 @@ impl FundingFeeSelection {
     pub fn fee(&self) -> &MonetaryAllocation { &self.fee }
 }
 
-fn rank(
-    totals: &FundingAssignmentTotals,
-    budget: &HostWorkBudget,
-) -> Result<FundingBurdenRank, FundingSearchError> {
-    let count = totals.source_debits().len();
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<u64>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchCandidates,
-        count
-            .checked_mul(count.checked_add(1).ok_or(FundingSearchError::Overflow)?)
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
+fn rank(totals: &FundingAssignmentTotals) -> Result<FundingBurdenRank, FundingSearchError> {
     Ok(FundingBurdenRank::from_assignment(totals))
 }
 
@@ -74,7 +52,6 @@ pub fn select_funding_with_unit_fee(
     resource_cursor: usize,
     fee_cursor: usize,
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<FundingFeeSelection>, FundingSearchError> {
     let count = problem.capacities.len();
     if count == 0 {
@@ -94,14 +71,12 @@ pub fn select_funding_with_unit_fee(
         problem.obligations,
         problem.eligible,
         limits,
-        budget,
     )?;
     let total = match &classification {
         FundingDomainClassification::Infeasible { .. } => return Ok(None),
         FundingDomainClassification::Unrestricted { totals, .. }
         | FundingDomainClassification::Restricted { totals, .. } => totals.total(),
     };
-    reserve_work(budget, HostWorkDimension::VerificationOperations, count)?;
     let fee_capacity = problem.capacities.iter().zip(fee_eligible).try_fold(
         0_u128,
         |sum, (&capacity, &eligible)| {
@@ -115,7 +90,7 @@ pub fn select_funding_with_unit_fee(
     let (resource_assignment, resource_totals, resource_unrestricted, resource_next_cursor) =
         if u128::from(total) < fee_capacity {
             let FundingPolicyResult::Selected(selected) =
-                select_fixed_funding_policy(problem, resource_cursor, limits, budget)?
+                select_fixed_funding_policy(problem, resource_cursor, limits)?
             else {
                 return Err(FundingSearchError::InvalidResult);
             };
@@ -123,19 +98,10 @@ pub fn select_funding_with_unit_fee(
             let unrestricted = matches!(fragment, FundingPolicyFragment::Unrestricted);
             (assignment, totals, unrestricted, next)
         } else {
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                count
-                    .checked_mul(size_of::<u64>())
-                    .ok_or(FundingSearchError::Overflow)?,
-            )?;
-            reserve_work(budget, HostWorkDimension::SearchCandidates, count)?;
             let mut capacities = filled_vec(count, 0_u64)?;
             capacities.copy_from_slice(problem.capacities);
             let mut best: Option<(RestrictedFundingCandidate, FundingBurdenRank)> = None;
             for payer in 0..count {
-                reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
                 if !fee_eligible[payer] || capacities[payer] == 0 {
                     continue;
                 }
@@ -147,18 +113,12 @@ pub fn select_funding_with_unit_fee(
                     },
                     resource_cursor,
                     limits,
-                    budget,
                 )?;
                 capacities[payer] += 1;
                 let Some(candidate) = candidate else {
                     continue;
                 };
-                let candidate_rank = rank(&candidate.totals, budget)?;
-                reserve_work(
-                    budget,
-                    HostWorkDimension::VerificationOperations,
-                    count.checked_mul(2).ok_or(FundingSearchError::Overflow)?,
-                )?;
+                let candidate_rank = rank(&candidate.totals)?;
                 let replace = match &best {
                     None => true,
                     Some((current, current_rank)) => {
@@ -186,7 +146,7 @@ pub fn select_funding_with_unit_fee(
                 return Ok(None);
             };
             let (assignment, totals, _) =
-                canonical_assignment(problem, best.totals.source_debits(), limits, budget)?;
+                canonical_assignment(problem, best.totals.source_debits(), limits)?;
             let next = (total != 0).then_some(if resource_cursor == count - 1 {
                 0
             } else {
@@ -194,18 +154,6 @@ pub fn select_funding_with_unit_fee(
             });
             (assignment, totals, false, next)
         };
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(2 * size_of::<u64>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchCandidates,
-        count.checked_mul(69).ok_or(FundingSearchError::Overflow)?,
-    )?;
     let mut fee_capacities = filled_vec(count, 0_u64)?;
     for (i, capacity) in fee_capacities.iter_mut().enumerate() {
         let remaining = problem.capacities[i]

@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
@@ -41,35 +40,8 @@ impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode f
 #[derive(Clone)]
 struct AnyMatch;
 
-fn metered_any_get(
-    datum: &str,
-    meter: &(dyn SourceMeter + Send + Sync),
-) -> Result<Option<String>, RSpaceError> {
-    meter.reserve(1, datum.len(), datum.len())?;
-    Ok(Some(datum.to_owned()))
-}
-
 impl Match<Any, String, String> for AnyMatch {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
-
-    fn get_metered(
-        &self,
-        _: &Any,
-        datum: &String,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<String>, RSpaceError> {
-        metered_any_get(datum, meter)
-    }
-
-    fn check_commit_metered(
-        &self,
-        _: &String,
-        _: &[&String],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        Ok(true)
-    }
 }
 
 struct Observer {
@@ -1063,4 +1035,129 @@ async fn replay_observer_replacement_cannot_split_an_inflight_operation() {
             replay.check_replay_data().await.unwrap();
         }
     }
+}
+
+// Added by the merge of feature/cost-accounted-rho (plan step 1.3): replay
+// counts a non-persistent produce only inside its commit closure, so a COMM
+// that the observer refuses leaves the count unchanged. Theirs counted the
+// produce when the operation started and rolled the count back after a failed
+// match. That rollback stays disabled (`rollback_produce_counter` in
+// `replay_rspace.rs`). Here it would undo a count that never happened, and the
+// retry below would then miss the recorded `times_repeated`.
+#[tokio::test]
+async fn replay_refused_comm_keeps_the_repeated_produce_count() {
+    let mut stores = InMemoryStoreManager::new();
+    let (play, replay) = TestSpace::create_with_replay(
+        stores.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(AnyMatch)),
+    )
+    .unwrap();
+    let initial = play.create_checkpoint().await.unwrap();
+    let join = vec!["channel".to_string(), "channel".to_string()];
+    assert!(
+        play.produce("channel".to_string(), "data".to_string(), false)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        play.consume(join.clone(), vec![Any, Any], "join".to_string(), false, BTreeSet::new())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        play.produce("channel".to_string(), "data".to_string(), false)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let recorded = play.create_checkpoint().await.unwrap();
+    let recorded_comm = recorded
+        .log
+        .iter()
+        .find_map(|event| match event {
+            Event::Comm(comm) => Some(comm.clone()),
+            _ => None,
+        })
+        .expect("play records the join COMM");
+    assert_eq!(recorded_comm.produces.len(), 2);
+    assert_eq!(
+        recorded_comm
+            .times_repeated
+            .values()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    replay
+        .rig_and_reset(initial.root, recorded.log)
+        .await
+        .unwrap();
+    let observer = Arc::new(Observer::new(false));
+    replay.set_accounting_observer(Some(observer.clone()));
+
+    assert_eq!(
+        replay
+            .produce("channel".to_string(), "data".to_string(), false)
+            .await
+            .map(|result| result.is_some()),
+        Ok(false)
+    );
+    assert_eq!(
+        replay
+            .consume(join.clone(), vec![Any, Any], "join".to_string(), false, BTreeSet::new())
+            .await
+            .map(|result| result.is_some()),
+        Ok(false)
+    );
+
+    observer.reject.store(true, Ordering::Release);
+    assert_eq!(
+        replay
+            .produce("channel".to_string(), "data".to_string(), false)
+            .await
+            .map(|result| result.is_some()),
+        Err(RSpaceError::OutOfPhlogistons)
+    );
+    assert_eq!(observer.count.load(Ordering::Acquire), 1);
+    assert_eq!(replay.get_data(&"channel".to_string()).await.unwrap().len(), 1);
+    assert_eq!(
+        replay
+            .get_waiting_continuations(join.clone())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    observer.reject.store(false, Ordering::Release);
+    assert_eq!(
+        replay
+            .produce("channel".to_string(), "data".to_string(), false)
+            .await
+            .map(|result| result.is_some()),
+        Ok(true)
+    );
+    assert_eq!(observer.count.load(Ordering::Acquire), 2);
+    {
+        let observed = observer.observed.lock().unwrap();
+        assert_eq!(observed[0], recorded_comm);
+        assert_eq!(observed[1], recorded_comm);
+    }
+    assert!(
+        replay
+            .get_data(&"channel".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        replay
+            .get_waiting_continuations(join)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    replay.check_replay_data().await.unwrap();
 }

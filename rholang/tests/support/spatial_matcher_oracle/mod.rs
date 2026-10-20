@@ -24,7 +24,10 @@ pub mod sub_pars {
     use models::rhoapi::Par;
 
     use super::par_count::ParCount;
-    use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+    // Changed by the merge of feature/cost-accounted-rho (finding C5): the
+    // unmetered `sub_pars` takes no work token, so no matcher context is
+    // needed.
+    // use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 
     /// The recursive semantic oracle deliberately shares the production
     /// subset enumeration, as it did before the metered matcher gained its
@@ -36,17 +39,23 @@ pub mod sub_pars {
         min_prune: &ParCount,
         max_prune: &ParCount,
     ) -> impl Iterator<Item = (Par, Par)> {
-        let context = SpatialMatcherContext::new();
-        crate::rust::interpreter::matcher::sub_pars::sub_pars(
-            par,
-            min,
-            max,
-            min_prune,
-            max_prune,
-            context.work().expect("unmetered matcher work"),
-        )
-        .expect("unmetered subset enumeration")
-        .map(|pair| pair.expect("unmetered candidate copy"))
+        // Changed by the merge of feature/cost-accounted-rho (finding C5):
+        // DR-131 removed the work token. The production enumeration returns
+        // `None` only when a count does not fit `isize`, and it yields the
+        // candidate pairs directly.
+        // let context = SpatialMatcherContext::new();
+        // crate::rust::interpreter::matcher::sub_pars::sub_pars(
+        //     par,
+        //     min,
+        //     max,
+        //     min_prune,
+        //     max_prune,
+        //     context.work().expect("unmetered matcher work"),
+        // )
+        // .expect("unmetered subset enumeration")
+        // .map(|pair| pair.expect("unmetered candidate copy"))
+        crate::rust::interpreter::matcher::sub_pars::sub_pars(par, min, max, min_prune, max_prune)
+            .expect("every count of the subset enumeration fits isize")
     }
 }
 

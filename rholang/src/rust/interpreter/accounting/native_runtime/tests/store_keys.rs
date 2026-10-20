@@ -3,17 +3,11 @@
 
 use models::rhoapi::Par;
 use proptest::prelude::*;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::{channel_key, StoreKey};
 
-use crate::rust::interpreter::accounting::native_runtime::clone_backing::tests::term;
+use crate::rust::interpreter::accounting::random_par_term as term;
 
-fn key(par: &Par) -> StoreKey {
-    channel_key(par, &|_: usize, _: usize, _: usize| {
-        Ok::<(), RSpaceError>(())
-    })
-    .expect("an unlimited meter accepts every charge")
-}
+fn key(par: &Par) -> StoreKey { channel_key(par).expect("a channel key") }
 
 /// A copy of `par` whose `locally_free` fields, in every `Par`, `Send` and
 /// `New` that the generator builds, hold `noise`.

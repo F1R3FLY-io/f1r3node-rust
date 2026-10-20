@@ -21,7 +21,9 @@ use comm::rust::transport::grpc_transport_server::TransportLayerServer;
 use comm::rust::transport::transport_layer::Blob;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+// Changed by the merge of feature/cost-accounted-rho (clippy gate):
+// the import has no use.
+// use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -29,7 +31,9 @@ use models::rust::casper::protocol::casper_message::{
 };
 // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
 use parking_lot::Mutex as PlMutex;
-use prost::bytes::Bytes;
+// Changed by the merge of feature/cost-accounted-rho (clippy gate):
+// the import has no use.
+// use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -173,7 +177,10 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            &mut self.runtime_manager.clone(),
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // the callee takes a shared reference.
+            // &mut self.runtime_manager.clone(),
+            &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             DeploySelection::Standard,
         )
@@ -741,7 +748,10 @@ impl TestNode {
 
             async move {
                 // Clone the block_store (cheap since it's Arc-based) to get a mutable reference
-                let mut block_store = casper.block_store.clone();
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // the callee takes a shared reference.
+                // let mut block_store = casper.block_store.clone();
+                let block_store = casper.block_store.clone();
                 GraphzGenerator::dag_as_cluster(
                     topo_sort,
                     lfb,
@@ -749,7 +759,10 @@ impl TestNode {
                         show_justification_lines: true,
                     },
                     serializer.clone(),
-                    &mut block_store,
+                    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                    // the callee takes a shared reference.
+                    // &mut block_store,
+                    &block_store,
                 )
                 .await
                 .map(|_| ())?;
@@ -878,7 +891,11 @@ impl TestNode {
             > { Box::pin(async move { Ok(()) }) },
         );
 
-        let _ = self.tls.handle_receive(dispatch, handle_streamed).await?;
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `let _` on the returned join handle reads as a dropped future. The
+        // explicit `drop` detaches the task, as the test-lane copy does.
+        // let _ = self.tls.handle_receive(dispatch, handle_streamed).await?;
+        drop(self.tls.handle_receive(dispatch, handle_streamed).await?);
 
         Ok(())
     }
@@ -1103,8 +1120,27 @@ impl TestNode {
             Some(ValidatorIdentity::new(&sk))
         };
 
-        let proposer_opt = match validator_id_opt {
-            Some(ref vi) => Some(new_proposer(
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `Option::map` states the same mapping.
+        // let proposer_opt = match validator_id_opt {
+        //     Some(ref vi) => Some(new_proposer(
+        //         vi.clone(),
+        //         None,
+        //         runtime_manager.clone(),
+        //         block_store.clone(),
+        //         deploy_storage.clone(),
+        //         rejected_deploy_buffer.clone(),
+        //         block_retriever.clone(),
+        //         tle.clone(),
+        //         connections_cell.clone(),
+        //         rp_conf.clone(),
+        //         event_publisher.clone(),
+        //         false, // allow_empty_blocks
+        //     )),
+        //     None => None,
+        // };
+        let proposer_opt = validator_id_opt.as_ref().map(|vi| {
+            new_proposer(
                 vi.clone(),
                 None,
                 runtime_manager.clone(),
@@ -1117,9 +1153,8 @@ impl TestNode {
                 rp_conf.clone(),
                 event_publisher.clone(),
                 false, // allow_empty_blocks
-            )),
-            None => None,
-        };
+            )
+        });
 
         let bp_dependencies = BlockProcessorDependencies::new(
             block_store.clone(),

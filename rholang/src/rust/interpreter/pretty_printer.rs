@@ -3309,7 +3309,10 @@ mod drive {
                         .expect("an addressable map cannot overflow its child count"),
                 );
                 let mut result = String::from("{");
-                for (index, pair) in rendered.chunks_exact(2).enumerate() {
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // `as_chunks` gives fixed-size chunks and drops the same remainder.
+                // for (index, pair) in rendered.chunks_exact(2).enumerate() {
+                for (index, pair) in rendered.as_chunks::<2>().0.iter().enumerate() {
                     if index != 0 {
                         result.push_str(", ");
                     }
@@ -3344,7 +3347,10 @@ mod drive {
             EPathMapMode::Empty | EPathMapMode::Set => rendered.join(", "),
             EPathMapMode::Map => {
                 let mut result = String::new();
-                for (index, pair) in rendered.chunks_exact(2).enumerate() {
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // `as_chunks` gives fixed-size chunks and drops the same remainder.
+                // for (index, pair) in rendered.chunks_exact(2).enumerate() {
+                for (index, pair) in rendered.as_chunks::<2>().0.iter().enumerate() {
                     if index != 0 {
                         result.push_str(", ");
                     }
@@ -3618,9 +3624,14 @@ mod differential {
             }
         }
         fn expr(e: &mut Expr) {
-            match &mut e.expr_instance {
-                Some(ExprInstance::ENotBody(ENot { p: Some(p) })) => tame(p),
-                _ => {}
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+            // `match` with one arm of interest is an `if let`.
+            // match &mut e.expr_instance {
+            //     Some(ExprInstance::ENotBody(ENot { p: Some(p) })) => tame(p),
+            //     _ => {}
+            // }
+            if let Some(ExprInstance::ENotBody(ENot { p: Some(p) })) = &mut e.expr_instance {
+                tame(p);
             }
         }
         fn connective(c: &mut Connective) {

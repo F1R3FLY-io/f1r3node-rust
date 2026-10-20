@@ -44,9 +44,6 @@
 
 use std::collections::BTreeMap;
 
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::BincodeByteSink;
-
 use crate::rhoapi::{Par, Var};
 use crate::rust::rhoapi_ext::EPathMap;
 
@@ -195,88 +192,6 @@ pub fn put_bytes_seq(out: &mut Vec<u8>, bs: &[Vec<u8>]) {
     }
 }
 
-/// The fallible twins emit the same primitive chunks as the Vec fast path.
-/// Native RSpace's sink charges before each chunk reaches the digest/buffer.
-#[inline(always)]
-pub fn try_put_u64(out: &mut dyn BincodeByteSink, v: u64) -> Result<(), RSpaceError> {
-    out.write_bytes(&v.to_le_bytes())
-}
-
-#[inline(always)]
-pub fn try_put_u32(out: &mut dyn BincodeByteSink, v: u32) -> Result<(), RSpaceError> {
-    out.write_bytes(&v.to_le_bytes())
-}
-
-#[inline(always)]
-pub fn try_put_i32(out: &mut dyn BincodeByteSink, v: i32) -> Result<(), RSpaceError> {
-    out.write_bytes(&v.to_le_bytes())
-}
-
-#[inline(always)]
-pub fn try_put_i64(out: &mut dyn BincodeByteSink, v: i64) -> Result<(), RSpaceError> {
-    out.write_bytes(&v.to_le_bytes())
-}
-
-#[inline(always)]
-pub fn try_put_bool(out: &mut dyn BincodeByteSink, v: bool) -> Result<(), RSpaceError> {
-    out.write_bytes(&[u8::from(v)])
-}
-
-#[inline(always)]
-pub fn try_put_bytes(out: &mut dyn BincodeByteSink, bytes: &[u8]) -> Result<(), RSpaceError> {
-    try_put_u64(out, bytes.len() as u64)?;
-    if bytes.is_empty() {
-        // `std::io::Write::write_all(&[])` performs no write, hence no native
-        // SourceMeter reservation. The zero length prefix was already paid.
-        Ok(())
-    } else {
-        out.write_bytes(bytes)
-    }
-}
-
-/// `Vec<u8>` uses serde's generic sequence implementation: one u64 count,
-/// then one `serialize_u8` write per member. It has the same bytes as
-/// `serialize_bytes`, but a different native SourceMeter reservation trace.
-pub fn try_put_byte_vec(out: &mut dyn BincodeByteSink, bytes: &[u8]) -> Result<(), RSpaceError> {
-    try_put_u64(out, bytes.len() as u64)?;
-    for byte in bytes {
-        out.write_bytes(std::slice::from_ref(byte))?;
-    }
-    Ok(())
-}
-
-#[inline(always)]
-pub fn try_put_str(out: &mut dyn BincodeByteSink, value: &str) -> Result<(), RSpaceError> {
-    try_put_bytes(out, value.as_bytes())
-}
-
-#[inline(always)]
-pub fn try_put_empty_bytes(out: &mut dyn BincodeByteSink) -> Result<(), RSpaceError> {
-    try_put_u64(out, 0)
-}
-
-pub fn try_put_str_seq(
-    out: &mut dyn BincodeByteSink,
-    values: &[String],
-) -> Result<(), RSpaceError> {
-    try_put_u64(out, values.len() as u64)?;
-    for value in values {
-        try_put_str(out, value)?;
-    }
-    Ok(())
-}
-
-pub fn try_put_bytes_seq(
-    out: &mut dyn BincodeByteSink,
-    values: &[Vec<u8>],
-) -> Result<(), RSpaceError> {
-    try_put_u64(out, values.len() as u64)?;
-    for value in values {
-        try_put_byte_vec(out, value)?;
-    }
-    Ok(())
-}
-
 // ===========================================================================
 // §B  The two object-safe traits the generated table implements
 // ===========================================================================
@@ -342,26 +257,10 @@ pub trait BincodeNode {
     /// serde's derive does.
     fn bincode_emit(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_>;
 
-    /// Same generated positional field program, but each bounded primitive
-    /// flows through a fallible charge-before-write sink.
-    fn bincode_emit_metered(
-        &self,
-        from: usize,
-        out: &mut dyn BincodeByteSink,
-    ) -> Result<Descent<'_>, RSpaceError>;
-
     /// Pre-cost positional serde layout. Only the four schema-extended nodes
     /// override this in generated code; all other nodes remain byte-identical.
     fn bincode_emit_legacy(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {
         self.bincode_emit(from, out)
-    }
-
-    fn bincode_emit_legacy_metered(
-        &self,
-        from: usize,
-        out: &mut dyn BincodeByteSink,
-    ) -> Result<Descent<'_>, RSpaceError> {
-        self.bincode_emit_metered(from, out)
     }
 
     /// Protocol-v6 positional layout. Every pre-v7 field is retained; only
@@ -369,14 +268,6 @@ pub trait BincodeNode {
     /// parallel tails before selecting this necessarily infallible emitter.
     fn bincode_emit_cost_v1(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {
         self.bincode_emit(from, out)
-    }
-
-    fn bincode_emit_cost_v1_metered(
-        &self,
-        from: usize,
-        out: &mut dyn BincodeByteSink,
-    ) -> Result<Descent<'_>, RSpaceError> {
-        self.bincode_emit_metered(from, out)
     }
 
     /// ⚠ **The one node whose field 0 must be CONSTRUCTED, not borrowed.**
@@ -402,10 +293,6 @@ pub trait BincodeNode {
 /// ⚠ The index is serde DECLARATION ORDER, never the proto tag.
 pub trait BincodeOneof {
     fn bincode_emit(&self, out: &mut Vec<u8>) -> Option<&dyn BincodeNode>;
-    fn bincode_emit_metered(
-        &self,
-        out: &mut dyn BincodeByteSink,
-    ) -> Result<Option<&dyn BincodeNode>, RSpaceError>;
 }
 
 /// A homogeneous sequence of nodes, erased.
@@ -519,33 +406,6 @@ impl BincodeNode for EPathMap {
                     None => put_bool(out, false),
                 },
                 _ => return Descent::Done,
-            }
-            i += 1;
-        }
-    }
-
-    fn bincode_emit_metered(
-        &self,
-        from: usize,
-        out: &mut dyn BincodeByteSink,
-    ) -> Result<Descent<'_>, RSpaceError> {
-        let mut i = from;
-        loop {
-            match i {
-                0 => unreachable!("EPathMap field 0 is opened by the shared driver"),
-                1 => try_put_empty_bytes(out)?,
-                2 => try_put_bool(out, self.connective_used)?,
-                3 => match &self.remainder {
-                    Some(value) => {
-                        try_put_bool(out, true)?;
-                        return Ok(Descent::Node {
-                            resume: NO_RESUME,
-                            node: value,
-                        });
-                    }
-                    None => try_put_bool(out, false)?,
-                },
-                _ => return Ok(Descent::Done),
             }
             i += 1;
         }

@@ -569,7 +569,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
                     // Guard against unbounded queue growth under high deploy/autopropose load.
                     let enqueue_reserved = queue_pending
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                        // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+                        // `try_update` has the same signature and semantics.
+                        // .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
                             (curr < queue_max_pending).then_some(curr + 1)
                         })
                         .is_ok();

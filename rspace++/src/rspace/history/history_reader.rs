@@ -1,6 +1,5 @@
 use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::hashing::stable_hash_provider::{
     EventCodecEpoch, StableHashSerialize, channel_hash_for_epoch, channel_tuple_hash_for_epoch,
 };
@@ -59,14 +58,6 @@ pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone>: Send + Syn
      * Get reader which accepts non-serialized and hashed keys
      */
     fn base(&self) -> Box<dyn HistoryReaderBase<C, P, A, K>>;
-
-    fn base_metered(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Box<dyn HistoryReaderBase<C, P, A, K>>, RSpaceError> {
-        meter.reserve(1, 0, std::mem::size_of_val(self))?;
-        Ok(self.base())
-    }
 
     fn get_data_proj_generic(&self, key: &C) -> Vec<Datum<A>>;
 
@@ -206,14 +197,6 @@ where
     }
 
     pub fn base(self) -> Box<dyn HistoryReaderBase<C, P, A, K>> { Box::new(self) }
-
-    pub fn base_metered(
-        self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Box<dyn HistoryReaderBase<C, P, A, K>>, RSpaceError> {
-        meter.reserve(1, 0, std::mem::size_of::<Self>())?;
-        Ok(self.base())
-    }
 }
 
 impl<C, P, A, K> HistoryReaderBase<C, P, A, K> for EpochHistoryReader<C, P, A, K>

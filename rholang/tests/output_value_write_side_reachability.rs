@@ -35,6 +35,18 @@
 //!
 //! ## The write path, traced (and it really is ONE site)
 //!
+//! > **Changed by the merge of feature/cost-accounted-rho (finding R1-28).**
+//! > DR-114 adds a second gate and a second write. In native funded execution
+//! > the dispatcher gates on `is_native_recorded_op`, which adds four Chroma
+//! > processes to `non_deterministic_ops()`. `reduce.rs` also records the reply
+//! > of a recorded call whose produce failed
+//! > (`FailedNonDeterministicCall` → `mark_as_non_deterministic`), so replay
+//! > meets the same denial. A native call that fails or gets a bad argument
+//! > replies `[false, code, message]` (`io::response::err`). So the register
+//! > below covers the native recorded set, and
+//! > [`NATIVE_FAILURE_REPLY_DEPTH`] records the failure reply. The diagram
+//! > shows the legacy path.
+//!
 //! ```text
 //!   system process returns  Vec<Par>                     ← the only variable
 //!         │
@@ -110,7 +122,10 @@ use std::collections::{HashMap, HashSet};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{BindPattern, EList, Expr, ListParWithRandom, Par, TaggedContinuation};
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// crate alias `RhoHistoryRepository` names the history type below.
+// use models::rhoapi::{BindPattern, EList, Expr, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{EList, Expr, Par};
 use models::rust::rholang::par_children::par_child_pars;
 use models::rust::rholang::protobuf_decoder;
 use models::rust::utils::new_gint_par;
@@ -118,14 +133,26 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::grpc_client_service::GrpcClientService;
+use rholang::rust::interpreter::io::errors::FserrCode;
+use rholang::rust::interpreter::io::response;
 use rholang::rust::interpreter::ollama_service::OllamaService;
 use rholang::rust::interpreter::openai_service::{
     create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig,
 };
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::system_processes::{non_deterministic_ops, BodyRefs};
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// crate alias `RhoHistoryRepository` names the history type below.
+// use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl};
+// Changed by the merge of feature/cost-accounted-rho (finding R1-28): the
+// register's denominator is DR-114's native recorded set.
+// use rholang::rust::interpreter::system_processes::{non_deterministic_ops, BodyRefs};
+use rholang::rust::interpreter::system_processes::{
+    is_native_recorded_op, non_deterministic_ops, BodyRefs,
+};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
-use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// crate alias `RhoHistoryRepository` names the history type below.
+// use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
@@ -378,7 +405,66 @@ const DISPOSITIONS: &[Disposition] = &[
         max_output_value_depth: 2,
         shape: "RhoList::create_par(entries) over CollectionEntry → Par (document ∥ metadata map)",
     },
+    // Added by the merge of feature/cost-accounted-rho (finding R1-28): the
+    // four Chroma processes that DR-114's `is_native_recorded_op` adds to
+    // `non_deterministic_ops()`. Native play records their replies
+    // (`system_processes.rs`, the `#[cfg(feature = "chromadb")]` arms of the
+    // native call), and the processes exist only in a chromadb build.
+    Disposition {
+        body_ref: BodyRefs::CHROMA_CREATE_COLLECTION,
+        urn: "rho:chroma:collection:new",
+        drive: Drive::CompiledOutWithoutFeature {
+            _feature: "chromadb",
+        },
+        max_output_value_depth: 0,
+        shape: "vec![Par::default()] — the empty Par",
+    },
+    Disposition {
+        body_ref: BodyRefs::CHROMA_GET_COLLECTION_META,
+        urn: "rho:chroma:collection:meta",
+        drive: Drive::CompiledOutWithoutFeature {
+            _feature: "chromadb",
+        },
+        max_output_value_depth: 1,
+        shape: "Nil, or Metadata → RhoMap::create_par over GString keys and scalar \
+                MetadataValue leaves (string, number, boolean)",
+    },
+    Disposition {
+        body_ref: BodyRefs::CHROMA_UPSERT_ENTRIES,
+        urn: "rho:chroma:collection:entries:new",
+        drive: Drive::CompiledOutWithoutFeature {
+            _feature: "chromadb",
+        },
+        max_output_value_depth: 0,
+        shape: "vec![RhoString::create_par(name)] — one Par, one GString expr",
+    },
+    Disposition {
+        body_ref: BodyRefs::CHROMA_DELETE_DOCUMENTS,
+        urn: "rho:chroma:collection:entries:delete",
+        drive: Drive::CompiledOutWithoutFeature {
+            _feature: "chromadb",
+        },
+        max_output_value_depth: 0,
+        shape: "vec![RhoString::create_par(name)] — one Par, one GString expr",
+    },
 ];
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-28): the
+/// `output_value` depth of DR-114's native failure reply. Every member of the
+/// native recorded set can write it in native funded execution, in place of
+/// its row's reply. Measured by
+/// [`the_native_failure_reply_is_one_list_level_over_scalars`].
+const NATIVE_FAILURE_REPLY_DEPTH: usize = 1;
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-28): the
+/// native recorded set. `is_native_recorded_op` is a predicate, so the set is
+/// read by scanning body refs. Body refs are small sequential constants (the
+/// largest is below 100), so the `u16` range holds every one of them.
+fn native_recorded_ops() -> HashSet<i64> {
+    (0..=i64::from(u16::MAX))
+        .filter(|body_ref| is_native_recorded_op(*body_ref))
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // the driver
@@ -417,18 +503,22 @@ fn produces_of(event: &Event) -> &[Produce] {
 async fn play_and_harvest(program: &str, services: ExternalServices) -> Written {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.expect("in-memory rspace store");
-    let (mut runtime, _replay, _history): (
-        RhoRuntimeImpl,
-        RhoRuntimeImpl,
-        std::sync::Arc<
-            Box<
-                dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        >,
-    ) = create_runtimes_with_services(store, false, &mut Vec::new(), services).await;
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+    // crate alias `RhoHistoryRepository` names the history type below.
+    // let (mut runtime, _replay, _history): (
+    //     RhoRuntimeImpl,
+    //     RhoRuntimeImpl,
+    //     std::sync::Arc<
+    //         Box<
+    //             dyn HistoryRepository<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+    //                 + Send
+    //                 + Sync
+    //                 + 'static,
+    //         >,
+    //     >,
+    // ) = create_runtimes_with_services(store, false, &mut Vec::new(), services).await;
+    let (mut runtime, _replay, _history): (RhoRuntimeImpl, RhoRuntimeImpl, RhoHistoryRepository) =
+        create_runtimes_with_services(store, false, &mut Vec::new(), services).await;
 
     let phlo = Cost::create(i64::MAX, "output_value write-side reachability".to_string());
     let rand = Blake2b512Random::create_from_bytes(&[0x29; 32]);
@@ -524,9 +614,21 @@ fn the_depth_meter_agrees_with_nested_list_units() {
 /// operation added there has no row and fails the first assertion; a row whose
 /// `body_ref` is removed from the set fails the second. Neither can be
 /// satisfied by editing a comment.
+///
+/// Changed by the merge of feature/cost-accounted-rho (finding R1-28): the
+/// denominator is DR-114's native recorded set, which must contain dev's
+/// `non_deterministic_ops()`.
 #[test]
 fn every_non_deterministic_op_carries_a_disposition() {
-    let registered: HashSet<i64> = non_deterministic_ops();
+    // let registered: HashSet<i64> = non_deterministic_ops();
+    let legacy: HashSet<i64> = non_deterministic_ops();
+    let registered: HashSet<i64> = native_recorded_ops();
+    assert!(
+        legacy.is_subset(&registered),
+        "DR-114's native recorded set must extend `non_deterministic_ops()`; \
+         missing: {:?}",
+        legacy.difference(&registered).collect::<Vec<_>>()
+    );
     assert!(
         !registered.is_empty(),
         "`non_deterministic_ops()` is empty; every assertion below would be \
@@ -572,6 +674,31 @@ fn every_non_deterministic_op_carries_a_disposition() {
         "  {} registered non-deterministic ops, {} dispositioned, bijective",
         registered.len(),
         DISPOSITIONS.len()
+    );
+}
+
+/// Added by the merge of feature/cost-accounted-rho (finding R1-28): DR-114's
+/// native failure reply, built as `native_failure_reply` builds it
+/// (`io::response::err(code, "<process>: <text>")`), is one list level over
+/// scalar leaves.
+#[test]
+fn the_native_failure_reply_is_one_list_level_over_scalars() {
+    for code in ["EXT_BAD_ARG", "EXT_FAILED", "EXT_OUTPUT_TOO_LARGE"] {
+        let reply = response::err(FserrCode(code), "gpt4: the service failed");
+        assert_eq!(
+            max_par_nesting(&reply),
+            NATIVE_FAILURE_REPLY_DEPTH,
+            "the native failure reply with code {code} changed its depth"
+        );
+    }
+    let deepest_row = DISPOSITIONS
+        .iter()
+        .map(|disposition| disposition.max_output_value_depth)
+        .max()
+        .expect("the register has rows");
+    assert!(
+        NATIVE_FAILURE_REPLY_DEPTH <= deepest_row,
+        "the failure reply is deeper than every registered reply"
     );
 }
 

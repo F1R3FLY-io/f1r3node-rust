@@ -1057,6 +1057,9 @@ const _FILE_HANDLE_IS_SEND_SYNC: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the tests that require a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
 
     /// Test helper — a shadow handle (no OS fd), suitable for
     /// filling the table without actually opening files.  The
@@ -1942,9 +1945,21 @@ mod tests {
     /// LOAD-BEARING sentinel guard: `[0; 32]` sweep panics with
     /// the explanatory message.
     #[tokio::test]
-    #[should_panic(expected = "sentinel")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "sentinel")]
     async fn close_all_for_deploy_panics_on_zero_sentinel() {
+        let child = PanicChild::new(
+            module_path!(),
+            "close_all_for_deploy_panics_on_zero_sentinel",
+        );
+        if !child.is_child() {
+            child.expect_panic("sentinel");
+            return;
+        }
         let table = FileHandleTable::new();
+        child.subject_reached();
         let _ = table.close_all_for_deploy(&[0u8; 32]).await;
     }
 

@@ -103,7 +103,7 @@ pub fn ematches_locally_free(target: &Par, pattern: &Par) -> Vec<u8> {
 }
 
 // forTuple
-impl<'a> HasLocallyFree<(Par, Par)> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<(Par, Par)> for SpatialMatcherContext {
     fn connective_used(&self, source: (Par, Par)) -> bool {
         self.connective_used(source.0) || self.connective_used(source.1)
     }
@@ -117,7 +117,7 @@ impl<'a> HasLocallyFree<(Par, Par)> for SpatialMatcherContext<'a> {
 }
 
 // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - line 357 and beyond
-impl<'a> HasLocallyFree<Par> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Par> for SpatialMatcherContext {
     fn connective_used(&self, p: Par) -> bool { p.connective_used }
 
     fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { take_par_locally_free(p) }
@@ -157,7 +157,7 @@ fn signature_connective_used(signature: &CostSignature) -> bool {
     false
 }
 
-impl<'a> HasLocallyFree<If> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<If> for SpatialMatcherContext {
     fn connective_used(&self, source: If) -> bool {
         source.condition.as_ref().is_some_and(|p| p.connective_used)
             || source.if_true.as_ref().is_some_and(|p| p.connective_used)
@@ -173,7 +173,7 @@ impl<'a> HasLocallyFree<If> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<CostSignedTerm> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<CostSignedTerm> for SpatialMatcherContext {
     fn connective_used(&self, source: CostSignedTerm) -> bool {
         source.body.as_ref().is_some_and(|p| p.connective_used)
             || source
@@ -197,7 +197,7 @@ impl<'a> HasLocallyFree<CostSignedTerm> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<CostStack> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<CostStack> for SpatialMatcherContext {
     fn connective_used(&self, source: CostStack) -> bool {
         let mut pending = vec![&source];
         while let Some(stack) = pending.pop() {
@@ -222,7 +222,7 @@ impl<'a> HasLocallyFree<CostStack> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<Bundle> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Bundle> for SpatialMatcherContext {
     fn connective_used(&self, _source: Bundle) -> bool { false }
 
     fn locally_free(&self, source: Bundle, _depth: i32) -> Vec<u8> {
@@ -230,19 +230,19 @@ impl<'a> HasLocallyFree<Bundle> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<Send> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Send> for SpatialMatcherContext {
     fn connective_used(&self, s: Send) -> bool { s.connective_used }
 
     fn locally_free(&self, s: Send, _depth: i32) -> Vec<u8> { s.locally_free }
 }
 
-impl<'a> HasLocallyFree<GUnforgeable> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<GUnforgeable> for SpatialMatcherContext {
     fn connective_used(&self, _unf: GUnforgeable) -> bool { false }
 
     fn locally_free(&self, _s: GUnforgeable, _depth: i32) -> Vec<u8> { Default::default() }
 }
 
-impl<'a> HasLocallyFree<Expr> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Expr> for SpatialMatcherContext {
     fn connective_used(&self, e: Expr) -> bool {
         match e.expr_instance {
             Some(GBool(_)) => false,
@@ -445,13 +445,13 @@ impl<'a> HasLocallyFree<Expr> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<New> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<New> for SpatialMatcherContext {
     fn connective_used(&self, n: New) -> bool { n.p.expect("New.p").connective_used }
 
     fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> { n.locally_free }
 }
 
-impl<'a> HasLocallyFree<VarInstance> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<VarInstance> for SpatialMatcherContext {
     fn connective_used(&self, v: VarInstance) -> bool {
         match v {
             BoundVar(_) => false,
@@ -475,7 +475,7 @@ impl<'a> HasLocallyFree<VarInstance> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<Var> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Var> for SpatialMatcherContext {
     fn connective_used(&self, v: Var) -> bool {
         self.connective_used(v.var_instance.expect("Var.var_instance"))
     }
@@ -485,13 +485,13 @@ impl<'a> HasLocallyFree<Var> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<Receive> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Receive> for SpatialMatcherContext {
     fn connective_used(&self, r: Receive) -> bool { r.connective_used }
 
     fn locally_free(&self, r: Receive, _depth: i32) -> Vec<u8> { r.locally_free }
 }
 
-impl<'a> HasLocallyFree<ReceiveBind> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<ReceiveBind> for SpatialMatcherContext {
     fn connective_used(&self, rb: ReceiveBind) -> bool {
         self.connective_used(rb.source.expect("ReceiveBind.source"))
     }
@@ -506,13 +506,13 @@ impl<'a> HasLocallyFree<ReceiveBind> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<Match> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Match> for SpatialMatcherContext {
     fn connective_used(&self, m: Match) -> bool { m.connective_used }
 
     fn locally_free(&self, m: Match, _depth: i32) -> Vec<u8> { m.locally_free }
 }
 
-impl<'a> HasLocallyFree<MatchCase> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<MatchCase> for SpatialMatcherContext {
     fn connective_used(&self, mc: MatchCase) -> bool {
         mc.source.expect("MatchCase.source").connective_used
     }
@@ -525,7 +525,7 @@ impl<'a> HasLocallyFree<MatchCase> for SpatialMatcherContext<'a> {
     }
 }
 
-impl<'a> HasLocallyFree<Connective> for SpatialMatcherContext<'a> {
+impl HasLocallyFree<Connective> for SpatialMatcherContext {
     fn connective_used(&self, conn: Connective) -> bool {
         match conn.connective_instance {
             Some(ConnAndBody(_)) => true,
@@ -1048,6 +1048,298 @@ pub fn connective_connective_used_ref(conn: &Connective) -> bool {
     }
 }
 
+pub trait HasLocallyFreeRef<T> {
+    fn connective_used_ref(&self, source: &T) -> bool;
+
+    fn locally_free_is_empty(&self, source: &T, depth: i32) -> bool;
+}
+
+fn required(par: &Option<Par>) -> &Par {
+    par.as_ref()
+        .expect("the owned predicate unwraps this field")
+}
+
+fn binary_connective_used(p1: &Option<Par>, p2: &Option<Par>) -> bool {
+    let left = required(p1).connective_used;
+    let right = required(p2).connective_used;
+    left | right
+}
+
+fn binary_locally_free_is_empty(p1: &Option<Par>, p2: &Option<Par>) -> bool {
+    let left = required(p1).locally_free.is_empty();
+    let right = required(p2).locally_free.is_empty();
+    left && right
+}
+
+fn var_connective_used(v: &Option<Var>) -> bool {
+    match v
+        .as_ref()
+        .expect("the owned predicate unwraps the variable")
+        .var_instance
+        .as_ref()
+        .expect("the owned predicate unwraps the variable instance")
+    {
+        BoundVar(_) => false,
+        FreeVar(_) | Wildcard(_) => true,
+    }
+}
+
+fn var_locally_free_is_empty(v: &Option<Var>, depth: i32) -> bool {
+    match v
+        .as_ref()
+        .expect("the owned predicate unwraps the variable")
+        .var_instance
+        .as_ref()
+        .expect("the owned predicate unwraps the variable instance")
+    {
+        BoundVar(index) if depth == 0 => {
+            assert!(
+                *index >= 0,
+                "a negative bound variable has no locally free bitset"
+            );
+            false
+        }
+        BoundVar(_) | FreeVar(_) | Wildcard(_) => true,
+    }
+}
+
+fn signature_locally_free_is_empty(signature: &CostSignature) -> bool {
+    signature_locally_free(signature).is_empty()
+}
+
+impl HasLocallyFreeRef<(Par, Par)> for SpatialMatcherContext {
+    fn connective_used_ref(&self, source: &(Par, Par)) -> bool {
+        source.0.connective_used || source.1.connective_used
+    }
+
+    fn locally_free_is_empty(&self, source: &(Par, Par), _depth: i32) -> bool {
+        source.0.locally_free.is_empty() && source.1.locally_free.is_empty()
+    }
+}
+
+impl HasLocallyFreeRef<Par> for SpatialMatcherContext {
+    fn connective_used_ref(&self, p: &Par) -> bool { p.connective_used }
+
+    fn locally_free_is_empty(&self, p: &Par, _depth: i32) -> bool { p.locally_free.is_empty() }
+}
+
+impl HasLocallyFreeRef<If> for SpatialMatcherContext {
+    fn connective_used_ref(&self, source: &If) -> bool {
+        source.condition.as_ref().is_some_and(|p| p.connective_used)
+            || source.if_true.as_ref().is_some_and(|p| p.connective_used)
+            || source.if_false.as_ref().is_some_and(|p| p.connective_used)
+    }
+
+    fn locally_free_is_empty(&self, source: &If, _depth: i32) -> bool {
+        [&source.condition, &source.if_true, &source.if_false]
+            .into_iter()
+            .flatten()
+            .all(|p| p.locally_free.is_empty())
+    }
+}
+
+impl HasLocallyFreeRef<CostSignedTerm> for SpatialMatcherContext {
+    fn connective_used_ref(&self, source: &CostSignedTerm) -> bool {
+        source.body.as_ref().is_some_and(|p| p.connective_used)
+            || source
+                .signature
+                .as_ref()
+                .is_some_and(signature_connective_used)
+    }
+
+    fn locally_free_is_empty(&self, source: &CostSignedTerm, _depth: i32) -> bool {
+        source
+            .body
+            .as_ref()
+            .is_none_or(|p| p.locally_free.is_empty())
+            && source
+                .signature
+                .as_ref()
+                .is_none_or(signature_locally_free_is_empty)
+    }
+}
+
+impl HasLocallyFreeRef<CostStack> for SpatialMatcherContext {
+    fn connective_used_ref(&self, source: &CostStack) -> bool {
+        let mut pending = vec![source];
+        while let Some(stack) = pending.pop() {
+            if stack.cells.iter().any(signature_connective_used) {
+                return true;
+            }
+            pending.extend(stack.parallel_tail.iter());
+        }
+        false
+    }
+    fn locally_free_is_empty(&self, source: &CostStack, _depth: i32) -> bool {
+        let mut pending = vec![source];
+        while let Some(stack) = pending.pop() {
+            if !stack.cells.iter().all(signature_locally_free_is_empty) {
+                return false;
+            }
+            pending.extend(stack.parallel_tail.iter());
+        }
+        true
+    }
+}
+
+impl HasLocallyFreeRef<Bundle> for SpatialMatcherContext {
+    fn connective_used_ref(&self, _source: &Bundle) -> bool { false }
+
+    fn locally_free_is_empty(&self, source: &Bundle, _depth: i32) -> bool {
+        required(&source.body).locally_free.is_empty()
+    }
+}
+
+impl HasLocallyFreeRef<Send> for SpatialMatcherContext {
+    fn connective_used_ref(&self, s: &Send) -> bool { s.connective_used }
+
+    fn locally_free_is_empty(&self, s: &Send, _depth: i32) -> bool { s.locally_free.is_empty() }
+}
+
+impl HasLocallyFreeRef<GUnforgeable> for SpatialMatcherContext {
+    fn connective_used_ref(&self, _unf: &GUnforgeable) -> bool { false }
+
+    fn locally_free_is_empty(&self, _unf: &GUnforgeable, _depth: i32) -> bool { true }
+}
+
+impl HasLocallyFreeRef<Expr> for SpatialMatcherContext {
+    fn connective_used_ref(&self, e: &Expr) -> bool {
+        match &e.expr_instance {
+            Some(
+                GBool(_) | GInt(_) | GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)
+                | GDouble(_) | GFloat32(_) | GBigInt(_) | GBigRat(_) | GFixedPoint(_) | GString(_)
+                | GUri(_) | GByteArray(_),
+            ) => false,
+
+            Some(EListBody(e)) => e.connective_used,
+            Some(ETupleBody(e)) => e.connective_used,
+            Some(ESetBody(e)) => e.connective_used,
+            Some(EMapBody(e)) => e.connective_used,
+            Some(EPathmapBody(e)) => e.connective_used,
+            Some(EZipperBody(e)) => e.connective_used,
+
+            Some(EVarBody(EVar { v })) => var_connective_used(v),
+            Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => required(p).connective_used,
+
+            Some(
+                EMultBody(EMult { p1, p2 })
+                | EDivBody(EDiv { p1, p2 })
+                | EModBody(EMod { p1, p2 })
+                | EPlusBody(EPlus { p1, p2 })
+                | EMinusBody(EMinus { p1, p2 })
+                | ELtBody(ELt { p1, p2 })
+                | ELteBody(ELte { p1, p2 })
+                | EGtBody(EGt { p1, p2 })
+                | EGteBody(EGte { p1, p2 })
+                | EEqBody(EEq { p1, p2 })
+                | ENeqBody(ENeq { p1, p2 })
+                | EAndBody(EAnd { p1, p2 })
+                | EOrBody(EOr { p1, p2 })
+                | EPercentPercentBody(EPercentPercent { p1, p2 })
+                | EPlusPlusBody(EPlusPlus { p1, p2 })
+                | EMinusMinusBody(EMinusMinus { p1, p2 }),
+            ) => binary_connective_used(p1, p2),
+
+            Some(EMethodBody(e)) => e.connective_used,
+            // Changed by the merge of feature/cost-accounted-rho: the owned
+            // `connective_used` reads the target alone (see the note above
+            // `ematches_locally_free`), and so does this branch's by-reference
+            // form. Only `locally_free_is_empty` reads both slots.
+            // Some(EMatchesBody(EMatches { target, pattern })) => {
+            //     binary_connective_used(target, pattern)
+            // }
+            Some(EMatchesBody(EMatches { target, .. })) => required(target).connective_used,
+
+            None => false,
+        }
+    }
+
+    fn locally_free_is_empty(&self, e: &Expr, depth: i32) -> bool {
+        match &e.expr_instance {
+            Some(
+                GBool(_) | GInt(_) | GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)
+                | GDouble(_) | GFloat32(_) | GBigInt(_) | GBigRat(_) | GFixedPoint(_) | GString(_)
+                | GUri(_) | GByteArray(_),
+            ) => true,
+
+            Some(EListBody(e)) => e.locally_free.is_empty(),
+            Some(ETupleBody(e)) => e.locally_free.is_empty(),
+            Some(ESetBody(e)) => e.locally_free.is_empty(),
+            Some(EMapBody(e)) => e.locally_free.is_empty(),
+            Some(EPathmapBody(e)) => e.locally_free.is_empty(),
+            Some(EZipperBody(e)) => e.locally_free.is_empty(),
+
+            Some(EVarBody(EVar { v })) => var_locally_free_is_empty(v, depth),
+            Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => {
+                required(p).locally_free.is_empty()
+            }
+
+            Some(
+                EMultBody(EMult { p1, p2 })
+                | EDivBody(EDiv { p1, p2 })
+                | EModBody(EMod { p1, p2 })
+                | EPlusBody(EPlus { p1, p2 })
+                | EMinusBody(EMinus { p1, p2 })
+                | ELtBody(ELt { p1, p2 })
+                | ELteBody(ELte { p1, p2 })
+                | EGtBody(EGt { p1, p2 })
+                | EGteBody(EGte { p1, p2 })
+                | EEqBody(EEq { p1, p2 })
+                | ENeqBody(ENeq { p1, p2 })
+                | EAndBody(EAnd { p1, p2 })
+                | EOrBody(EOr { p1, p2 })
+                | EPercentPercentBody(EPercentPercent { p1, p2 })
+                | EPlusPlusBody(EPlusPlus { p1, p2 })
+                | EMinusMinusBody(EMinusMinus { p1, p2 }),
+            ) => binary_locally_free_is_empty(p1, p2),
+
+            Some(EMethodBody(e)) => e.locally_free.is_empty(),
+            Some(EMatchesBody(EMatches { target, pattern })) => {
+                binary_locally_free_is_empty(target, pattern)
+            }
+
+            None => true,
+        }
+    }
+}
+
+impl HasLocallyFreeRef<New> for SpatialMatcherContext {
+    fn connective_used_ref(&self, n: &New) -> bool { required(&n.p).connective_used }
+
+    fn locally_free_is_empty(&self, n: &New, _depth: i32) -> bool { n.locally_free.is_empty() }
+}
+
+impl HasLocallyFreeRef<Receive> for SpatialMatcherContext {
+    fn connective_used_ref(&self, r: &Receive) -> bool { r.connective_used }
+
+    fn locally_free_is_empty(&self, r: &Receive, _depth: i32) -> bool { r.locally_free.is_empty() }
+}
+
+impl HasLocallyFreeRef<ReceiveBind> for SpatialMatcherContext {
+    fn connective_used_ref(&self, rb: &ReceiveBind) -> bool { required(&rb.source).connective_used }
+
+    fn locally_free_is_empty(&self, rb: &ReceiveBind, _depth: i32) -> bool {
+        let source = required(&rb.source).locally_free.is_empty();
+        source && rb.patterns.iter().all(|p| p.locally_free.is_empty())
+    }
+}
+
+impl HasLocallyFreeRef<Match> for SpatialMatcherContext {
+    fn connective_used_ref(&self, m: &Match) -> bool { m.connective_used }
+
+    fn locally_free_is_empty(&self, m: &Match, _depth: i32) -> bool { m.locally_free.is_empty() }
+}
+
+impl HasLocallyFreeRef<MatchCase> for SpatialMatcherContext {
+    fn connective_used_ref(&self, mc: &MatchCase) -> bool { required(&mc.source).connective_used }
+
+    fn locally_free_is_empty(&self, mc: &MatchCase, _depth: i32) -> bool {
+        let source = required(&mc.source).locally_free.is_empty();
+        let pattern = required(&mc.pattern).locally_free.is_empty();
+        source && pattern
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use models::rhoapi::connective::ConnectiveInstance;
@@ -1057,7 +1349,7 @@ mod tests {
 
     use super::*;
 
-    fn ctx() -> SpatialMatcherContext<'static> { SpatialMatcherContext::new() }
+    fn ctx() -> SpatialMatcherContext { SpatialMatcherContext::new() }
 
     fn free_par() -> Par {
         let mut par = new_freevar_par(0, Vec::new());
@@ -1279,6 +1571,19 @@ mod tests {
             HasLocallyFree::<Expr>::locally_free(&context, matches_expr.clone(), 0),
             create_bit_vector(&[1])
         );
+        // Added by the merge of feature/cost-accounted-rho: the by-reference
+        // predicates of that branch (DR-104) must give the owned answers. The
+        // pattern of `matches` has a connective, and the expression still has
+        // none, so `connective_used_ref` reads the target alone.
+        assert!(!HasLocallyFreeRef::<Expr>::connective_used_ref(
+            &context,
+            &matches_expr
+        ));
+        assert!(!HasLocallyFreeRef::<Expr>::locally_free_is_empty(
+            &context,
+            &matches_expr,
+            0
+        ));
         assert!(!matches_expr.clone().connective_used(matches_expr));
 
         let method_expr = expr_of(EMethodBody(EMethod {
@@ -1618,5 +1923,357 @@ mod tests {
             create_bit_vector(&[2])
         );
         assert!(var_ref.clone().locally_free(var_ref, 0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod by_reference_tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use models::rhoapi::cost_signature::Value;
+    use models::rhoapi::{CostSignatureCompound, EMethod, EZipper};
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
+
+    use super::*;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the test that requires a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
+
+    fn cached() -> impl Strategy<Value = (bool, Vec<u8>)> {
+        (any::<bool>(), proptest::collection::vec(0u8..2, 0..3))
+    }
+
+    fn par() -> impl Strategy<Value = Par> {
+        cached().prop_map(|(connective_used, locally_free)| {
+            models::par_from_default! {
+                connective_used,
+                locally_free,
+                ..Default::default()
+            }
+        })
+    }
+
+    fn optional_par() -> impl Strategy<Value = Option<Par>> {
+        proptest::option::weighted(0.85, par())
+    }
+
+    fn var() -> impl Strategy<Value = Option<Var>> {
+        let instance = prop_oneof![
+            1 => Just(None),
+            4 => (-3i32..64).prop_map(|index| Some(BoundVar(index))),
+            2 => (0i32..4).prop_map(|level| Some(FreeVar(level))),
+            2 => Just(Some(Wildcard(WildcardMsg {}))),
+        ];
+        proptest::option::weighted(0.85, instance.prop_map(|var_instance| Var { var_instance }))
+    }
+
+    fn signature() -> impl Strategy<Value = CostSignature> {
+        let leaf = prop_oneof![
+            Just(None),
+            (-3i32..64).prop_map(|level| Some(Value::BoundLevel(level))),
+            par().prop_map(|p| Some(Value::Quote(p))),
+            par().prop_map(|p| Some(Value::Name(p))),
+            proptest::collection::vec(any::<u8>(), 0..3)
+                .prop_map(|bytes| Some(Value::Ground(bytes))),
+            any::<bool>().prop_map(|unit| Some(Value::Unit(unit))),
+        ]
+        .prop_map(|value| CostSignature { value });
+        leaf.prop_recursive(2, 8, 3, |inner| {
+            proptest::collection::vec(inner, 0..3).prop_map(|elements| CostSignature {
+                value: Some(Value::Compound(CostSignatureCompound { elements })),
+            })
+        })
+    }
+
+    /// Every variant of `Expr`, including missing operands and variables.
+    fn expr() -> impl Strategy<Value = Expr> {
+        (0usize..43, optional_par(), optional_par(), var(), cached()).prop_map(
+            |(variant, p1, p2, v, (connective_used, locally_free))| {
+                let expr_instance = match variant {
+                    0 => None,
+                    1 => Some(GBool(connective_used)),
+                    2 => Some(GInt(7)),
+                    3 => Some(GUint64(7)),
+                    4 => Some(GInt32(7)),
+                    5 => Some(GUint32(7)),
+                    6 => Some(GUint16(7)),
+                    7 => Some(GUint8(7)),
+                    8 => Some(GDouble(7)),
+                    9 => Some(GFloat32(7)),
+                    10 => Some(GBigInt(vec![7])),
+                    11 => Some(GBigRat(GBigRational::default())),
+                    12 => Some(GFixedPoint(Default::default())),
+                    13 => Some(GString("s".to_owned())),
+                    14 => Some(GUri("u".to_owned())),
+                    15 => Some(GByteArray(vec![7])),
+                    16 => Some(EListBody(EList {
+                        connective_used,
+                        locally_free,
+                        ..Default::default()
+                    })),
+                    17 => Some(ETupleBody(ETuple {
+                        connective_used,
+                        locally_free,
+                        ..Default::default()
+                    })),
+                    18 => Some(ESetBody(ESet {
+                        connective_used,
+                        locally_free,
+                        ..Default::default()
+                    })),
+                    19 => Some(EMapBody(EMap {
+                        connective_used,
+                        locally_free,
+                        ..Default::default()
+                    })),
+                    // Changed by the merge of feature/cost-accounted-rho
+                    // (finding R1-17): F1R3Lang's `EPathMap` keeps its entry
+                    // trie private, so the value is built by `EPathMap::new`.
+                    // 20 => Some(EPathmapBody(EPathMap {
+                    //     connective_used,
+                    //     locally_free,
+                    //     ..Default::default()
+                    // })),
+                    20 => Some(EPathmapBody(EPathMap::new(
+                        Vec::<Par>::new(),
+                        locally_free,
+                        connective_used,
+                        None,
+                    ))),
+                    21 => Some(EZipperBody(EZipper {
+                        connective_used,
+                        locally_free,
+                        ..Default::default()
+                    })),
+                    22 => Some(EVarBody(EVar { v })),
+                    23 => Some(ENotBody(ENot { p: p1 })),
+                    24 => Some(ENegBody(ENeg { p: p1 })),
+                    25 => Some(EMultBody(EMult { p1, p2 })),
+                    26 => Some(EDivBody(EDiv { p1, p2 })),
+                    27 => Some(EModBody(EMod { p1, p2 })),
+                    28 => Some(EPlusBody(EPlus { p1, p2 })),
+                    29 => Some(EMinusBody(EMinus { p1, p2 })),
+                    30 => Some(ELtBody(ELt { p1, p2 })),
+                    31 => Some(ELteBody(ELte { p1, p2 })),
+                    32 => Some(EGtBody(EGt { p1, p2 })),
+                    33 => Some(EGteBody(EGte { p1, p2 })),
+                    34 => Some(EEqBody(EEq { p1, p2 })),
+                    35 => Some(ENeqBody(ENeq { p1, p2 })),
+                    36 => Some(EAndBody(EAnd { p1, p2 })),
+                    37 => Some(EOrBody(EOr { p1, p2 })),
+                    38 => Some(EMethodBody(EMethod {
+                        connective_used,
+                        locally_free,
+                        ..Default::default()
+                    })),
+                    39 => Some(EMatchesBody(EMatches {
+                        target: p1,
+                        pattern: p2,
+                    })),
+                    40 => Some(EPercentPercentBody(EPercentPercent { p1, p2 })),
+                    41 => Some(EPlusPlusBody(EPlusPlus { p1, p2 })),
+                    _ => Some(EMinusMinusBody(EMinusMinus { p1, p2 })),
+                };
+                Expr { expr_instance }
+            },
+        )
+    }
+
+    /// Both closures panic, or both return the same value.
+    fn same_outcome(
+        owned: impl FnOnce() -> bool,
+        by_reference: impl FnOnce() -> bool,
+    ) -> Result<(), TestCaseError> {
+        let owned = catch_unwind(AssertUnwindSafe(owned));
+        let by_reference = catch_unwind(AssertUnwindSafe(by_reference));
+        match (owned, by_reference) {
+            (Ok(owned), Ok(by_reference)) => prop_assert_eq!(owned, by_reference),
+            (Err(_), Err(_)) => {}
+            (owned, by_reference) => prop_assert!(
+                false,
+                "owned panicked: {}, by reference panicked: {}",
+                owned.is_err(),
+                by_reference.is_err()
+            ),
+        }
+        Ok(())
+    }
+
+    fn check<T: Clone>(context: &SpatialMatcherContext, value: T) -> Result<(), TestCaseError>
+    where SpatialMatcherContext: HasLocallyFree<T> + HasLocallyFreeRef<T> {
+        same_outcome(
+            || context.connective_used(value.clone()),
+            || context.connective_used_ref(&value),
+        )?;
+        for depth in [0, 1] {
+            same_outcome(
+                || context.locally_free(value.clone(), depth).is_empty(),
+                || context.locally_free_is_empty(&value, depth),
+            )?;
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// D-D2 (DR-104): for the thirteen element types of `list_match!` and for
+        /// `MatchCase`, at depths 0 and 1, the predicates by reference return the
+        /// owned predicates' values and panic exactly when they panic.
+        #[test]
+        fn predicates_by_reference_equal_owned_predicates(
+            pair in (par(), par()),
+            single in par(),
+            branches in (optional_par(), optional_par(), optional_par()),
+            signed in (optional_par(), proptest::option::of(signature())),
+            cells in proptest::collection::vec(signature(), 0..3),
+            body in optional_par(),
+            send in cached(),
+            expression in expr(),
+            new in (optional_par(), cached()),
+            receive in cached(),
+            bind in (optional_par(), proptest::collection::vec(par(), 0..3)),
+            matched in cached(),
+            case in (optional_par(), optional_par()),
+        ) {
+            let context = SpatialMatcherContext::new();
+            check(&context, pair)?;
+            check(&context, single)?;
+            check(&context, If {
+                condition: branches.0,
+                if_true: branches.1,
+                if_false: branches.2,
+                ..Default::default()
+            })?;
+            check(&context, CostSignedTerm {
+                body: signed.0,
+                signature: signed.1,
+            })?;
+            check(&context, CostStack { cells, parallel_tail: Vec::new() })?;
+            check(&context, Bundle {
+                body,
+                ..Default::default()
+            })?;
+            check(&context, Send {
+                connective_used: send.0,
+                locally_free: send.1,
+                ..Default::default()
+            })?;
+            check(&context, GUnforgeable::default())?;
+            check(&context, expression)?;
+            check(&context, New {
+                p: new.0,
+                locally_free: new.1.1,
+                ..Default::default()
+            })?;
+            check(&context, Receive {
+                connective_used: receive.0,
+                locally_free: receive.1,
+                ..Default::default()
+            })?;
+            check(&context, ReceiveBind {
+                source: bind.0,
+                patterns: bind.1,
+                ..Default::default()
+            })?;
+            check(&context, Match {
+                connective_used: matched.0,
+                locally_free: matched.1,
+                ..Default::default()
+            })?;
+            check(&context, MatchCase {
+                source: case.0,
+                pattern: case.1,
+                ..Default::default()
+            })?;
+        }
+
+        /// Added by the merge of feature/cost-accounted-rho (finding R1-17):
+        /// F1R3Lang's `CostStack` has a parallel tail, and both predicates
+        /// walk it. A flat tail of up to three branches and a chain of the
+        /// same branches, each the tail of the one before, give the owned
+        /// predicates' values by reference too.
+        #[test]
+        fn predicates_by_reference_equal_owned_predicates_on_parallel_tails(
+            cells in proptest::collection::vec(signature(), 0..3),
+            branches in proptest::collection::vec(
+                proptest::collection::vec(signature(), 0..3),
+                1..4,
+            ),
+        ) {
+            let context = SpatialMatcherContext::new();
+            let flat = CostStack {
+                cells: cells.clone(),
+                parallel_tail: branches
+                    .iter()
+                    .map(|cells| CostStack {
+                        cells: cells.clone(),
+                        parallel_tail: Vec::new(),
+                    })
+                    .collect(),
+            };
+            check(&context, flat)?;
+            let chain = branches
+                .into_iter()
+                .rev()
+                .fold(Vec::new(), |inner, cells| {
+                    vec![CostStack {
+                        cells,
+                        parallel_tail: inner,
+                    }]
+                });
+            check(&context, CostStack {
+                cells,
+                parallel_tail: chain,
+            })?;
+        }
+    }
+
+    /// The negative-variable control: the owned predicate panics on a negative
+    /// bound variable at depth 0, and so does the predicate by reference.
+    #[test]
+    fn negative_bound_variable_panics_in_both_predicates() {
+        let context = SpatialMatcherContext::new();
+        let expression = Expr {
+            expr_instance: Some(EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(BoundVar(-1)),
+                }),
+            })),
+        };
+        // Changed by the merge of feature/cost-accounted-rho (plan step 1.9,
+        // panic-expectation policy test): each predicate ran behind an unwind interceptor.
+        // A child process now runs each predicate, and this process checks the panic of
+        // the child. The owned predicate fails inside `create_bit_vector`, and the message
+        // of that failure depends on the build profile, so its check names the location.
+        // let owned = catch_unwind(AssertUnwindSafe(|| {
+        //     context.locally_free(expression.clone(), 0).is_empty()
+        // }));
+        // let by_reference = catch_unwind(AssertUnwindSafe(|| {
+        //     context.locally_free_is_empty(&expression, 0)
+        // }));
+        // assert!(owned.is_err());
+        // assert!(by_reference.is_err());
+        let child = PanicChild::new(
+            module_path!(),
+            "negative_bound_variable_panics_in_both_predicates",
+        );
+        if child.is_case("owned") {
+            child.subject_reached();
+            let _ = context.locally_free(expression.clone(), 0).is_empty();
+            return;
+        }
+        if child.is_case("by_reference") {
+            child.subject_reached();
+            let _ = context.locally_free_is_empty(&expression, 0);
+            return;
+        }
+        child.expect_panic_at_in_case("owned", "models/src/lib.rs:");
+        child.expect_panic_in_case(
+            "by_reference",
+            "a negative bound variable has no locally free bitset",
+        );
+        assert!(context.locally_free_is_empty(&expression, 1));
     }
 }

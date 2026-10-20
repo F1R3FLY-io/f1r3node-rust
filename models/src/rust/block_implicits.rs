@@ -15,7 +15,10 @@ use super::casper::protocol::casper_message::{
     ProcessedSystemDeploy,
 };
 use super::validator::{self, Validator};
-use crate::rhoapi::PCost;
+// Disabled by the merge of feature/cost-accounted-rho (lint fix): no code in
+// this file names `PCost` since the checkpoint merge e5102e945, which builds
+// the generated deploy with `ProcessedDeploy::empty`.
+// use crate::rhoapi::PCost;
 
 pub fn block_hash_gen() -> impl Strategy<Value = BlockHash> {
     prop::collection::vec(any::<u8>(), block_hash::LENGTH)

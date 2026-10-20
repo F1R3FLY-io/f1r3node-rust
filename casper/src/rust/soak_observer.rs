@@ -151,7 +151,11 @@ impl ObserverBinding {
         match self
             .0
             .operations
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+            // `try_update` has the same signature and semantics.
+            // .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
         {
             Ok(n) => Some(n + 1),
             Err(_) => {
@@ -165,7 +169,11 @@ impl ObserverBinding {
         if self
             .0
             .lost
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+            // `try_update` has the same signature and semantics.
+            // .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
             .is_err()
         {
             self.0.overflow.store(true, Ordering::Release);
@@ -198,18 +206,32 @@ impl ObserverBinding {
         if !self.0.active.load(Ordering::Acquire) {
             return;
         }
-        let sequence =
-            match self
-                .0
-                .sequence
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
-            {
-                Ok(n) => n + 1,
-                Err(_) => {
-                    self.0.overflow.store(true, Ordering::Release);
-                    return;
-                }
-            };
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // nightly-2026-09-03 deprecates `fetch_update`. Its replacement
+        // `try_update` has the same signature and semantics.
+        // let sequence =
+        //     match self
+        //         .0
+        //         .sequence
+        //         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+        //     {
+        //         Ok(n) => n + 1,
+        //         Err(_) => {
+        //             self.0.overflow.store(true, Ordering::Release);
+        //             return;
+        //         }
+        //     };
+        let sequence = match self
+            .0
+            .sequence
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+        {
+            Ok(n) => n + 1,
+            Err(_) => {
+                self.0.overflow.store(true, Ordering::Release);
+                return;
+            }
+        };
         let hash = match hash.map(<[u8; 32]>::try_from).transpose() {
             Ok(hash) => hash,
             Err(_) => {
@@ -357,6 +379,10 @@ impl ObserverController {
         }
     }
 
+    // Added by the merge of feature/cost-accounted-rho (clippy gate): the new
+    // clippy also applies `result_large_err` to async functions. The error
+    // type `AuthorityFailure` is the same on both sides of the merge.
+    #[allow(clippy::result_large_err)]
     pub async fn authority_snapshot(
         &self,
         request: evaluation::AuthorityRequest,

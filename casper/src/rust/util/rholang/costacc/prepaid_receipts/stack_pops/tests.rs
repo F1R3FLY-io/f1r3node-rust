@@ -1,5 +1,4 @@
 use models::rhoapi::cost_signature::Value;
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_wire::PhloWireLimits;
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -57,9 +56,7 @@ fn frontier_receipts_partition_original_preorder_occurrences() {
         b"left".as_slice(),
         b"right".as_slice(),
     ];
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
-    let records =
-        partition_frontier_receipt(&original, &[&left, &right], 1, LIMITS.cells, &budget).unwrap();
+    let records = partition_frontier_receipt(&original, &[&left, &right], 1, LIMITS.cells).unwrap();
     assert_eq!(
         OrderedPrepaidCells::decode(&records[0], LIMITS.cells)
             .unwrap()
@@ -72,10 +69,8 @@ fn frontier_receipts_partition_original_preorder_occurrences() {
             .cells(),
         &[b"right".as_slice()]
     );
-    assert!(
-        partition_frontier_receipt(&original, &[&left, &left], 1, LIMITS.cells, &budget).is_err()
-    );
-    assert!(partition_frontier_receipt(&original, &[&left], 1, LIMITS.cells, &budget).is_err());
+    assert!(partition_frontier_receipt(&original, &[&left, &left], 1, LIMITS.cells).is_err());
+    assert!(partition_frontier_receipt(&original, &[&left], 1, LIMITS.cells).is_err());
 }
 
 fn signature(value: u8) -> CostSignature {

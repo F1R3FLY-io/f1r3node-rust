@@ -2,12 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use models::rhoapi::{CostSignature, CostStack};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use prost::Message;
-use rholang::rust::interpreter::accounting::authority::{
-    cost_signature_to_sig, stack_branches_metered,
-};
-use rholang::rust::interpreter::host_work::HostWorkBudget;
+use rholang::rust::interpreter::accounting::authority::{cost_signature_to_sig, stack_branches};
 use rspace_plus_plus::rspace::internal::Datum;
 
 use super::*;
@@ -63,22 +59,6 @@ fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, CasperError> {
     Ok(copy)
 }
 
-fn reserve_frontier(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), CasperError> {
-    budget
-        .reserve(
-            dimension,
-            HostWorkUnits::new(
-                u64::try_from(amount).map_err(|_| invalid("frontier host work overflow"))?,
-            ),
-        )
-        .map(|_| ())
-        .map_err(|error| invalid(&error.to_string()))
-}
-
 /// Partition one original preorder transfer-cell receipt. Each surviving
 /// occurrence appears in exactly one new rooted receipt; the remaining count
 /// must equal the already verified physical pop count. The returned records
@@ -88,21 +68,11 @@ fn partition_frontier_receipt(
     publications: &[&PlannedPurseStackPublication],
     popped: usize,
     limits: PrepaidCellLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<Vec<u8>>, CasperError> {
-    reserve_frontier(budget, HostWorkDimension::SearchStateBytes, original.len())?;
     let mut seen = Vec::new();
     seen.try_reserve_exact(original.len())
         .map_err(|_| invalid("frontier marker allocation failed"))?;
     seen.resize(original.len(), false);
-    reserve_frontier(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        publications
-            .len()
-            .checked_mul(std::mem::size_of::<Vec<u8>>())
-            .ok_or_else(|| invalid("frontier record allocation overflow"))?,
-    )?;
     let mut records = Vec::new();
     records
         .try_reserve_exact(publications.len())
@@ -113,21 +83,11 @@ fn partition_frontier_receipt(
         if indices.is_empty() || indices.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(invalid("frontier publication indices are not increasing"));
         }
-        reserve_frontier(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            indices
-                .len()
-                .checked_mul(std::mem::size_of::<&[u8]>())
-                .ok_or_else(|| invalid("frontier slice allocation overflow"))?,
-        )?;
         let mut selected = Vec::new();
         selected
             .try_reserve_exact(indices.len())
             .map_err(|_| invalid("frontier slice allocation failed"))?;
-        let mut encoded_bound = 48usize;
         for &index in indices {
-            reserve_frontier(budget, HostWorkDimension::VerificationOperations, 1)?;
             let cell = original
                 .get(index)
                 .ok_or_else(|| invalid("frontier receipt index exceeds original record"))?;
@@ -137,14 +97,8 @@ fn partition_frontier_receipt(
             retained = retained
                 .checked_add(1)
                 .ok_or_else(|| invalid("frontier retained count overflow"))?;
-            encoded_bound = encoded_bound
-                .checked_add(8)
-                .and_then(|size| size.checked_add(cell.len()))
-                .ok_or_else(|| invalid("frontier record byte bound overflow"))?;
             selected.push(*cell);
         }
-        reserve_frontier(budget, HostWorkDimension::VerificationBytes, encoded_bound)?;
-        reserve_frontier(budget, HostWorkDimension::SearchStateBytes, encoded_bound)?;
         records.push(OrderedPrepaidCells::encode(&selected, limits)?);
     }
     if retained
@@ -163,24 +117,15 @@ async fn physical_counts(
     runtime: &RuntimeOps,
     channel: &Par,
     head: &CostSignature,
-    budget: Option<&HostWorkBudget>,
 ) -> Result<BTreeMap<[u8; 32], usize>, CasperError> {
-    let data = if let Some(budget) = budget {
-        read_live_data_metered(runtime, channel, budget).await?
-    } else {
-        runtime
-            .runtime
-            .reducer
-            .space
-            .get_data(channel)
-            .await
-            .map_err(|error| CasperError::InterpreterError(error.into()))?
-    };
-    let inventory = if let Some(budget) = budget {
-        supply::decode_purse_inventory_metered(&data, head, budget)?
-    } else {
-        supply::decode_purse_inventory(&data, head)?
-    };
+    let data = runtime
+        .runtime
+        .reducer
+        .space
+        .get_data(channel)
+        .await
+        .map_err(|error| CasperError::InterpreterError(error.into()))?;
+    let inventory = supply::decode_purse_inventory(&data, head)?;
     let mut counts = BTreeMap::new();
     for stack in inventory.stacks {
         *counts.entry(stack.source_hash).or_insert(0) += 1;
@@ -196,7 +141,6 @@ async fn load_bucket(
     head: &CostSignature,
     limits: PrepaidStackPopLimits,
     remaining_bytes: &mut usize,
-    budget: Option<&HostWorkBudget>,
 ) -> Result<(), CasperError> {
     if states.contains_key(&source) {
         return Ok(());
@@ -206,20 +150,14 @@ async fn load_bucket(
     }
     let counts = match states.values().find(|state| state.channel == *channel) {
         Some(state) => Arc::clone(&state.physical_counts),
-        None => Arc::new(physical_counts(runtime, channel, head, budget).await?),
+        None => Arc::new(physical_counts(runtime, channel, head).await?),
     };
     let count = counts.get(&source).copied().unwrap_or(0);
     let receipt_id = PrepaidReceiptBucket::key_for_source(&source);
     let maximum_bytes = limits.receipts.value_bytes.min(*remaining_bytes);
-    let original = if let Some(budget) = budget {
-        runtime
-            .read_prepaid_receipt_metered(&receipt_id, maximum_bytes, budget)
-            .await?
-    } else {
-        runtime
-            .read_prepaid_receipt(&receipt_id, maximum_bytes)
-            .await?
-    };
+    let original = runtime
+        .read_prepaid_receipt(&receipt_id, maximum_bytes)
+        .await?;
     let mut records = Vec::new();
     match original.as_deref() {
         None if count != 0 => return Err(invalid("live stack source has no prepaid provenance")),
@@ -258,7 +196,7 @@ impl RuntimeOps {
         draws: &[PrepaidStackPop],
         limits: PrepaidStackPopLimits,
     ) -> Result<Log, CasperError> {
-        self.apply_prepaid_stack_pops_internal(stacks, draws, limits, None)
+        self.apply_prepaid_stack_pops_internal(stacks, draws, limits)
             .await
             .map(NativePrepaidPopResult::into_log)
     }
@@ -268,9 +206,8 @@ impl RuntimeOps {
         stacks: &[PurseStack],
         draws: &[PrepaidStackPop],
         limits: PrepaidStackPopLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativePrepaidPopResult, CasperError> {
-        self.apply_prepaid_stack_pops_internal(stacks, draws, limits, Some(budget))
+        self.apply_prepaid_stack_pops_internal(stacks, draws, limits)
             .await
     }
 
@@ -282,7 +219,6 @@ impl RuntimeOps {
         verified: &VerifiedPurseStackPops<'_>,
         draws: &[PrepaidStackPop],
         limits: PrepaidStackPopLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativePrepaidPopResult, CasperError> {
         if draws.len() > limits.draws || verified.stacks().len() > limits.draws {
             return Err(invalid("verified stack migration draw limit exceeded"));
@@ -291,7 +227,6 @@ impl RuntimeOps {
         let mut receipt_indices = BTreeMap::<[u8; 32], usize>::new();
         let mut root_popped = BTreeMap::<[u8; 32], usize>::new();
         for draw in draws {
-            reserve_frontier(budget, HostWorkDimension::SearchStateBytes, 80)?;
             if draw.count == 0 || selected.insert(draw.stack_id, draw.count).is_some() {
                 return Err(invalid("verified stack draw is zero or duplicated"));
             }
@@ -327,7 +262,6 @@ impl RuntimeOps {
         let plan = supply::plan_verified_purse_stack_pops(
             verified,
             self.runtime.reducer.space.codec_epoch(),
-            budget,
         )?;
         let mut states = BTreeMap::new();
         let mut selections = BTreeSet::new();
@@ -337,17 +271,6 @@ impl RuntimeOps {
             .map_err(|_| invalid("verified frontier tail allocation failed"))?;
         let mut remaining_bytes = limits.receipts.batch_bytes;
         let mut remaining_cells = limits.cells.cells;
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                reserve_frontier(budget, dimension, amount)
-                    .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
-            }
-            Ok(())
-        };
         for original in plan.originals() {
             let receipt_index = *receipt_indices
                 .get(&original.instance_id)
@@ -370,7 +293,6 @@ impl RuntimeOps {
                 head,
                 limits,
                 &mut remaining_bytes,
-                Some(budget),
             )
             .await?;
             let state = states
@@ -380,18 +302,8 @@ impl RuntimeOps {
                 .records
                 .get(receipt_index)
                 .ok_or_else(|| invalid("verified receipt occurrence is out of range"))?;
-            reserve_frontier(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                record
-                    .len()
-                    .checked_div(9)
-                    .unwrap_or_default()
-                    .checked_mul(std::mem::size_of::<&[u8]>())
-                    .ok_or_else(|| invalid("verified receipt decode backing overflow"))?,
-            )?;
             let cells = OrderedPrepaidCells::decode(record, limits.cells)?;
-            let branches = stack_branches_metered(original.instance_id, &original.stack, &backing)
+            let branches = stack_branches(original.instance_id, &original.stack)
                 .map_err(|error| invalid(&error.to_string()))?;
             let physical_cells = branches.iter().try_fold(0usize, |count, branch| {
                 count
@@ -414,13 +326,6 @@ impl RuntimeOps {
                 .iter()
                 .filter(|publication| publication.original_root_id == original.instance_id)
                 .count();
-            reserve_frontier(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                publication_count
-                    .checked_mul(std::mem::size_of::<&PlannedPurseStackPublication>())
-                    .ok_or_else(|| invalid("verified publication reference overflow"))?,
-            )?;
             let mut publications = Vec::new();
             publications
                 .try_reserve_exact(publication_count)
@@ -430,25 +335,9 @@ impl RuntimeOps {
                     .iter()
                     .filter(|publication| publication.original_root_id == original.instance_id),
             );
-            let records = partition_frontier_receipt(
-                cells.cells(),
-                &publications,
-                popped,
-                limits.cells,
-                budget,
-            )?;
+            let records =
+                partition_frontier_receipt(cells.cells(), &publications, popped, limits.cells)?;
             for (publication, record) in publications.into_iter().zip(records) {
-                shared::rust::clone_backing::reserve_copy_and_cleanup(
-                    &publication.channel,
-                    &backing,
-                )
-                .and_then(|_| {
-                    shared::rust::clone_backing::reserve_copy_and_cleanup(
-                        publication.head(),
-                        &backing,
-                    )
-                })
-                .map_err(|_| invalid("frontier tail host work rejected"))?;
                 tails.push(Tail {
                     source: publication.source_hash,
                     channel: publication.channel.clone(),
@@ -466,7 +355,6 @@ impl RuntimeOps {
                 &tail.head,
                 limits,
                 &mut remaining_bytes,
-                Some(budget),
             )
             .await?;
         }
@@ -487,24 +375,11 @@ impl RuntimeOps {
                     "verified frontier bucket occurrence limit exceeded",
                 ));
             }
-            reserve_frontier(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                std::mem::size_of::<Vec<u8>>(),
-            )?;
             records
                 .try_reserve(1)
                 .map_err(|_| invalid("verified frontier bucket allocation failed"))?;
             records.push(tail.record);
         }
-        reserve_frontier(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            states
-                .len()
-                .checked_mul(std::mem::size_of::<Option<Vec<u8>>>())
-                .ok_or_else(|| invalid("verified replacement backing overflow"))?,
-        )?;
         let mut replacements = Vec::new();
         replacements
             .try_reserve_exact(states.len())
@@ -513,20 +388,6 @@ impl RuntimeOps {
             let replacement = if state.records.is_empty() {
                 None
             } else {
-                let refs_bytes = state
-                    .records
-                    .len()
-                    .checked_mul(std::mem::size_of::<&[u8]>())
-                    .ok_or_else(|| invalid("verified bucket reference overflow"))?;
-                let encoded_bound = state.records.iter().try_fold(48usize, |bytes, record| {
-                    bytes
-                        .checked_add(8)
-                        .and_then(|bytes| bytes.checked_add(record.len()))
-                        .ok_or_else(|| invalid("verified bucket encoding overflow"))
-                })?;
-                reserve_frontier(budget, HostWorkDimension::SearchStateBytes, refs_bytes)?;
-                reserve_frontier(budget, HostWorkDimension::SearchStateBytes, encoded_bound)?;
-                reserve_frontier(budget, HostWorkDimension::VerificationBytes, encoded_bound)?;
                 let refs = state.records.iter().map(Vec::as_slice).collect::<Vec<_>>();
                 Some(
                     PrepaidReceiptBucket::new(*source, &refs, limits.bucket)?
@@ -535,14 +396,6 @@ impl RuntimeOps {
             };
             replacements.push(replacement);
         }
-        reserve_frontier(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            states
-                .len()
-                .checked_mul(std::mem::size_of::<PrepaidReceiptChange<'_>>())
-                .ok_or_else(|| invalid("verified change backing overflow"))?,
-        )?;
         let changes = states
             .iter()
             .zip(&replacements)
@@ -560,28 +413,18 @@ impl RuntimeOps {
             .try_reserve_exact(changes.len())
             .map_err(|_| invalid("verified owned change allocation failed"))?;
         for change in &changes {
-            owned_changes.push(OwnedPrepaidReceiptChange::copy_from(*change, budget)?);
+            owned_changes.push(OwnedPrepaidReceiptChange::copy_from(*change)?);
         }
         let checkpoint = self.runtime.create_soft_checkpoint().await;
         let result = async {
-            supply::apply_verified_stack_plan(self, plan, budget).await?;
+            supply::apply_verified_stack_plan(self, plan).await?;
             let mut live_counts = BTreeMap::new();
             for (source, state) in &states {
-                shared::rust::clone_backing::inspect(&state.channel, &backing)
-                    .map_err(|_| invalid("verified count key host work rejected"))?;
-                shared::rust::clone_backing::reserve_nested_encode(
-                    &state.channel,
-                    state.channel.encoded_len(),
-                    &backing,
-                )
-                .map_err(|_| invalid("verified count key host work rejected"))?;
                 let key = state.channel.encode_to_vec();
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     live_counts.entry(key.clone())
                 {
-                    entry.insert(
-                        physical_counts(self, &state.channel, &state.head, Some(budget)).await?,
-                    );
+                    entry.insert(physical_counts(self, &state.channel, &state.head).await?);
                 }
                 let count = live_counts
                     .get(&key)
@@ -595,7 +438,7 @@ impl RuntimeOps {
                 }
             }
             let mut log = self
-                .replace_prepaid_receipts_metered(&changes, limits.receipts, budget)
+                .replace_prepaid_receipts(&changes, limits.receipts)
                 .await?;
             log.extend(self.runtime.take_event_log().await);
             Ok::<_, CasperError>(log)
@@ -622,7 +465,6 @@ impl RuntimeOps {
         stacks: &[PurseStack],
         draws: &[PrepaidStackPop],
         limits: PrepaidStackPopLimits,
-        budget: Option<&HostWorkBudget>,
     ) -> Result<NativePrepaidPopResult, CasperError> {
         if draws.len() > limits.draws || stacks.len() > limits.draws {
             return Err(invalid("stack migration draw limit exceeded"));
@@ -678,7 +520,6 @@ impl RuntimeOps {
                 head,
                 limits,
                 &mut remaining_bytes,
-                budget,
             )
             .await?;
             let state = states
@@ -747,7 +588,6 @@ impl RuntimeOps {
                 &tail.head,
                 limits,
                 &mut remaining_bytes,
-                budget,
             )
             .await?;
         }
@@ -800,31 +640,22 @@ impl RuntimeOps {
             .collect::<Vec<_>>();
         ordered_changes(&changes, limits.receipts)?;
         let mut owned_changes = Vec::new();
-        if budget.is_some() {
-            owned_changes
-                .try_reserve_exact(changes.len())
-                .map_err(|_| invalid("owned stack-pop change allocation failed"))?;
-            for change in &changes {
-                owned_changes.push(OwnedPrepaidReceiptChange::copy_from(
-                    *change,
-                    budget.unwrap(),
-                )?);
-            }
+        owned_changes
+            .try_reserve_exact(changes.len())
+            .map_err(|_| invalid("owned stack-pop change allocation failed"))?;
+        for change in &changes {
+            owned_changes.push(OwnedPrepaidReceiptChange::copy_from(*change)?);
         }
         let checkpoint = self.runtime.create_soft_checkpoint().await;
         let result = async {
-            if let Some(budget) = budget {
-                supply::apply_stack_pops_metered(self, stacks, &pops, budget).await?;
-            } else {
-                supply::apply_stack_pops(self, stacks, &pops).await?;
-            }
+            supply::apply_stack_pops(self, stacks, &pops).await?;
             let mut live_counts = BTreeMap::new();
             for (source, state) in &states {
                 let key = state.channel.encode_to_vec();
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     live_counts.entry(key.clone())
                 {
-                    entry.insert(physical_counts(self, &state.channel, &state.head, budget).await?);
+                    entry.insert(physical_counts(self, &state.channel, &state.head).await?);
                 }
                 let count = live_counts
                     .get(&key)
@@ -837,13 +668,9 @@ impl RuntimeOps {
                     ));
                 }
             }
-            let mut log = if let Some(budget) = budget {
-                self.replace_prepaid_receipts_metered(&changes, limits.receipts, budget)
-                    .await?
-            } else {
-                self.replace_prepaid_receipts(&changes, limits.receipts)
-                    .await?
-            };
+            let mut log = self
+                .replace_prepaid_receipts(&changes, limits.receipts)
+                .await?;
             log.extend(self.runtime.take_event_log().await);
             Ok::<_, CasperError>(log)
         }

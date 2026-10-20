@@ -24,6 +24,19 @@ Par (Deterministic ordering for consensus)
 
 **Compiler entry**: `Compiler::source_to_adt(source)` or `source_to_adt_with_normalizer_env(source, env)`
 
+## Program frontends
+
+The pipeline above is the default frontend. It uses the `rholang-rs` parser (`rholang_parser`) and the normalizer. A second entry receives the frontend as a value of the `ProgramFrontend` trait (`rholang/src/rust/interpreter/frontend.rs`).
+
+| Item | Purpose |
+|------|---------|
+| `ProgramFrontend::prepare(source, environment)` | Translates the source into a `PreparedProgram`, which holds the normalized `Par`. |
+| `PreparedProgram::from_normalized_with_binding` | Binds the program to its source bytes, its language identity and its protobuf encoding. The constructor refuses a binding whose encoding differs from the `Par`. |
+| `prepare_program(frontend, source, environment)` | Checks the ABI version (`PREPARED_PROGRAM_ABI_V1`). A frontend that declares a language identity must bind the program to the same source and the same identity. |
+| `InterpreterImpl::inj_attempt_with_frontend` | Evaluates a term through a frontend. |
+
+The node installs the MeTTaIL frontend (crate `mettail-rholang-runtime`) when the build enables the `mettail-frontend` feature (`node/src/rust/runtime/setup.rs`). Casper receives the frontend through `RuntimeManager::with_program_frontend`. Offered-deploy execution refuses to run when no frontend is installed (`RuntimeManager::required_program_frontend`).
+
 ## Normalization
 
 Transforms parsed AST into canonical `Par` form with De Bruijn indices.
@@ -100,7 +113,7 @@ prefix.
 
 **Variable substitution**: `Substitute` trait replaces De Bruijn-indexed variables. Each substitution reserves a deterministic `Substitution` source-token event through `MeteredMachine`.
 
-**Arithmetic overflow safety**: Division and negation operations guard against i64 overflow. `i64::MIN / -1` and `i64::MIN.neg()` return `InterpreterError::ReduceError("Arithmetic overflow in ...")` as soft deploy failures rather than panics.
+**Arithmetic overflow safety**: Division and negation operations guard against i64 overflow. `i64::MIN / -1` and `i64::MIN.neg()` return `InterpreterError::ArithmeticOverflow("Arithmetic overflow in ...")` as soft deploy failures rather than panics. The variant is a classified user failure (DR-128).
 
 ## Cost accounting
 
@@ -205,6 +218,18 @@ Err(InterpreterError::NonDeterministicProcessFailure {
 ```
 
 During replay, `DispatchType::FailedNonDeterministicCall` triggers `Produce::with_error()` to mark the produce event as failed, ensuring the replay matches the original execution trace.
+
+### Native Funded Execution (DR-114)
+
+The pattern above is the legacy path. In native funded execution (protocol 6) the dispatcher sends the external-service and print processes to a native driver in `system_processes.rs`:
+
+- The driver records twelve processes (`is_native_recorded_op`): dev's eight nondeterministic processes and four more Chroma processes. Play calls a service once and records the reply on the triggering produce. Replay delivers the record and never calls a service.
+- A failure is a paid `[false, code, message]` reply with the code `EXT_BAD_ARG`, `EXT_FAILED` or `EXT_OUTPUT_TOO_LARGE`. It is never a `NonDeterministicProcessFailure`.
+- A success must fit the record room of the deploy. Otherwise the reply is `EXT_OUTPUT_TOO_LARGE`.
+- `stdout` and `stderr` prepay their formatting and print in play only. Their acknowledged forms reply `Nil` in play and in replay.
+- A persistent send to a recorded process, and an `IllegalArgumentError` of any system process, become `SystemProcessShapeError`, a classified user failure.
+
+`DR-114` in `docs/casper/theory/cost-accounting-decision-records.md` gives the design, the evidence rules and the verification.
 
 ## Dispatch
 

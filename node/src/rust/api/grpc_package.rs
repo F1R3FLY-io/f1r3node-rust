@@ -236,7 +236,10 @@ mod tests {
         assert_eq!(header[3], 0x4, "first server frame must be SETTINGS");
         let mut payload = vec![0u8; len];
         stream.read_exact(&mut payload).await.expect("payload");
-        payload.chunks_exact(6).find_map(|s| {
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `as_chunks` gives fixed-size chunks and drops the same remainder.
+        // payload.chunks_exact(6).find_map(|s| {
+        payload.as_chunks::<6>().0.iter().find_map(|s| {
             (u16::from_be_bytes([s[0], s[1]]) == 0x5)
                 .then(|| u32::from_be_bytes([s[2], s[3], s[4], s[5]]))
         })

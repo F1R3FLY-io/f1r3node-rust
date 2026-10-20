@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 00c715ee808415b81a6ff96594a0a5b5fdaada0036881251b3bcebefa7f284ea # shrinks to target = Par { sends: [Send { chan: None, data: [], persistent: false, locally_free: [1], connective_used: false }], receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: [], connective_used: false, cost_signed_terms: [], cost_stacks: [] }

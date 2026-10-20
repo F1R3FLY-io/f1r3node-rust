@@ -336,7 +336,10 @@ fn main() {
         ("map(1024 entries)", vec![map_datum(1024); 8]),
         ("wide(4096 siblings)", vec![
             ListParWithRandom {
-                pars: (0..4096).map(|i| gint(i)).collect(),
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+                // the closure only forwards to `gint`.
+                // pars: (0..4096).map(|i| gint(i)).collect(),
+                pars: (0..4096).map(gint).collect(),
                 random_state: vec![1; 32],
                 cost_authority: None,
                 cost_stack: None,

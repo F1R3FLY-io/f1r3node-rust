@@ -312,28 +312,33 @@ fn pins() -> Vec<Pin> {
             // `every_blessed_normalized_term_is_pinned` fails if it starts normalizing.
             normalized: None,
         },
-        Pin {
-            constant: "CAPABILITIES_REGISTRY",
-            resource: "CapabilitiesRegistry.rhox",
-            source: embedded_rho::CAPABILITIES_REGISTRY,
-            digest: "1577390b7abb4e61afc8558683da5efa230e30f41a5439167a4471e3bfbdab69",
-            length: 9769,
-            normalized: Some(NormalizedPin {
-                digest: "48926050c97f42d7a875647c411629436019892ce78ec20990fd46263cf3f813",
-                length: 5715,
-            }),
-        },
-        Pin {
-            constant: "EXCHANGE",
-            resource: "Exchange.rhox",
-            source: embedded_rho::EXCHANGE,
-            digest: "d367e84f3c7b46b3d8c373ca9370a8344bec1332b99e4b345ae8d44b47b10a53",
-            length: 5423,
-            normalized: Some(NormalizedPin {
-                digest: "0cefb2d4889051d94efffc1e5337fe6d13f0eae5594e45819e51174abb9436e7",
-                length: 499,
-            }),
-        },
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-29): the
+        // dev merge 1d325b996 of feature/cost-accounted-rho removed
+        // `CapabilitiesRegistry.rhox`, `Exchange.rhox` and their `embedded_rho`
+        // constants, and the checkpoint merges 29b729551 and e5102e945 took that
+        // removal. These two rows name constants that no longer exist:
+        // Pin {
+        //     constant: "CAPABILITIES_REGISTRY",
+        //     resource: "CapabilitiesRegistry.rhox",
+        //     source: embedded_rho::CAPABILITIES_REGISTRY,
+        //     digest: "1577390b7abb4e61afc8558683da5efa230e30f41a5439167a4471e3bfbdab69",
+        //     length: 9769,
+        //     normalized: Some(NormalizedPin {
+        //         digest: "48926050c97f42d7a875647c411629436019892ce78ec20990fd46263cf3f813",
+        //         length: 5715,
+        //     }),
+        // },
+        // Pin {
+        //     constant: "EXCHANGE",
+        //     resource: "Exchange.rhox",
+        //     source: embedded_rho::EXCHANGE,
+        //     digest: "d367e84f3c7b46b3d8c373ca9370a8344bec1332b99e4b345ae8d44b47b10a53",
+        //     length: 5423,
+        //     normalized: Some(NormalizedPin {
+        //         digest: "0cefb2d4889051d94efffc1e5337fe6d13f0eae5594e45819e51174abb9436e7",
+        //         length: 499,
+        //     }),
+        // },
     ]
 }
 

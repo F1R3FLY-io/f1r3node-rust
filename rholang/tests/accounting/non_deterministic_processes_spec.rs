@@ -16,7 +16,11 @@ use rholang::rust::interpreter::openai_service::{
     create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig,
 };
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+// runtimes below select the CostV1 epoch.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
+use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services_for_epoch;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -63,6 +67,11 @@ async fn evaluate_with_mock_service(
 ) -> EvaluateResult {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): this
+    // upstream test models protocol 6 (cost-accounted Rho), which F1R3Lang runs
+    // in the CostV1 epoch. A Legacy runtime opens no COMM accounting scope. The
+    // old initializer was:
+    // ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
     let (runtime, _, _): (
         RhoRuntimeImpl,
         RhoRuntimeImpl,
@@ -74,7 +83,14 @@ async fn evaluate_with_mock_service(
                     + 'static,
             >,
         >,
-    ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+    ) = create_runtimes_with_services_for_epoch(
+        EventCodecEpoch::CostV1,
+        store,
+        false,
+        &mut Vec::new(),
+        external_services,
+    )
+    .await;
     install_test_payer(&runtime);
 
     let rand = Blake2b512Random::create_from_bytes(&[]);
@@ -101,6 +117,10 @@ async fn evaluate_and_replay(
 ) -> (EvaluateResult, EvaluateResult) {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): play
+    // and replay run in the CostV1 epoch of protocol 6, as above. The old
+    // initializer was:
+    // ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
     let (mut runtime, mut replay_runtime, _): (
         RhoRuntimeImpl,
         RhoRuntimeImpl,
@@ -112,7 +132,14 @@ async fn evaluate_and_replay(
                     + 'static,
             >,
         >,
-    ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+    ) = create_runtimes_with_services_for_epoch(
+        EventCodecEpoch::CostV1,
+        store,
+        false,
+        &mut Vec::new(),
+        external_services,
+    )
+    .await;
     install_test_payer(&runtime);
     install_test_payer(&replay_runtime);
 
@@ -406,8 +433,18 @@ async fn gpt4_out_of_phlogistons_rejects_output_and_marks_the_invocation_failed(
     let store = kvm.r_space_stores().await.unwrap();
     let external_services =
         create_test_external_services(OpenAIMockConfig::single_completion(&completion), None);
-    let (mut runtime, _, _) =
-        create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+    // CostV1 epoch of protocol 6, as above.
+    // let (mut runtime, _, _) =
+    //     create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+    let (mut runtime, _, _) = create_runtimes_with_services_for_epoch(
+        EventCodecEpoch::CostV1,
+        store,
+        false,
+        &mut Vec::new(),
+        external_services,
+    )
+    .await;
     install_test_payer(&runtime);
     let pre_state_root = runtime.get_root().await;
     let rejected = runtime

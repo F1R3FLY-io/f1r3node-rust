@@ -11,13 +11,9 @@ use models::rust::casper::protocol::casper_message::{
     Event, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy, SystemDeployData,
 };
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
-use models::rust::cost_protocol_limits::{
-    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
-};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
@@ -71,7 +67,6 @@ fn inspect_offered_replay_preflight(
         let ProcessedUserDeploy::Offered(processed) = term else {
             continue;
         };
-        let host = HostWorkBudget::new(offered_funded_v6_host_work_limits());
         let evidence_bytes = processed.native_cost_evidence_bytes().len();
         if evidence_bytes > limits.evidence.total_bytes
             || processed.deploy_log().len() > limits.deploy_log_events
@@ -79,26 +74,6 @@ fn inspect_offered_replay_preflight(
             return Err(CasperError::RuntimeError(
                 "offered replay candidate exceeds protocol limits".to_string(),
             ));
-        }
-        let estimated_allocation = evidence_bytes.checked_mul(8).ok_or_else(|| {
-            CasperError::RuntimeError("offered replay evidence allocation overflows".to_string())
-        })?;
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationBytes, evidence_bytes),
-            (HostWorkDimension::VerificationOperations, evidence_bytes),
-            (HostWorkDimension::SearchStateBytes, estimated_allocation),
-            (
-                HostWorkDimension::VerificationOperations,
-                processed.deploy_log().len(),
-            ),
-        ] {
-            host.reserve(
-                dimension,
-                HostWorkUnits::new(u64::try_from(amount).map_err(|_| {
-                    CasperError::RuntimeError("offered replay work overflows".to_string())
-                })?),
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         }
         processed
             .validate(limits.evidence)

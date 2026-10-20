@@ -440,13 +440,25 @@ macro_rules! reducer_expression_oracle_methods {
                 || !p.unforgeables.is_empty()
                 || !p.bundles.is_empty()
             {
-                Err(InterpreterError::ReduceError(String::from(
+                // Changed by the merge of feature/cost-accounted-rho (finding
+                // R1-42): DR-128 raises this error as `ValueTypeError` in
+                // production, and the twin must raise the same error.
+                // Err(InterpreterError::ReduceError(String::from(
+                //     "Error: parallel or non expression found where expression expected.",
+                // )))
+                Err(InterpreterError::ValueTypeError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
             } else {
                 match p.exprs.as_slice() {
                     [e] => Ok(self.eval_expr_to_expr_recursive(e, env)?),
-                    _ => Err(InterpreterError::ReduceError(
+                    // Changed by the merge of feature/cost-accounted-rho
+                    // (finding R1-42): DR-128 raises this error as
+                    // `ValueTypeError` in production.
+                    // _ => Err(InterpreterError::ReduceError(
+                    //     "Error: Multiple expressions given.".to_string(),
+                    // )),
+                    _ => Err(InterpreterError::ValueTypeError(
                         "Error: Multiple expressions given.".to_string(),
                     )),
                 }
@@ -462,7 +474,13 @@ macro_rules! reducer_expression_oracle_methods {
                 && !p.unforgeables.is_empty()
                 && !p.bundles.is_empty()
             {
-                Err(InterpreterError::ReduceError(String::from(
+                // Changed by the merge of feature/cost-accounted-rho (finding
+                // R1-42): DR-128 raises this error as `ValueTypeError` in
+                // production, and the twin must raise the same error.
+                // Err(InterpreterError::ReduceError(String::from(
+                //     "Error: parallel or non expression found where expression expected.",
+                // )))
+                Err(InterpreterError::ValueTypeError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
             } else {
@@ -480,7 +498,13 @@ macro_rules! reducer_expression_oracle_methods {
                         let evaled = self.eval_expr_to_expr_recursive(e, env)?;
                         Self::extract_i64(evaled)
                     }
-                    _ => Err(InterpreterError::ReduceError(
+                    // Changed by the merge of feature/cost-accounted-rho
+                    // (finding R1-42): DR-128 raises this error as
+                    // `ValueTypeError` in production.
+                    // _ => Err(InterpreterError::ReduceError(
+                    //     "Error: Integer expected, or unimplemented expression.".to_string(),
+                    // )),
+                    _ => Err(InterpreterError::ValueTypeError(
                         "Error: Integer expected, or unimplemented expression.".to_string(),
                     )),
                 }
@@ -500,7 +524,13 @@ macro_rules! reducer_expression_oracle_methods {
                 && !p.unforgeables.is_empty()
                 && !p.bundles.is_empty()
             {
-                Err(InterpreterError::ReduceError(String::from(
+                // Changed by the merge of feature/cost-accounted-rho (finding
+                // R1-42): DR-128 raises this error as `ValueTypeError` in
+                // production, and the twin must raise the same error.
+                // Err(InterpreterError::ReduceError(String::from(
+                //     "Error: parallel or non expression found where expression expected.",
+                // )))
+                Err(InterpreterError::ValueTypeError(String::from(
                     "Error: parallel or non expression found where expression expected.",
                 )))
             } else {
@@ -518,7 +548,13 @@ macro_rules! reducer_expression_oracle_methods {
                         let evaled = self.eval_expr_to_expr_recursive(e, env)?;
                         Self::extract_bool(evaled)
                     }
-                    _ => Err(InterpreterError::ReduceError(
+                    // Changed by the merge of feature/cost-accounted-rho
+                    // (finding R1-42): DR-128 raises this error as
+                    // `ValueTypeError` in production.
+                    // _ => Err(InterpreterError::ReduceError(
+                    //     "Error: Multiple expressions given.".to_string(),
+                    // )),
+                    _ => Err(InterpreterError::ValueTypeError(
                         "Error: Multiple expressions given.".to_string(),
                     )),
                 }

@@ -1,0 +1,136 @@
+' Order-then-execute for cost-accounted (v6) shards, with record and replay
+' (amendment of 2026-10-13). Consensus orders accepted envelopes and never
+' waits for execution. One executor runs each finalized block, applies the P1
+' gate before each envelope, settles, and publishes its record. Every other
+' node replays that record. Replay follows the record, so honest replays of
+' one record reach one root, whether the reduction scheduler stays or goes and
+' whether the candidate pick is fixed or random. A wrong attestation or an
+' invalid record is shown by replaying the record.
+'
+' Paper anchors: P1 = publications cost-accounting/cost-accounted-rho.tex
+'   gate P1:2188-2213 · rejection without effect P1:2208-2212 ·
+'   block validity P1:1708-1714 · the run decides P1:2090-2093 ·
+'   refund from the actual run P1:2154-2160.
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §7.
+' It supersedes the diagram consensus-proposal-order-then-execute.puml, which
+' assumed a deterministic executor. That diagram stays for the record.
+' Palette: user and envelope = supply blue · proposer = control amber ·
+'   Casper core = capability indigo · linearizer = process lilac ·
+'   executor = pool green · replay = surface salmon ·
+'   records and executed roots = delta orange · evidence = reject red
+' The legend also defines every name and abbreviation that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh consensus-proposal-record-and-replay.puml
+
+@startuml consensus-proposal-record-and-replay
+!include palette.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor              $ca_neutral
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  DividerBackgroundColor  $ca_note_grey
+  GroupBorderColor        #666666
+  GroupBackgroundColor    #FAFAFA
+}
+skinparam maxMessageSize 340
+title Order-then-execute on v6 shards with record and replay (amendment of 2026-10-13)
+
+autonumber
+
+actor       "User\n(signer)"                                as U $ca_supply
+participant "Proposer\n(no execution)"                       as P $ca_control
+participant "Validators\n(structural validity)"              as V $ca_capability
+participant "Fork choice and\nclique-oracle finality"        as F $ca_capability
+participant "Linearizer\n(main-chain epochs)"                as L $ca_process
+participant "Executor of block b\n(by convention, the sender of b)" as X $ca_pool
+participant "Every other node\n(replays the record)"         as R $ca_surface
+database    "Records and\nexecuted roots"                    as A $ca_delta
+
+== Inclusion and structural validation: as in the first version ==
+U -[$ca_instantiate]> P : signed offered envelope
+P -> A : newest finalized block E whose canonical record\nthis node has replayed, and its root <latex>r_E</latex>
+P -> P : inclusion filter at <latex>r_E</latex>: DR-64 check,\nDR-65 group rule, per-block demand cap
+P -[$ca_instantiate]> V : block = parents, justifications, envelopes,\nattestation <latex>(E, r_E)</latex>, epoch validator set,\nand the records that this node executed and no earlier block cites
+V -> V : signatures, justifications, equivocation, envelope rules,\nrecord encoding, each cited block lies in the past cone
+V -> F : add the valid block to the DAG
+note over P, F $ca_note_green
+  **Consensus keeps accepting blocks.** No step of inclusion
+  or validation waits for execution or for replay
+  (P1:1708-1714 makes block validity a syntactic predicate).
+end note
+
+== Finality and linearization: unchanged ==
+F -> F : LMD-GHOST fork choice, clique oracle with the epoch weights
+F -> L : the LFB advances: the newly finalized set
+L -> X : block b in the canonical order Ord, envelopes in block order
+L -> R : the same order Ord (every node runs the linearizer)
+
+== Execution: one executor runs block b and records it ==
+loop each envelope e of b, in block order
+  X -> X : P1 gate at the current root: <latex>\Sigma_s \geq \Delta_s</latex> for every lane s?\n(DR-65 group rule inside b)
+  alt the gate accepts
+    X -> X : hold, execute, settle, fee to the sender of b
+  else the gate rejects
+    X -[$ca_debit]> X : reject e: no state change, no tokens consumed (P1:2208-2212)
+  end
+end
+X -> X : <latex>\mathrm{rec}(b)</latex> = pre-root, gate verdicts, processed deploys\n(event log, native cost evidence), system work, post-root
+X -> X : certify <latex>\mathrm{rec}(b)</latex> by one replay, as today's producer does
+X -[$ca_instantiate]> V : cite <latex>\mathrm{rec}(b)</latex> in the executor's next block
+note over X $ca_note_amber
+  The run is one valid run among many:
+  a random candidate pick, and, with or without
+  the scheduler, any order that the rules allow
+  (P1:2090-2093). The record fixes the run.
+end note
+
+== Replay: every other node follows the record ==
+F -> R : a block that cites <latex>\mathrm{rec}(b)</latex> is finalized
+R -> A : fix the canonical record of b:\nthe first citation of b in Ord that starts at <latex>\mathrm{executed}(\mathrm{prev}(b))</latex>\nand replays to its stated post-root
+R -> R : replay <latex>\mathrm{rec}(b)</latex>:\nthe recorded COMMs,\nthe same host work in every replay
+alt replay fails, or ends at another root
+  R -[$ca_debit]> A : signed invalid-record evidence against the citing sender,\nthen try the next citation in Ord
+else replay reaches the stated root
+  R -> A : <latex>\mathrm{executed}(b)</latex> = the post-root of the canonical record
+end
+
+== Attestation and dispute ==
+P -[$ca_instantiate]> V : a later block attests <latex>(E', r_{E'})</latex>
+V -> A : when replay reaches <latex>E'</latex>:\ncompare <latex>r_{E'}</latex> with <latex>\mathrm{executed}(E')</latex>,\nand re-run the inclusion filter of that block at <latex>r_{E'}</latex>
+note over V, A $ca_note_red
+  A root mismatch, an invalid record, or an envelope that fails
+  the filter at the proposer's own attested root is signed slashing
+  evidence. Any node proves it by replaying the records.
+  It never changes block validity after the fact.
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| user and signed envelope |
+  |<$ca_control>| proposer |
+  |<$ca_capability>| Casper core: validity, DAG, fork choice, finality |
+  |<$ca_process>| deterministic linearization of finalized blocks |
+  |<$ca_pool>| the one executor of a block, which records the run |
+  |<$ca_surface>| replay of the record on every other node |
+  |<$ca_delta>| records and executed roots |
+  |<$ca_note_red>| slashing evidence |
+
+  |= name |= meaning |
+  | P1 | the paper "Cost-Accounted Rho Calculus" (L. G. Meredith, May 2026). P1:a-b cites its lines a to b. |
+  | P1 gate | accept an envelope only if <latex>\Sigma_s \geq \Delta_s</latex> for every signature lane s |
+  | <latex>\Sigma_s</latex>, <latex>\Delta_s</latex> | the token supply and the demand of signature s |
+  | DR-64, DR-65 | the decision records of the funding check before execution, and of same-block offers on one purse |
+  | E, <latex>r_E</latex> | the newest finalized block whose canonical record the proposer has replayed, and the root after it. E' is a later one. |
+  | b, e | one finalized block, and one envelope (a signed user deploy) of it |
+  | Ord, prev(b) | the canonical order of finalized blocks, and the block before b in it |
+  | <latex>\mathrm{rec}(b)</latex> | the record of one run of b: pre-root, verdicts, processed deploys, system work, post-root |
+  | <latex>\mathrm{executed}(b)</latex> | the post-root of the canonical record of b |
+  | canonical record | the first record of b that a finalized block cites in Ord, starts at executed(prev(b)) and replays to its stated root |
+  | COMM | one RSpace communication event: a send that matches a receive |
+  | LMD-GHOST | latest-message-driven greedy heaviest-observed subtree fork choice |
+  | LFB, DAG | the last finalized block, and the directed acyclic graph of blocks |
+  | v6 | protocol version 6, with cost accounting and offered envelopes |
+endlegend
+
+@enduml

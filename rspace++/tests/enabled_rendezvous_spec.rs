@@ -22,7 +22,7 @@
 //! | test | property |
 //! |---|---|
 //! | [`t0_teeth_the_fixture_puts_the_admissible_datum_off_the_front`] | the corpus really does exercise backtracking — without this every "agrees" below could be vacuous |
-//! | [`t1_the_enumeration_head_is_the_selector_choice`] | ★ `E(S)`'s first selection for a continuation is EXACTLY what a real `consume` takes |
+//! | [`t1_every_selector_choice_is_an_enumerated_selection`] | ★ every selection that a real `consume` takes is one of `E(S)`'s selections, and fresh runs take each of them (R2-04: play order is random, DR-129) |
 //! | [`t2_the_enumeration_is_complete`] | every resting datum that matches appears; a guard removes exactly the ones it rejects |
 //! | [`t3_the_query_is_read_only`] | store, event log and produce counter are untouched by the query |
 //! | [`t4_the_enumeration_is_deterministic`] | repeated calls agree, and insertion order does not change the answer |
@@ -228,7 +228,10 @@ fn selected(enabled: &[TestRendezvous]) -> Vec<(String, Vec<i64>)> {
 fn resting_ints(state: &TestState, channel: &str) -> Vec<i64> {
     state
         .data_flat()
-        .get(&channel.to_string())
+        // Changed by the merge of feature/cost-accounted-rho
+        // (clippy gate): the lookup borrows the key as `&str`.
+        // .get(&channel.to_string())
+        .get(channel)
         .map(|data| data.iter().map(|datum| as_int(&datum.a)).collect())
         .unwrap_or_default()
 }
@@ -272,24 +275,121 @@ async fn t0_teeth_the_fixture_puts_the_admissible_datum_off_the_front() {
 // T1 — ★ the head identity
 // ════════════════════════════════════════════════════════════════════════════
 
-/// **`E(S)`'s first selection for a continuation is exactly what a real
-/// `consume` on that state takes.**
+// Disabled by R2-04 (complete guard search, defect D1): play shuffles the
+// candidates of each channel before it selects (DR-129), so a real `consume`
+// takes a random member of `E(S)`, not always its head.
+// `t1_every_selector_choice_is_an_enumerated_selection` replaces this test.
+// ```text
+// /// **`E(S)`'s first selection for a continuation is exactly what a real
+// /// `consume` on that state takes.**
+// ///
+// /// This is the bridge the whole speculative construction stands on: the
+// /// enumeration is the production selector with the early return replaced by a
+// /// record, so their first answers must coincide. The test does not inspect
+// /// either implementation — it runs the enumeration on a state, then runs a real
+// /// `consume` against a byte-identical copy of the same state, and compares the
+// /// data each one took.
+// ///
+// /// Both the unguarded shape (first spatial match wins) and the guarded shape
+// /// (the guard backtracks past the first spatial match) are checked, because
+// /// they take different paths through the descent.
+// #[tokio::test]
+// async fn t1_the_enumeration_head_is_the_selector_choice() {
+//     for (label, guard, receiver_patterns) in [
+//         ("unguarded", Guard::Unguarded, vec![Pattern::Wildcard]),
+//         ("guarded", Guard::AtMost(45), vec![Pattern::Wildcard]),
+//     ] {
+//         // ── the enumeration arm ──
+//         let enumerating = play_space().await;
+//         rest_data(&enumerating, "offer", &REJECTED_FIRST).await;
+//         let fired = rest_receive(
+//             &enumerating,
+//             &["offer"],
+//             receiver_patterns.clone(),
+//             GuardedContinuation::guarded("k", guard.clone()),
+//         )
+//         .await;
+//         assert!(
+//             fired,
+//             "{label}: with data resting, an ordinary consume FIRES — that is the selector answer \
+//              this test compares against"
+//         );
+//
+//         // The consume above fired, so re-stage the same state without firing: a
+//         // second space that gets the data and the continuation planted
+//         // directly.
+//         let staged = play_space().await;
+//         rest_data(&staged, "offer", &REJECTED_FIRST).await;
+//         let store = staged.get_store();
+//         store.put_continuation(
+//             &vec!["offer".to_string()],
+//             rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+//                 &vec!["offer".to_string()],
+//                 &receiver_patterns,
+//                 &GuardedContinuation::guarded("k", guard.clone()),
+//                 false,
+//                 BTreeSet::new(),
+//             ),
+//         ).expect("hot store write");
+//         store.put_join(&"offer".to_string(), &["offer".to_string()]).expect("hot store write");
+//
+//         let enabled = staged.enabled_rendezvous().unwrap();
+//         assert!(!enabled.is_empty(), "{label}: the staged state must admit a rendezvous");
+//         let head: Vec<i64> = enabled[0]
+//             .data_candidates
+//             .iter()
+//             .map(|candidate| as_int(&candidate.datum.a))
+//             .collect();
+//
+//         // ── the selector arm: a THIRD space holding the same data, receiving
+//         // ──
+//         let selecting = play_space().await;
+//         rest_data(&selecting, "offer", &REJECTED_FIRST).await;
+//         let taken = selecting
+//             .consume(
+//                 vec!["offer".to_string()],
+//                 receiver_patterns.clone(),
+//                 GuardedContinuation::guarded("k", guard.clone()),
+//                 false,
+//                 BTreeSet::new(),
+//             )
+//             .await
+//             .expect("consume must not error")
+//             .expect("the selector must fire on this state");
+//         let selector: Vec<i64> = taken.1.iter().map(|r| as_int(&r.matched_datum)).collect();
+//
+//         assert_eq!(
+//             head, selector,
+//             "{label}: E(S)'s head selection and the production selector's choice must be the same \
+//              datum — they are the same descent"
+//         );
+//     }
+// }
+// ```
+
+/// Fresh selector spaces for T1. With two admissible selections, every run
+/// takes the same one with probability `2 * 2^-64`.
+const SELECTOR_RUNS: usize = 64;
+
+/// **Every selection that a real `consume` takes is one of `E(S)`'s
+/// selections, and fresh runs take each of them.**
 ///
-/// This is the bridge the whole speculative construction stands on: the
-/// enumeration is the production selector with the early return replaced by a
-/// record, so their first answers must coincide. The test does not inspect
-/// either implementation — it runs the enumeration on a state, then runs a real
-/// `consume` against a byte-identical copy of the same state, and compares the
-/// data each one took.
+/// Changed by R2-04 (complete guard search, defect D1): play shuffles the
+/// candidates of each channel before it selects (DR-129), so a real
+/// `consume` takes a random member of `E(S)`, not always its head. The test
+/// enumerates one staged state. It then runs a real `consume` against 64
+/// fresh copies of the same state, and it compares the data that each one
+/// took with the enumeration.
 ///
-/// Both the unguarded shape (first spatial match wins) and the guarded shape
-/// (the guard backtracks past the first spatial match) are checked, because
-/// they take different paths through the descent.
+/// Both the unguarded shape (both data are admissible) and the guarded shape
+/// (only `"1"` is admissible, and the guard backtracks past `"46"` whenever
+/// the shuffle puts it first) are checked, because they take different paths
+/// through the descent.
 #[tokio::test]
-async fn t1_the_enumeration_head_is_the_selector_choice() {
-    for (label, guard, receiver_patterns) in [
-        ("unguarded", Guard::Unguarded, vec![Pattern::Wildcard]),
-        ("guarded", Guard::AtMost(45), vec![Pattern::Wildcard]),
+async fn t1_every_selector_choice_is_an_enumerated_selection() {
+    for (label, guard, receiver_patterns, admissible) in [
+        ("unguarded", Guard::Unguarded, vec![Pattern::Wildcard], vec![vec![46], vec![1]]),
+        ("guarded", Guard::AtMost(45), vec![Pattern::Wildcard], vec![vec![1]]),
     ] {
         // ── the enumeration arm ──
         let enumerating = play_space().await;
@@ -313,47 +413,66 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
         let staged = play_space().await;
         rest_data(&staged, "offer", &REJECTED_FIRST).await;
         let store = staged.get_store();
-        store.put_continuation(
-            &vec!["offer".to_string()],
-            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-                &vec!["offer".to_string()],
-                &receiver_patterns,
-                &GuardedContinuation::guarded("k", guard.clone()),
-                false,
-                BTreeSet::new(),
-            ),
-        );
-        store.put_join(&"offer".to_string(), &["offer".to_string()]);
-
-        let enabled = staged.enabled_rendezvous().unwrap();
-        assert!(!enabled.is_empty(), "{label}: the staged state must admit a rendezvous");
-        let head: Vec<i64> = enabled[0]
-            .data_candidates
-            .iter()
-            .map(|candidate| as_int(&candidate.datum.a))
-            .collect();
-
-        // ── the selector arm: a THIRD space holding the same data, receiving
-        // ──
-        let selecting = play_space().await;
-        rest_data(&selecting, "offer", &REJECTED_FIRST).await;
-        let taken = selecting
-            .consume(
-                vec!["offer".to_string()],
-                receiver_patterns.clone(),
-                GuardedContinuation::guarded("k", guard.clone()),
-                false,
-                BTreeSet::new(),
+        store
+            .put_continuation(
+                // Changed by the merge of feature/cost-accounted-rho
+                // (clippy gate): a slice literal needs no `Vec`.
+                // &vec!["offer".to_string()],
+                &["offer".to_string()],
+                rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                    &vec!["offer".to_string()],
+                    &receiver_patterns,
+                    &GuardedContinuation::guarded("k", guard.clone()),
+                    false,
+                    BTreeSet::new(),
+                ),
             )
-            .await
-            .expect("consume must not error")
-            .expect("the selector must fire on this state");
-        let selector: Vec<i64> = taken.1.iter().map(|r| as_int(&r.matched_datum)).collect();
+            .expect("hot store write");
+        store
+            .put_join(&"offer".to_string(), &["offer".to_string()])
+            .expect("hot store write");
 
+        let enabled = staged
+            .enabled_rendezvous()
+            .expect("the enumeration reads the store");
+        let enumerated: BTreeSet<Vec<i64>> = selected(&enabled)
+            .into_iter()
+            .map(|(_, data)| data)
+            .collect();
         assert_eq!(
-            head, selector,
-            "{label}: E(S)'s head selection and the production selector's choice must be the same \
-             datum — they are the same descent"
+            enumerated,
+            admissible.into_iter().collect::<BTreeSet<_>>(),
+            "{label}: E(S) names exactly the admissible selections"
+        );
+
+        // ── the selector arm: fresh spaces holding the same data, receiving ──
+        let mut choices = BTreeSet::new();
+        for _ in 0..SELECTOR_RUNS {
+            let selecting = play_space().await;
+            rest_data(&selecting, "offer", &REJECTED_FIRST).await;
+            let taken = selecting
+                .consume(
+                    vec!["offer".to_string()],
+                    receiver_patterns.clone(),
+                    GuardedContinuation::guarded("k", guard.clone()),
+                    false,
+                    BTreeSet::new(),
+                )
+                .await
+                .expect("consume must not error")
+                .expect("the selector must fire on this state");
+            let selector: Vec<i64> = taken.1.iter().map(|r| as_int(&r.matched_datum)).collect();
+            assert!(
+                enumerated.contains(&selector),
+                "{label}: the selector took {selector:?}, which E(S) does not name \
+                 ({enumerated:?})"
+            );
+            choices.insert(selector);
+        }
+        assert_eq!(
+            choices, enumerated,
+            "{label}: across {SELECTOR_RUNS} fresh runs the selector takes every selection that \
+             E(S) names"
         );
     }
 }
@@ -370,16 +489,21 @@ async fn t2_the_enumeration_is_complete() {
     let space = play_space().await;
     rest_data(&space, "c", &["10", "20", "30", "40"]).await;
     let store = space.get_store();
-    store.put_continuation(
-        &vec!["c".to_string()],
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-            &vec!["c".to_string()],
-            &vec![Pattern::Wildcard],
-            &GuardedContinuation::unguarded("k"),
-            false,
-            BTreeSet::new(),
-        ),
-    );
+    store
+        .put_continuation(
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // &vec!["c".to_string()],
+            &["c".to_string()],
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &vec!["c".to_string()],
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::unguarded("k"),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
     let mut widths: Vec<i64> = selected(&space.enabled_rendezvous().unwrap())
         .into_iter()
         .map(|(_, data)| data[0])
@@ -394,16 +518,22 @@ async fn t2_the_enumeration_is_complete() {
     // (b) the same state with `AtMost(25)`: exactly the two admissible data.
     let guarded = play_space().await;
     rest_data(&guarded, "c", &["10", "20", "30", "40"]).await;
-    guarded.get_store().put_continuation(
-        &vec!["c".to_string()],
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-            &vec!["c".to_string()],
-            &vec![Pattern::Wildcard],
-            &GuardedContinuation::guarded("k", Guard::AtMost(25)),
-            false,
-            BTreeSet::new(),
-        ),
-    );
+    guarded
+        .get_store()
+        .put_continuation(
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // &vec!["c".to_string()],
+            &["c".to_string()],
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &vec!["c".to_string()],
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::guarded("k", Guard::AtMost(25)),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
     let mut admitted: Vec<i64> = selected(&guarded.enabled_rendezvous().unwrap())
         .into_iter()
         .map(|(_, data)| data[0])
@@ -415,16 +545,21 @@ async fn t2_the_enumeration_is_complete() {
     let two = play_space().await;
     rest_data(&two, "c", &["10", "20"]).await;
     for name in ["k1", "k2"] {
-        two.get_store().put_continuation(
-            &vec!["c".to_string()],
-            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-                &vec!["c".to_string()],
-                &vec![Pattern::Wildcard],
-                &GuardedContinuation::unguarded(name),
-                false,
-                BTreeSet::new(),
-            ),
-        );
+        two.get_store()
+            .put_continuation(
+                // Changed by the merge of feature/cost-accounted-rho
+                // (clippy gate): a slice literal needs no `Vec`.
+                // &vec!["c".to_string()],
+                &["c".to_string()],
+                rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                    &vec!["c".to_string()],
+                    &vec![Pattern::Wildcard],
+                    &GuardedContinuation::unguarded(name),
+                    false,
+                    BTreeSet::new(),
+                ),
+            )
+            .expect("hot store write");
     }
     let mut pairs = selected(&two.enabled_rendezvous().unwrap());
     pairs.sort();
@@ -451,16 +586,22 @@ async fn t2_the_enumeration_is_complete() {
 async fn t3_the_query_is_read_only() {
     let space = play_space().await;
     rest_data(&space, "c", &["10", "20"]).await;
-    space.get_store().put_continuation(
-        &vec!["c".to_string()],
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-            &vec!["c".to_string()],
-            &vec![Pattern::Wildcard],
-            &GuardedContinuation::unguarded("k"),
-            false,
-            BTreeSet::new(),
-        ),
-    );
+    space
+        .get_store()
+        .put_continuation(
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // &vec!["c".to_string()],
+            &["c".to_string()],
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &vec!["c".to_string()],
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::unguarded("k"),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
 
     let before = space.get_store().snapshot();
     let checkpoint_before = space.create_soft_checkpoint().await;
@@ -516,16 +657,22 @@ async fn t4_the_enumeration_is_deterministic() {
         let space = play_space().await;
         for channel in channel_order {
             rest_data(&space, channel, data_order).await;
-            space.get_store().put_continuation(
-                &vec![channel.to_string()],
-                rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-                    &vec![channel.to_string()],
-                    &vec![Pattern::Wildcard],
-                    &GuardedContinuation::unguarded("k"),
-                    false,
-                    BTreeSet::new(),
-                ),
-            );
+            space
+                .get_store()
+                .put_continuation(
+                    // Changed by the merge of feature/cost-accounted-rho
+                    // (clippy gate): a slice literal needs no `Vec`.
+                    // &vec![channel.to_string()],
+                    &[channel.to_string()],
+                    rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                        &vec![channel.to_string()],
+                        &vec![Pattern::Wildcard],
+                        &GuardedContinuation::unguarded("k"),
+                        false,
+                        BTreeSet::new(),
+                    ),
+                )
+                .expect("hot store write");
         }
         selected(&space.enabled_rendezvous().unwrap())
     }
@@ -553,19 +700,26 @@ async fn t4_the_enumeration_is_deterministic() {
 async fn t5_a_non_head_value_can_be_selected_by_public_consume() {
     let space = play_space().await;
     rest_data(&space, "c", &["10", "20", "30"]).await;
-    space.get_store().put_continuation(
-        &vec!["c".to_string()],
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-            &vec!["c".to_string()],
-            &vec![Pattern::Wildcard],
-            &GuardedContinuation::unguarded("k"),
-            false,
-            BTreeSet::new(),
-        ),
-    );
     space
         .get_store()
-        .put_join(&"c".to_string(), &["c".to_string()]);
+        .put_continuation(
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // &vec!["c".to_string()],
+            &["c".to_string()],
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &vec!["c".to_string()],
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::unguarded("k"),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
+    space
+        .get_store()
+        .put_join(&"c".to_string(), &["c".to_string()])
+        .expect("hot store write");
 
     let enabled = space.enabled_rendezvous().unwrap();
     assert_eq!(enabled.len(), 3, "three resting data, one wildcard bind");
@@ -630,16 +784,21 @@ async fn t6_play_and_replay_enumerate_identically() {
     let (play, replay) = fixture().await;
 
     rest_data(&play, "offer", &["55", "42", "13"]).await;
-    play.get_store().put_continuation(
-        &vec!["offer".to_string()],
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-            &vec!["offer".to_string()],
-            &vec![Pattern::Wildcard],
-            &GuardedContinuation::guarded("k", Guard::AtMost(45)),
-            false,
-            BTreeSet::new(),
-        ),
-    );
+    play.get_store()
+        .put_continuation(
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // &vec!["offer".to_string()],
+            &["offer".to_string()],
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &vec!["offer".to_string()],
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::guarded("k", Guard::AtMost(45)),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
 
     let state = play.get_store().snapshot();
     replay.get_store().set_state(state);
@@ -686,16 +845,22 @@ async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
     // (c) data present, but the guard refuses every one.
     let refused = play_space().await;
     rest_data(&refused, "c", &["50", "60"]).await;
-    refused.get_store().put_continuation(
-        &vec!["c".to_string()],
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-            &vec!["c".to_string()],
-            &vec![Pattern::Wildcard],
-            &GuardedContinuation::guarded("k", Guard::AtMost(45)),
-            false,
-            BTreeSet::new(),
-        ),
-    );
+    refused
+        .get_store()
+        .put_continuation(
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // &vec!["c".to_string()],
+            &["c".to_string()],
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &vec!["c".to_string()],
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::guarded("k", Guard::AtMost(45)),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
     assert!(
         refused.enabled_rendezvous().unwrap().is_empty(),
         "a guard that refuses every resting datum leaves nothing enabled"
@@ -704,16 +869,22 @@ async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
     // (d) data present, but no pattern matches spatially.
     let mismatched = play_space().await;
     rest_data(&mismatched, "c", &["10"]).await;
-    mismatched.get_store().put_continuation(
-        &vec!["c".to_string()],
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
-            &vec!["c".to_string()],
-            &vec![Pattern::StringMatch("99".to_string())],
-            &GuardedContinuation::unguarded("k"),
-            false,
-            BTreeSet::new(),
-        ),
-    );
+    mismatched
+        .get_store()
+        .put_continuation(
+            // Changed by the merge of feature/cost-accounted-rho
+            // (clippy gate): a slice literal needs no `Vec`.
+            // &vec!["c".to_string()],
+            &["c".to_string()],
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &vec!["c".to_string()],
+                &vec![Pattern::StringMatch("99".to_string())],
+                &GuardedContinuation::unguarded("k"),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
     assert!(
         mismatched.enabled_rendezvous().unwrap().is_empty(),
         "a spatial mismatch leaves nothing enabled"
@@ -736,18 +907,24 @@ async fn t8_a_join_enumerates_its_cross_product() {
         rest_data(&space, "left", &["1", "2"]).await;
         rest_data(&space, "right", &["3", "4"]).await;
         let channels = vec!["left".to_string(), "right".to_string()];
-        space.get_store().put_continuation(
-            &channels,
-            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+        space
+            .get_store()
+            .put_continuation(
                 &channels,
-                &vec![Pattern::Wildcard, Pattern::Wildcard],
-                &GuardedContinuation::guarded("k", guard),
-                false,
-                BTreeSet::new(),
-            ),
-        );
+                rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                    &channels,
+                    &vec![Pattern::Wildcard, Pattern::Wildcard],
+                    &GuardedContinuation::guarded("k", guard),
+                    false,
+                    BTreeSet::new(),
+                ),
+            )
+            .expect("hot store write");
         for channel in channels.iter() {
-            space.get_store().put_join(channel, &channels);
+            space
+                .get_store()
+                .put_join(channel, &channels)
+                .expect("hot store write");
         }
         selected(&space.enabled_rendezvous().unwrap())
             .into_iter()
@@ -776,16 +953,19 @@ async fn t8_a_join_enumerates_its_cross_product() {
     rest_data(&space, "left", &["1", "9"]).await;
     rest_data(&space, "right", &["5"]).await;
     let channels = vec!["left".to_string(), "right".to_string()];
-    space.get_store().put_continuation(
-        &channels,
-        rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+    space
+        .get_store()
+        .put_continuation(
             &channels,
-            &vec![Pattern::Wildcard, Pattern::Wildcard],
-            &GuardedContinuation::guarded("k", Guard::StrictlyIncreasing),
-            false,
-            BTreeSet::new(),
-        ),
-    );
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &channels,
+                &vec![Pattern::Wildcard, Pattern::Wildcard],
+                &GuardedContinuation::guarded("k", Guard::StrictlyIncreasing),
+                false,
+                BTreeSet::new(),
+            ),
+        )
+        .expect("hot store write");
     let admitted: Vec<Vec<i64>> = selected(&space.enabled_rendezvous().unwrap())
         .into_iter()
         .map(|(_, data)| data)

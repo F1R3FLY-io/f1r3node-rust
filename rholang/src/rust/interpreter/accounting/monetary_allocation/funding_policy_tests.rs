@@ -1,17 +1,12 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::super::{
     check_fixed_funding_witness, check_funding_deficit, check_funding_domain_counterexample,
 };
 use super::*;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits(problem: FundingMinimaxProblem<'_>) -> FundingSearchLimits {
     FundingSearchLimits {
@@ -92,8 +87,7 @@ fn assert_oracle(problem: FundingMinimaxProblem<'_>) {
     let actual_domain: BTreeSet<_> = all.iter().map(|x| contributions(x)).collect();
     let full_domain: BTreeSet<_> = full.iter().map(|x| contributions(x)).collect();
     for cursor in 0..problem.capacities.len() {
-        let result =
-            select_fixed_funding_policy(problem, cursor, limits(problem), &work()).unwrap();
+        let result = select_fixed_funding_policy(problem, cursor, limits(problem)).unwrap();
         let expected = all.iter().min_by(|left, right| {
             rank(left)
                 .cmp(&rank(right))
@@ -122,15 +116,14 @@ fn assert_oracle(problem: FundingMinimaxProblem<'_>) {
                     "{problem:?}, cursor {cursor}"
                 );
                 assert_eq!(
-                    problem.check_assignment(selection.assignment(), limits(problem), &work()),
+                    problem.check_assignment(selection.assignment(), limits(problem)),
                     Ok(selection.totals().clone())
                 );
                 assert!(check_funding_minimax_certificate(
                     problem,
                     selection.assignment(),
                     selection.rank_certificate().cuts(),
-                    limits(problem),
-                    &work()
+                    limits(problem)
                 )
                 .unwrap());
                 assert!(check_fixed_funding_witness(
@@ -140,8 +133,7 @@ fn assert_oracle(problem: FundingMinimaxProblem<'_>) {
                     },
                     selection.assignment(),
                     selection.witness_certificate().entries(),
-                    limits(problem),
-                    &work()
+                    limits(problem)
                 )
                 .unwrap());
                 let total: u64 = problem.obligations.iter().sum();
@@ -171,8 +163,7 @@ fn assert_oracle(problem: FundingMinimaxProblem<'_>) {
                             problem.obligations,
                             problem.eligible,
                             counterexample.view(),
-                            limits(problem),
-                            &work()
+                            limits(problem)
                         )
                         .unwrap());
                         let domain = derive_funding_optimal_domain(
@@ -180,7 +171,6 @@ fn assert_oracle(problem: FundingMinimaxProblem<'_>) {
                             selection.assignment(),
                             selection.rank_certificate().cuts(),
                             limits(problem),
-                            &work(),
                         )
                         .unwrap();
                         assert!(check_funding_cyclic_tie_certificate(
@@ -188,8 +178,7 @@ fn assert_oracle(problem: FundingMinimaxProblem<'_>) {
                             selection.assignment(),
                             cursor,
                             contribution_certificate.exclusions(),
-                            limits(problem),
-                            &work()
+                            limits(problem)
                         )
                         .unwrap());
                         assert_eq!(
@@ -238,7 +227,7 @@ fn redundant_missing_edges_do_not_select_restricted_cursor_policy() {
     };
     assert_oracle(problem);
     let FundingPolicyResult::Selected(selection) =
-        select_fixed_funding_policy(problem, 0, limits(problem), &work()).unwrap()
+        select_fixed_funding_policy(problem, 0, limits(problem)).unwrap()
     else {
         panic!("the exact diagonal assignment is feasible");
     };
@@ -256,7 +245,7 @@ fn uniquely_feasible_restricted_contributions_still_advance_priority() {
     assert_oracle(problem);
     for cursor in 0..2 {
         let FundingPolicyResult::Selected(selection) =
-            select_fixed_funding_policy(problem, cursor, limits(problem), &work()).unwrap()
+            select_fixed_funding_policy(problem, cursor, limits(problem)).unwrap()
         else {
             panic!("restricted and flexible obligations fit jointly");
         };
@@ -282,7 +271,7 @@ fn zero_funding_has_no_update_and_full_width_preserves_all_source_positions() {
                 eligible: &edges,
             };
             let FundingPolicyResult::Selected(selection) =
-                select_fixed_funding_policy(problem, count - 1, limits(problem), &work()).unwrap()
+                select_fixed_funding_policy(problem, count - 1, limits(problem)).unwrap()
             else {
                 panic!("the final source has sufficient capacity");
             };
@@ -307,7 +296,7 @@ fn malformed_input_and_invalid_cursor_are_not_economic_infeasibility() {
         eligible: &[vec![true]],
     };
     assert_eq!(
-        select_fixed_funding_policy(problem, 1, limits(problem), &work()),
+        select_fixed_funding_policy(problem, 1, limits(problem)),
         Err(FundingSearchError::InvalidPriorityCursor)
     );
     assert_eq!(
@@ -317,8 +306,7 @@ fn malformed_input_and_invalid_cursor_are_not_economic_infeasibility() {
                 ..problem
             },
             0,
-            limits(problem),
-            &work()
+            limits(problem)
         ),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
@@ -328,45 +316,9 @@ fn malformed_input_and_invalid_cursor_are_not_economic_infeasibility() {
         eligible: &[vec![true; 2]],
     };
     assert!(matches!(
-        select_fixed_funding_policy(overflow, 0, limits(overflow), &work()),
+        select_fixed_funding_policy(overflow, 0, limits(overflow)),
         Err(_)
     ));
-}
-
-#[test]
-fn every_budget_prefix_rejects_partial_policy_results() {
-    let problem = FundingMinimaxProblem {
-        capacities: &[1],
-        obligations: &[1],
-        eligible: &[vec![true]],
-    };
-    let measured = work();
-    let expected = select_fixed_funding_policy(problem, 0, limits(problem), &measured).unwrap();
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let full = measured.usage(dimension).get();
-        for prefix in 0..=full {
-            let mut bound = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-            bound.set(dimension, HostWorkLimit::new(prefix));
-            let actual = select_fixed_funding_policy(
-                problem,
-                0,
-                limits(problem),
-                &HostWorkBudget::new(bound),
-            );
-            if prefix == full {
-                assert_eq!(actual, Ok(expected.clone()));
-            } else {
-                assert!(
-                    matches!(actual, Err(FundingSearchError::HostWork(_))),
-                    "{dimension:?} {prefix}/{full}: {actual:?}"
-                );
-            }
-        }
-    }
 }
 
 #[test]
@@ -380,14 +332,14 @@ fn concurrent_policy_calls_preserve_independent_cursors_and_inputs() {
         let handles: Vec<_> = (0..3)
             .map(|cursor| {
                 scope.spawn(move || {
-                    select_fixed_funding_policy(problem, cursor, limits(problem), &work()).unwrap()
+                    select_fixed_funding_policy(problem, cursor, limits(problem)).unwrap()
                 })
             })
             .collect();
         for (cursor, handle) in handles.into_iter().enumerate() {
             assert_eq!(
                 handle.join().unwrap(),
-                select_fixed_funding_policy(problem, cursor, limits(problem), &work()).unwrap()
+                select_fixed_funding_policy(problem, cursor, limits(problem)).unwrap()
             );
         }
     });

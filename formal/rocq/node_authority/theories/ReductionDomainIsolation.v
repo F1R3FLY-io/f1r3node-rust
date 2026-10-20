@@ -1,3 +1,20 @@
+(* Changed by the merge of feature/cost-accounted-rho (DR-131, plan step 1.8).
+   DR-131 removes host work. The merge removes the host-work budget of the
+   reducer from root_with_observation
+   (rholang/src/rust/interpreter/deterministic_reduction.rs), so a re-entry
+   into the same domain no longer compares host-work policies. The domain key
+   is the space, the phlo budget and the coordinator (matches_domain).
+
+   The model keeps budget_id, which models the phlo RuntimeBudget in the
+   domain key, and every space, coordinator, scope, roster and failure-ledger
+   theorem. The host-work parts stay below as comments: host_compatible, the
+   host arguments of may_reuse and decide_admission, the Reject decision,
+   same_domain_host_mismatch_rejects, distinct_explicit_host_work_cannot_reuse,
+   HostUsage, HostLimit, reserve_host_for_domain,
+   host_charge_cannot_touch_foreign_domain and
+   owner_over_limit_rejects_without_charging_foreign_host. Their Print
+   Assumptions lines are comments too. *)
+
 From Stdlib Require Import List Bool Arith.
 Import ListNotations.
 
@@ -6,6 +23,9 @@ Record DomainKey := {
   budget_id : nat;
   coordinator_id : nat;
 }.
+
+(* Disabled by the merge of feature/cost-accounted-rho (DR-131): no host-work
+   policy takes part in domain admission.
 
 Definition host_compatible (requested current : option nat) : bool :=
   match requested with
@@ -16,15 +36,25 @@ Definition host_compatible (requested current : option nat) : bool :=
       | Some current_id => Nat.eqb requested_id current_id
       end
   end.
+*)
 
 Definition same_domain (requested current : DomainKey) : bool :=
   Nat.eqb (space_id requested) (space_id current) &&
   Nat.eqb (budget_id requested) (budget_id current) &&
   Nat.eqb (coordinator_id requested) (coordinator_id current).
 
+(* Changed by the merge of feature/cost-accounted-rho (DR-131): a domain is
+   reused exactly when the domain keys agree. The old definition follows.
+
 Definition may_reuse
   (requested current : DomainKey) (requested_host current_host : option nat) : bool :=
   same_domain requested current && host_compatible requested_host current_host.
+*)
+Definition may_reuse (requested current : DomainKey) : bool :=
+  same_domain requested current.
+
+(* Changed by the merge of feature/cost-accounted-rho (DR-131): with no
+   host-work policy, admission never rejects. The old definitions follow.
 
 Inductive AdmissionDecision := Reuse | Fresh | Reject.
 
@@ -34,6 +64,15 @@ Definition decide_admission
   if same_domain requested current
   then if host_compatible requested_host current_host then Reuse else Reject
   else Fresh.
+*)
+Inductive AdmissionDecision := Reuse | Fresh.
+
+Definition decide_admission (requested current : DomainKey) : AdmissionDecision :=
+  if same_domain requested current then Reuse else Fresh.
+
+(* Changed by the merge of feature/cost-accounted-rho (DR-131): the theorems
+   below lose the host arguments of may_reuse and decide_admission. The old
+   statement and proof of each one follow.
 
 Theorem reuse_iff_may_reuse : forall requested current requested_host current_host,
   decide_admission requested current requested_host current_host = Reuse <->
@@ -122,6 +161,69 @@ Proof.
       now rewrite andb_false_r.
   - unfold may_reuse, host_compatible.
     now rewrite andb_false_r.
+Qed.
+*)
+
+Theorem reuse_iff_may_reuse : forall requested current,
+  decide_admission requested current = Reuse <->
+  may_reuse requested current = true.
+Proof.
+  intros requested current.
+  unfold decide_admission, may_reuse.
+  destruct (same_domain requested current); split; intros H;
+    try discriminate; reflexivity.
+Qed.
+
+Theorem foreign_domain_starts_fresh : forall requested current,
+  same_domain requested current = false ->
+  decide_admission requested current = Fresh.
+Proof.
+  intros requested current Hforeign.
+  unfold decide_admission. now rewrite Hforeign.
+Qed.
+
+Theorem reuse_requires_same_space : forall requested current,
+  may_reuse requested current = true ->
+  space_id requested = space_id current.
+Proof.
+  intros requested current H.
+  unfold may_reuse, same_domain in H.
+  repeat rewrite andb_true_iff in H.
+  destruct H as [[Hspace _] _].
+  now apply Nat.eqb_eq in Hspace.
+Qed.
+
+Theorem reuse_requires_same_budget : forall requested current,
+  may_reuse requested current = true ->
+  budget_id requested = budget_id current.
+Proof.
+  intros requested current H.
+  unfold may_reuse, same_domain in H.
+  repeat rewrite andb_true_iff in H.
+  destruct H as [[_ Hbudget] _].
+  now apply Nat.eqb_eq in Hbudget.
+Qed.
+
+Theorem reuse_requires_same_coordinator : forall requested current,
+  may_reuse requested current = true ->
+  coordinator_id requested = coordinator_id current.
+Proof.
+  intros requested current H.
+  unfold may_reuse, same_domain in H.
+  repeat rewrite andb_true_iff in H.
+  destruct H as [[_ _] Hcoordinator].
+  now apply Nat.eqb_eq in Hcoordinator.
+Qed.
+
+Theorem distinct_spaces_cannot_reuse : forall requested current,
+  space_id requested <> space_id current ->
+  may_reuse requested current = false.
+Proof.
+  intros requested current Hdistinct.
+  destruct (may_reuse requested current) eqn:Hreuse; auto.
+  exfalso.
+  apply Hdistinct.
+  now apply (reuse_requires_same_space requested current).
 Qed.
 
 Definition enter_domain (stack : list nat) (requested : nat) : list nat * bool :=
@@ -228,6 +330,10 @@ Proof.
   now rewrite Hdistinct.
 Qed.
 
+(* Disabled by the merge of feature/cost-accounted-rho (DR-131): no domain
+   reserves host work, so no host-work charge or limit exists. The model of
+   that reservation follows.
+
 Definition HostUsage := DomainKey -> nat.
 Definition HostLimit := DomainKey -> nat.
 
@@ -276,15 +382,20 @@ Proof.
   apply Nat.leb_gt in Hover.
   now rewrite Hover.
 Qed.
+*)
 
 Print Assumptions reuse_requires_same_space.
 Print Assumptions reuse_iff_may_reuse.
 Print Assumptions foreign_domain_starts_fresh.
+(* Disabled by the merge of feature/cost-accounted-rho (DR-131):
 Print Assumptions same_domain_host_mismatch_rejects.
+*)
 Print Assumptions reuse_requires_same_budget.
 Print Assumptions reuse_requires_same_coordinator.
 Print Assumptions distinct_spaces_cannot_reuse.
+(* Disabled by the merge of feature/cost-accounted-rho (DR-131):
 Print Assumptions distinct_explicit_host_work_cannot_reuse.
+*)
 Print Assumptions scoped_entry_restores_caller.
 Print Assumptions ancestor_reentry_reuses_session.
 Print Assumptions foreign_split_preserves_outer_roster.

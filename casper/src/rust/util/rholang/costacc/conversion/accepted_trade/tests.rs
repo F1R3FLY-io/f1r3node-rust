@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_controls::PhloControlsV1;
 use models::rust::phlo_intent::{
     PhloConversionCompositionV2, PhloFundingIntentV1, PhloFundingIntentV2,
@@ -15,10 +14,6 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use super::*;
 use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::tests::retained_record_context;
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)))
-}
 
 fn receipt() -> Receipt<'static> {
     Receipt {
@@ -90,7 +85,7 @@ async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
         .try_into()
         .unwrap();
     assert_eq!(
-        manager.read_accepted_trade_receipt(&adopted, empty_root, [7; 32], &budget()),
+        manager.read_accepted_trade_receipt(&adopted, empty_root, [7; 32]),
         Err(AcceptedTradeStateError::IssuerUnavailable)
     );
     let encoded = receipt().encode().unwrap();
@@ -120,23 +115,17 @@ async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
         .try_into()
         .unwrap();
     assert_eq!(
-        manager.read_accepted_trade_receipt(&adopted, [99; 32], [7; 32], &budget()),
+        manager.read_accepted_trade_receipt(&adopted, [99; 32], [7; 32]),
         Err(AcceptedTradeStateError::Root)
     );
     let trade = manager
-        .read_accepted_trade_receipt(&adopted, root, [7; 32], &budget())
+        .read_accepted_trade_receipt(&adopted, root, [7; 32])
         .unwrap();
     assert_eq!(trade.root, root);
     assert_eq!(trade.output_source_identity, [8; 32]);
     assert_eq!(trade.output_custody, b"purse-b");
     assert_eq!(trade.output_asset, b"REV");
     assert_eq!(trade.unspent_output, 5);
-    let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(matches!(
-        manager.read_accepted_trade_receipt(&adopted, root, [7; 32], &exhausted),
-        Err(AcceptedTradeStateError::HostBudget(_))
-    ));
-    assert!(exhausted.is_rejected());
     runtime
         .runtime
         .reducer
@@ -162,7 +151,7 @@ async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
         .try_into()
         .unwrap();
     assert_eq!(
-        manager.read_accepted_trade_receipt(&adopted, malformed_root, [7; 32], &budget()),
+        manager.read_accepted_trade_receipt(&adopted, malformed_root, [7; 32]),
         Err(AcceptedTradeStateError::Record)
     );
 }
@@ -186,10 +175,9 @@ fn accepted_trade_transition_binds_original_asset_and_exact_old_value() {
         available: 5,
     };
     let intent = intent();
-    let prepared =
-        plan_separate_prior_receipt_transition(root, &intent, &trade, &output, 4, 3, &budget())
-            .unwrap()
-            .unwrap();
+    let prepared = plan_separate_prior_receipt_transition(root, &intent, &trade, &output, 4, 3)
+        .unwrap()
+        .unwrap();
     assert_eq!(prepared.realized_debit(), 3);
     assert_eq!(Receipt::decode(prepared.expected()).unwrap().unspent, 5);
     assert_eq!(Receipt::decode(prepared.replacement()).unwrap().unspent, 2);
@@ -206,11 +194,11 @@ fn accepted_trade_transition_binds_original_asset_and_exact_old_value() {
         Err(AcceptedTradeStateError::Stale)
     );
     assert_eq!(
-        plan_separate_prior_receipt_transition(root, &intent, &trade, &output, 4, 5, &budget()),
+        plan_separate_prior_receipt_transition(root, &intent, &trade, &output, 4, 5),
         Err(AcceptedTradeStateError::Amount)
     );
     assert_eq!(
-        plan_separate_prior_receipt_transition(root, &intent, &trade, &output, 4, 0, &budget()),
+        plan_separate_prior_receipt_transition(root, &intent, &trade, &output, 4, 0),
         Ok(None)
     );
 }

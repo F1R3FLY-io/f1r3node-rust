@@ -153,7 +153,10 @@ pub fn parse_chmod_mode(s: &str) -> Option<libc::mode_t> {
     }
     let mut bits: libc::mode_t = 0;
     // Order: user-r, user-w, user-x, group-r, group-w, group-x, other-r, other-w, other-x
-    let expected = [b'r', b'w', b'x', b'r', b'w', b'x', b'r', b'w', b'x'];
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): a byte
+    // string literal gives the same array.
+    // let expected = [b'r', b'w', b'x', b'r', b'w', b'x', b'r', b'w', b'x'];
+    let expected = *b"rwxrwxrwx";
     for (i, &b) in bytes.iter().enumerate() {
         if b == expected[i] {
             bits |= 1 << (8 - i);

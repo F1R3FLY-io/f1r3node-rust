@@ -40,6 +40,12 @@ fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
         time_stamp: 1700000000000,
+        // Added by the merge of feature/cost-accounted-rho (finding R3-31): the
+        // dev merge 1d325b996 restored these two fields, and the checkpoint
+        // merges 29b729551 and e5102e945 took them. The values are the
+        // `construct_deploy` defaults. The parameter above stays ignored.
+        phlo_price: 1,
+        phlo_limit: 90000,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
@@ -149,13 +155,19 @@ fn t5_pos_wire_multi_sig_cosigner_threshold_round_trip() {
     let primary_sig = sig_a.clone();
 
     let cosigner_proto = CompoundSigner {
-        pk: pk_b.bytes.clone().into(),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+        // value already has the field type, so `.into()` converts nothing.
+        // pk: pk_b.bytes.clone().into(),
+        pk: pk_b.bytes.clone(),
         sig: sig_b,
         sig_algorithm: Secp256k1::name(),
     };
 
     let proto = models::casper::DeployDataProto {
-        deployer: primary_pk_bytes.clone().into(),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+        // value already has the field type, so `.into()` converts nothing.
+        // deployer: primary_pk_bytes.clone().into(),
+        deployer: primary_pk_bytes.clone(),
         term: data.term.clone(),
         timestamp: data.time_stamp,
         sig: primary_sig,
@@ -167,6 +179,16 @@ fn t5_pos_wire_multi_sig_cosigner_threshold_round_trip() {
         cosigners: vec![cosigner_proto],
         cosigner_threshold: 0,
         sig_algebra: None,
+        // Added by the merge of feature/cost-accounted-rho (finding R3-31): the
+        // wire deploy gained these fields after this test was written. The
+        // proto carries the phlo values of the signed data, so the signatures
+        // still verify. The other fields keep their protobuf defaults.
+        phlo_price: data.phlo_price,
+        phlo_limit: data.phlo_limit,
+        authority_presentations: Vec::new(),
+        deploy_id: Bytes::new(),
+        authorization_v61: None,
+        funding_intent: None,
     };
 
     let cosigned = DeployData::from_proto_cosigned(proto.clone()).expect("decode");
@@ -185,7 +207,10 @@ fn t6_pos_wire_threshold_2_of_3_round_trip_through_proto() {
     let sig_b = sign(&data, &sk_b);
 
     let proto = models::casper::DeployDataProto {
-        deployer: pk_a.bytes.clone().into(),
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+        // value already has the field type, so `.into()` converts nothing.
+        // deployer: pk_a.bytes.clone().into(),
+        deployer: pk_a.bytes.clone(),
         term: data.term.clone(),
         timestamp: data.time_stamp,
         sig: sig_a,
@@ -196,18 +221,32 @@ fn t6_pos_wire_threshold_2_of_3_round_trip_through_proto() {
         expiration_timestamp: 0,
         cosigners: vec![
             CompoundSigner {
-                pk: pk_b.bytes.clone().into(),
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+                // value already has the field type, so `.into()` converts nothing.
+                // pk: pk_b.bytes.clone().into(),
+                pk: pk_b.bytes.clone(),
                 sig: sig_b,
                 sig_algorithm: Secp256k1::name(),
             },
             CompoundSigner {
-                pk: pk_c.bytes.clone().into(),
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+                // value already has the field type, so `.into()` converts nothing.
+                // pk: pk_c.bytes.clone().into(),
+                pk: pk_c.bytes.clone(),
                 sig: Bytes::new(), // placeholder for threshold
                 sig_algorithm: Secp256k1::name(),
             },
         ],
         cosigner_threshold: 2,
         sig_algebra: None,
+        // Added by the merge of feature/cost-accounted-rho (finding R3-31): the
+        // same fields as in the literal above, with the same values.
+        phlo_price: data.phlo_price,
+        phlo_limit: data.phlo_limit,
+        authority_presentations: Vec::new(),
+        deploy_id: Bytes::new(),
+        authorization_v61: None,
+        funding_intent: None,
     };
 
     let cosigned =

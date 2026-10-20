@@ -1,8 +1,14 @@
 use super::{add_edge, ResidualEdge, ABSENT};
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the seam of the tests that require a panic.
+use crate::rust::interpreter::panic_child::PanicChild;
 
 fn divergence(edges: &[ResidualEdge], vertices: usize) -> Vec<i128> {
     let mut result = vec![0_i128; vertices];
-    for pair in edges.chunks_exact(2) {
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `as_chunks` gives fixed-size chunks and drops the same remainder.
+    // for pair in edges.chunks_exact(2) {
+    for pair in edges.as_chunks::<2>().0 {
         let flow = i128::from(pair[1].capacity);
         result[pair[1].to] += flow;
         result[pair[0].to] -= flow;
@@ -39,30 +45,57 @@ fn assert_adjacency_coverage(edges: &[ResidualEdge], heads: &[usize]) {
 }
 
 #[test]
-#[should_panic(expected = "adjacency scan must cover exactly its owned edges")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "adjacency scan must cover exactly its owned edges")]
 fn adjacency_coverage_detects_a_skipped_owned_edge() {
+    let child = PanicChild::new(
+        module_path!(),
+        "adjacency_coverage_detects_a_skipped_owned_edge",
+    );
+    if !child.is_child() {
+        child.expect_panic("adjacency scan must cover exactly its owned edges");
+        return;
+    }
     let mut edges = Vec::new();
     let mut heads = vec![ABSENT; 3];
     add_edge(&mut edges, &mut heads, 0, 1, 1);
     add_edge(&mut edges, &mut heads, 0, 2, 1);
     heads[0] = edges[heads[0]].next;
+    child.subject_reached();
     assert_adjacency_coverage(&edges, &heads);
 }
 
 #[test]
-#[should_panic(expected = "adjacency scan must stay with its owner")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "adjacency scan must stay with its owner")]
 fn adjacency_coverage_detects_another_vertexs_head() {
+    let child = PanicChild::new(
+        module_path!(),
+        "adjacency_coverage_detects_another_vertexs_head",
+    );
+    if !child.is_child() {
+        child.expect_panic("adjacency scan must stay with its owner");
+        return;
+    }
     let mut edges = Vec::new();
     let mut heads = vec![ABSENT; 2];
     add_edge(&mut edges, &mut heads, 0, 1, 1);
     heads[1] = heads[0];
+    child.subject_reached();
     assert_adjacency_coverage(&edges, &heads);
 }
 
 pub(super) fn assert_unique_funding_pairs(edges: &[ResidualEdge]) {
     assert_eq!(edges.len() % 2, 0);
     let mut pairs = std::collections::BTreeSet::new();
-    for pair in edges.chunks_exact(2) {
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `as_chunks` gives fixed-size chunks and drops the same remainder.
+    // for pair in edges.chunks_exact(2) {
+    for pair in edges.as_chunks::<2>().0 {
         assert!(
             pairs.insert((pair[1].to, pair[0].to)),
             "funding layout must not duplicate an original pair"
@@ -71,12 +104,24 @@ pub(super) fn assert_unique_funding_pairs(edges: &[ResidualEdge]) {
 }
 
 #[test]
-#[should_panic(expected = "funding layout must not duplicate an original pair")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "funding layout must not duplicate an original pair")]
 fn funding_layout_detects_duplicate_assignment_pairs() {
+    let child = PanicChild::new(
+        module_path!(),
+        "funding_layout_detects_duplicate_assignment_pairs",
+    );
+    if !child.is_child() {
+        child.expect_panic("funding layout must not duplicate an original pair");
+        return;
+    }
     let mut edges = Vec::new();
     let mut heads = vec![ABSENT; 4];
     add_edge(&mut edges, &mut heads, 1, 2, 1);
     add_edge(&mut edges, &mut heads, 1, 2, 1);
+    child.subject_reached();
     assert_unique_funding_pairs(&edges);
 }
 
@@ -90,7 +135,10 @@ pub(super) fn assert_projection_identities(
     let mut outgoing = vec![0_i128; obligations];
     let mut rows = vec![0_i128; sources];
     let mut columns = vec![0_i128; obligations];
-    for pair in edges.chunks_exact(2) {
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `as_chunks` gives fixed-size chunks and drops the same remainder.
+    // for pair in edges.chunks_exact(2) {
+    for pair in edges.as_chunks::<2>().0 {
         let from = pair[1].to;
         let to = pair[0].to;
         let flow = i128::from(pair[1].capacity);
@@ -120,11 +168,23 @@ pub(super) fn assert_projection_identities(
 }
 
 #[test]
-#[should_panic(expected = "funding projection requires a permitted edge kind")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "funding projection requires a permitted edge kind")]
 fn projection_rejects_a_direct_source_to_sink_edge() {
+    let child = PanicChild::new(
+        module_path!(),
+        "projection_rejects_a_direct_source_to_sink_edge",
+    );
+    if !child.is_child() {
+        child.expect_panic("funding projection requires a permitted edge kind");
+        return;
+    }
     let mut edges = Vec::new();
     let mut heads = vec![ABSENT; 4];
     add_edge(&mut edges, &mut heads, 0, 3, 1);
+    child.subject_reached();
     assert_projection_identities(&edges, 1, 1);
 }
 
@@ -175,16 +235,55 @@ impl FundingProgress {
 }
 
 #[test]
-#[should_panic(expected = "augmentation must make positive funding progress")]
-fn funding_progress_rejects_a_zero_update() { FundingProgress::new(0, 10).record(0, 0); }
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "augmentation must make positive funding progress")]
+fn funding_progress_rejects_a_zero_update() {
+    let child = PanicChild::new(module_path!(), "funding_progress_rejects_a_zero_update");
+    if !child.is_child() {
+        child.expect_panic("augmentation must make positive funding progress");
+        return;
+    }
+    child.subject_reached();
+    FundingProgress::new(0, 10).record(0, 0);
+}
 
 #[test]
-#[should_panic(expected = "funding progress must equal the applied amount")]
-fn funding_progress_rejects_an_incorrect_counter() { FundingProgress::new(2, 10).record(5, 2); }
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "funding progress must equal the applied amount")]
+fn funding_progress_rejects_an_incorrect_counter() {
+    let child = PanicChild::new(
+        module_path!(),
+        "funding_progress_rejects_an_incorrect_counter",
+    );
+    if !child.is_child() {
+        child.expect_panic("funding progress must equal the applied amount");
+        return;
+    }
+    child.subject_reached();
+    FundingProgress::new(2, 10).record(5, 2);
+}
 
 #[test]
-#[should_panic(expected = "funding must not exceed the obligation")]
-fn funding_progress_rejects_an_overfunded_obligation() { FundingProgress::new(2, 4).record(5, 3); }
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "funding must not exceed the obligation")]
+fn funding_progress_rejects_an_overfunded_obligation() {
+    let child = PanicChild::new(
+        module_path!(),
+        "funding_progress_rejects_an_overfunded_obligation",
+    );
+    if !child.is_child() {
+        child.expect_panic("funding must not exceed the obligation");
+        return;
+    }
+    child.subject_reached();
+    FundingProgress::new(2, 4).record(5, 3);
+}
 
 pub(super) struct AugmentationSnapshot {
     capacities: Vec<u64>,
@@ -232,12 +331,21 @@ impl AugmentationSnapshot {
 }
 
 #[test]
-#[should_panic(expected = "completed augmentation must match every modeled residual capacity")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "completed augmentation must match every modeled residual capacity")]
 fn augmentation_detects_a_skipped_path_edge() {
+    let child = PanicChild::new(module_path!(), "augmentation_detects_a_skipped_path_edge");
+    if !child.is_child() {
+        child.expect_panic("completed augmentation must match every modeled residual capacity");
+        return;
+    }
     let (mut edges, _) = chain();
     let snapshot = AugmentationSnapshot::new(&edges, &[0, 0, 2], 2, 1);
     edges[2].capacity = 0;
     edges[3].capacity = 1;
+    child.subject_reached();
     snapshot.assert_completed(&edges);
 }
 
@@ -575,7 +683,10 @@ proptest::proptest! {
         for obligation in 0..obligations {
             add_edge(&mut edges, &mut heads, sources + 1 + obligation, sink, 0);
         }
-        for (index, pair) in edges.chunks_exact_mut(2).enumerate() {
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `as_chunks` gives fixed-size chunks and drops the same remainder.
+        // for (index, pair) in edges.chunks_exact_mut(2).enumerate() {
+        for (index, pair) in edges.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let (capacity, flow_seed) = seeds[index % seeds.len()];
             let flow = flow_seed.min(capacity);
             pair[0].capacity = capacity - flow;
@@ -740,14 +851,32 @@ impl SearchStepSnapshot {
 }
 
 #[test]
-#[should_panic(expected = "one completed scan must advance exactly one queue position")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "one completed scan must advance exactly one queue position")]
 fn queue_step_detects_a_skipped_cursor() {
+    let child = PanicChild::new(module_path!(), "queue_step_detects_a_skipped_cursor");
+    if !child.is_child() {
+        child.expect_panic("one completed scan must advance exactly one queue position");
+        return;
+    }
+    child.subject_reached();
     SearchStepSnapshot::new(&[0, 1], 0).assert_completed(&[0, 1], 2);
 }
 
 #[test]
-#[should_panic(expected = "discovery must preserve existing queue positions")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "discovery must preserve existing queue positions")]
 fn queue_step_detects_a_rewritten_prefix() {
+    let child = PanicChild::new(module_path!(), "queue_step_detects_a_rewritten_prefix");
+    if !child.is_child() {
+        child.expect_panic("discovery must preserve existing queue positions");
+        return;
+    }
+    child.subject_reached();
     SearchStepSnapshot::new(&[0, 1], 0).assert_completed(&[1, 0], 1);
 }
 
@@ -844,8 +973,19 @@ fn chain() -> (Vec<ResidualEdge>, Vec<usize>) {
 }
 
 #[test]
-#[should_panic(expected = "known vertices must have shortest discovered distances")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "known vertices must have shortest discovered distances")]
 fn early_success_detects_a_non_shortest_parent_path() {
+    let child = PanicChild::new(
+        module_path!(),
+        "early_success_detects_a_non_shortest_parent_path",
+    );
+    if !child.is_child() {
+        child.expect_panic("known vertices must have shortest discovered distances");
+        return;
+    }
     let mut edges = Vec::new();
     let mut heads = vec![ABSENT; 5];
     add_edge(&mut edges, &mut heads, 0, 1, 1);
@@ -853,29 +993,66 @@ fn early_success_detects_a_non_shortest_parent_path() {
     add_edge(&mut edges, &mut heads, 1, 3, 1);
     add_edge(&mut edges, &mut heads, 3, 4, 1);
     add_edge(&mut edges, &mut heads, 2, 4, 1);
+    child.subject_reached();
     assert_search_state(&edges, &heads, &[0, 0, 2, 4, 6], &[0, 1, 2, 3, 4], 2);
 }
 
 #[test]
-#[should_panic(expected = "queue vertices must be unique")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "queue vertices must be unique")]
 fn queue_invariant_detects_duplicate_discovery() {
+    let child = PanicChild::new(
+        module_path!(),
+        "queue_invariant_detects_duplicate_discovery",
+    );
+    if !child.is_child() {
+        child.expect_panic("queue vertices must be unique");
+        return;
+    }
     let (edges, heads) = chain();
+    child.subject_reached();
     assert_search_state(&edges, &heads, &[0, ABSENT, ABSENT], &[0, 0], 0);
 }
 
 #[test]
-#[should_panic(expected = "processed vertices must discover every residual neighbor")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "processed vertices must discover every residual neighbor")]
 fn queue_invariant_detects_incomplete_neighbor_scan() {
+    let child = PanicChild::new(
+        module_path!(),
+        "queue_invariant_detects_incomplete_neighbor_scan",
+    );
+    if !child.is_child() {
+        child.expect_panic("processed vertices must discover every residual neighbor");
+        return;
+    }
     let (edges, heads) = chain();
+    child.subject_reached();
     assert_search_state(&edges, &heads, &[0, ABSENT, ABSENT], &[0], 1);
 }
 
 #[test]
-#[should_panic(expected = "native residual edges must match the funding graph model")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "native residual edges must match the funding graph model")]
 fn graph_relation_detects_an_edge_that_bypasses_a_payer() {
+    let child = PanicChild::new(
+        module_path!(),
+        "graph_relation_detects_an_edge_that_bypasses_a_payer",
+    );
+    if !child.is_child() {
+        child.expect_panic("native residual edges must match the funding graph model");
+        return;
+    }
     let mut edges = Vec::new();
     let mut heads = vec![ABSENT; 4];
     add_edge(&mut edges, &mut heads, 0, 2, 1);
     add_edge(&mut edges, &mut heads, 2, 3, 1);
+    child.subject_reached();
     assert_graph_relation(&[1], &[1], &[vec![true]], &[vec![0]], &edges);
 }

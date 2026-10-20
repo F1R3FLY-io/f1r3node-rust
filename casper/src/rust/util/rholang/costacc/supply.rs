@@ -1,22 +1,17 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::{CostSignature, CostStack, ListParWithRandom, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::{
-    canonical_cost_signature, canonical_cost_signature_metered, cost_signature_to_sig,
-    cost_signature_to_sig_metered, funding_sig_channel_metered, plan_stack_frontier_with_host_work,
-    stack_branches_metered, verify_physical_settlement_with_host_work, AuthorityEvent,
-    AuthorityPhysicalEventDraw, AuthorityPhysicalInventory, StackFrontierPublication,
+    canonical_cost_signature, cost_signature_to_sig, funding_sig_channel, plan_stack_frontier,
+    stack_branches, verify_physical_settlement, AuthorityEvent, AuthorityPhysicalEventDraw,
+    AuthorityPhysicalInventory, StackFrontierPublication,
 };
 use rholang::rust::interpreter::accounting::{Sig, SignatureChannel};
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source::produce_for_epoch;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::internal::Datum;
-use shared::rust::clone_backing::{self, BackingError};
+use rspace_plus_plus::rspace::trace::event::Produce;
 
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -102,50 +97,20 @@ impl PlannedPurseStackSettlement<'_> {
 pub fn plan_verified_purse_stack_pops<'a>(
     verified: &VerifiedPurseStackPops<'a>,
     epoch: EventCodecEpoch,
-    budget: &HostWorkBudget,
 ) -> Result<PlannedPurseStackSettlement<'a>, CasperError> {
-    let backing = |operations: usize, scanned: usize, bytes: usize| {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, bytes),
-        ] {
-            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-            budget
-                .reserve(dimension, HostWorkUnits::new(amount))
-                .map_err(|_| BackingError::Rejected)?;
-        }
-        Ok(())
-    };
-    let source_meter = |operations: usize, scanned: usize, bytes: usize| {
-        backing(operations, scanned, bytes).map_err(|_| RSpaceError::HostWorkRejected)
-    };
     let mut grouped = BTreeMap::<[u8; 32], BTreeMap<[u8; 32], u64>>::new();
     for (branch_id, pop) in &verified.pops {
         let root_id = verified.root_for_branch(branch_id).ok_or_else(|| {
             CasperError::RuntimeError("verified stack branch has no captured root".to_string())
         })?;
-        backing(1, 0, std::mem::size_of::<([u8; 32], u64)>() * 2)
-            .map_err(|_| CasperError::RuntimeError("stack plan host work rejected".to_string()))?;
         grouped.entry(root_id).or_default().insert(*branch_id, *pop);
     }
     let mut originals = Vec::new();
     let mut publications = Vec::new();
-    backing(
-        grouped.len(),
-        0,
-        grouped
-            .len()
-            .checked_mul(std::mem::size_of::<&PurseStack>())
-            .ok_or_else(|| CasperError::RuntimeError("stack plan size overflow".to_string()))?,
-    )
-    .map_err(|_| CasperError::RuntimeError("stack plan host work rejected".to_string()))?;
     originals
         .try_reserve_exact(grouped.len())
         .map_err(|_| CasperError::RuntimeError("stack plan allocation failed".to_string()))?;
     for (root_id, pops) in grouped {
-        backing(verified.stacks.len(), 0, 0)
-            .map_err(|_| CasperError::RuntimeError("stack plan host work rejected".to_string()))?;
         let mut matches = verified
             .stacks
             .iter()
@@ -180,25 +145,6 @@ pub fn plan_verified_purse_stack_pops<'a>(
             if remaining.is_empty() {
                 Vec::new()
             } else {
-                clone_backing::reserve_slice_copy_and_cleanup(remaining, &backing).map_err(
-                    |_| CasperError::RuntimeError("stack plan host work rejected".to_string()),
-                )?;
-                backing(
-                    1,
-                    0,
-                    remaining
-                        .len()
-                        .checked_mul(std::mem::size_of::<usize>())
-                        .and_then(|bytes| {
-                            bytes.checked_add(std::mem::size_of::<StackFrontierPublication>())
-                        })
-                        .ok_or_else(|| {
-                            CasperError::RuntimeError("stack index overflow".to_string())
-                        })?,
-                )
-                .map_err(|_| {
-                    CasperError::RuntimeError("stack plan host work rejected".to_string())
-                })?;
                 vec![StackFrontierPublication {
                     original_root_id: root_id,
                     original_branch_id: root_id,
@@ -211,37 +157,30 @@ pub fn plan_verified_purse_stack_pops<'a>(
                 }]
             }
         } else {
-            plan_stack_frontier_with_host_work(root_id, &original.stack, &pops, Some(budget))
+            plan_stack_frontier(root_id, &original.stack, &pops)
                 .map_err(|error| CasperError::RuntimeError(error.to_string()))?
         };
         for publication in frontier {
             let head = publication.head().ok_or_else(|| {
                 CasperError::RuntimeError("frontier publication has no head".to_string())
             })?;
-            let signature = cost_signature_to_sig_metered(head, &backing)
+            let signature = cost_signature_to_sig(head)
                 .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-            let channel = funding_sig_channel_metered(&signature, &backing)
+            let channel = funding_sig_channel(&signature)
                 .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-            backing(1, original.random_state.len(), original.random_state.len()).map_err(|_| {
-                CasperError::RuntimeError("stack plan host work rejected".to_string())
-            })?;
             let datum = ListParWithRandom {
                 pars: Vec::new(),
                 random_state: original.random_state.clone(),
                 cost_authority: None,
                 cost_stack: Some(publication.residual),
             };
-            let source =
-                produce_for_epoch(epoch, &channel, &datum, original.persistent, &source_meter)
-                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            let source = Produce::create_for_epoch(epoch, &channel, &datum, original.persistent)
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
             let source_hash = source
                 .hash
                 .bytes()
                 .try_into()
                 .map_err(|_| CasperError::RuntimeError("stack source width".to_string()))?;
-            backing(1, 0, std::mem::size_of::<PlannedPurseStackPublication>()).map_err(|_| {
-                CasperError::RuntimeError("stack plan host work rejected".to_string())
-            })?;
             publications.try_reserve(1).map_err(|_| {
                 CasperError::RuntimeError("stack plan allocation failed".to_string())
             })?;
@@ -270,21 +209,7 @@ pub fn plan_verified_purse_stack_pops<'a>(
 pub async fn apply_verified_stack_plan(
     runtime_ops: &mut RuntimeOps,
     plan: PlannedPurseStackSettlement<'_>,
-    budget: &HostWorkBudget,
 ) -> Result<(), CasperError> {
-    let backing = |operations: usize, scanned: usize, bytes: usize| {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, bytes),
-        ] {
-            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-            budget
-                .reserve(dimension, HostWorkUnits::new(amount))
-                .map_err(|_| BackingError::Rejected)?;
-        }
-        Ok(())
-    };
     let current_root: [u8; 32] = runtime_ops
         .runtime
         .get_root()
@@ -302,29 +227,6 @@ pub async fn apply_verified_stack_plan(
     }
     let mut removals = BTreeMap::<Vec<u8>, (Par, Vec<&PurseStack>)>::new();
     for original in &plan.originals {
-        clone_backing::inspect(&original.channel, &backing).map_err(|_| {
-            CasperError::RuntimeError("stack removal host work rejected".to_string())
-        })?;
-        clone_backing::reserve_nested_encode(
-            &original.channel,
-            original.channel.encoded_len(),
-            &backing,
-        )
-        .and_then(|_| clone_backing::reserve_copy_and_cleanup(&original.channel, &backing))
-        .map_err(|_| CasperError::RuntimeError("stack removal host work rejected".to_string()))?;
-        backing(
-            1,
-            0,
-            original
-                .channel
-                .encoded_len()
-                .checked_add(std::mem::size_of::<(Par, Vec<&PurseStack>)>())
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<&PurseStack>()))
-                .ok_or_else(|| {
-                    CasperError::RuntimeError("stack removal size overflow".to_string())
-                })?,
-        )
-        .map_err(|_| CasperError::RuntimeError("stack removal host work rejected".to_string()))?;
         removals
             .entry(original.channel.encode_to_vec())
             .or_insert_with(|| (original.channel.clone(), Vec::new()))
@@ -332,19 +234,11 @@ pub async fn apply_verified_stack_plan(
             .push(*original);
     }
     for (_, channel_removals) in removals.values_mut() {
-        let sort_work = channel_removals
-            .len()
-            .checked_mul(1 + channel_removals.len().checked_ilog2().unwrap_or(0) as usize)
-            .ok_or_else(|| CasperError::RuntimeError("stack removal sort overflow".to_string()))?;
-        backing(sort_work, 0, 0).map_err(|_| {
-            CasperError::RuntimeError("stack removal host work rejected".to_string())
-        })?;
         channel_removals.sort_by(|left, right| right.datum_index.cmp(&left.datum_index));
     }
     for (channel, channel_removals) in removals.values() {
-        let live =
-            super::prepaid_receipts::read_live_data_metered(runtime_ops, channel, budget).await?;
-        check_stack_captures(&live, channel_removals, Some(budget))?;
+        let live = super::prepaid_receipts::read_live_data(runtime_ops, channel).await?;
+        check_stack_captures(&live, channel_removals)?;
     }
     let checkpoint = runtime_ops.runtime.create_soft_checkpoint().await;
     let mutation = async {
@@ -400,27 +294,10 @@ pub(crate) fn verify_purse_stack_pops<'a>(
     signatures: &BTreeMap<[u8; 32], CostSignature>,
     inventory: &AuthorityPhysicalInventory<[u8; 32]>,
     draws: &[AuthorityPhysicalEventDraw<[u8; 32]>],
-    budget: &HostWorkBudget,
 ) -> Result<VerifiedPurseStackPops<'a>, CasperError> {
-    let backing = |operations: usize, scanned: usize, bytes: usize| {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, bytes),
-        ] {
-            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-            budget
-                .reserve(dimension, HostWorkUnits::new(amount))
-                .map_err(|_| BackingError::Rejected)?;
-        }
-        Ok(())
-    };
     let mut branch_roots = BTreeMap::new();
     let mut root_ids = std::collections::BTreeSet::new();
     for stack in stacks {
-        backing(1, 0, 4096).map_err(|_| {
-            CasperError::RuntimeError("stack witness host work rejected".to_string())
-        })?;
         if !root_ids.insert(stack.instance_id) {
             return Err(CasperError::RuntimeError(
                 "rooted authority capture repeats a stack identity".to_string(),
@@ -443,12 +320,9 @@ pub(crate) fn verify_purse_stack_pops<'a>(
                 "physical inventory differs from the rooted stack tree".to_string(),
             ));
         }
-        let branches = stack_branches_metered(stack.instance_id, &stack.stack, &backing)
+        let branches = stack_branches(stack.instance_id, &stack.stack)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         for branch in branches {
-            backing(1, 0, 4096).map_err(|_| {
-                CasperError::RuntimeError("stack witness host work rejected".to_string())
-            })?;
             if branch_roots
                 .insert(branch.stack_id, stack.instance_id)
                 .is_some()
@@ -459,14 +333,8 @@ pub(crate) fn verify_purse_stack_pops<'a>(
             }
         }
     }
-    let settlement = verify_physical_settlement_with_host_work(
-        events,
-        signatures,
-        inventory,
-        draws,
-        Some(budget),
-    )
-    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+    let settlement = verify_physical_settlement(events, signatures, inventory, draws)
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
     if settlement
         .stack_pops
         .keys()
@@ -487,36 +355,7 @@ pub(crate) fn verify_purse_stack_pops<'a>(
 /// Canonicalize cell values while preserving the authored stack forest.
 /// Branch position determines child authority identity, so a sorter that
 /// reorders siblings or a reconstruction from flat cells is not equivalent.
-fn canonical_cost_stack(
-    stack: &CostStack,
-    budget: Option<&HostWorkBudget>,
-) -> Result<CostStack, CasperError> {
-    // The historical linear path keeps its exact charge and clone behavior.
-    // Branches additionally prepay the complete copy/cleanup and each DFS
-    // worklist growth before the corresponding allocation.
-    let branch_budget = budget.filter(|_| !stack.parallel_tail.is_empty());
-    let backing = |operations: usize, scanned: usize, bytes: usize| {
-        let Some(budget) = branch_budget else {
-            return Ok(());
-        };
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, bytes),
-        ] {
-            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-            budget
-                .reserve(dimension, HostWorkUnits::new(amount))
-                .map_err(|_| BackingError::Rejected)?;
-        }
-        Ok(())
-    };
-    if branch_budget.is_some() {
-        clone_backing::reserve_copy_and_cleanup(stack, &backing)
-            .map_err(|_| CasperError::RuntimeError("cost stack host work rejected".to_string()))?;
-        backing(1, 0, std::mem::size_of::<&mut CostStack>())
-            .map_err(|_| CasperError::RuntimeError("cost stack host work rejected".to_string()))?;
-    }
+fn canonical_cost_stack(stack: &CostStack) -> Result<CostStack, CasperError> {
     let mut canonical = stack.clone();
     let mut pending = Vec::new();
     pending.try_reserve(1).map_err(|_| {
@@ -525,25 +364,8 @@ fn canonical_cost_stack(
     pending.push(&mut canonical);
     while let Some(node) = pending.pop() {
         for cell in &mut node.cells {
-            *cell = if branch_budget.is_some() {
-                canonical_cost_signature_metered(cell, &backing)
-            } else {
-                canonical_cost_signature(cell)
-            }
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
-        if branch_budget.is_some() {
-            backing(
-                node.parallel_tail.len(),
-                0,
-                node.parallel_tail
-                    .len()
-                    .checked_mul(std::mem::size_of::<&mut CostStack>())
-                    .ok_or_else(|| {
-                        CasperError::RuntimeError("cost stack worklist overflow".to_string())
-                    })?,
-            )
-            .map_err(|_| CasperError::RuntimeError("cost stack host work rejected".to_string()))?;
+            *cell = canonical_cost_signature(cell)
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         }
         pending.try_reserve(node.parallel_tail.len()).map_err(|_| {
             CasperError::RuntimeError("cost stack traversal allocation failed".to_string())
@@ -556,22 +378,6 @@ fn canonical_cost_stack(
 pub fn decode_purse_inventory(
     data: &[Datum<ListParWithRandom>],
     expected_head: &CostSignature,
-) -> Result<PurseInventory, CasperError> {
-    decode_purse_inventory_with_budget(data, expected_head, None)
-}
-
-pub fn decode_purse_inventory_metered(
-    data: &[Datum<ListParWithRandom>],
-    expected_head: &CostSignature,
-    budget: &HostWorkBudget,
-) -> Result<PurseInventory, CasperError> {
-    decode_purse_inventory_with_budget(data, expected_head, Some(budget))
-}
-
-fn decode_purse_inventory_with_budget(
-    data: &[Datum<ListParWithRandom>],
-    expected_head: &CostSignature,
-    budget: Option<&HostWorkBudget>,
 ) -> Result<PurseInventory, CasperError> {
     let expected_head = canonical_cost_signature(expected_head)
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
@@ -606,7 +412,7 @@ fn decode_purse_inventory_with_budget(
                         .to_string(),
                 ));
             }
-            let canonical = canonical_cost_stack(stack, budget)?;
+            let canonical = canonical_cost_stack(stack)?;
             stored.push((
                 <[u8; 32]>::try_from(datum.source.hash.bytes())
                     .expect("RSpace produce identity length"),
@@ -653,7 +459,6 @@ fn decode_purse_inventory_with_budget(
 fn check_stack_captures(
     live: &[Datum<ListParWithRandom>],
     selected: &[&PurseStack],
-    budget: Option<&HostWorkBudget>,
 ) -> Result<(), CasperError> {
     let Some(first) = selected.first() else {
         return Ok(());
@@ -663,11 +468,7 @@ fn check_stack_captures(
         .cells
         .first()
         .ok_or_else(|| CasperError::RuntimeError("captured stack is empty".to_string()))?;
-    let inventory = if let Some(budget) = budget {
-        decode_purse_inventory_metered(live, head, budget)?
-    } else {
-        decode_purse_inventory(live, head)?
-    };
+    let inventory = decode_purse_inventory(live, head)?;
     let by_index = inventory
         .stacks
         .iter()
@@ -687,24 +488,6 @@ pub async fn apply_stack_pops(
     runtime_ops: &mut RuntimeOps,
     stacks: &[PurseStack],
     stack_pops: &std::collections::BTreeMap<[u8; 32], u64>,
-) -> Result<(), CasperError> {
-    apply_stack_pops_with_budget(runtime_ops, stacks, stack_pops, None).await
-}
-
-pub async fn apply_stack_pops_metered(
-    runtime_ops: &mut RuntimeOps,
-    stacks: &[PurseStack],
-    stack_pops: &std::collections::BTreeMap<[u8; 32], u64>,
-    budget: &HostWorkBudget,
-) -> Result<(), CasperError> {
-    apply_stack_pops_with_budget(runtime_ops, stacks, stack_pops, Some(budget)).await
-}
-
-async fn apply_stack_pops_with_budget(
-    runtime_ops: &mut RuntimeOps,
-    stacks: &[PurseStack],
-    stack_pops: &std::collections::BTreeMap<[u8; 32], u64>,
-    budget: Option<&HostWorkBudget>,
 ) -> Result<(), CasperError> {
     let by_id = stacks
         .iter()
@@ -775,18 +558,14 @@ async fn apply_stack_pops_with_budget(
         channel_removals.sort_by(|left, right| right.datum_index.cmp(&left.datum_index));
     }
     for (channel, channel_removals) in removals.values() {
-        let live = if let Some(budget) = budget {
-            super::prepaid_receipts::read_live_data_metered(runtime_ops, channel, budget).await?
-        } else {
-            runtime_ops
-                .runtime
-                .reducer
-                .space
-                .get_data(channel)
-                .await
-                .map_err(|error| CasperError::InterpreterError(error.into()))?
-        };
-        check_stack_captures(&live, channel_removals, budget)?;
+        let data = runtime_ops
+            .runtime
+            .reducer
+            .space
+            .get_data(channel)
+            .await
+            .map_err(|error| CasperError::InterpreterError(error.into()))?;
+        check_stack_captures(&data, channel_removals)?;
     }
     let checkpoint = runtime_ops.runtime.create_soft_checkpoint().await;
     let mutation = async {
@@ -837,7 +616,6 @@ async fn apply_stack_pops_with_budget(
 mod tests {
     use models::rhoapi::cost_signature::Value;
     use models::rhoapi::CostAuthority;
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use rholang::rust::interpreter::accounting::authority::{
         authority_demand, cost_region, stack_branch_id, stack_branches, AuthorityPhysicalEventDraw,
         ResourceMultiset,
@@ -869,7 +647,11 @@ mod tests {
                 },
             ],
         };
-        let canonical = canonical_cost_stack(&tree, None).unwrap();
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-35):
+        // user decision 1 removed the host-work budget parameter of
+        // `canonical_cost_stack`. The old call was:
+        // let canonical = canonical_cost_stack(&tree, None).unwrap();
+        let canonical = canonical_cost_stack(&tree).expect("a valid cost tree canonicalizes");
         let identities = |stack: &CostStack| {
             stack_branches([7; 32], stack)
                 .unwrap()
@@ -890,7 +672,10 @@ mod tests {
         invalid.parallel_tail[0].parallel_tail[0].cells[0] = CostSignature {
             value: Some(Value::Unit(false)),
         };
-        assert!(canonical_cost_stack(&invalid, None).is_err());
+        // Changed by the merge of feature/cost-accounted-rho (finding R3-35): no
+        // budget argument. The old line was:
+        // assert!(canonical_cost_stack(&invalid, None).is_err());
+        assert!(canonical_cost_stack(&invalid).is_err());
     }
 
     #[test]
@@ -954,7 +739,6 @@ mod tests {
                 stack_ids: vec![left_id],
             },
         ];
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)));
         let verified = verify_purse_stack_pops(
             [39; 32],
             &captured,
@@ -962,13 +746,11 @@ mod tests {
             &BTreeMap::new(),
             &inventory,
             &draws,
-            &budget,
         )
         .unwrap();
         assert_eq!(verified.root_for_branch(&left_id), Some(root_id));
         assert_eq!(verified.pops().len(), 2);
-        let plan =
-            plan_verified_purse_stack_pops(&verified, EventCodecEpoch::CostV2, &budget).unwrap();
+        let plan = plan_verified_purse_stack_pops(&verified, EventCodecEpoch::CostV2).unwrap();
         assert_eq!(plan.originals().len(), 1);
         assert_eq!(plan.publications().len(), 1);
         assert_eq!(plan.publications()[0].original_branch_id, right_id);
@@ -997,7 +779,6 @@ mod tests {
             &BTreeMap::new(),
             &inventory,
             &simultaneous,
-            &budget,
         )
         .is_err());
     }

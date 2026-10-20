@@ -1392,6 +1392,20 @@ would have fired is the proposed **clause 9 (citation freshness)** of
 **That is a second, independent witness for clause 9, and it is the first witness that clause 2 alone is
 not sufficient.**
 
+#### Changed by the merge of `feature/cost-accounted-rho` (finding R1-06)
+
+The ruling above makes `+` and `-` consistent with `*` and unary `-`. DR-128 of that branch changed the
+overflow of `*` and of unary `-` from `ReduceError` to the user failure `ArithmeticOverflow`. So the merge
+gives the overflow of `+` and `-` the same variant:
+
+- The text does not change. Both variants show as `Reduce error: <message>`, and the message still names
+  the operation and both operands.
+- The `Debug` form of the error now names `ArithmeticOverflow`. It is still a pure function of the term.
+- The classifier `classify_errors` now gives the class User, where `ReduceError` gave Unclassified.
+- The pins are the sites `Int +` and `Int -` of `an_arithmetic_overflow_is_a_user_failure_at_every_site`
+  (`rholang/src/rust/interpreter/reduce_economic_failure_tests.rs`) and the three overflow tests of
+  `rholang/tests/reduce_spec.rs`.
+
 ---
 
 ### CBR-030

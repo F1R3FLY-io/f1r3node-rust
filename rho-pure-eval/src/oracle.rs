@@ -46,7 +46,6 @@
 //! question, and keeps `EMatches` free of any binder semantics.
 
 use models::rhoapi::Par;
-use shared::rust::clone_backing::{BackingError, BackingMeter};
 
 /// Decides whether a Rholang term matches a Rholang pattern.
 ///
@@ -63,18 +62,6 @@ pub trait SpatialMatch: Sync {
     /// never evaluated — evaluating it would try to resolve those free
     /// variables and fail).
     fn matches(&self, target: &Par, pattern: &Par) -> bool;
-
-    /// Metered spatial matching for an offered-funded evaluation. The default
-    /// refuses the operation: silently calling `matches` here would let a
-    /// caller bypass the signed deploy's work budget.
-    fn matches_metered(
-        &self,
-        _target: &Par,
-        _pattern: &Par,
-        _meter: &dyn BackingMeter,
-    ) -> Result<bool, BackingError> {
-        Err(BackingError::Rejected)
-    }
 
     /// Whether this oracle can answer [`matches`](Self::matches) at all.
     ///

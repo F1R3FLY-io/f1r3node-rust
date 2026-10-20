@@ -2,6 +2,13 @@ use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::{Arc, Mutex};
 use loom::thread;
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the negative controls below.
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
+use panic_child::PanicChild;
+
 #[path = "../../../../rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/state.rs"]
 mod production;
 
@@ -284,7 +291,19 @@ fn export_boundary_keeps_evidence_stable_until_persistence_and_closure() {
 }
 
 #[test]
-#[should_panic(expected = "export must follow persistence")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "export must follow persistence")]
 fn exporting_before_persistence_violates_the_publication_contract() {
+    let child = PanicChild::new(
+        module_path!(),
+        "exporting_before_persistence_violates_the_publication_contract",
+    );
+    if !child.is_child() {
+        child.expect_panic("export must follow persistence");
+        return;
+    }
+    child.subject_reached();
     check_export_boundary(false);
 }

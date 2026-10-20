@@ -1081,6 +1081,112 @@ Each phase ends in green tests and is mergeable independently.
   enumerate alike; that, plus applying the guard on the replay consume
   path, is what makes replay reproduce play's SELECTION and not merely its
   COMM event. 15 tests in `rspace++/tests/guarded_matching_tests.rs`.
+- **Phase 11 — the complete search stays after the cost-accounted-rho
+  merge** ✅ **Done** (consensus-affecting). This entry is the decision
+  record of two user decisions of 2026-10-16: decisions 4 and 6 of the
+  plan for the merge of `75de2dc39`.
+
+  *Context.* The merge of `feature/cost-accounted-rho` at `75de2dc39`
+  brings DR-129 and DR-131 of
+  [the cost-accounting decision records](../casper/theory/cost-accounting-decision-records.md).
+  DR-129 restores the random play order of `dev` (`shuffle_with_index`).
+  It also adds three rules:
+    - E1 orders each channel that a join names more than once.
+    - E3-a lets the Stored check of replay skip a continuation whose commit
+      can veto.
+    - R3 restores the pools of a failed selection in reverse order.
+
+  The first resolution of this merge replaced the complete search with the
+  greedy pick of upstream: one spatial pick for each bind, and then one
+  guard check. Defect D1 came back with it. `dev` still has the defect. Its
+  `extract_first_match` checks the guard once for each waiting continuation
+  (`origin/dev` at `b1d866e45`, `rspace++/src/rspace/space_matcher.rs:123-175`).
+
+  *Decision 4.* Play and native replay both use the complete search. As in
+  Phase 10, the search also covers a join with no guard. The random play
+  order of DR-129, E1 and R3 stay.
+
+  *Decision 6.* The Stored check of native replay does not skip a
+  continuation whose commit can veto. `Match::commit_may_veto` stays as a
+  trait hook, so that the trait matches upstream. No production code calls
+  it.
+
+  *Changes.*
+    1. `SpaceMatcher::extract_prepared_data_candidates`
+       (`rspace++/src/rspace/space_matcher.rs`) runs E1 with a rollback
+       list, and then it searches from the first bind. If no selection is
+       admissible, the search restores the ordered pools. The rollback then
+       restores the arrival order in reverse (R3).
+    2. The native replay selector `match_data`
+       (`rspace++/src/rspace/replay_rspace/native_candidate/selection.rs`)
+       is a depth-first search. It tries the incoming datum first, and then
+       the canonical order. It uses each linear datum once. It checks the
+       guard on each complete assignment, and it takes the first admissible
+       one.
+    3. The four E3-a skips in `rspace++/src/rspace/replay_rspace/native_candidate.rs`
+       and `native_candidate/selection.rs` are commented out, with their
+       reason. The produce filter of directive replay compares only the
+       recorded identity again.
+    4. The Rholang matcher's `check_commit_by_reference`
+       (`rholang/src/rust/interpreter/matcher/match.rs`) decides each guard
+       through `guard_disposition_in_env`, as `check_commit` does.
+
+  *Why play and replay agree.* Each side takes the first admissible
+  assignment in the lexicographic order of its pools. For a channel that a
+  join names more than once, E1 orders play's pool by the incoming datum
+  first, and then by source hash. Native replay orders the recorded data by
+  the incoming datum first, and then by source hash, digest and index. Equal
+  source hashes imply equal data (DR-129), so the two orders give one
+  sequence of values. For a channel that a join names once, replay keeps
+  only the data equal to the recorded datum. So replay's pools are play's
+  pools restricted to the recorded data, in the same relative order.
+  Suppose that an admissible assignment of the restricted pools comes
+  before play's pick. Then it also comes before the pick in play's pools,
+  and play would have taken it. So replay's first admissible assignment is
+  play's pick.
+
+  *Why the Stored check needs no skip.* Play stores an operation only when
+  its complete search finds no admissible assignment. Whether such an
+  assignment exists does not depend on the order of the search. Native
+  replay runs the complete search over the same data. So it accepts each
+  honest Stored claim, and it rejects a Stored claim only when an admissible
+  assignment existed.
+
+  *Relation to DR-130.* DR-130 calls a branch change that corrects a defect
+  that `dev` still has a carried fix. The complete search is a carried fix
+  of defect D1 in that sense.
+
+  *Accepted risk.* The complete search has no step cap. A guarded join of
+  arity $`k`$ over pools of $`n`$ resting data can take up to $`n^k`$ guard
+  checks, in play and in every replay. DR-131 meters no search work, and
+  the branch had the same exposure before this merge. A cap on one side
+  only is not a fix, because a cap on play's full pool would make the Stored
+  check reject honest blocks. An order-independent check of the candidate
+  count could bound the search on both sides. That check is a task for
+  milestone M2.
+
+  *Tests.* The logs are in `target/verification/` of the worktree that ran
+  them. Each row names its negative control.
+
+  | Test | File | Negative control |
+  |---|---|---|
+  | The five D1 witnesses of Phase 10: `a_guard_selects_the_one_admissible_datum_out_of_many`, `the_produce_path_backtracks_across_a_join`, `a_guard_free_join_no_longer_strands_on_a_spatial_dead_end`, `play_and_replay_agree_on_a_guarded_selection` and `play_and_replay_agree_when_the_guard_permutes_a_repeated_channel` | `rspace++/tests/guarded_matching_tests.rs` | Under the greedy pick, 9 of the 22 tests of the file fail, these five among them (`merge2-s1-before-guarded-20261019.log`). After the restore and the DR-129 adaptations, 22 of 22 pass (`merge2-s1-adapted-guarded-20261019.log`). The guard tests pass in 64 of 64 stress iterations (`merge2-s1-stress64-guarded-r2-20261019.log`). |
+  | `native_consume_backtracks_past_a_wildcard_that_takes_the_needed_datum`, `native_produce_backtracks_past_a_wildcard_that_takes_the_incoming_datum` and `native_consume_backtracks_when_the_guard_rejects_the_first_assignment` | `rspace++/src/rspace/replay_rspace/native_candidate/selection/tests.rs` | Each test checks that a greedy oracle finds no selection. Play, native replay and the replay of the recorded identity agree on the data and on the COMM bytes. |
+  | `guarded_repeated_channel_selection_is_the_first_admissible_assignment` (property test) | the same file | An independent oracle enumerates the assignments in odometer order. |
+  | `repeated_channel_selection_matches_frozen_legacy_selection`, `produce_selection_matches_frozen_legacy_produce` and `consume_matches_legacy_for_repeated_channels_and_partial_misses` (property tests with a data-dependent guard) | the same file | Frozen depth-first oracles. The doc comments of the first two tests give their measured case counts. |
+  | `a_vetoed_join_restores_the_order_that_e1_changed` | `rspace++/src/rspace/rspace/tests/random_candidate_order_tests.rs` | A mutation that restores the rollback in arrival order makes the test fail (`merge2-e1-rollback-mutation-20261019.log`). |
+  | `store_directive_cannot_suppress_a_guard_backtrack_match` and `store_directive_cannot_suppress_a_guard_backtrack_match_of_a_produce` | `rspace++/tests/comm_observer_tests/native_directive.rs` | A mutation that restores the E3-a skips makes both tests fail (`merge2-d6-directive-mutation-20261019.log`). |
+  | `stored_ticket_cannot_suppress_a_guard_backtrack_match` | `rspace++/src/rspace/replay_rspace/native_session/tests.rs` | A mutation that restores the E3-a skip makes the test fail (`merge2-d6-session-mutation-20261019.log`). |
+  | `play_fires_on_the_admissible_datum_and_replay_follows_the_recorded_comm` (64 runs) | `rspace++/tests/comm_observer_tests/native_directive.rs` | The test requires at least one run in which the guard rejects an assignment before the pick. |
+  | `t1_every_selector_choice_is_an_enumerated_selection` (64 consumes) | `rspace++/tests/enabled_rendezvous_spec.rs` | It requires that the set of choices equals the enumerated set. |
+  | `guard_rejection_backtracks_to_the_next_resting_datum` and `the_guarded_selection_does_not_depend_on_arrival_order` | `rholang/tests/reduce_spec.rs` | A mutation that restores the greedy pick makes each test fail in 31 of 64 stress iterations (`merge2-d1-rholang-greedy-mutation-20261019.log`). The random play order puts the rejected datum first in about half of the runs. After the restore, both tests pass in 64 of 64 iterations (`merge2-r1-22-after-stress64-20261019.log`). |
+  | `persistent_peek_is_canonical_and_guarded_match_ends_in_either_outcome` (finding R1-22) | `rholang/tests/concurrent_rspace_architecture_repro_spec.rs` | The test requires the one outcome `out=["2"] x=["1"]` over 64 plays of each term. Under the greedy mutation, the stranded outcome comes back, and the test fails in 64 of 64 iterations. |
+  | `a_stored_guarded_consume_replays_under_either_guard` (F5) and `random_play_agrees_with_native_replay` (F6) | `rholang/src/rust/interpreter/accounting/native_runtime/tests/random_candidate_order.rs` | Under the greedy mutation, both tests fail in 64 of 64 iterations. Play strands a guarded consume, and the Stored check of native replay finds the admissible datum. F6 gives each guarded family a third datum (finding R1-23), so that its pick still varies. Both tests also replay an honest stored consume (finding RT-03). F5 requires at least one run in which that consume waits for `7`. |
+  | `a_join_on_one_channel_twice_replays_to_the_play_root` (F4), with a guarded join of one channel twice (finding RT-04) | the same file | The guarded term passes under the greedy mutation, because for its seed the first assignment in E1 order passes the guard. So it pins the order on which play and native replay agree, not the backtrack. |
+
+  The upstream test `store_consumes_greedy_guard_veto_without_exhaustive_search`
+  requires the greedy store, so it is commented out with the reason. The
+  tests above replace it.
 
 ## 9. Out of scope
 

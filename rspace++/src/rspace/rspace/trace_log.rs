@@ -3,27 +3,27 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use shared::rust::collection_backing::{tree_backing, tree_search_bound};
 
 use super::RSpace;
 use crate::rspace::errors::RSpaceError;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::internal::{ConsumeCandidate, WaitingContinuation};
 use crate::rspace::metrics_constants::RSPACE_METRICS_SOURCE;
-use crate::rspace::operation_context::{self, OperationOrder, PathSegment};
+use crate::rspace::operation_context::{self, OperationOrder};
 use crate::rspace::striped_locks;
 use crate::rspace::trace::Log;
 use crate::rspace::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 
+// Added by the merge of feature/cost-accounted-rho (finding R2-08): HEAD's
+// doc, restored without "or a SourceMeter call", because DR-131 removed the
+// meter.
 /// Outstanding slots are counted per destination. Every ordinary log append
 /// preserves these slots, so a resting commit can publish after retirement
-/// without allocation or a SourceMeter call. The reservation mutex is always
-/// acquired before the selected log mutex; no log mutex is held while HotStore
-/// retirement holds shard locks.
+/// without allocation. The reservation mutex is always acquired before the
+/// selected log mutex; no log mutex is held while HotStore retirement holds
+/// shard locks.
 #[derive(Default)]
 pub(super) struct EventLogReservations {
     pub(super) plain: usize,
@@ -130,10 +130,7 @@ where
     /// Reserve one destination-specific event slot before a resting store
     /// transaction is authorized. Ordinary writers preserve every live slot;
     /// the lease's `publish` therefore has no allocation or fallible work.
-    pub(super) fn reserve_resting_event_slot(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<EventSlotLease, RSpaceError> {
+    pub(super) fn reserve_resting_event_slot(&self) -> Result<EventSlotLease, RSpaceError> {
         let order = operation_context::current();
         let mut reservations = self
             .event_log_reservations
@@ -145,22 +142,14 @@ where
                 let needed = reservations
                     .plain
                     .checked_add(1)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
+                    .ok_or(RSpaceError::ProduceCommitProtocolViolation)?;
                 let target = log
                     .len()
                     .checked_add(needed)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let bytes = target
-                    .checked_mul(size_of::<Event>())
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let copied = log
-                    .len()
-                    .checked_mul(size_of::<Event>())
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                meter.reserve(1, copied, bytes)?;
+                    .ok_or(RSpaceError::ProduceCommitProtocolViolation)?;
                 if log.capacity() < target {
                     log.try_reserve_exact(needed)
-                        .map_err(|_| RSpaceError::HostWorkRejected)?;
+                        .map_err(|_| RSpaceError::ProduceCommitProtocolViolation)?;
                 }
                 reservations.plain = needed;
             }
@@ -169,75 +158,23 @@ where
                     .ordered_event_log
                     .lock()
                     .expect("ordered event log lock");
-                let entries = logs
-                    .len()
-                    .max(reservations.ordered.len())
-                    .checked_add(1)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let max_depth = logs
-                    .keys()
-                    .chain(reservations.ordered.keys())
-                    .map(|key| key.path.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(order.path.len());
-                // At most eight ordered lookups/inserts/removals cover both
-                // reservation and publication (or refusal cleanup). The
-                // allocation-free causal-path comparator may lift at every
-                // depth, with at most `usize::BITS` pointer steps per lift.
-                let comparisons = tree_search_bound(entries)
-                    .checked_mul(8)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let path_bytes = max_depth
-                    .checked_mul(size_of::<PathSegment>())
-                    .and_then(|bytes| bytes.checked_mul(2))
-                    .and_then(|bytes| bytes.checked_mul(comparisons))
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let path_steps = max_depth
-                    .checked_mul(usize::BITS as usize)
-                    .and_then(|steps| steps.checked_mul(4))
-                    .and_then(|steps| steps.checked_mul(comparisons))
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let (log_ops, log_backing) = tree_backing::<OperationOrder, Log>(entries)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let (reservation_ops, reservation_backing) =
-                    tree_backing::<OperationOrder, usize>(entries)
-                        .ok_or(RSpaceError::HostWorkRejected)?;
-                meter.reserve(
-                    log_ops
-                        .checked_add(reservation_ops)
-                        .and_then(|ops| ops.checked_add(path_steps))
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                    path_bytes,
-                    log_backing
-                        .checked_add(reservation_backing)
-                        .and_then(|bytes| bytes.checked_add(path_bytes))
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                )?;
                 let needed = reservations
                     .ordered
                     .get(order)
                     .copied()
                     .unwrap_or(0)
                     .checked_add(1)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
+                    .ok_or(RSpaceError::ProduceCommitProtocolViolation)?;
                 let present_len = logs.get(order).map_or(0, Vec::len);
                 let target = present_len
                     .checked_add(needed)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let bytes = target
-                    .checked_mul(size_of::<Event>())
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let copied = present_len
-                    .checked_mul(size_of::<Event>())
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                meter.reserve(1, copied, bytes)?;
+                    .ok_or(RSpaceError::ProduceCommitProtocolViolation)?;
                 let log = logs.entry(order.clone()).or_default();
                 if log.capacity() < target && log.try_reserve_exact(needed).is_err() {
                     if log.is_empty() {
                         logs.remove(order);
                     }
-                    return Err(RSpaceError::HostWorkRejected);
+                    return Err(RSpaceError::ProduceCommitProtocolViolation);
                 }
                 reservations.ordered.insert(order.clone(), needed);
             }

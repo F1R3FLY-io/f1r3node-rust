@@ -64,7 +64,10 @@ struct Route {
     target: String,
 }
 
-type Roots = BTreeMap<String, PathBuf>;
+// Changed by the merge of feature/cost-accounted-rho (finding R1-49): only
+// the retired snapshot gate used this map (see the note above
+// `live_pinned_sources_and_abi_witnesses_match`).
+// type Roots = BTreeMap<String, PathBuf>;
 type Sources = BTreeMap<(String, String), Vec<u8>>;
 
 fn ensure(condition: bool, message: impl Into<String>) -> Result<(), String> {
@@ -222,101 +225,106 @@ fn node_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn external_roots() -> Result<Roots, String> {
-    let mut roots = BTreeMap::from([("node".into(), node_root())]);
-    for (name, variable) in [
-        ("mettail", "F1R3LANG_METTAIL_ROOT"),
-        ("venus", "F1R3LANG_VENUS_ROOT"),
-        ("legacy_parser", "F1R3LANG_LEGACY_PARSER_ROOT"),
-        ("papers", "F1R3LANG_PAPERS_ROOT"),
-    ] {
-        let root = std::env::var_os(variable).ok_or_else(|| {
-            format!("set {variable} explicitly; external snapshot was not checked")
-        })?;
-        roots.insert(name.into(), PathBuf::from(root));
-    }
-    Ok(roots)
-}
-
-fn load_sources(manifest: &Manifest, roots: &Roots) -> Result<Sources, String> {
-    let mut sources = Sources::new();
-    for snapshot in &manifest.snapshots {
-        let root = roots.get(&snapshot.name).ok_or("missing repository root")?;
-        for file in &snapshot.files {
-            relative_path(&file.path)?;
-            let bytes = match snapshot.name.as_str() {
-                "node" => git(root, &[
-                    "show",
-                    &format!("{}:{}", snapshot.revision, file.path),
-                ])?,
-                _ => fs::read(root.join(&file.path)).map_err(|error| error.to_string())?,
-            };
-            check_digest(&bytes, &file.sha256)
-                .map_err(|error| format!("{}:{}: {error}", snapshot.name, file.path))?;
-            if snapshot.kind == "revision_sources" {
-                let committed = git(root, &[
-                    "show",
-                    &format!("{}:{}", snapshot.revision, file.path),
-                ])?;
-                check_digest(&committed, &file.sha256)?;
-            }
-            sources.insert((snapshot.name.clone(), file.path.clone()), bytes);
-        }
-        if snapshot.kind == "development_snapshot" {
-            let head = git(root, &["rev-parse", "HEAD"])?;
-            ensure(
-                String::from_utf8_lossy(&head).trim() == snapshot.revision,
-                "development snapshot HEAD changed",
-            )?;
-            let diff = git(root, &[
-                "diff",
-                "--no-ext-diff",
-                "--binary",
-                "--no-color",
-                "HEAD",
-            ])?;
-            check_digest(
-                &diff,
-                snapshot
-                    .tracked_diff_sha256
-                    .as_deref()
-                    .ok_or("missing diff hash")?,
-            )?;
-            let modified = git(root, &["diff", "--name-only", "HEAD"])?;
-            ensure(
-                String::from_utf8_lossy(&modified)
-                    .lines()
-                    .collect::<Vec<_>>()
-                    == snapshot
-                        .modified_paths
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>(),
-                "development modified-file inventory changed",
-            )?;
-            let untracked = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-            let actual: BTreeSet<_> = untracked
-                .split(|byte| *byte == 0)
-                .filter(|path| !path.is_empty())
-                .map(|path| String::from_utf8_lossy(path).into_owned())
-                .collect();
-            let expected: BTreeSet<_> = snapshot
-                .untracked_files
-                .iter()
-                .map(|file| file.path.clone())
-                .collect();
-            ensure(
-                actual == expected,
-                "development untracked-file inventory changed",
-            )?;
-            for file in &snapshot.untracked_files {
-                let bytes = fs::read(root.join(&file.path)).map_err(|error| error.to_string())?;
-                check_digest(&bytes, &file.sha256)?;
-            }
-        }
-    }
-    Ok(sources)
-}
+// Changed by the merge of feature/cost-accounted-rho (finding R1-49): only
+// the retired snapshot gate called these two functions (see the note above
+// `live_pinned_sources_and_abi_witnesses_match`). `check_contract` still
+// validates the shape of the snapshot entries. The negative controls still
+// use `check_digest` and `check_abis`.
+// fn external_roots() -> Result<Roots, String> {
+//     let mut roots = BTreeMap::from([("node".into(), node_root())]);
+//     for (name, variable) in [
+//         ("mettail", "F1R3LANG_METTAIL_ROOT"),
+//         ("venus", "F1R3LANG_VENUS_ROOT"),
+//         ("legacy_parser", "F1R3LANG_LEGACY_PARSER_ROOT"),
+//         ("papers", "F1R3LANG_PAPERS_ROOT"),
+//     ] {
+//         let root = std::env::var_os(variable).ok_or_else(|| {
+//             format!("set {variable} explicitly; external snapshot was not checked")
+//         })?;
+//         roots.insert(name.into(), PathBuf::from(root));
+//     }
+//     Ok(roots)
+// }
+//
+// fn load_sources(manifest: &Manifest, roots: &Roots) -> Result<Sources, String> {
+//     let mut sources = Sources::new();
+//     for snapshot in &manifest.snapshots {
+//         let root = roots.get(&snapshot.name).ok_or("missing repository root")?;
+//         for file in &snapshot.files {
+//             relative_path(&file.path)?;
+//             let bytes = match snapshot.name.as_str() {
+//                 "node" => git(root, &[
+//                     "show",
+//                     &format!("{}:{}", snapshot.revision, file.path),
+//                 ])?,
+//                 _ => fs::read(root.join(&file.path)).map_err(|error| error.to_string())?,
+//             };
+//             check_digest(&bytes, &file.sha256)
+//                 .map_err(|error| format!("{}:{}: {error}", snapshot.name, file.path))?;
+//             if snapshot.kind == "revision_sources" {
+//                 let committed = git(root, &[
+//                     "show",
+//                     &format!("{}:{}", snapshot.revision, file.path),
+//                 ])?;
+//                 check_digest(&committed, &file.sha256)?;
+//             }
+//             sources.insert((snapshot.name.clone(), file.path.clone()), bytes);
+//         }
+//         if snapshot.kind == "development_snapshot" {
+//             let head = git(root, &["rev-parse", "HEAD"])?;
+//             ensure(
+//                 String::from_utf8_lossy(&head).trim() == snapshot.revision,
+//                 "development snapshot HEAD changed",
+//             )?;
+//             let diff = git(root, &[
+//                 "diff",
+//                 "--no-ext-diff",
+//                 "--binary",
+//                 "--no-color",
+//                 "HEAD",
+//             ])?;
+//             check_digest(
+//                 &diff,
+//                 snapshot
+//                     .tracked_diff_sha256
+//                     .as_deref()
+//                     .ok_or("missing diff hash")?,
+//             )?;
+//             let modified = git(root, &["diff", "--name-only", "HEAD"])?;
+//             ensure(
+//                 String::from_utf8_lossy(&modified)
+//                     .lines()
+//                     .collect::<Vec<_>>()
+//                     == snapshot
+//                         .modified_paths
+//                         .iter()
+//                         .map(String::as_str)
+//                         .collect::<Vec<_>>(),
+//                 "development modified-file inventory changed",
+//             )?;
+//             let untracked = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+//             let actual: BTreeSet<_> = untracked
+//                 .split(|byte| *byte == 0)
+//                 .filter(|path| !path.is_empty())
+//                 .map(|path| String::from_utf8_lossy(path).into_owned())
+//                 .collect();
+//             let expected: BTreeSet<_> = snapshot
+//                 .untracked_files
+//                 .iter()
+//                 .map(|file| file.path.clone())
+//                 .collect();
+//             ensure(
+//                 actual == expected,
+//                 "development untracked-file inventory changed",
+//             )?;
+//             for file in &snapshot.untracked_files {
+//                 let bytes = fs::read(root.join(&file.path)).map_err(|error| error.to_string())?;
+//                 check_digest(&bytes, &file.sha256)?;
+//             }
+//         }
+//     }
+//     Ok(sources)
+// }
 
 fn check_abis(abis: &[Abi], sources: &Sources) -> Result<(), String> {
     for abi in abis {
@@ -457,36 +465,44 @@ fn live_source_reference_inventory_matches_the_frozen_inventory() {
     assert!(check_reference_inventory(&declared, &removed).is_err());
 }
 
-#[test]
-fn live_pinned_sources_and_abi_witnesses_match() {
-    let declared = manifest();
-    check_contract(&declared).expect("valid baseline contract");
-    let roots = external_roots().expect("explicit roots for the complete snapshot gate");
-    let sources = load_sources(&declared, &roots).expect("exact source snapshots");
-    check_abis(&declared.abis, &sources).expect("pinned ABI declarations");
-    let mut current = sources;
-    for abi in declared.abis.iter().filter(|abi| abi.repository == "node") {
-        current.insert(
-            (abi.repository.clone(), abi.path.clone()),
-            fs::read(node_root().join(&abi.path)).expect("current node ABI source"),
-        );
-    }
-    check_abis(&declared.abis, &current).expect("current node ABI declarations");
-    let node = declared
-        .snapshots
-        .iter()
-        .find(|snapshot| snapshot.name == "node")
-        .expect("node snapshot");
-    for file in node.files.iter().filter(|file| {
-        file.path.starts_with("models/")
-            || file
-                .path
-                .starts_with("rholang/src/rust/interpreter/accounting/")
-    }) {
-        check_digest(
-            &fs::read(node_root().join(&file.path)).expect("current engine source"),
-            &file.sha256,
-        )
-        .unwrap_or_else(|error| panic!("protected engine source {}: {error}", file.path));
-    }
-}
+// Changed by the merge of feature/cost-accounted-rho (finding R1-49): the
+// project owner retired this snapshot gate on 2026-10-19. MeTTaIL and the
+// node are developed and released together as F1R3Lang. The node builds the
+// live MeTTaIL checkout (`node/Cargo.toml:20`), so a frozen copy of MeTTaIL
+// files, MeTTaIL engine versions and node engine files contradicts that
+// intent. The gate first failed on the node side at 70186668f (2026-09-10).
+// On the MeTTaIL side, it failed when MeTTaIL moved past f2fa50a45. Both
+// merge parents fail it. The six other baseline tests still run.
+// #[test]
+// fn live_pinned_sources_and_abi_witnesses_match() {
+//     let declared = manifest();
+//     check_contract(&declared).expect("valid baseline contract");
+//     let roots = external_roots().expect("explicit roots for the complete snapshot gate");
+//     let sources = load_sources(&declared, &roots).expect("exact source snapshots");
+//     check_abis(&declared.abis, &sources).expect("pinned ABI declarations");
+//     let mut current = sources;
+//     for abi in declared.abis.iter().filter(|abi| abi.repository == "node") {
+//         current.insert(
+//             (abi.repository.clone(), abi.path.clone()),
+//             fs::read(node_root().join(&abi.path)).expect("current node ABI source"),
+//         );
+//     }
+//     check_abis(&declared.abis, &current).expect("current node ABI declarations");
+//     let node = declared
+//         .snapshots
+//         .iter()
+//         .find(|snapshot| snapshot.name == "node")
+//         .expect("node snapshot");
+//     for file in node.files.iter().filter(|file| {
+//         file.path.starts_with("models/")
+//             || file
+//                 .path
+//                 .starts_with("rholang/src/rust/interpreter/accounting/")
+//     }) {
+//         check_digest(
+//             &fs::read(node_root().join(&file.path)).expect("current engine source"),
+//             &file.sha256,
+//         )
+//         .unwrap_or_else(|error| panic!("protected engine source {}: {error}", file.path));
+//     }
+// }

@@ -2,6 +2,13 @@ use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use loom::sync::{Arc, Mutex};
 use loom::thread;
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the negative controls below.
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
+use panic_child::PanicChild;
+
 fn check_capture(pending_first: bool, abandoned: bool) {
     let pending = Arc::new(AtomicUsize::new(1));
     let invalid = Arc::new(AtomicBool::new(false));
@@ -37,8 +44,20 @@ fn pending_acquire_precedes_invalidation_read() {
 }
 
 #[test]
-#[should_panic(expected = "abandoned preparation exported evidence")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "abandoned preparation exported evidence")]
 fn reading_invalidation_first_can_export_an_abandoned_preparation() {
+    let child = PanicChild::new(
+        module_path!(),
+        "reading_invalidation_first_can_export_an_abandoned_preparation",
+    );
+    if !child.is_child() {
+        child.expect_panic("abandoned preparation exported evidence");
+        return;
+    }
+    child.subject_reached();
     loom::model(|| check_capture(false, true));
 }
 
@@ -79,7 +98,19 @@ fn recording_failure_invalidates_before_authority_unlock() {
 }
 
 #[test]
-#[should_panic(expected = "preparation published after recording failure")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "preparation published after recording failure")]
 fn deferred_ticket_drop_permits_publication_after_recording_failure() {
+    let child = PanicChild::new(
+        module_path!(),
+        "deferred_ticket_drop_permits_publication_after_recording_failure",
+    );
+    if !child.is_child() {
+        child.expect_panic("preparation published after recording failure");
+        return;
+    }
+    child.subject_reached();
     loom::model(|| check_recording_failure(false));
 }

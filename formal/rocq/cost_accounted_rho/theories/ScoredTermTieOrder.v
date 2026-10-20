@@ -1,8 +1,16 @@
 (**
-  Abstract comparison contract for the metered scored-term sorter.
+  Abstract comparison contract for the scored-term sorter.
 
   The concrete score and emitted-byte encodings are modeled by natural score
   ranks and byte lists. The original input position is the final stable key.
+
+  Changed by the merge of feature/cost-accounted-rho (DR-131, plan step 1.8):
+  the metered sorter and its precharge are removed. The module now binds
+  [ScoredTerm::sort_vec] in models/src/rust/rholang/sorter/score_tree.rs. It
+  sorts with the stable [sort_by] on the key (score, emitted bytes), so the
+  input position is the last key, as [key_compare] states. The old header
+  named the metered scored-term sorter and ended with these two sentences:
+
   A failed precharge returns no transition: sorting must not drain or mutate
   the source vector until every comparison and output reservation succeeds.
 *)
@@ -91,6 +99,11 @@ Proof.
   contradiction.
 Qed.
 
+(* Disabled by the merge of feature/cost-accounted-rho (DR-131, plan step
+   1.8): the sorter reserves nothing before it compares, so no comparison is
+   refused and the source vector has no refusal path. The precharge model
+   follows.
+
 Definition precharged_compare (allowed : bool) (source : list nat)
     (left right : Key) : option (comparison * list nat) :=
   if allowed then Some (key_compare left right, source) else None.
@@ -106,5 +119,6 @@ Proof.
   intros source left right order after H.
   inversion H. auto.
 Qed.
+*)
 
 End ScoredTermTieOrder.

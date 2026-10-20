@@ -21,8 +21,10 @@ use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
 use casper::rust::util::rholang::interpreter_util;
-use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, F1r3flyState, Header, Justification,
 };
@@ -31,6 +33,7 @@ use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -49,7 +52,9 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -74,7 +79,9 @@ async fn stage_live_rejection() -> (Vec<TestNode>, String, Bytes, usize, Vec<Blo
         r#"@"gate_cell"!("s")"#.to_string(),
         None,
         None,
-        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+        // Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
         Some(0),
         Some(shard_id.clone()),
     )
@@ -110,11 +117,13 @@ async fn stage_live_rejection() -> (Vec<TestNode>, String, Bytes, usize, Vec<Blo
             r#"for (@v <- @"gate_cell") { @"gate_cell"!("b") }"#.to_string(),
             None,
             None,
-            Some(
-                crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-                    .0
-                    .clone(),
-            ),
+            // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+            // Some(
+            // crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            // .0
+            // .clone(),
+            // ),
+            Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
         )
@@ -220,15 +229,27 @@ async fn premature_retry_is_rejected_by_every_validator() {
     // proposer mints it (the deferral above), so it is assembled through
     // the production checkpoint directly — the same technique the
     // carrier-record spec uses for proposer-unreachable shapes.
+    // Changed by DR-116 (gap G6): the owner's buffer holds the loser's
+    // offered envelope.
+    // let retry_holder = nodes[loser_owner]
+    //     .rejected_deploy_buffer
+    //     .lock()
+    //     .expect("buffer lock")
+    //     .read_all()
+    //     .expect("buffer read");
+    // let retry_deploy = retry_holder
+    //     .into_iter()
+    //     .find(|d| d.sig == loser_sig)
+    //     .expect("owner's buffer must hold the loser (owner-scoped populate)");
     let retry_holder = nodes[loser_owner]
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .read_all()
+        .read_all_envelopes(models::rust::cost_protocol_limits::offered_funded_v6_limits().envelope)
         .expect("buffer read");
     let retry_deploy = retry_holder
         .into_iter()
-        .find(|d| d.sig == loser_sig)
+        .find(|envelope| envelope.identity().as_bytes() == loser_sig.as_ref())
         .expect("owner's buffer must hold the loser (owner-scoped populate)");
     let snapshot = nodes[loser_owner]
         .casper
@@ -259,13 +280,29 @@ async fn premature_retry_is_rejected_by_every_validator() {
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
     };
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    // Changed by DR-116 (gap G6): the retry is an offered envelope, staged
+    // through the offered checkpoint with the owner's adopted policy.
+    // let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    //     &mut nodes[loser_owner].block_store,
+    //     snapshot.parents.clone(),
+    //     vec![retry_deploy],
+    //     Vec::new(),
+    //     &snapshot,
+    //     &runtime_manager,
+    //     block_data,
+    let adopted_casper = nodes[loser_owner].casper.clone();
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_envelopes(
         &mut nodes[loser_owner].block_store,
         snapshot.parents.clone(),
-        vec![retry_deploy],
+        vec![
+            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Envelope(
+                retry_deploy,
+            ),
+        ],
         Vec::new(),
         &snapshot,
         &runtime_manager,
+        adopted_casper.adopted_resource_policy.as_ref(),
         block_data,
         HashMap::new(),
         None,
@@ -281,7 +318,10 @@ async fn premature_retry_is_rejected_by_every_validator() {
             bonds: checkpoint.bonds,
             block_number: next_block_num,
         },
-        deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
+        // Changed by DR-116 (gap G6): the envelope checkpoint already holds
+        // processed user deploys.
+        // deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
+        deploys: checkpoint.deploys,
         rejected_deploys: checkpoint.rejected_deploys,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
@@ -295,7 +335,9 @@ async fn premature_retry_is_rejected_by_every_validator() {
             .map(|p| p.block_hash.clone())
             .collect(),
         timestamp: now_millis,
-        version: 1,
+        // Changed by DR-116 (gap G6): the block carries the genesis version.
+        // version: 1,
+        version: nodes[loser_owner].genesis.header.version,
         extra_bytes: Bytes::new(),
     };
     let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();

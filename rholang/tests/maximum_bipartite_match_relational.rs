@@ -16,12 +16,19 @@ struct OracleFrame {
     pending_target: Option<usize>,
 }
 
+// Added by the merge of feature/cost-accounted-rho (clippy gate): one
+// reported pair, as `(target, pattern, (pattern, target))`.
+type Assignment = (usize, usize, (usize, usize));
+
 fn oracle_match(
     pattern_count: usize,
     target_count: usize,
     edges: &[bool],
     calls: &mut usize,
-) -> Option<Vec<(usize, usize, (usize, usize))>> {
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+    // alias `Assignment` names the reported pair.
+    // ) -> Option<Vec<(usize, usize, (usize, usize))>> {
+) -> Option<Vec<Assignment>> {
     let edge = |pattern: usize, target: usize| edges[pattern * target_count + target];
     let mut assignments = vec![None; target_count];
 
@@ -34,10 +41,13 @@ fn oracle_match(
         }];
         let mut augmented = false;
 
-        loop {
-            let Some(frame) = stack.last_mut() else {
-                break;
-            };
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+        // loop condition is a `while let`.
+        // loop {
+        //     let Some(frame) = stack.last_mut() else {
+        //         break;
+        //     };
+        while let Some(frame) = stack.last_mut() {
             let mut descended = false;
             while frame.next_target < target_count {
                 let target = frame.next_target;
@@ -109,7 +119,10 @@ fn relational_match(
     target_count: usize,
     edges: &[bool],
 ) -> (
-    Option<Vec<(usize, usize, (usize, usize))>>,
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+    // alias `Assignment` names the reported pair.
+    // Option<Vec<(usize, usize, (usize, usize))>>,
+    Option<Vec<Assignment>>,
     usize,
     rholang::rust::interpreter::matcher::maximum_bipartite_match::MaximumBipartiteMatchStats,
 ) {

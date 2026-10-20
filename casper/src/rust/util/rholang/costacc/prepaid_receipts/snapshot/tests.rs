@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -18,10 +17,6 @@ const LIMITS: PrepaidReceiptLimits = PrepaidReceiptLimits {
     value_bytes: 4096,
     batch_bytes: 65_536,
 };
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)))
-}
 
 async fn fixture() -> (Arc<RuntimeManager>, RuntimeOps) {
     let stores = RSpaceStore {
@@ -55,13 +50,7 @@ async fn snapshot_distinguishes_absent_unrequested_and_wrong_root() {
     let (manager, mut native) = fixture().await;
     let before = checkpoint(&mut native).await;
     let absent = manager
-        .capture_prepaid_receipts(
-            before,
-            EventCodecEpoch::Legacy,
-            &[[1; 32]],
-            LIMITS,
-            &budget(),
-        )
+        .capture_prepaid_receipts(before, EventCodecEpoch::Legacy, &[[1; 32]], LIMITS)
         .unwrap();
     assert_eq!(absent.root(), before);
     assert_eq!(absent.receipt(&before, &[1; 32]).unwrap(), Some(None));
@@ -82,13 +71,7 @@ async fn snapshot_distinguishes_absent_unrequested_and_wrong_root() {
     assert!(absent.receipt(&after, &[1; 32]).is_err());
     assert!(absent.receipt(&after, &[2; 32]).is_err());
     let present = manager
-        .capture_prepaid_receipts(
-            after,
-            EventCodecEpoch::Legacy,
-            &[[2; 32], [1; 32]],
-            LIMITS,
-            &budget(),
-        )
+        .capture_prepaid_receipts(after, EventCodecEpoch::Legacy, &[[2; 32], [1; 32]], LIMITS)
         .unwrap();
     assert_eq!(
         present.receipt(&after, &[1; 32]).unwrap(),
@@ -96,32 +79,20 @@ async fn snapshot_distinguishes_absent_unrequested_and_wrong_root() {
     );
     assert_eq!(present.receipt(&after, &[2; 32]).unwrap(), Some(None));
     let historical = manager
-        .capture_prepaid_receipts(
-            before,
-            EventCodecEpoch::Legacy,
-            &[[1; 32]],
-            LIMITS,
-            &budget(),
-        )
+        .capture_prepaid_receipts(before, EventCodecEpoch::Legacy, &[[1; 32]], LIMITS)
         .unwrap();
     assert_eq!(historical, absent);
     let mut forged_root = after;
     forged_root[0] ^= 1;
     assert!(matches!(
-        manager.capture_prepaid_receipts(
-            forged_root,
-            EventCodecEpoch::Legacy,
-            &[[1; 32]],
-            LIMITS,
-            &budget()
-        ),
+        manager.capture_prepaid_receipts(forged_root, EventCodecEpoch::Legacy, &[[1; 32]], LIMITS,),
         Err(CasperError::RuntimeError(_))
     ));
     assert!(manager
-        .capture_prepaid_receipts(forged_root, EventCodecEpoch::Legacy, &[], LIMITS, &budget())
+        .capture_prepaid_receipts(forged_root, EventCodecEpoch::Legacy, &[], LIMITS)
         .is_err());
     let empty = manager
-        .capture_prepaid_receipts(after, EventCodecEpoch::Legacy, &[], LIMITS, &budget())
+        .capture_prepaid_receipts(after, EventCodecEpoch::Legacy, &[], LIMITS)
         .unwrap();
     assert_eq!(empty.root(), after);
     assert_eq!(empty.receipt(&after, &[1; 32]).unwrap(), None);
@@ -150,13 +121,7 @@ async fn snapshot_rejects_duplicates_late_malformed_values_and_bounds() {
         .unwrap();
     let root = checkpoint(&mut native).await;
     assert!(manager
-        .capture_prepaid_receipts(
-            root,
-            EventCodecEpoch::Legacy,
-            &[[1; 32], [1; 32]],
-            LIMITS,
-            &budget()
-        )
+        .capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &[[1; 32], [1; 32]], LIMITS,)
         .is_err());
     let overhead = 2 * (size_of::<[u8; 32]>() + size_of::<SnapshotEntry>());
     for bounds in [
@@ -174,13 +139,7 @@ async fn snapshot_rejects_duplicates_late_malformed_values_and_bounds() {
         },
     ] {
         assert!(manager
-            .capture_prepaid_receipts(
-                root,
-                EventCodecEpoch::Legacy,
-                &[[1; 32], [2; 32]],
-                bounds,
-                &budget()
-            )
+            .capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &[[1; 32], [2; 32]], bounds,)
             .is_err());
     }
     let exact = PrepaidReceiptLimits {
@@ -189,19 +148,8 @@ async fn snapshot_rejects_duplicates_late_malformed_values_and_bounds() {
         batch_bytes: overhead + 9,
     };
     assert!(manager
-        .capture_prepaid_receipts(
-            root,
-            EventCodecEpoch::Legacy,
-            &[[1; 32], [2; 32]],
-            exact,
-            &budget()
-        )
+        .capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &[[1; 32], [2; 32]], exact,)
         .is_ok());
-    let tiny = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(manager
-        .capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &[[1; 32]], LIMITS, &tiny)
-        .is_err());
-    assert!(tiny.is_rejected());
     for mutation in 0..3 {
         native
             .runtime
@@ -239,19 +187,12 @@ async fn snapshot_rejects_duplicates_late_malformed_values_and_bounds() {
                 EventCodecEpoch::Legacy,
                 &[[1; 32], [3; 32]],
                 LIMITS,
-                &budget()
             )
             .is_err());
         assert_eq!(checkpoint(&mut native).await, bad_root);
     }
     assert!(manager
-        .capture_prepaid_receipts(
-            root,
-            EventCodecEpoch::Legacy,
-            &[[1; 32], [2; 32]],
-            exact,
-            &budget()
-        )
+        .capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &[[1; 32], [2; 32]], exact,)
         .is_ok());
 }
 
@@ -284,7 +225,6 @@ async fn concurrent_snapshots_keep_independent_roots_during_publication() {
                         EventCodecEpoch::Legacy,
                         &[[2; 32], [1; 32]],
                         LIMITS,
-                        &budget(),
                     )
                     .unwrap();
                 assert_eq!(
@@ -316,13 +256,7 @@ async fn concurrent_snapshots_keep_independent_roots_during_publication() {
             .unwrap();
         let later = checkpoint(&mut native).await;
         let fresh = manager
-            .capture_prepaid_receipts(
-                later,
-                EventCodecEpoch::Legacy,
-                &[[1; 32]],
-                LIMITS,
-                &budget(),
-            )
+            .capture_prepaid_receipts(later, EventCodecEpoch::Legacy, &[[1; 32]], LIMITS)
             .unwrap();
         assert_eq!(
             fresh.receipt(&later, &[1; 32]).unwrap(),
@@ -334,13 +268,7 @@ async fn concurrent_snapshots_keep_independent_roots_during_publication() {
         worker.await.unwrap();
     }
     let first_view = manager
-        .capture_prepaid_receipts(
-            first,
-            EventCodecEpoch::Legacy,
-            &[[1; 32]],
-            LIMITS,
-            &budget(),
-        )
+        .capture_prepaid_receipts(first, EventCodecEpoch::Legacy, &[[1; 32]], LIMITS)
         .unwrap();
     assert_eq!(
         first_view.receipt(&first, &[1; 32]).unwrap(),
@@ -375,8 +303,8 @@ proptest! {
                 histories.push((checkpoint(&mut native).await, reference.clone()));
             }
             for (root, values) in histories {
-                let normal = manager.capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &keys, LIMITS, &budget()).unwrap();
-                let reversed = manager.capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &reverse, LIMITS, &budget()).unwrap();
+                let normal = manager.capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &keys, LIMITS).unwrap();
+                let reversed = manager.capture_prepaid_receipts(root, EventCodecEpoch::Legacy, &reverse, LIMITS).unwrap();
                 prop_assert_eq!(&normal, &reversed);
                 for id in 0u8..8 {
                     let expected = values.get(&id).copied().map(|n| [n]);

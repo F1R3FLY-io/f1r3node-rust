@@ -4,6 +4,54 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/tlc-run.sh"
 
+# DR-120 (gap G9): every configuration of the v6 merge models has its own
+# well-formed TLC identity, so a checkpoint of one configuration is never
+# recovered under another.
+merge_dir="$ROOT/formal/tlaplus/cost_accounted_rho"
+declare -A merge_identity_owner=()
+for config in "$merge_dir"/MCV6MergeSerialization*.cfg "$merge_dir"/MCCursorDuplicateDetection*.cfg; do
+  case "$(basename "$config")" in
+    MCV6MergeSerialization*) merge_module="$merge_dir/MCV6MergeSerialization.tla" ;;
+    *) merge_module="$merge_dir/MCCursorDuplicateDetection.tla" ;;
+  esac
+  merge_hash="$(tlc_source_hash "$config" "$merge_module")"
+  merge_identity="$(tlc_recovery_identity "$merge_hash")"
+  [[ "$merge_hash" =~ ^[0-9a-f]{64}$ ]]
+  [[ "$merge_identity" =~ ^[0-9a-f]{64}$ ]]
+  if [[ -n "${merge_identity_owner[$merge_identity]:-}" ]]; then
+    echo "error: $(basename "$config") shares a TLC identity with ${merge_identity_owner[$merge_identity]}" >&2
+    exit 1
+  fi
+  merge_identity_owner[$merge_identity]="$(basename "$config")"
+done
+if (( ${#merge_identity_owner[@]} != 23 )); then
+  echo "error: expected 23 v6 merge TLC configurations, found ${#merge_identity_owner[@]}" >&2
+  exit 1
+fi
+
+# DR-119 (bug 11004): every configuration of the two cost-cursor models has its
+# own well-formed TLC identity.
+declare -A cursor_identity_owner=()
+for config in "$merge_dir"/FeeCursorBranchMerge*.cfg "$merge_dir"/FeeCursorCells*.cfg; do
+  case "$(basename "$config")" in
+    FeeCursorBranchMerge*) cursor_module="$merge_dir/FeeCursorBranchMerge.tla" ;;
+    *) cursor_module="$merge_dir/FeeCursorCells.tla" ;;
+  esac
+  cursor_hash="$(tlc_source_hash "$config" "$cursor_module")"
+  cursor_identity="$(tlc_recovery_identity "$cursor_hash")"
+  [[ "$cursor_hash" =~ ^[0-9a-f]{64}$ ]]
+  [[ "$cursor_identity" =~ ^[0-9a-f]{64}$ ]]
+  if [[ -n "${cursor_identity_owner[$cursor_identity]:-}" ]]; then
+    echo "error: $(basename "$config") shares a TLC identity with ${cursor_identity_owner[$cursor_identity]}" >&2
+    exit 1
+  fi
+  cursor_identity_owner[$cursor_identity]="$(basename "$config")"
+done
+if (( ${#cursor_identity_owner[@]} != 13 )); then
+  echo "error: expected 13 cost-cursor TLC configurations, found ${#cursor_identity_owner[@]}" >&2
+  exit 1
+fi
+
 config="$ROOT/formal/tlaplus/uptime/MC_UptimeEnvelopeDominance.cfg"
 module="$ROOT/formal/tlaplus/uptime/UptimeEnvelopeDominance.tla"
 source_hash="$(tlc_source_hash "$config" "$module")"

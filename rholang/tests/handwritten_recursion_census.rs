@@ -39,7 +39,9 @@
 //! earlier census. Calls conservatively reach every same-file definition with that name; a
 //! cross-module edge is admitted only when every definition is in **exactly one** file. That
 //! keeps genuinely cross-file cycles visible — `normalize.rs` ⇄
-//! `normalize_drive.rs` ⇄ `p_input_normalizer.rs` is one, and a per-file scan cannot see it.
+//! `normalize_drive.rs` ⇄ `p_input_normalizer.rs` was one, and a per-file scan cannot see it.
+//! (Changed by the merge of feature/cost-accounted-rho, finding R1-43: that cycle no longer
+//! exists, so this example is now historical. The old text said "is one".)
 //!
 //! # Loose in the safe direction, deliberately
 //!
@@ -176,19 +178,46 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         "rholang/src/rust/interpreter/compiler/normalize_drive.rs",
         Disposition::Measured("the driver half of `normalize`"),
     ),
-    (
-        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs",
-        Disposition::Measured(
-            "★ participates in a CROSS-FILE cycle with normalize.rs and normalize_drive.rs — \
-             the shape a per-file scan structurally cannot see",
-        ),
-    ),
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-43): the census
+    // finds no term-family cycle in this file, here and at HEAD aed9f4427, so the
+    // stale-row check failed on this row.
+    // (
+    //     "rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs",
+    //     Disposition::Measured(
+    //         "★ participates in a CROSS-FILE cycle with normalize.rs and normalize_drive.rs — \
+    //          the shape a per-file scan structurally cannot see",
+    //     ),
+    // ),
     // ── substitution ───────────────────────────────────────────────────────────────
     (
         "rholang/src/rust/interpreter/substitute.rs",
         Disposition::Measured("gate subjects `substitute`, `substitute_no_sort`"),
     ),
     // ── matcher ────────────────────────────────────────────────────────────────────
+    // Added by the merge of feature/cost-accounted-rho (finding R1-43): the two matcher
+    // files that the census reports after the merge.
+    (
+        "rholang/src/rust/interpreter/matcher/match.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: `Matcher::get` calls `Self::get_with_context`, and \
+             `get_with_context` reaches `get(` only in its commented-out D-M4 (DR-91) lines, as \
+             `free_map.get(&level)` on the `FreeMap` `BTreeMap`. Its `Par` matches are also in \
+             commented-out lines. Neither function calls itself or walks a term",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: two self-loops from the R3-17 merge repair. The \
+             commented-out former signature `// fn connective_used(&self, _context: \
+             &SpatialMatcherContext) -> bool {` opens a brace that no line closes, so the \
+             scanner reads the real `fn connective_used(` header below it as a call. \
+             `MatchValue::locally_free_is_empty` calls `context.locally_free_is_empty(..)`, \
+             the `HasLocallyFreeRef` method of `SpatialMatcherContext` in has_locally_free.rs, \
+             not itself. Those methods read the cached `locally_free` of the children, and the \
+             `CostStack` method walks the parallel tails with a `pending` Vec",
+        ),
+    ),
     // ── codecs and canonical form ──────────────────────────────────────────────────
     (
         "models/src/rust/canonical_path.rs",
@@ -233,6 +262,19 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
              serde dispatch over generated Par is tracked by DERIVE_DISPOSITIONS instead",
         ),
     ),
+    // Added by the merge of feature/cost-accounted-rho (finding R1-43): a file that the
+    // census reports after the merge. It was already undeclared at HEAD aed9f4427.
+    (
+        "rholang/src/rust/interpreter/util/mod.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: each arm of `GeneratedMessage::encoded_len` calls \
+             `value.encoded_len()`, the `prost::Message::encoded_len` of the wrapped rhoapi \
+             message. It never calls itself. The scanner erases the receiver and invents a \
+             self-loop. The wrapped length walks are generated `Message::encoded_len` impls, \
+             which DERIVE_DISPOSITIONS tracks and gate subject `encode` exercises through \
+             `encode_to_vec`",
+        ),
+    ),
     // ── evaluator ──────────────────────────────────────────────────────────────────
     (
         "rho-pure-eval/src/eval.rs",
@@ -250,6 +292,151 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
              `signature_algebra_operations_are_stack_safe_at_depth_twenty_thousand` and \
              `token_and_signed_process_lifecycles_are_stack_safe` drive Clone, equality, \
              compact Debug, and Drop at depth 20,000 on a 128 KiB stack",
+        ),
+    ),
+    // Added by the merge of feature/cost-accounted-rho (finding R1-43): the metering
+    // files that the census reports after the merge. Five of them form one cross-file
+    // component that closes through `RuntimeBudget` legacy charging.
+    (
+        "rholang/src/rust/interpreter/accounting/lexical.rs",
+        Disposition::Measured(
+            "production `resolve_lexical_names_for_funding` is the `FundingResolver` machine on a \
+             heap work stack (G1-2, DR-67). \
+             `stack_safety_tests::resolver_walks_a_term_nested_one_hundred_thousand_deep_on_a_small_stack` \
+             and `resolver_allocates_one_hundred_thousand_nested_names_on_a_small_stack` drive it \
+             at depth 100,000 on a 256 KiB stack. The reported `resolve_par` and \
+             `resolve_receive` cycle is the former recursive resolver, kept only as the parity \
+             oracle. Both functions are `#[cfg(test)]`, and \
+             `machine_resolver_matches_the_recursive_resolver` compares the two resolvers. The \
+             oracle stays in this file because feature/cost-accounted-rho owns it, and a move \
+             under tests/support would conflict with later merges",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/accounting/lexical/stack_safety_tests.rs",
+        Disposition::NotATermDepthCycle(
+            "test module (`#[cfg(test)] mod stack_safety_tests` in lexical.rs). Its only real \
+             recursion is `render` over proptest `Shape` values, which `prop_recursive(5, 48, 4, \
+             ..)` bounds. `source_of` and three tests join only because the braces in the \
+             Rholang string literals of `render` unbalance the scanner's count. The body of \
+             `render` then runs to the end of the file, and each later `fn NAME(` header reads \
+             as a call",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/accounting/delta_sigma/estimate.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive. The commented-out former signatures of `par_parts` and \
+             `expr_parts` end in an open brace that no line closes, so their phantom bodies run \
+             to the end of the file and call every later definition. The bodies of \
+             `find_marker` and `Estimator::receive` also run past their end, through the \
+             commented-out lines `// if let Subterm::Par(par) = subterm {` and \
+             `// if self.names_fresh(&condition.locally_free, 0) {`. `Vec::new()` in \
+             `expr_operands` joins `Estimator::new`, which reaches `expr_operands` again through \
+             `note_env_value`, `measure_subterm`, `subterm_parts`, `par_parts` and \
+             `expr_parts`. `HashMap::get`, `HashMap::insert` and `Vec::push` join \
+             `Measures::get`, `Measures::insert` and `Members::push`. Without these artefacts \
+             the call graph is acyclic, and the walks use heap work stacks. \
+             `stack_safety_tests::the_estimate_runs_a_term_nested_one_hundred_thousand_deep_on_a_small_stack` \
+             runs `linear_cost_estimate` at depth 100,000 from a 256 KiB thread, inside its \
+             64 MiB `stacker::grow` segment",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/accounting/delta_sigma/estimate/recursive_oracle.rs",
+        Disposition::Measured(
+            "deliberate recursive parity oracle, not production code: estimate.rs declares it \
+             only as `#[cfg(test)] mod recursive_oracle`. Its `walk`, `fold` and \
+             `par_holds_variable` recurse once per nesting level. The deep tests \
+             `the_oracle_agrees_on_a_term_above_the_sizing_bound` and \
+             `the_variable_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_small_stack` \
+             run it at depth 5,000 on a 1 GiB `ORACLE_STACK_BYTES` thread. \
+             `iterative_passes_match_the_recursive_oracle` and \
+             `binder_levels_and_parity_hold_on_the_corpus` run it on generated and corpus \
+             programs, and all of them compare it with the production work-stack passes. The \
+             oracle stays in this file because feature/cost-accounted-rho owns it, and a move \
+             under tests/support would conflict with later merges",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/accounting/delta_sigma/estimate/stack_safety_tests.rs",
+        Disposition::NotATermDepthCycle(
+            "test module (`#[cfg(test)] mod stack_safety_tests` in estimate.rs). Its real \
+             recursion is `render_list` with `render_item` over proptest `Generated` programs, \
+             which `prop_recursive(4, 40, 4, ..)` bounds. `render` and six test functions join \
+             only because the bodies of `render` and `render_item` run to the end of the file: \
+             the braces in their Rholang string literals, and in the commented-out first \
+             `String::from` line of `render`, unbalance the scanner's count. Each later \
+             `fn NAME(` header then reads as a call",
+        ),
+    ),
+    (
+        "casper/src/rust/util/rholang/costacc/vault_cost_deploy/phlo.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: `ApplyPhloCostDeploy::env` calls `self.amounts.env()`, \
+             which is `<ApplyCostDeploy as SystemDeployTrait>::env` in vault_cost_deploy.rs. \
+             It never calls itself. The scanner erases the receiver and invents a self-loop. \
+             The Par, Expr and ETuple matches build one fixed six-element cursor tuple",
+        ),
+    ),
+    (
+        "casper/src/rust/util/rholang/costacc/genesis_resource_policy.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: one cross-file component with token_metadata_check.rs, \
+             runtime_manager.rs, rho_runtime.rs, charging_rspace.rs and accounting/mod.rs. \
+             `GenesisResourcePolicy::load_at` calls `read_on_chain_token_metadata`, which \
+             spawns a runtime whose `ChargingRSpace` calls `RuntimeBudget::is_legacy` and \
+             `charge_legacy`. Those call `AtomicU64::load` on `legacy_active` and `unmetered`. \
+             The scanner erases the receiver and routes that `load` to this file, the only \
+             file that defines `fn load` (two live bodies and one commented-out DR-99 body). \
+             Here, `AdoptedResourcePolicy::load` and `load_at` call the `GenesisResourcePolicy` \
+             methods of the same name, and `GenesisResourcePolicy::load` calls \
+             `Self::load_at`. No function calls itself, and none walks a term",
+        ),
+    ),
+    (
+        "casper/src/rust/util/token_metadata_check.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive, part of the cross-file component described at \
+             genesis_resource_policy.rs. `read_on_chain_token_metadata` runs one \
+             `RuntimeManager::play_exploratory_deploy` and parses one fixed (String, String, \
+             Int) tuple. The component closes only through the `AtomicU64::load` calls in \
+             `RuntimeBudget::is_legacy` and `charge_legacy`, which the scanner routes to \
+             `GenesisResourcePolicy::load`",
+        ),
+    ),
+    (
+        "casper/src/rust/util/rholang/runtime_manager.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive, the runtime-construction part of the cross-file component \
+             described at genesis_resource_policy.rs. `play_exploratory_deploy` calls \
+             `spawn_runtime`, which calls `spawn_runtime_for_epoch`, `spawn_runtime_with` and \
+             then `rho_runtime::create_rho_runtime`, a straight call chain. The component \
+             closes only through the `AtomicU64::load` calls in `RuntimeBudget::is_legacy` and \
+             `charge_legacy`, which the scanner routes to `GenesisResourcePolicy::load`",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/rho_runtime.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive, part of the cross-file component described at \
+             genesis_resource_policy.rs. `create_rho_runtime` calls `create_runtime`, which \
+             calls `create_rho_env`, which calls `ChargingRSpace::charging_rspace` once. The \
+             `Par` match is the key type of the merge-channel `HashMap`. The component closes \
+             only through the `AtomicU64::load` calls in `RuntimeBudget::is_legacy` and \
+             `charge_legacy`, which the scanner routes to `GenesisResourcePolicy::load`",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/storage/charging_rspace.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive. The `consume`, `produce`, `produce_guarded` and \
+             `consume_result` methods of the `ISpace` impl inside \
+             `ChargingRSpace::charging_rspace` forward to `self.space`, the wrapped \
+             `RhoISpace`, and never call themselves. The `Par` matches are `ISpace` type \
+             arguments. The methods call `RuntimeBudget::is_legacy` and `charge_legacy`, whose \
+             `AtomicU64::load` the scanner routes to `GenesisResourcePolicy::load`. That edge \
+             closes the cross-file component described at genesis_resource_policy.rs",
         ),
     ),
     // ── test and API surfaces ──────────────────────────────────────────────────────
@@ -295,6 +482,41 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
              other, and neither walks a recursive term",
         ),
     ),
+    // Added by the merge of feature/cost-accounted-rho (finding R1-43): the API and
+    // native-replay files that the census reports after the merge.
+    (
+        "casper/src/rust/api/block_api.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: the `casper_deploy` helper nested in `BlockAPI::deploy` \
+             calls `casper.deploy(deploy_data)`, the `Casper::deploy` trait method of its \
+             `Arc<dyn MultiParentCasper + Send + Sync>` argument. It never calls \
+             `BlockAPI::deploy`. The scanner erases the receiver and joins the two. The only \
+             term-family match is that `std::marker::Send` bound, not rhoapi::Send",
+        ),
+    ),
+    (
+        "rspace++/src/rspace/replay_rspace/native_candidate/selection.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: `prepare_consume_candidate` and \
+             `prepare_produce_candidate` call `channel_data` and `match_data`, and \
+             `channel_data` calls `channel_position`. Nothing calls back. The reverse edges \
+             exist only because the bodies of `channel_position`, `channel_data` and \
+             `match_data` run to the end of the file through commented-out lines that open a \
+             brace, for example `// if channel == &existing.channel {`. The only term-family \
+             match is `std::marker::Send` in the `ReplayRSpace` impl bounds",
+        ),
+    ),
+    (
+        "rspace++/src/rspace/replay_rspace/native_candidate/selection/tests.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: the commented-out former signature of `same_data` (D-D5, \
+             DR-107) ends in an open brace that no line closes. The scanner makes it a \
+             `same_data` node whose body runs to the end of the file, and it reads every later \
+             test header as a call. Each test calls the real `same_data`, a non-recursive \
+             assertion helper. The term-family matches are the rspace `Match` trait and \
+             `std::marker::Send` bounds",
+        ),
+    ),
     // ── ⚠ THE OVER-REPORT, MADE VISIBLE ────────────────────────────────────────────
     //
     // The five rows below were all surfaced by the census on its first run and all five are
@@ -338,15 +560,15 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     ),
 ];
 
-/// Anti-vacuity is structural rather than a pinned observation count:
-///
-/// * every declared crate root must still exist;
-/// * the independently maintained recursive normalizer oracle calibrates mutual-SCC detection;
-/// * the derived active file set must equal `RECURSION_DISPOSITIONS` in both directions.
-///
-/// A numerical floor becomes stale precisely when this campaign succeeds at retiring a cycle.
-/// Exact set equality catches missing roots, scanner regressions, new cycles, and retired cycles
-/// without requiring a human to bless a progressively smaller magic number.
+// Anti-vacuity is structural rather than a pinned observation count:
+//
+// * every declared crate root must still exist;
+// * the independently maintained recursive normalizer oracle calibrates mutual-SCC detection;
+// * the derived active file set must equal `RECURSION_DISPOSITIONS` in both directions.
+//
+// A numerical floor becomes stale precisely when this campaign succeeds at retiring a cycle.
+// Exact set equality catches missing roots, scanner regressions, new cycles, and retired cycles
+// without requiring a human to bless a progressively smaller magic number.
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

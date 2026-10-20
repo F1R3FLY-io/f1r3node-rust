@@ -677,29 +677,10 @@ fn borrowed_epathmap_entries(pathmap: &crate::rhoapi::EPathMap) -> BorrowedEPath
     }
 }
 
-/// Charge points of the existing canonical Par visitor. A key charge occurs
-/// before `decode_trie_path`, including for malformed keys; a Par charge
-/// occurs before inspecting its cost fields. No key is charged twice.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CanonicalVisitStep {
-    BorrowedPar,
-    DecodedKeyPar,
-    EncodedKey(usize),
-}
-
-#[derive(Debug)]
-pub enum CanonicalVisitFailure {
-    Codec(crate::rust::canonical_path::CodecError),
-    Charge(rspace_plus_plus::rspace::errors::RSpaceError),
-}
-
 fn drive_canonical_par_tree<'a>(
     root: CanonicalParTask<'a>,
     visit: &mut impl FnMut(&Par),
-    before: &mut impl FnMut(
-        CanonicalVisitStep,
-    ) -> Result<(), rspace_plus_plus::rspace::errors::RSpaceError>,
-) -> Result<(), CanonicalVisitFailure> {
+) -> Result<(), crate::rust::canonical_path::CodecError> {
     use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
 
     use crate::rust::canonical_path::decode_trie_path;
@@ -716,7 +697,6 @@ fn drive_canonical_par_tree<'a>(
     while let Some(task) = work.pop() {
         match task {
             CanonicalParTask::OwnedPar(mut par) => {
-                before(CanonicalVisitStep::DecodedKeyPar).map_err(CanonicalVisitFailure::Charge)?;
                 visit(&par);
                 owned_children.clear();
                 owned_tries.clear();
@@ -746,7 +726,6 @@ fn drive_canonical_par_tree<'a>(
                 work.append(&mut ordered_children);
             }
             CanonicalParTask::BorrowedPar(par) => {
-                before(CanonicalVisitStep::BorrowedPar).map_err(CanonicalVisitFailure::Charge)?;
                 visit(par);
                 borrowed_children.clear();
                 borrowed_tries.clear();
@@ -794,8 +773,6 @@ fn drive_canonical_par_tree<'a>(
                     work.push(CanonicalParTask::OwnedPar(value));
                 }
                 if first_error.is_none() {
-                    before(CanonicalVisitStep::EncodedKey(key.len()))
-                        .map_err(CanonicalVisitFailure::Charge)?;
                     match decode_trie_path(&key) {
                         Ok(decoded_key) => work.push(CanonicalParTask::OwnedPar(decoded_key)),
                         Err(error) => first_error = Some(error),
@@ -808,8 +785,6 @@ fn drive_canonical_par_tree<'a>(
                     BorrowedEPathMapEntries::Set(zipper) => {
                         let advanced = zipper.to_next_get_val().is_some();
                         let decoded = if advanced && first_error.is_none() {
-                            before(CanonicalVisitStep::EncodedKey(zipper.path().len()))
-                                .map_err(CanonicalVisitFailure::Charge)?;
                             Some(decode_trie_path(zipper.path()))
                         } else {
                             None
@@ -819,8 +794,6 @@ fn drive_canonical_par_tree<'a>(
                     BorrowedEPathMapEntries::Map(zipper) => {
                         let value = zipper.to_next_get_val();
                         let decoded = if value.is_some() && first_error.is_none() {
-                            before(CanonicalVisitStep::EncodedKey(zipper.path().len()))
-                                .map_err(CanonicalVisitFailure::Charge)?;
                             Some(decode_trie_path(zipper.path()))
                         } else {
                             None
@@ -850,7 +823,7 @@ fn drive_canonical_par_tree<'a>(
     }
 
     match first_error {
-        Some(error) => Err(CanonicalVisitFailure::Codec(error)),
+        Some(error) => Err(error),
         None => Ok(()),
     }
 }
@@ -872,15 +845,7 @@ pub fn consume_canonical_par_tree(
     root: Par,
     mut visit: impl FnMut(&Par),
 ) -> Result<(), crate::rust::canonical_path::CodecError> {
-    match drive_canonical_par_tree(
-        CanonicalParTask::OwnedPar(root),
-        &mut visit,
-        &mut |_| Ok(()),
-    ) {
-        Ok(()) => Ok(()),
-        Err(CanonicalVisitFailure::Codec(error)) => Err(error),
-        Err(CanonicalVisitFailure::Charge(_)) => unreachable!("no-op charge hook cannot fail"),
-    }
+    drive_canonical_par_tree(CanonicalParTask::OwnedPar(root), &mut visit)
 }
 
 /// Visit a borrowed `Par` graph in canonical preorder without projecting
@@ -895,26 +860,7 @@ pub fn visit_canonical_par_tree(
     root: &Par,
     mut visit: impl FnMut(&Par),
 ) -> Result<(), crate::rust::canonical_path::CodecError> {
-    match drive_canonical_par_tree(CanonicalParTask::BorrowedPar(root), &mut visit, &mut |_| {
-        Ok(())
-    }) {
-        Ok(()) => Ok(()),
-        Err(CanonicalVisitFailure::Codec(error)) => Err(error),
-        Err(CanonicalVisitFailure::Charge(_)) => unreachable!("no-op charge hook cannot fail"),
-    }
-}
-
-/// Metered borrowed traversal for native event-key validation. The caller
-/// defines the deterministic schedule, but this visitor guarantees each
-/// charge precedes the corresponding inspect/decode operation.
-pub fn visit_canonical_par_tree_charged(
-    root: &Par,
-    mut visit: impl FnMut(&Par),
-    mut before: impl FnMut(
-        CanonicalVisitStep,
-    ) -> Result<(), rspace_plus_plus::rspace::errors::RSpaceError>,
-) -> Result<(), CanonicalVisitFailure> {
-    drive_canonical_par_tree(CanonicalParTask::BorrowedPar(root), &mut visit, &mut before)
+    drive_canonical_par_tree(CanonicalParTask::BorrowedPar(root), &mut visit)
 }
 
 /// Consume a decoded `Par` graph while moving every canonical EPathMap key to

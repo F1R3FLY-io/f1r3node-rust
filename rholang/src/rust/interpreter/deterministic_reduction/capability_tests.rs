@@ -18,6 +18,14 @@ struct RejectedJoinReads {
     reject: BTreeSet<Par>,
 }
 
+/// Changed by DR-131 S6: the error of a rejected join read. It was
+/// `RSpaceError::HostWorkRejected`, which is deleted. Both are platform
+/// failures (`economic_failure.rs`), so the retained-charge check holds as
+/// before.
+fn join_read_rejection() -> RSpaceError {
+    RSpaceError::InterpreterError("join read rejected".to_owned())
+}
+
 #[async_trait]
 impl ExecutionBackend for RejectedJoinReads {
     fn codec_epoch(&self) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
@@ -66,7 +74,7 @@ impl ExecutionBackend for RejectedJoinReads {
 
     async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, RSpaceError> {
         if self.reject.contains(&channel) {
-            Err(RSpaceError::HostWorkRejected)
+            Err(join_read_rejection())
         } else {
             self.inner.get_joins(channel).await
         }
@@ -121,16 +129,54 @@ async fn rejected_frontier(rejections: &[bool]) {
         core.inj_with_observation(
             parsed,
             Blake2b512Random::create_from_bytes(b"rejected-frontier"),
-            None,
         ),
     )
     .await
     .expect("every prepared intent must receive a completion");
-    if rejections.iter().any(|reject| *reject) {
-        assert_eq!(result, Err(InterpreterError::HostWorkRejected));
+    // Changed by DR-131: the reducer no longer collapses the rejections of
+    // several branches into one error. As on dev, one rejected branch gives
+    // its own error, and several give an aggregate with one error for each.
+    // if rejections.iter().any(|reject| *reject) {
+    //     assert_eq!(result, Err(InterpreterError::HostWorkRejected));
+    //     assert!(!failures.permits_retained_charge());
+    // } else {
+    //     result.unwrap();
+    // }
+    let rejected = rejections.iter().filter(|reject| **reject).count();
+    match rejected {
+        0 => result.unwrap(),
+        1 => assert_eq!(
+            result,
+            Err(InterpreterError::RSpaceError(join_read_rejection()))
+        ),
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-15): the
+        // F1R3Lang driver keeps the `Located` wrapper of each lane in an aggregate
+        // (`aggregate_evaluator_errors`), so the test checks the count and the root
+        // cause of each error.
+        // count => assert_eq!(
+        //     result,
+        //     Err(InterpreterError::AggregateError {
+        //         interpreter_errors: vec![
+        //             InterpreterError::RSpaceError(join_read_rejection());
+        //             count
+        //         ],
+        //     })
+        // ),
+        count => match &result {
+            Err(InterpreterError::AggregateError { interpreter_errors }) => {
+                assert_eq!(interpreter_errors.len(), count);
+                for error in interpreter_errors {
+                    assert_eq!(
+                        error.root_cause(),
+                        &InterpreterError::RSpaceError(join_read_rejection())
+                    );
+                }
+            }
+            other => panic!("expected an aggregate of {count} rejections, got {other:?}"),
+        },
+    }
+    if rejected > 0 {
         assert!(!failures.permits_retained_charge());
-    } else {
-        result.unwrap();
     }
     for (index, rejected) in rejections.iter().enumerate() {
         assert_eq!(

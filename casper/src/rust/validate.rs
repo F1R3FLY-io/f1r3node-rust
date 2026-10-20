@@ -891,7 +891,10 @@ impl Validate {
       let message = format!(
         "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
         term,
-        &deployer_string,
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // the format arguments are borrowed already.
+        // &deployer_string,
+        deployer_string,
         timestamp_string,
         block_hash_string,
         current_block_hash_string

@@ -265,7 +265,9 @@ impl NoOpsCasperEffect {
 
     /// Add block to DAG storage and update latest messages (like Scala blockDagStorage.insert)
     pub fn add_to_dag(&mut self, block_hash: BlockHash) {
-        use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // the import has no use.
+        // use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
         // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala test logic)
         if let Ok(Some(block)) = self.block_store.get(&block_hash) {

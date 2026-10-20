@@ -190,25 +190,41 @@ pub fn check_registration(registered: &BTreeSet<String>) -> Result<(), FloorBrea
 pub fn check_report(registered: &BTreeSet<String>, result: &TestResult) -> Result<(), FloorBreach> {
     let reported: BTreeSet<String> = result.assertions.keys().cloned().collect();
 
-    match result.has_finished {
-        false => {
-            return Err(FloorBreach::DidNotFinish {
-                registered: registered.clone(),
-                reported,
-            })
-        }
-        true => {}
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+    // `match` on one boolean is an `if`.
+    // match result.has_finished {
+    //     false => {
+    //         return Err(FloorBreach::DidNotFinish {
+    //             registered: registered.clone(),
+    //             reported,
+    //         })
+    //     }
+    //     true => {}
+    // }
+    if !result.has_finished {
+        return Err(FloorBreach::DidNotFinish {
+            registered: registered.clone(),
+            reported,
+        });
     }
 
     let silent: BTreeSet<String> = registered.difference(&reported).cloned().collect();
-    match silent.is_empty() {
-        false => {
-            return Err(FloorBreach::RegisteredButSilent {
-                silent,
-                registered: registered.clone(),
-            })
-        }
-        true => {}
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+    // `match` on one boolean is an `if`.
+    // match silent.is_empty() {
+    //     false => {
+    //         return Err(FloorBreach::RegisteredButSilent {
+    //             silent,
+    //             registered: registered.clone(),
+    //         })
+    //     }
+    //     true => {}
+    // }
+    if !silent.is_empty() {
+        return Err(FloorBreach::RegisteredButSilent {
+            silent,
+            registered: registered.clone(),
+        });
     }
 
     let unregistered: BTreeSet<String> = reported.difference(registered).cloned().collect();
@@ -366,6 +382,17 @@ fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>, arena: &'a Ar
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_) => {}
+
+        // Added by the merge of feature/cost-accounted-rho (finding R3-30): the
+        // f32 ground term (checkpoint merge e5102e945) and the sized integers
+        // (aed9f4427) carry no sub-process either. This exhaustive match did not
+        // name them, so it stopped compiling when they arrived.
+        ExprInstance::GFloat32(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_) => {}
 
         // A variable reference names a binder, never a process.
         ExprInstance::EVarBody(_) => {}

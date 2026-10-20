@@ -3,6 +3,13 @@ use std::collections::BTreeMap;
 use loom::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use loom::thread;
 
+// Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the child-process seam of the negative controls below.
+#[path = "../../../../shared/tests/support/panic_child.rs"]
+mod panic_child;
+
+use panic_child::PanicChild;
+
 #[path = "../../../../rspace++/src/rspace/shared/sparse_transaction.rs"]
 mod sparse_transaction;
 
@@ -168,16 +175,42 @@ fn rejected_batch_concurrent_insert_remove_preserves_complete_publication() {
 }
 
 #[test]
-#[should_panic(expected = "negative control: rejected batch retained only one namespace")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "negative control: rejected batch retained only one namespace")]
 fn rejected_batch_missing_transaction_gate_exposes_partial_publication() {
+    let child = PanicChild::new(
+        module_path!(),
+        "rejected_batch_missing_transaction_gate_exposes_partial_publication",
+    );
+    if !child.is_child() {
+        child.expect_panic("negative control: rejected batch retained only one namespace");
+        return;
+    }
+    child.subject_reached();
     explore(|| competing_rejected_batches(false));
 }
 
 #[test]
-#[should_panic(
-    expected = "negative control: competing transactions both claimed the same authority"
-)]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(
+//     expected = "negative control: competing transactions both claimed the same authority"
+// )]
 fn missing_transaction_gate_exposes_a_duplicate_compare_and_swap_winner() {
+    let child = PanicChild::new(
+        module_path!(),
+        "missing_transaction_gate_exposes_a_duplicate_compare_and_swap_winner",
+    );
+    if !child.is_child() {
+        child.expect_panic(
+            "negative control: competing transactions both claimed the same authority",
+        );
+        return;
+    }
+    child.subject_reached();
     explore(|| competing_transactions(false));
 }
 
@@ -252,8 +285,20 @@ fn snapshots_exclude_partial_publication_and_release_after_callback_errors() {
 }
 
 #[test]
-#[should_panic(expected = "negative control: snapshot observed partial publication")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "negative control: snapshot observed partial publication")]
 fn missing_snapshot_gate_exposes_partial_publication() {
+    let child = PanicChild::new(
+        module_path!(),
+        "missing_snapshot_gate_exposes_partial_publication",
+    );
+    if !child.is_child() {
+        child.expect_panic("negative control: snapshot observed partial publication");
+        return;
+    }
+    child.subject_reached();
     explore(|| snapshot_during_publication(false, false));
 }
 
@@ -384,8 +429,20 @@ fn state_import_two_alias_guards_reject_stale_opposite_alias_commits() {
 }
 
 #[test]
-#[should_panic(expected = "negative control: stale preflight admitted conflicting cold aliases")]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(expected = "negative control: stale preflight admitted conflicting cold aliases")]
 fn state_import_missing_opposite_alias_guard_exposes_conflicting_bindings() {
+    let child = PanicChild::new(
+        module_path!(),
+        "state_import_missing_opposite_alias_guard_exposes_conflicting_bindings",
+    );
+    if !child.is_child() {
+        child.expect_panic("negative control: stale preflight admitted conflicting cold aliases");
+        return;
+    }
+    child.subject_reached();
     explore(|| competing_cold_alias_commits(false));
 }
 
@@ -540,10 +597,24 @@ fn state_import_history_conflicting_batch_discards_its_private_prefix() {
 }
 
 #[test]
-#[should_panic(
-    expected = "negative control: stale history absence allowed a conflicting overwrite"
-)]
+// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+// policy test): the test expected a panic. A child process now runs the subject, and
+// this process checks the exit status and the stderr of the child.
+// #[should_panic(
+//     expected = "negative control: stale history absence allowed a conflicting overwrite"
+// )]
 fn state_import_history_unconditional_write_exposes_stale_absence_corruption() {
+    let child = PanicChild::new(
+        module_path!(),
+        "state_import_history_unconditional_write_exposes_stale_absence_corruption",
+    );
+    if !child.is_child() {
+        child.expect_panic(
+            "negative control: stale history absence allowed a conflicting overwrite",
+        );
+        return;
+    }
+    child.subject_reached();
     explore(|| competing_history_batches(false, false));
 }
 

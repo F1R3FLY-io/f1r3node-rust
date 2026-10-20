@@ -504,6 +504,26 @@ proof. Workstream D's removal obligations (D4.1 precharge/refund + D4.2/D4.3 mer
 discharged. The dispatcher and merge semantics are unchanged; the cache repair prevents reuse across distinct
 main-parent transitions.
 
+**Amendment (DR-120, 2026-10-10).** The outcome above overstates what the port
+realized. Dev's merger runs the whole merge analysis on every multi-parent
+merge, so no conflict-free scope was "composed without merge analysis"
+(P1:356-359). The shared-channel residual went to an exhaustive search over
+rejection options, not to "a natural serialization order" (P1:363-366). DR-120
+realizes both for offered-funded v6 merges: a conflict-free scope composes
+without the analysis, and one ordered pass in a strict total order replaces
+the search. Legacy merges keep the dispatcher and dev's merger unchanged.
+
+**Amendment (audit 2026-10-12).** Item 1 is wrong at HEAD `e38ff0de8`. No
+file under `casper/src` or `node/src` calls `admit_by_funding` or
+`static_authority_plan`, so the gate of DR-11 is not live. The merge
+`1d325b996` removed that gate on 2026-10-01. The node plays and replays each
+deploy to termination. Since the commits `02d01541b` and `e64261134`, a
+different check runs before execution in play and in every replay. It is the
+check of DR-123 and DR-124, and it calls `delta_sigma::estimate`
+(`direct_wallet_funding/execution/gate.rs:26-28, 423-442`). It checks one
+envelope against $`R_0`$ and admits nothing concurrently. The text above stays
+as the record of that time.
+
 **Cross-refs.** DR-5 (precharge/refund removal), DR-9 (token-per-COMM cost), DR-11 (acceptance gate),
 DR-13 (Σ⟦s⟧ supply). KEEP-LIST: `MergeableChannelAccounting.v`/`.tla` (the merge path's formal anchor).
 
@@ -3250,6 +3270,10 @@ pass both closed-gate and settled-gate paths. The unchanged finalization
 eviction tests preserve an above-floor carrier and remove a floor-terminal
 deploy.
 
+**Amendment (DR-116, 2026-10-09).** Owner custody also holds for offered
+envelopes. A failed offered deploy that a merge rejects is final, so its owner
+buffers nothing.
+
 **Cross-refs.** DR-33, TM-CA-171, O10 through O14, and
 `formal/tlaplus/deploy_recovery/README.md`.
 
@@ -3396,6 +3420,14 @@ indices and exact committed-effect projection.
 Lifecycle tests check failed settlement membership, restore-horizon deferral,
 and adopted-state cleanup. Floor tests check that failed-body settlement is
 settled content. Storage tests check accepted and rejected exact effects.
+
+**Amendment (DR-115, 2026-10-08).** The merge 1d325b996 restored the dev merge
+index and removed `has_committed_state_effect`. From then until DR-115, the
+merge index skipped every failed deploy. DR-115 restores the merge-index part
+of this record for protocol-6 offered deploys: a failed offered deploy indexes
+its committed settlement suffix. The metadata, containment and lifecycle parts
+of this record are not implemented at HEAD. The model
+`DeployLifecycleFinalization` that this record cites is not in the repository.
 
 **Cross-refs.** DR-43, DR-50, DR-53, CA-P-203, TM-CA-193, UC-CA-184,
 E2E-052, and finalized-floor safety invariant S34.
@@ -3964,6 +3996,35 @@ offer holds its exact demand. A dynamic offer holds up to the limit and gets
 the rest back. Validators recompute the same decision. DR-67 covers the stack
 safety of the newly reachable analyzer.
 
+**Amendment (DR-113, 2026-10-09).** DR-113 implements the exhaustion row:
+exhaustion of the signed limit is a classified user failure. No certified
+bound and no hold exist yet, so every live contract binds the signed limit.
+
+**Amendment (DR-123, 2026-10-11).** DR-123 implements the check of items 3
+to 5. It amends the wording of items 4 and 6 and of the verification
+obligation (design section 8.6). The rejection text for holds that do not fit
+is "insufficient phlogiston" (P1:2210).
+
+**Amendment (DR-124, 2026-10-11).** DR-124 makes the check live in play and
+in every replay. The check holds only the client's demand, as P1's acceptance
+protocol does (P1:2191-2200). That demand is the demand of the client lanes,
+the lanes that a source of the envelope may pay. A source is located at the
+purse of such a lane, or it permits the lane for at least one class (the
+G1-6 fix). The demand of every other lane leaves the holds, and the estimate
+is then incomplete.
+
+**Amendment (audit 2026-10-12).** The context is wrong about the hold
+arithmetic. `FundingBranchReservation` had production callers.
+`select_phlo_funding_family` (`phlo_execution/family_policy.rs:426`) calls
+`FundingBranchReservation::from_plans` at `:686`, and
+`phlo_execution/funding.rs:277` also calls it. At the commit `c3aacd649` of
+2026-10-03, the producer called `select_phlo_funding_family` during
+settlement (`family_selection.rs:206`). So the hold arithmetic ran after
+execution, not before it. The check of DR-123 now calls it before execution
+(`direct_wallet_funding/execution/gate.rs:935`). The context is right that no
+production path called the static analysis. The text above stays as the record
+of that time.
+
 **Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
 `def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
 Epic 8946 leaves `ofp-1-admission-inputs`, `ofp-2-bound-analyzer`, and
@@ -4090,6 +4151,159 @@ property test.
 `ofp-3-funding-groups`, `ofp-4-held-capacity-guard`, and
 `ofp-5-replay-groups`.
 
+**Implementation note 1: the code motion (G2-1, 2026-10-11).** The user
+decided to move the code first. Then the live check (G1-6) and the ordered
+batch (G2-2) change no Casper file that the branch shares with `dev`. G2-1
+moves the single-offer play and replay code and changes no behavior.
+
+- **The new module.** The file
+  `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_block.rs`
+  holds the moved code. `execution.rs` declares it and re-exports
+  `CertifiedOfferedDraft` to the crate.
+- **The moved blocks.**
+  - The body of the play branch of `compute_state_envelopes` is now
+    `RuntimeOps::compute_offered_envelope_state`. It takes the arguments of
+    `compute_state_envelopes`, with the envelope in place of the candidates.
+  - The body of the replay branch of
+    `replay_compute_state_envelopes_with_policy` is now
+    `RuntimeManager::replay_offered_envelope_state`. It takes the arguments
+    of its caller.
+  - `certify_offered_draft` with its DR-102 comment and
+    `replay_offered_system_continuation` moved from `runtime_manager.rs`.
+  - `CertifiedOfferedDraft` and its impl moved with certify. Its fields are
+    private, and certify builds it with a struct literal.
+- **The old sites.** Each moved block leaves exactly one pointer comment
+  (user decision U1). No commented-out copy stays. The two branch heads stay
+  in `runtime.rs` and `runtime_manager.rs`, and each head calls its new
+  function.
+- **The other edits.**
+  - Four helpers are now `pub(crate)`: `offered_candidate_rejection`,
+    `reserve_presentation_copy`, `offered_event_clone_bytes` and
+    `save_mergeable_channels_metered`. Their tests stay in place.
+  - The replay branch wrote the private field `offered_budget_recorder`
+    twice. It now calls `record_offered_budget_usage`, which passes the same
+    arguments to the same recorder.
+  - The imports that became unused are removed. `acceptance.rs` imports
+    `CertifiedOfferedDraft` from its new path.
+  - Both branch bodies end with `return`, and `clippy::needless_return`
+    rejects that at the end of a function. The two new functions allow the
+    lint, so the moved text stays unchanged.
+- **Evidence that the move is exact.** A script removed white space and
+  trailing commas from each moved block. It found each block verbatim in the
+  new module, with the two recorder calls as the only token edits. rustfmt
+  joined some lines of the two branch bodies, which lost one indentation
+  level.
+- **Lines of the shared files.** `runtime.rs` changes by +12 and −289 lines.
+  `runtime_manager.rs` changes by +28 and −554 lines.
+- **Citations.** The documents cite the moved code in `offered_block.rs`.
+  The removed imports and blocks move the later lines of both shared files.
+  The new re-export moves the later lines of `direct_wallet_funding.rs`. This
+  commit refreshes the citations of all these lines. The refresh covers the
+  consensus proposal, three of its diagrams and the design of the linear cost
+  estimate. It also covers DR-111, DR-120, DR-123, two code comments and the
+  note of `ReplayRoleAttribution.v`. The proposal, the design and two
+  diagrams state that these citations follow a later commit than their code
+  basis. The note adds four lines to the Rocq development, so the
+  verification document now states 111,811 lines.
+- **Audit coverage.** The source-line audit
+  (`scripts/audit/check-source-line-refs.sh`) does not check `offered_block.rs`
+  yet, because its allow-list does not name the file.
+- **Verification.** No test is new, because no behavior changes.
+  `cargo fmt --check`, workspace clippy with `-D warnings` and the workspace
+  doctests pass. The casper suite passes 1776 of 1780 tests with the
+  provisional caps and 1774 of 1780 with the committed caps. Every failure is
+  a known failure and fails at the same assertion as before. The proof gate
+  (`COST_ACCOUNTING_ONLY=1`) and the documentation syntax gate pass. The
+  source-line audit reports the same 57 older mismatches of 502 citations
+  before and after.
+
+**Implementation note 2: the held-capacity guard with one offer per block
+(G1-7, 2026-10-12).** Step G1-7 enforces item 5 for one offered member per
+block. There are no later holds, so the guard is the condition under which
+SystemVault reserves each debit (design section 8.3). Decision B3 stays
+superseded. Steps G2-2 and G2-4 add the later holds.
+
+- **The purpose.** A member whose own code spends the funds that its
+  settlement needs becomes a charged user failure. Before G1-7, such a
+  self-drain ended with "wallet settlement rejected" after all the work, and
+  the work was free, against P1:1990-1992 and P1:2301-2302.
+- **The guard.** `held_capacity_guard` in `gate.rs` checks
+  $`\mathrm{balance}_{\mathrm{after}}(p) \geq \mathrm{debit}(p) + \mathrm{later}(p)`$
+  for every purse of the debits and the later holds. A purse that the
+  balances do not list has balance 0, and a sum that overflows fails its
+  purse. The function walks the two sorted key sets in one pass and returns
+  the failing purses in ascending order.
+- **The inputs.** `held_capacity.rs` takes the debit of each custody from the
+  settlement capture of the success path, as the acquisition plus the fee.
+  Settlement charges the same amounts. It reads the SystemVault balance of
+  each debited purse at the settlement root, where the run has changed it.
+  Play and replay read the same root.
+- **Play.** The producer runs a pass after execution. On the success path
+  it checks the guard right after the settlement capture, before any state
+  change. If the guard fails, `roll_back_for_guard` resets the runtime to the
+  execution root, as `abort` does. It drops the births of the run, its grant
+  issuances, their log and its mergeable map. A second pass then settles the
+  run as `UserFailure`. Its selection uses the capacities at $`R_0`$ (user
+  decision U3), and its settlement binds to the execution root.
+- **Replay (arbitration M2).** One flag, "user failure or guard failure",
+  reaches every site.
+  - The witness replay treats a committed `UserFailure` for a run without a
+    user failure as a claimed guard failure. A run with a user failure that
+    the block commits as a success still rejects.
+  - The flag selects the settlement root and skips the grant collection.
+  - `settle_replayed_candidate` recomputes the success path at the root after
+    the run (`success_path_debits`) and reads the balances there. It accepts
+    the claim only if the guard fails. It then drops the births of the run
+    and settles the rollback from the execution root.
+  - The outcome and the mergeable map follow the flag.
+  - A committed success needs no extra check. Its wallet settlement rejects a
+    short purse, and with one offer per block that condition is the guard.
+- **Test hooks.** These hooks exist only in builds with the feature
+  `test-utils`. The recorder keeps each guard outcome, and a hook of one node
+  makes its guard fail in play and in replay.
+- **Rocq.** `HeldCapacityGuard.v` proves the guard lemmas without a floor and
+  the replay rule, with three negative controls.
+- **Shared files.** The step changes no Casper file that the branch shares
+  with `dev`.
+
+- **Verification.**
+  - Rocq, with no axiom: `HeldCapacityGuard.v` proves `guard_true_iff`,
+    `held_capacity_guard_preserves_later_holds`,
+    `guard_implies_vault_reservation`, `single_member_guard_is_vault_condition`,
+    `rollback_charge_fits_restored_balance`, `rollback_keeps_later_holds`,
+    `settled_keeps_later_holds` and `replay_accepts_exactly_the_honest_class`.
+  - Three proved negative controls refute three wrong rules:
+    - the vault-only condition, with the example of design section 8.3
+    - settlement without the guard
+    - the replay that trusts the failure class of the evidence
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 291 modules and
+    3347 closed assumption queries.
+  - Property tests of 256 cases in `execution/gate/tests.rs`:
+    - the guard equals the pointwise inequality
+    - with no later holds, the guard equals the condition of SystemVault
+    - the rollback charge fits the restored balance when realized use is at
+      most the estimate
+  - A unit test replays the example of design section 8.3.
+  - `casper/tests/api/offered_guard_api_test.rs`: a self-drain becomes a
+    charged user failure with equal receipts on every node. The balance is
+    the restored balance minus the charge, and the drained transfer moves
+    nothing. A later transfer that leaves enough funds settles normally. A
+    producer with a hook that makes its guard fail gets its block rejected
+    by the other validators, which find a holding guard.
+  - casper (nextest, release, 8 test threads): 1805 of 1809 tests pass with
+    the provisional caps, and 1803 of 1809 with the committed caps. The
+    failures are the known failures, at their earlier assertions.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Amendment (audit 2026-10-12).** The user approved one amendment on
+2026-10-10, and this record did not carry it. Member $`i`$ is accepted at
+$`R_0`$, but it reads its settlement inputs at $`R_{i-1}`$. Two offers of one
+signer share a cursor scope. So a settlement read at $`R_0`$ would make the
+second settlement fail. The proposal records the rule in §4.2. The rule refines
+item 1, and the decision above stays.
+
 ## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
 
 **Status.** Adopted 2026-10-03 as decision D3 of epic 8946, by the user
@@ -4171,6 +4385,242 @@ worklist fold equals the recursive fold. Differential property tests compare
 each port with the recursive reference, which stays as a `#[cfg(test)]`
 oracle.
 
+**Implementation note 1: the analyzer walks (G1-1, 2026-10-09).** Leaf
+`ofp-1-stack-safe-analyzer`. The user approved the backport on 2026-10-09
+("Backport the relevant changes").
+
+- **Source of the code.** The F1R3Lang integration wrote iterative versions of
+  the analyzer walks in merge `29b729551` on branch
+  `integration/f1r3lang-cost-accounted-rho-20261005`. This branch copies the
+  non-test changes of that merge to `delta_sigma.rs` verbatim.
+  - A cherry-pick is not possible, because the merge changes 3,637 files.
+  - The test edits of the merge stay out. They need the iterative `Par` drop
+    and the `par_from_default!` macro of F1R3Lang, which this branch does not
+    have. The 2,048-level test of the merge stays out for the same reason.
+  - A paragraph of the module documentation cites the source. The recursive
+    oracle and the declaration of the new test file are at the end of the
+    file. F1R3Lang did not change these regions, so its next merge of this
+    branch meets identical walk text.
+- **The four walks.**
+  - `signed_demand_par` keeps a work stack of `DemandTask` values and a value
+    stack of `SignedDemand` values. The tasks `Combine`, `Alternative` and
+    `SignedFinish` fold a child into its parent after the child finishes.
+  - `collect` and `has_bound_level` inside `static_authority_signatures` keep
+    depth-first worklists in the order of the recursion.
+  - `demand_by_sig_into` keeps a work stack of `LaneTask` values and a value
+    stack of lane maps. The helper `branch_demand_by_sig` is gone.
+  - A `ScopeLink` is one entry of a parent-linked arena: the index of the
+    enclosing link and the lane of the region. The arena holds the enclosing
+    signed regions. It replaces the copy of the region list at each level
+    (`scopes.to_vec()`).
+  - The arena never removes a link, so the index of a task always denotes the
+    same chain. The decision text names a push/pop scope stack. The arena
+    gives the same chains without a pop.
+- **The oracle.** The recursive walks of HEAD `17e07307f` stay at the end of
+  `delta_sigma.rs`, in the `#[cfg(test)]` module `recursive_oracle`. Only their
+  visibility differs from HEAD.
+- **Equal results.** The machine visits the items of a node in the order of the
+  recursion. So it makes the same `reject` calls in the same order and keeps
+  the same first rejection reason. Three differences in the code do not change
+  a result:
+  - A `match` without a source skips the combination with an empty demand.
+    `SignedDemand::combine` returns its left operand for an empty demand.
+  - The chain walk adds lanes from the inner region outward. The recursion
+    added them from the outer region inward. Lane bumps commute.
+  - `demand_by_sig_into` calls `region_sig` for all sends and receives of a
+    node before it visits the receive bodies. The lane map is equal for a pure
+    callback. The function has no production caller.
+- **Limits.**
+  - The walks are stack-safe, but not linear. An introduction still adds one
+    unit to each enclosing signed region, as the recursion did. So the work is
+    proportional to the introductions times the signed nesting depth.
+  - The canonical form of a signature (`sort_signature` and the
+    `ParSortMatcher`) and prost encoding still recurse over the depth of a
+    quoted signature. The iterative sorter and the generated traits of
+    F1R3Lang cover them. They are general interpreter work.
+- **Verification.**
+  - Rocq `StackSafeDemandWalk.v` uses the standard library only and no axiom.
+    - `demand_compile_run_equivalence` instantiates `compile_run_equivalence`
+      of `StackSafePDA.v`: the post-order program of the machine, run on a
+      value stack, pushes the value of the recursion. It holds for every
+      interpretation of the demand algebra. So it covers every field of
+      `SignedDemand`, the first rejection reason included.
+    - `lazy_run_runs_the_flattened_program` shows that the work stack, which
+      expands one task at a time, runs exactly that program.
+      `iterative_walk_refines_recursion` combines the two results.
+    - `iterative_walk_steps_are_linear` bounds the steps by three per syntax
+      node.
+    - `arena_push_extends_chain`, `arena_append_preserves_chain` and
+      `arena_push_preserves_order` show that the arena represents the
+      persistent scope chains of the model.
+    - `bump_lanes_reverse` shows that the direction of the chain walk does not
+      change the lane counts.
+    - `collect_worklist_refines_recursion` shows that the worklist of
+      `collect` returns the value or the first error of its recursion.
+    - Two proved negative controls break the refinement.
+      `skipped_scope_pop_breaks_the_refinement` uses a machine that does not
+      pop the scope after a signed region.
+      `reordered_visit_breaks_the_refinement` uses a machine that visits the
+      items of a node in reverse order.
+    - The proof gate passes in cost-accounting mode: 278 modules and 3161
+      closed assumption queries. Each of the 16 registered theorems of the
+      module is closed under the global context.
+  - Rust tests in `delta_sigma/stack_safety_tests.rs`:
+    - a 256-case property test that compares each walk with the oracle: the
+      `SignedDemand` value with its first rejection reason, the signature map
+      or its first error, and the per-lane map.
+    - the same comparison on every program of the repository corpus that the
+      normalizer accepts. The parser panics on `select`
+      (`rholang/examples/old/*/Cell2.rho`), so the test counts a panic as a
+      rejection.
+    - a test of the first rejection reason when two reasons compete.
+    - a test of a `match` without sources and an `if` without branches.
+    - a term nested 100,000 levels deep. The walks run on a 256 KiB thread and
+      agree with the oracle, which runs on a 1 GiB thread. The test builds and
+      dismantles the term iteratively, because prost's drop recurses.
+  - Suites:
+    - rholang and rspace++ pass 4140 of 4140, with the 5 new tests. The first
+      run failed the corpus test, because the parser panicked on `select`.
+    - A clippy fix then split one test helper. The 51 `delta_sigma` tests pass
+      again.
+    - The rholang doctests pass. `cargo fmt --check` and
+      `cargo clippy --workspace --all-targets -- -D warnings` pass.
+    - Only tests, `oslf.rs` and `resource_logic.rs` call the changed walks.
+      Nothing calls those two modules in production, so the Casper suite does
+      not apply.
+
+**Implementation note 2: the funding resolver (G1-2, 2026-10-09).** Leaf
+`ofp-1-stack-safe-lexical`. The user approved metering, linear work and a
+stack-safe walk on 2026-10-09: "so long as they are necessary for
+cost-accounting completion". The walk follows the specialized machines of
+`feature/mettail`.
+
+- **Why each property is necessary.** The pre-execution funding check runs the
+  resolver on every incoming deploy before any payment.
+  - Without metering, an attacker gets analysis work for free.
+  - Without linear work, that free work grows with the square of the program
+    size. HEAD substituted the whole body of each `new` again, and it copied
+    each level only to count its terms.
+  - Without a stack-safe walk, one deep deploy can exhaust the stack of the
+    node.
+- **The machine.** `FundingResolver` in `lexical.rs` pops one task at a time
+  from a heap work stack.
+  - The tasks are `Visit`, `BindSignatures`, `Signature`, `Cells`, `Holes`,
+    `Enter`, `Pop` and `Build`.
+  - A binder stack holds the scope. An entry `Some(name)` is a name that the
+    reducer allocates. An entry `None` is a hole: a receive or match variable,
+    or a `new` in a position that the resolver does not resolve.
+  - Two value stacks hold the rebuilt children and the resolved signatures
+    until the `Build` task of their node takes them.
+- **What the machine rewrites.** It rewrites the cost signatures that the
+  analyzer reads: the signatures of signed terms, the cells of token stacks,
+  and the signatures of receive binds. It also resolves a dequotation `*x` of a
+  resolved name, as HEAD did. It copies every other field.
+  - HEAD substituted every bound name of a resolved `new` into the whole body.
+    The analyzer reads none of the other positions. So when HEAD succeeds, the
+    analyzer's results do not change.
+  - The whole-body substitution could also fail on a position that the
+    analyzer does not read. An example is the wildcard pattern of
+    `1 matches _` in send data
+    (`rholang/src/test/resources/tests/test-matches.rho`). HEAD then returned
+    `SubstituteError`. The machine does not substitute that position, so it
+    accepts the program. This deviation is deliberate.
+  - The parity tests compare the walked signatures, the analyzer's results and
+    the first error. They accept the deviation above only when HEAD fails with
+    `Illegal Substitution` and the machine succeeds.
+- **Linear work.**
+  - The machine visits each node once and resolves each signature once.
+  - A signature gets an environment that holds only the bindings that it can
+    reference. These are its bound levels and the free variables of its quoted
+    processes, which `locally_free` lists with one byte per de Bruijn index.
+  - `term_count` counts the terms of a node without a copy.
+  - `new_binding_values` builds the values of `util::allocate_new_bindings`,
+    with the same errors. That function copies its whole environment at each
+    binding, so a `new` with many names costs quadratic work there.
+- **Metering.** The resolver reserves each charge before it does the work.
+  - `StructuralItems`: one per task, plus one per scheduled task, per scanned
+    expression, per rebuilt part, per signature element and per scanned byte
+    of `locally_free`.
+  - `SubstitutionBindings`: one per binder that the resolver pushes.
+  - `VerificationOperations`, `VerificationBytes` and `SearchStateBytes`: the
+    block accounting of the reducer for every copy
+    (`reserve_blocks_copy_and_cleanup`), and the metered signature
+    substitution (`substitute_cost_signature_metered`).
+  - A refused reservation returns `HostWorkRejected`. The resolver then
+    dismantles its partial results without recursion.
+  - `resolve_lexical_names_for_funding_metered` is the metered entry. The
+    unmetered entry `resolve_lexical_names_for_funding` runs the same machine
+    without a budget. Only tests call it.
+- **The term schedule.** The machine counts the terms of the input node, as
+  the reducer does. HEAD counted them after its substitution had merged a
+  dequotation of a resolved name into the node. So HEAD could give a sibling
+  `new` another split of the randomness than the reducer. The test
+  `machine_follows_the_reducer_schedule_beside_a_resolved_dequotation` shows
+  the case.
+- **Receive bodies.** This note keeps HEAD's rule: a receive body gets the split
+  of the receive's own randomness. DR-121 changes the rule.
+- **Limits of stack safety.** The walk keeps its state on the heap. Three
+  recursions stay. Each is general interpreter work, and the normalizer and
+  `encoded_len` already recurse over the same depth before the resolver runs.
+  - The derived protobuf clone of the fields that the resolver does not walk:
+    channels, patterns, expressions and conditions.
+  - The substitution and sorting of a quoted signature. The metered path stops
+    at a depth of 256, through the guard of the metered sorter.
+  - The derived drop of the output, which the caller owns.
+  - The generated stack-safe traits of F1R3Lang remove these recursions.
+- **The oracle.** HEAD's `resolve_par` and `resolve_receive` stay in
+  `lexical.rs` under `#[cfg(test)]`, with the entry
+  `resolve_lexical_names_for_funding_recursive`.
+- **Verification.**
+  - Rocq `StackSafeLexicalResolver.v` uses the standard library only and no
+    axiom.
+    - `subst_compose` shows that two substitutions compose into one.
+    - `resolver_linearization` and `one_pass_equals_recursive_resolver` show
+      that one pass with an environment equals HEAD's recursion, which
+      substitutes the names of each `new` into its body.
+    - `machine_runs_its_denotation` shows that each step of the machine keeps
+      the denotation of its work stack. So the machine computes the one pass
+      (`machine_refines_one_pass_resolver`) and HEAD's recursion
+      (`machine_refines_recursive_resolver`). This is the
+      `compile_run_equivalence` pattern of `StackSafePDA.v`, with a scope stack
+      and allocation effects.
+    - `resolver_steps_are_linear` bounds the steps by six per syntax node.
+    - Two proved negative controls break the refinement. In
+      `skipped_scope_pop_breaks_the_refinement`, a machine that does not pop
+      the scope after a `new` leaks the binding to a later sibling. In
+      `reordered_visit_breaks_the_refinement`, a machine that visits the items
+      of a node in reverse order reports another first error.
+    - The proof gate passes in cost-accounting mode: 279 modules and 3172
+      closed assumption queries. Each of the 11 registered theorems of the
+      module is closed under the global context.
+  - Rust tests in `lexical/stack_safety_tests.rs`:
+    - a 256-case property test on generated programs. It compares the walked
+      signatures, the analyzer's results and the first error with the oracle,
+      and the metered result with the unmetered one.
+    - the same comparison on the repository corpus, once with the URNs of the
+      corpus bound and once with every URN binding failing. A parser panic
+      counts as a rejection. The deviation of HEAD's substitution appears only
+      at `test-matches.rho`, and the test checks this list.
+    - `machine_does_not_substitute_positions_that_the_analyzer_does_not_read`
+      shows the deviation on a small program.
+    - `new_binding_values` against `util::allocate_new_bindings`.
+    - a linear charge: every host-work dimension grows by the same amount for
+      each added level of nesting.
+    - an exhausted budget: one unit less than the measured work in any charged
+      dimension rejects the program, and exactly the measured work accepts it
+      with the same result.
+    - 100,000 nested `new` terms on a 256 KiB thread, with the name of each
+      level checked against the reducer's rule.
+    - a term nested 100,000 levels deep through every walked construct, on a
+      256 KiB thread.
+  - Suites:
+    - rholang and rspace++ pass 4149 of 4149, with the 9 new tests. This run
+      also covers the test-helper refactor of implementation note 1.
+    - The rholang doctests pass. `cargo fmt --check` and
+      `cargo clippy --workspace --all-targets -- -D warnings` pass.
+    - No production code calls the resolver yet, so the Casper suite does not
+      apply.
+
 **Cross-refs.** DR-64. Leaves `ofp-1-stack-safe-analyzer`,
 `ofp-1-stack-safe-lexical`, and `ofp-1-stack-safe-signatures`.
 
@@ -4218,6 +4668,23 @@ and maps to no purse in any later deployment. The installer rule of items 1
 to 3 applies only to stored terms that user code signs, never to system
 residue.
 
+**Amendment (audit 2026-10-12).** The user approved two changes to this
+record on 2026-10-10, and the record did not carry them. The proposal records
+both (§4.3). The linear cost estimate design records the interim rule as B5
+(sections 8.5 and 16).
+
+- **Narrowing.** G3 funds only seals whose signature locates a key wallet,
+  and only seals that existed at $`R_0`$.
+- **Interim rule B5.** Until a tuple-space veto exists, the node rejects the
+  triggering deploy with no charge when an installer purse cannot pay. B5
+  replaces item 3 for now.
+- **Note on the premise of B5.** RSpace already has a commit veto.
+  `Match::check_commit` (`rspace++/src/rspace/match.rs:34-39`) lets a `where`
+  guard veto a commit, and the veto keeps the data and the continuation
+  (`rspace++/src/rspace/space_matcher.rs:184-199`). The accounting observer
+  has no veto (`rspace++/src/rspace/rspace_interface.rs:116-122`). So the
+  premise of B5 is under review in G3.
+
 **Verification obligations.** The three-node gateway flow passes. A TLA+
 control shows that a trigger with no stored signature cannot draw an installer
 purse. `FundingSlotBootstrap.v` covers the third-party stack. Each invariant
@@ -4242,6 +4709,15 @@ decisions do not change, because they are general Casper behavior.
 
 **Verification obligations.** The recovery-family tests pass on the activated
 harness. Recovery outcomes match the current outcomes for the same scenarios.
+
+**Amendment (DR-115, 2026-10-08).** DR-115 makes a failed offered deploy
+rejectable by the merge. So the recovery error that this record removes now
+also reaches failed offered deploys. By user decision, gap G6 follows DR-115
+directly.
+
+**Amendment (DR-116, 2026-10-09).** DR-116 implements this record. It lists
+the tests that stay on legacy deploys and the residuals, including in-scope
+recovery.
 
 **Cross-refs.** DR-55, DR-56, DR-66. Leaf `ofp-3-recovery-offered-format`.
 
@@ -4411,6 +4887,16 @@ The integration test
 `unfundable_offer_at_queue_head_is_quarantined_and_next_offer_is_included`
 shows that an unfundable head offer does not stop the next offer. It also
 checks the root-bound status entry.
+
+**Amendment (DR-116, 2026-10-09).** The quarantine also removes the buffer
+entry of the candidate.
+
+**Amendment (DR-113, 2026-10-09).** Exhaustion of the signed limit is a
+classified user failure, so it no longer reaches the candidate rejection.
+
+**Amendment (DR-114, 2026-10-09).** An external-service call and a malformed
+system-process call no longer reach the candidate rejection. The call is
+recorded and replayed, and a shape error is a classified user failure.
 
 **Cross-refs.** P1 `sec:deploy-boundaries`. DR-63, DR-65. Leaves
 `ofp-1-baseline-liveness` and `ofp-1-baseline-verify-quarantine`. Leaf
@@ -4770,6 +5256,25 @@ their purpose: replay follows the play order, and a guard veto of the first
 greedy candidate stores the operation without an exhaustive search. Before
 the change, the second test failed, because the canonical order put the
 guard-approved candidate first.
+
+**Amendment (DR-129, 2026-10-13).** DR-129 restores `dev`'s random shuffle
+in play (user decision 2026-10-12). Replay follows the recorded pick, so
+play does not need this order. The text above stays as written, with these
+changes:
+
+- Decision item 4 now holds for directive replay and metered native replay
+  only. Play calls `shuffle_with_index` with `dev`'s body again.
+- The context overstates the need. Play and replay need one order only for
+  a join that names one channel twice (E1) and for the Stored check (E3).
+  DR-129 closes both with local fixes.
+- The legacy (digest, index) oracle of item 5 moved to `candidate_order.rs`,
+  with no change in behavior.
+- `NativeCandidateOrder.tla` now lets play pick any matching candidate, and
+  replay follows the recorded payload. The control
+  `NativeCandidateOrderReplaySourceMatchUnsafe` replaces
+  `NativeCandidateOrderReplayNoTieBreakUnsafe`.
+- The diagram above now names the order of replay.
+- DR-129 lists the changes to the three directive-replay tests.
 
 **Cross-refs.** DR-72, DR-74. Leaves `ofp-2-perf-ordering` and
 `ofp-2-cap-root-causes`.
@@ -5553,6 +6058,14 @@ Tests in `hot_store/native/tests.rs`:
 - `every_data_view_cut_rejects_without_filling_the_cache`. This test found
   a first draft that reserved the snapshot after the insert.
 
+**Amendment (DR-106).** The entries of the channel data also borrow their
+channels, and the selection reads the position of each channel's entry,
+which the build of the entries records (DR-106).
+
+**Amendment (DR-107).** The incoming datum of a produce is also borrowed,
+so no datum in the channel data is owned. The produce selection moves the
+incoming value into its result (DR-107).
+
 **Cross-refs.** DR-81. Leaf `ofp-2-cap-c2-data-views`.
 
 ## DR-83 — Continuation-shard replaces count store-owned pointers inline
@@ -5605,6 +6118,20 @@ which is not yet released. It changes no observable value.
   the same when the payload grows 16 times, stays below the walked charge,
   and covers the allocation of the pointer copy.
 - `shared_cleanup_charges_the_pointer_only`.
+
+**Amendment (DR-108).** In block mode, the cleanup walk of store-owned shared
+pointers charges each pointer as a field with its strong-count header
+(DR-108).
+
+**Amendment (DR-110).** The checkpoint of the replay authority copies its
+events, its rows and its generation pointer with block copies. Their
+payloads were prepaid at birth, so the block shared-pointer walk cleans up
+the copies (DR-110, decision 9).
+
+**Amendment (DR-111).** Score vectors now also prepay the VerificationBytes
+of their release. `SorterMeter::score_vec` reserves one read of each slot at
+the birth of the vector (Rule S, DR-111, decision 4). The other owned
+vectors are unchanged.
 
 **Cross-refs.** DR-81, DR-82. Leaf `ofp-2-cap-conditional-c5-c6-c11`.
 
@@ -6041,6 +6568,9 @@ Tests:
 - The existing every-cut and differential tests of candidate selection and
   installation pass unchanged.
 
+**Amendment (DR-109).** The commit guard also pays the release of its
+owned result, with a second block inspection (DR-109, decision 5).
+
 **Cross-refs.** DR-76 (C12, the same read-coverage rule for the COMM
 observation), DR-81, DR-82. Leaf `ofp-2-cap-d-a1-commit-check-reads`.
 
@@ -6128,6 +6658,17 @@ Tests in `replay_authority/tests/backing.rs`:
 
 The existing replay-authority tests, including the retry exhaustion and the
 checkpoint and result rejection tests, pass unchanged.
+
+**Amendment (DR-110).** The checkpoint copies of the replay authority now
+follow the row and copy rules of this record (DR-110, decision 9). The owned
+backing that builds the canonical authority doubles only the operations. The
+second inspection in `canonical_cost_signature_metered` prepays the release
+bytes of each canonical signature (DR-110, Rule B).
+
+**Amendment (DR-111).** The owned-backing convention of this record prepays
+releases in operations only. Rule S of DR-111 adds the release reads of the
+score vectors of the metered sorter in VerificationBytes, one read of each
+slot at birth.
 
 **Cross-refs.** DR-79 (C14), DR-83 (C5), DR-88. Leaf
 `ofp-2-cap-d-a2-replay-authority-backing`.
@@ -6404,6 +6945,21 @@ inline field, not as a worklist entry. A block-mode copy of a slice of
 shared pointers charges each pointer's strong-count update. See DR-94
 decisions 5 and 6.
 
+**Amendment (DR-108).** Decision 3: the first entry that a popped entry's
+children push reuses the popped slot, so only the root and the further
+entries reserve `BLOCK_ENTRY_BACKING` (DR-108).
+
+**Amendment (DR-111).** Decision 4 is complete. `SorterMeter` has the block
+wrappers `clone_blocks`, `inspect_blocks`, `clone_slice_blocks`,
+`hash_insert_blocks` and `score_vec`. The per-level `clone`, `inspect` and
+`clone_slice` compile only for tests, as reference charges (DR-111,
+decision 1).
+
+**Amendment (DR-112).** The legacy per-level mode of decision 4 is now a
+test oracle. It compiles only for tests and under the shared feature
+`level-walker-oracle`, which the dev-dependencies of models, rholang and
+rspace++ enable. A production build contains only the block mode.
+
 **Cross-refs.** DR-81, DR-82 and DR-83 (shared pointers and prepaid
 releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
 `ofp-2-cap-d-b3-worklist-charge`.
@@ -6533,6 +7089,14 @@ which stays, prepays the extra length computation, and
 `reserve_nested_encode` covers `Message::encode`. `NestedEncodeCost.v`
 proves the bound for `Message::encode` (its `site_work`), and DR-94
 corrects that file's comment.
+
+**Amendment (DR-110).** `bounded_legacy_events` in
+`replay_authority/result.rs`, which this record listed with a linear charge,
+now reserves the nested encode of each authority. The key reserves the output
+bytes, so the reservation adds none. A block inspection prepays the site's
+length computation, as the correction note above states. The Casper callers
+of the funding channel have a length inspection but no nested encode
+reservation (DR-110, recorded gaps).
 
 **Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.
 
@@ -6708,6 +7272,31 @@ of 23.7 MB for the validator and 21.5 MB for the producer. The deferred
 RSpace source preparation, about 130 MB of validator VerificationBytes,
 accounts for most of the difference from the plan's projection of 258 MB
 for this cluster.
+
+**Amendment (DR-108).** Decision 5: the block-mode cleanup of store-owned
+shared pointers also charges the strong-count header of each pointer
+(DR-108).
+
+**Amendment (DR-110).** Stage B (D-E3) switched the sites that this record
+kept legacy (decisions 2, 3 and 8):
+
+- An owned temporary gets two block inspections, for the comparison and the
+  release.
+- The source preparation pays the source pass and the release of each value
+  with two block inspections.
+- The footprint and the join keys reserve their own channel traversals. So
+  the channel inspections of the observation construction pay one length
+  computation each.
+- The canonical signature prepays its release where it is born (Rule B).
+- The lane channel also pays the release of the shadowed unsorted channel,
+  which the audit above did not count.
+
+The recorded gaps about the footprint, the cold-read keys and the checkpoint
+are resolved (DR-110).
+
+**Amendment (DR-111).** The first recorded gap of this record is resolved.
+The score vectors of the metered sorter prepay one read of each slot at
+birth (Rule S, DR-111, decision 4).
 
 **Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93. Leaf
 `ofp-2-cap-d-b4-walker-stage-a`.
@@ -7340,6 +7929,17 @@ An operation can check one entry more than once. For example, a consume
 checks its group in the prefetch, in the candidate read and in the stored
 consume.
 
+**Amendment (DR-108).** Decision 5: the bincode pass of `channel_key` and
+`GroupKeys::build` reads the channel, and the writer reserves only the
+output bytes. At the three key reads of the native session, a per-level
+inspection of the channel also paid this read. Under block accounting, a
+second block inspection before the key pays it (DR-108, decision 6).
+
+**Amendment (DR-110).** With the digest-keyed cold reads of this record,
+the source preparation reads no channel for the keys of the operation's own
+channels. The keys of the joins of a produce still encode each join channel.
+DR-110 reserves that pass (decision 5).
+
 **Cross-refs.** DR-77, DR-82, DR-95. Leaves `ofp-2-cap-d-c2a-digest-keys`,
 `ofp-2-cap-d-c2b-ordered-index`, `ofp-2-cap-d-c2c-store-port`,
 `ofp-2-cap-d-c2d-digest-cold-fill-export` and
@@ -7914,6 +8514,25 @@ producer's self-replay and the validator replays. The replay budget of every
 role now measures `certify_offered_draft` alone, and each role charges its
 acceptance work to a separate budget.
 
+**Amendment (audit 2026-10-12).** The behavior change "The validator replays
+of one block charge the same usage" holds for the replays that the probe
+measured. Those replays ran in one process on one host. Two validator-local
+dependencies remain, so validators on different hosts can charge different
+host work.
+
+- The native session constructor sizes its host-work reservation with the
+  shard count of the native cache
+  (`rspace++/src/rspace/replay_rspace/native_session.rs:164-175`). That count
+  comes from `available_parallelism()`, the CPU count of the host
+  (`rspace++/src/rspace/hot_store.rs:1609-1614`). This is pgmcp bug 10814.
+- The charges of set and map construction depend on the iteration order of a
+  hash table, which varies between processes. DR-111 keeps this open by user
+  decision. This is pgmcp bug 10812, which DR-111 calls bug 475811.
+
+So the claim of item D-C5 that every validator charges identical host work
+overclaims. DR-102 repeats the claim for every role, and its amendment points
+here.
+
 **Cross-refs.** DR-79, DR-96, DR-98. Leaf `ofp-2-cap-d-c5a-trace-known-bounds`.
 
 ## DR-101 — System residue is never charged to an earlier deployment
@@ -8214,6 +8833,10 @@ code and on `unit_payer_keeps_its_region`.
 `a_process_that_a_system_contract_runs_keeps_its_callers_seal` also passes
 under the committed caps. Six of the nine tests still need the Phase D caps.
 
+**Amendment (DR-116, 2026-10-09).** Gap G6 landed.
+`a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` is
+re-enabled and passes.
+
 **Cross-refs.** DR-31, DR-41, DR-68, DR-98, DR-100. Bug 10056
 (`bug-after-one-signer-writes-the-registry-any-other-signer-s-registry-lookup-or-insert-is-unfundable-work-charged-to-the-earlier-writer-s-authority-51d630`).
 
@@ -8461,6 +9084,11 @@ VerificationBytes, 8.73 M VerificationOperations and 4.37 MB of
 SearchStateBytes to its replay budget. The final probe measurement of Phase D
 (item D-R) records the gateway numbers.
 
+**Amendment (audit 2026-10-12).** The first behavior change above holds on
+one host and in one process. Bugs 10814 and 10812 remain. So a validator on
+another host, or in another process, can charge a different usage. The
+amendment of DR-100 states both causes.
+
 **Cross-refs.** DR-72, DR-95, DR-100, DR-101. Leaf
 `ofp-2-cap-d-c5b-acceptance-attribution-test`.
 
@@ -8468,9 +9096,9 @@ SearchStateBytes to its replay budget. The final probe measurement of Phase D
 
 **Status.** Part 1 implemented 2026-10-07 for Phase D item D-D1a of epic
 8946 (D-D1 of the Phase D plan). Part 2, the in-place merge of a remainder
-binding (item D-D1b), is a separate change. A design pass made two
-corrections to the planned bound, and the implementation review made two
-more. This record includes all four.
+binding, implemented 2026-10-07 for item D-D1b. A design pass made two
+corrections to the planned bound of part 1, and the implementation review
+made two more. This record includes all four.
 
 **Terms.**
 
@@ -8722,5 +9350,6582 @@ Under the committed caps, the Casper suite now passes
 `a_process_that_a_system_contract_runs_keeps_its_callers_seal`, one of the
 seven DR-101 tests that those caps rejected at their first deployment.
 
-**Cross-refs.** DR-77, DR-78, DR-91. Leaf
-`ofp-2-cap-d-d1a-free-map-charges`.
+**Part 2: the in-place merge (D-D1b).** The rest of this record before the
+cross-references describes part 2.
+
+**Part 2 context.** Before part 2, `handle_remainder` copied the binding at its
+level, merged the copy and inserted it again, which dropped the old binding.
+The copy charged a copy and a cleanup of the whole binding
+(`reserve_clone`). A `Par` pattern with a remainder variable merges its ten
+field lists into one binding, so each such variable copied its growing
+binding up to ten times. The copy made a rejected merge harmless: the
+callers backtrack when a merge returns `None`, and the stored binding stayed
+unchanged.
+
+**Part 2 decision.**
+
+1. A merger has the type
+   `&dyn Fn(&mut Par, Vec<T>, &MatcherWork<'_>) -> Option<()>`. It changes
+   the binding in place.
+2. Every merger assigns after all its reservations. The ten field mergers
+   of a `Par` remainder make one assignment and no reservation.
+   `merge_set_remainder` and `merge_map_remainder` reserve their
+   deduplication work and then assign the new `Expr` once. These two
+   functions replace the set and map closures, which stay in the source as
+   comments.
+3. `handle_remainder` merges an existing binding in place through
+   `get_mut`. A new binding starts as an empty `Par`. It is merged, its
+   insert is reserved, and then it is inserted. Only a new binding charges
+   an insert.
+4. The replaced lines stay in the source, commented out with their reason.
+
+**Part 2 algorithm (literate form).**
+
+```text
+⟨remainder merge⟩ ≡
+  ⟨free-map search charge⟩
+  reserve 1 operation                   -- the merger's work context
+  if the map holds a binding b at the level:
+    merger(b, targets)                  -- in place, assignments last
+  else:
+    b ← an empty Par
+    merger(b, targets)
+    ⟨free-map insert charge⟩
+    insert b at the level
+```
+
+![Activity diagram of one remainder merge. handle_remainder receives the targets, which come from charged copies with their cleanup. It reserves one free-map search, S of n equal to 11 times h of n operations and 8 S of n scanned bytes, and one operation for the merger's work context. If a binding b is stored at the level, the merger changes b in place, with all its reservations first and its assignments last. If a reservation rejects, the merge returns None and b and the free map are unchanged. Otherwise b holds the merged binding, with no copy and no drop of b. If no binding is stored, b starts as an empty Par and the merger runs on it. A rejected reservation returns None, drops b and leaves the free map unchanged. Otherwise the insert is reserved: the search, h of n plus 1 times L moves and the growth B of n plus 1 minus B of n. A rejected insert reservation returns None and leaves the free map unchanged. Otherwise b is inserted at the level. Both accepted paths return Some. A red note states that before part 2 the binding was copied with a charged copy and cleanup of the whole binding, merged, reserved and inserted again, so a Par remainder copied its growing binding up to ten times. A legend maps the colours: input, host-work reservation, merger, new binding, accepted state, and rejection with an unchanged free map.](diagrams/remainder-in-place-merge.svg)
+
+(*Source: [`diagrams/remainder-in-place-merge.puml`](diagrams/remainder-in-place-merge.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/remainder-in-place-merge.puml`.*)
+
+**Part 2 soundness.**
+
+- *All or nothing.* A merger that assigns after all its reservations has
+  not changed the binding when a reservation rejects. A new binding enters
+  the map only after its merge and its insert reservation succeed. Thus a
+  rejected merge leaves the free map unchanged
+  (`FreeMapBindings.rejected_merge_leaves_map`).
+- *Same result.* When the budget admits the work, the in-place merge gives
+  the free map of the copy merge
+  (`FreeMapBindings.in_place_merge_equals_copy_merge`).
+- *Charges.* The in-place merge makes no copy of the binding and drops no
+  binding, so it charges neither. An assignment drops the old value of one
+  field. The matcher charged the cleanup of that value with the copy that
+  created it: `list_match_single_` and `list_match` reserve a copy and a
+  cleanup (`reserve_clone`) for every remainder target before the merge.
+- *Determinism.* The charge depends on the targets and on the size of the
+  map, not on the size of the existing binding.
+
+**Part 2 verification.** `FreeMapBindings.v` part 2 proves without axioms:
+
+- `rejected_run_keeps_value`: a rejected merger that assigns last leaves
+  its value unchanged.
+- `in_place_merge_equals_copy_merge` and `rejected_merge_leaves_map`.
+- Negative control: `assign_first_merge_changes_map_on_rejection`. A
+  merger that assigns before a rejected reservation changes the stored
+  binding in place, while the copy merge leaves it.
+
+Tests in the `metered_tests` module of `list_match.rs`:
+
+- `remainder_merge_matches_legacy_copy_merge` (128 cases): for each of the
+  ten field mergers, the set merger and the map merger, with and without an
+  existing binding, the in-place merge gives the free map of a frozen copy
+  of the old copy merge. The set and map targets contain duplicates.
+- `rejected_remainder_merge_leaves_the_free_map` (128 cases): each case
+  counts the reservations of a whole set or map merge, rejects at the first
+  16, the last 16 and one random reservation, and then accepts with the
+  whole budget. Every rejection leaves the free map unchanged, and the
+  acceptance gives the copy merge.
+- `in_place_merge_charge_is_independent_of_the_existing_binding`: an
+  existing binding of 8 or of 512 expressions gives the same charge.
+- Negative controls: `legacy_copy_merge_charge_grew_with_the_existing_binding`
+  and `assign_first_merger_changes_the_binding_on_rejection`.
+- Two mutations in a scratch copy make
+  `rejected_remainder_merge_leaves_the_free_map` fail. A set merger that
+  assigns before its reservations fails with an existing binding. An insert
+  before its reservation fails with no binding.
+- The existing tests `remainder_assignment_preserves_free_map_and_rejects_short_credit`
+  and `remainder_merger_rejects_before_payload_materialization_or_publication`
+  use the new merger type. The 52 match tests in
+  `rholang/tests/matcher/match_test.rs` pass.
+
+**Part 2 measurement.** The D-G0 probe ran the gateway test twice with part
+1 and twice with part 2, again under the provisional caps. Every role still
+charged exactly the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| Part 1, run 1 | 1,414,843,614 | 157,578,002 | 62,780,899 |
+| Part 1, run 2 | 1,404,389,055 | 157,707,790 | 62,786,462 |
+| Part 2, run 1 | 1,249,206,436 | 144,836,209 | 61,016,038 |
+| Part 2, run 2 | 1,261,584,846 | 144,887,478 | 61,026,598 |
+| Change of the means | −154.2 MB (−10.9 %) | −12.8 MB (−8.1 %) | −1.76 M (−2.8 %) |
+
+Two runs of one build differ by up to 12.4 MB of VerificationBytes, so the
+change is about 12 times that spread. In multiples of the original caps,
+the replay falls to 4.68 in VerificationBytes and 1.08 in SearchStateBytes.
+Parts 1 and 2 together remove 459.1 MB of VerificationBytes (−26.8 %) and
+45.4 MB of SearchStateBytes (−23.9 %) from this replay.
+
+**Amendment (DR-104).** The part 2 soundness says that `list_match_single_`
+reserves a copy and a cleanup for every remainder target. After DR-104 it
+reserves an inspection for its predicate instead. The argument still holds:
+the copy that produced the target value reserved its cleanup. Those copies
+are the pair copies in `fold_match` and `maximum_bipartite_match`, the subset
+copies in `sub_pars`, and the copies in `list_match`.
+
+**Amendment (DR-105).** The field copies of
+`bind_free_variable_by_reference` also reserve the cleanup of the values
+that they bind.
+
+**Amendment (DR-109).** The charged clone of a free map is a block copy
+and cleanup (DR-109, decision 2). The insert charges that follow still
+start from the backing of the cloned map.
+
+**Cross-refs.** DR-77, DR-78, DR-91. Leaves
+`ofp-2-cap-d-d1a-free-map-charges` and `ofp-2-cap-d-d1b-in-place-merge`.
+
+## DR-104 — The matcher reads by reference instead of copying
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D2 of epic 8946 (D-M8
+of the Phase D plan). A read-only design pass checked the approved design
+against the current code and corrected it in four places. This record
+includes the corrections.
+
+**Context.** The matcher copied values only to read a flag or to test a
+predicate:
+
+- The owned predicates of `HasLocallyFree` take their argument by value. So
+  `list_match_single_` (for each remainder target), the term case of
+  `match_function` (for each pattern) and `free_check` in `fold_match.rs`
+  (for each remainder item) copied a value, and charged the copy and its
+  cleanup, only to test it. The owned predicates also built union bitsets,
+  and a bit vector for a bound variable, without a charge.
+- The Par/Par matcher copied the pattern expressions (`reserve_slice` and
+  `no_frees_exprs`) to remove the free variables and the wildcards.
+- The fold over the pairs of a receive copied each target and each pattern
+  before `spatial_match`, also when the pattern was ground and the
+  comparison only read both values.
+- The Par/Par matcher inspected the whole target before a ground
+  comparison, which reads no more of the target than of the pattern.
+
+The probe of the gateway funding block attributed about 10.5 MB of
+VerificationBytes to the copy in `list_match_single_` and 15.7 MB to the
+copy of the pattern expressions.
+
+**Decision.**
+
+1. A sibling trait `HasLocallyFreeRef<T>` gives `connective_used_ref(&x)`
+   and `locally_free_is_empty(&x, depth)` for the 13 element types of
+   `list_match!` and for `MatchCase`. Each mirrors the owned predicate. It
+   calls `expect` where the owned version unwraps, it evaluates both
+   operands where the owned version evaluates both, and it panics on a
+   negative bound variable at depth 0. It allocates nothing.
+2. An inspection (`reserve_inspect`) precedes each predicate by reference.
+   It prepays the walk and one traversal. `list_match_single_`, the term case
+   of `match_function` and `free_check` (for `Par` and for `MatchCase`)
+   reserve that inspection instead of a copy. The remainder case of
+   `match_function` keeps its inspection and stops building the union.
+3. `retain_no_frees` filters the owned pattern expressions in place. It
+   charges $`2n`$ operations, $`n\,(2S + 3w)`$ scanned bytes and no backing,
+   where $`S`$ is `size_of::<Expr>()` and $`w`$ is the size of a word.
+4. `fold_match` reserves the read of the pattern's `connective_used` flag (1
+   operation and 8 bytes) before it reads the flag. It compares a ground pair
+   by reference through `match_ground_par`. Other pairs keep the copy and
+   `spatial_match`.
+5. The Par/Par matcher reserves the same flag read. For a ground pattern it
+   charges two inspections of the pattern and compares by reference
+   (`match_ground_par`). For a pattern with connectives it inspects the
+   target and the pattern, as before.
+6. The arity prefilter stays rejected. `fold_match` walks the pairs before it
+   compares the lengths, and the host-work budget must still reject a
+   malformed collection.
+7. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨predicate by reference⟩ ≡
+  reserve inspect(x)                          -- the walk and one traversal
+  b ← predicate_ref(x)                        -- expect where the owned version unwraps
+
+⟨in-place filter⟩ ≡
+  reserve (2n operations, n · (2S + 3w) scanned bytes, 0 backing)
+  retain the expressions that are not free variables or wildcards
+
+⟨ground pair⟩ ≡
+  reserve (1 operation, 8 scanned bytes, 0)   -- the connective_used flag
+  if the pattern uses no connective:
+    reserve inspect(pattern) twice            -- the lockstep bound
+    guard match_pars(target, pattern)         -- by reference
+  else:
+    copy the pair and call spatial_match, as before
+```
+
+**Soundness.**
+
+- *Predicates.* The owned predicate builds a union of the bitsets of the
+  parts. A union has the length of its longer argument, so it is empty
+  exactly when every part is empty
+  (`MatcherReadsByReference.union_empty_iff`,
+  `fold_union_empty_iff_all_empty`). A predicate reads a part of one
+  traversal of its value, which the inspection before it prepays.
+- *Partiality.* The predicates by reference panic exactly where the owned
+  predicates panic, so every node keeps the same outcome on a malformed
+  term.
+- *Filter.* `Vec::retain` keeps the elements before the first removal in
+  place, moves each later element that it keeps, and drops each removed
+  element in place. The predicate reads each element, and each element is
+  then moved or dropped at most once. Thus the work fits $`n\,(2S + 3w)`$
+  when $`3w \le 2S`$ (`retain_work_within_charge`). The filter allocates
+  nothing.
+- *Lockstep.* `match_pars` and the `PartialEq` implementations that it calls
+  compare field by field and element by element, compare lengths before
+  contents, and stop at the first difference. They read as much of the
+  target as of the pattern, and never more than one traversal of the
+  pattern (`lockstep_reads_equal`, `lockstep_reads_bounded_by_pattern`). Two
+  inspections of the pattern therefore cover both sides
+  (`two_pattern_inspections_cover_lockstep_reads`).
+- *Reservation first.* `fold_match` can reach a pattern's flag without an
+  earlier inspection, so the flag read is reserved before the flag is read
+  (DR-88).
+- *Releases.* A target or a pattern that the matcher owns comes from a copy
+  that reserved its cleanup (see the DR-104 amendment to DR-103). A ground
+  comparison by reference creates no owned value.
+- *Determinism.* Every charge depends only on the shape of the values and on
+  compile-time sizes.
+
+**Corrections to the approved design.**
+
+- The approved charge of the filter, $`(n, nS, 0)`$, undercounts `retain`.
+  Removing the first of $`n`$ elements moves the other $`n - 1`$, which reads
+  and writes $`2(n - 1)S`$ bytes (`one_pass_charge_undercounts_retain`).
+- The ground-pair path read the `connective_used` flag before any
+  reservation. It now reserves that read first.
+- The approved design gave no charge for the predicates by reference. Each
+  one now follows an inspection.
+- The remainder case of `match_function` made no copy. It keeps its
+  inspection and only stops building the union.
+
+**Scope.** This change is cost-accounting work. The metered matcher exists
+only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. The matcher returns the same results and the
+same free maps. No encoding, root, event or receipt changes.
+
+**Verification.** `MatcherReadsByReference.v` proves these results without
+axioms:
+
+- `union_length`, `union_empty_iff` and `fold_union_empty_iff_all_empty`.
+- `lockstep_reads_equal`, `lockstep_reads_bounded_by_pattern`,
+  `two_pattern_inspections_cover_lockstep_reads` and `prefix_reads_decide`
+  (the elements that the comparison reads decide
+  `MeteredComparison.compare_prefix`).
+- `retain_equals_filter`, `retain_moves_and_drops` and
+  `retain_work_within_charge`.
+- Negative controls: `target_inspection_grows_with_unread_target`, with
+  `legacy_ground_charge_example` (4,098 elements charged when the comparison
+  reads 2), and `one_pass_charge_undercounts_retain`.
+
+Tests:
+
+- `predicates_by_reference_equal_owned_predicates` (256 cases, in
+  `has_locally_free.rs`): for the 13 element types and `MatchCase`, at depths
+  0 and 1, with missing fields and with bound variables and levels from −3
+  to 63, the predicates by reference return the values of the owned
+  predicates and panic exactly when they panic.
+  `negative_bound_variable_panics_in_both_predicates` pins the panic.
+- In `spatial_matcher.rs`:
+  - `retained_no_frees_equals_cloned_filter` (256 cases).
+  - `retain_no_frees_charge_is_exact` and `retain_no_frees_allocates_nothing`
+    (counting allocator).
+  - `fold_match_by_reference_equals_cloned_pair_walk` (256 cases): the
+    results and the free maps equal those of the walk that copies every pair
+    into `spatial_match`.
+  - `ground_comparison_charge_is_independent_of_target_size` (1 against
+    4,096 expressions), with the negative control
+    `legacy_ground_charge_grew_with_target_size`.
+  - `ground_pair_by_reference_accepts_exact_credit`: one unit less in any
+    charged dimension rejects.
+- The existing matcher tests and the 52 match tests pass.
+- Three mutations in a scratch copy fail the property tests. A binary
+  predicate that requires only one empty operand fails
+  `predicates_by_reference_equal_owned_predicates`. A filter that keeps the
+  wildcards fails `retained_no_frees_equals_cloned_filter`. A fold that
+  ignores a ground mismatch fails
+  `fold_match_by_reference_equals_cloned_pair_walk`.
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-103 part
+2 and twice with DR-104, under the provisional caps. Every role charged
+exactly the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-103, run 1 | 1,249,206,436 | 144,836,209 | 61,016,038 |
+| DR-103, run 2 | 1,261,584,846 | 144,887,478 | 61,026,598 |
+| DR-104, run 1 | 1,228,145,614 | 143,399,559 | 60,881,538 |
+| DR-104, run 2 | 1,239,660,953 | 143,389,150 | 60,887,498 |
+| Change of the means | −21.5 MB (−1.7 %) | −1.47 MB (−1.0 %) | −137 K (−0.2 %) |
+
+The change of VerificationBytes is about 1.8 times the largest difference
+between two runs of one build, and the runs of the two builds do not
+overlap. The changes of SearchStateBytes and VerificationOperations are
+about 29 and 13 times that difference. The saving is smaller than the 38 MB
+of the plan, because inspections remain at the sites of the predicates. In
+multiples of the original caps, the replay falls to 4.60 in
+VerificationBytes and 1.07 in SearchStateBytes.
+
+**Amendment (DR-105).** The Par/Par matcher now inspects the pattern before
+it chooses its path, and it inspects the target only on the general path. A
+pattern that is one free variable binds the target directly (DR-105).
+
+**Amendment (DR-109).** Under block accounting, the two inspections of a
+ground pattern are block inspections. The lockstep bound holds unchanged,
+because each read of the target mirrors a read of the pattern of the same
+size (DR-109).
+
+**Cross-refs.** DR-79, DR-88, DR-91, DR-92, DR-94, DR-103. Phase D item D-E2
+moves the matcher's walker calls to block mode. Leaf
+`ofp-2-cap-d-d2-matcher-reads-by-reference`.
+
+## DR-105 — A free-variable pattern binds its target directly
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D3 of epic 8946 (D-M9
+of the Phase D plan). A read-only design pass checked the approved design
+against the code after DR-103 and DR-104 and corrected it in five places.
+This record includes the corrections.
+
+**Context.** A receive argument `@x` is a pattern `Par` whose only
+expression is the free variable `x`. To match a target against it, the
+general path did this work:
+
+- `fold_match` copied the target and the pattern, with their copy and
+  cleanup reserved, and called `spatial_match`.
+- The Par/Par matcher inspected the target and the pattern, reserved the
+  bounds vector of the connectives (640 bytes) and filtered the pattern
+  expressions. It then made ten `list_match_single_` calls with empty
+  pattern lists. Each call checks every element of one field of the target
+  and merges the field into the binding at the variable's level.
+
+The copy of the pattern and the inspections did no work that the binding
+needs. The probe attributed about 10.7 MB of VerificationBytes to the
+pattern copies in `fold_match` and about 6.8 MB to the inspections at the
+Par/Par entry.
+
+A failed match leaves the fields before the first open field merged into
+the binding, and callers observe that partial binding:
+
+- A bipartite match reuses one context for every candidate.
+- `sub_pars` reuses the context for every subset.
+- A disjunction or a negation reuses the free map after a failed branch.
+
+A fast path must therefore reproduce the partial binding exactly.
+
+**Decision.**
+
+1. `free_variable_level(&Par)` recognizes a pattern that uses connectives,
+   whose only expression is `EVar(FreeVar(level))`, and whose other lists,
+   connectives and cost terms are empty. It destructures the `Par`
+   exhaustively, and it does not read `locally_free`.
+2. After the flag read, `fold_match` reserves the test: 12 operations, and
+   12 words and one `Expr` of scanned bytes. For a free-variable pattern it
+   binds the borrowed target through `bind_free_variable_by_reference`. For
+   each field, that function inspects and tests every element, copies the
+   field with its copy and cleanup reserved, and merges the field with
+   `handle_remainder`. It copies neither the pattern nor the whole target.
+3. The Par/Par matcher inspects the pattern first, and that inspection
+   prepays the test. For a free-variable pattern it binds the owned target
+   through `bind_free_variable`. That function makes the same ten
+   `list_match_single_` calls with empty pattern lists and moves the fields.
+   Other patterns then inspect the target and take the general path, as
+   before.
+4. The fields go in the Par/Par order: sends, receives, news, exprs, matches,
+   bundles, unforgeables, conditionals, cost_signed_terms, cost_stacks.
+5. A wildcard pattern and a pattern with more than one variable keep the
+   general path.
+6. A test-only switch (`LEGACY_FREE_VARIABLE_PATH`) selects the general path
+   for the equality tests.
+7. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨free-variable test⟩ ≡                         -- at the fold site
+  reserve (12 operations, 12 words + size_of::<Expr>() scanned bytes, 0)
+  -- at the Par/Par site the inspection of the pattern prepays the test
+
+⟨bind one field⟩ ≡
+  for each element e of the field:
+    reserve inspect(e)
+    if e has a locally free variable: return None   -- earlier fields stay merged
+  owned target: move the field
+  borrowed target: reserve the copy and cleanup of the field; copy it
+  ⟨remainder merge⟩                                  -- DR-103 part 2
+
+⟨bind⟩ ≡
+  ⟨bind one field⟩ for sends, receives, news, exprs, matches, bundles,
+  unforgeables, conditionals, cost_signed_terms and cost_stacks, in order
+```
+
+**Soundness.**
+
+- *Same outcome.* For `@x`, every pattern list is empty after the
+  free-variable filter. So each general `list_match_single_` call takes the
+  remainder branch: it checks one field and merges it. The fast path makes
+  the same checks and the same merges in the same order. Thus the result and
+  the free map are the same, failure state included
+  (`FreeVariableFastPath.fast_path_equals_general`,
+  `fast_path_failure_state`), and no other level changes
+  (`fast_path_keeps_other_levels`). The steps that the fast path omits are
+  pure for this pattern: with no connectives the remainder is the target,
+  and the filtered expressions are empty.
+- *Rejections.* The fast path can reject at other points than the general
+  path. No caller observes where it rejects: the contexts share one error
+  slot, a rejected reservation fails every later reservation, and a metered
+  match then returns an error.
+- *Charges.* An inspection of each element comes before its predicate reads
+  it (DR-104). A borrowed field is copied with its copy and cleanup
+  reserved. The searches and the inserts are charged as in DR-103. A field
+  that a merge overwrites was created by a copy that reserved its cleanup.
+- *Determinism.* Every charge depends only on the shape of the values and on
+  compile-time sizes.
+
+**Corrections to the approved design.**
+
+- The approved predicate required every other field to be empty. It must
+  not read `locally_free`, which the general path never reads, and it must
+  include the connectives and both cost lists.
+- The Par/Par order puts bundles before unforgeables. An implementation in
+  struct order would leave another failure state
+  (`field_order_changes_failure_state`).
+- The test at the fold site reads the pattern, so it needs its own
+  reservation first (DR-88).
+- Only the borrowed fold site copies the fields. The Par/Par site moves
+  them.
+- The fast path also saves the bounds vector, the filter and the target's
+  shell, so the saving was measured again instead of taken from the plan.
+
+**Scope.** This change is cost-accounting work. The metered matcher exists
+only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. The matcher returns the same results and the
+same free maps. No encoding, root, event or receipt changes.
+
+**Verification.** `FreeVariableFastPath.v` proves these results without
+axioms:
+
+- `fast_path_equals_general`, `fast_path_failure_state`,
+  `merge_keeps_other_levels`, `fast_path_keeps_other_levels` and
+  `fast_fields_in_index_order`.
+- Negative controls: `check_all_first_loses_partial_binding`,
+  `field_order_changes_failure_state` (with `fresh_merge_is_stored`), and
+  `legacy_free_variable_charge_includes_pattern_copy` with
+  `legacy_free_variable_charge_example`.
+
+Tests in `spatial_matcher.rs`:
+
+- `free_variable_fast_path_equals_general_path` (256 cases): on the owned and
+  on the borrowed entry, with and without a stored binding at the level and
+  with open elements in any field, the fast path gives the result and the
+  free map of the general path. A metered run gives the same outcome and
+  rejects nothing. The stored binding has a shell that the merge never
+  writes.
+- `free_variable_failure_leaves_the_general_partial_binding`: a failure at
+  bundles leaves sends and exprs merged and unforgeables unmerged, and a
+  failure at the first field leaves the map unchanged.
+- `free_variable_level_accepts_only_one_free_variable`.
+- `free_variable_pair_accepts_exact_credit`.
+- `free_variable_copies_fit_reserved_backing` (counting allocator). The test
+  measures the binding itself, because `fold_match` also allocates the
+  labels of its metrics counters, outside the host-work model.
+- Negative control: `legacy_free_variable_charge_grew_with_target_size`.
+- The existing matcher tests and the 52 match tests pass.
+- Three mutations in a scratch copy make
+  `free_variable_fast_path_equals_general_path` and
+  `free_variable_failure_leaves_the_general_partial_binding` fail: the
+  struct order (unforgeables before bundles), a check of every field before
+  the first merge, and a fresh binding instead of the in-place merge.
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-104 and
+twice with DR-105, under the provisional caps. Every role charged exactly
+the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-104, run 1 | 1,228,145,614 | 143,399,559 | 60,881,538 |
+| DR-104, run 2 | 1,239,660,953 | 143,389,150 | 60,887,498 |
+| DR-105, run 1 | 1,203,070,723 | 140,521,206 | 60,476,133 |
+| DR-105, run 2 | 1,189,831,318 | 140,325,579 | 60,457,440 |
+| Change of the means | −37.5 MB (−3.0 %) | −2.97 MB (−2.1 %) | −418 K (−0.7 %) |
+
+The runs of the two builds do not overlap. The change of VerificationBytes
+is about 2.8 times the largest difference between two runs of one build,
+and the changes of SearchStateBytes and VerificationOperations are about 15
+and 22 times it. The saving is about twice the 17.5 MB of the plan, because
+the fast path also skips the inspection of the target, the bounds vector
+and the filter. In multiples of the original caps, the replay falls to 4.46
+in VerificationBytes and 1.05 in SearchStateBytes.
+
+**Amendment (DR-109).** The copies of the borrowed fields are block slice
+copies (DR-109, decision 2).
+
+**Cross-refs.** DR-88, DR-103, DR-104. Leaf
+`ofp-2-cap-d-d3-free-variable-fast-path`.
+
+## DR-106 — The selection reads recorded channel positions, and the entries borrow their channels
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D4 of epic 8946 (D-M7
+of the Phase D plan). A read-only design pass checked the approved design
+against the code after DR-105 and refined it in three places. This record
+includes the refinements.
+
+**Context.** Native replay prepares a candidate in two steps
+(`native_candidate/metered.rs`):
+
+- `metered_channel_data` builds one entry for each distinct channel of a
+  join. For each channel it searches the entries built so far for an equal
+  channel (`channel_position`). A found entry takes the channel's values.
+  Otherwise the channel is copied into a new entry, with its copy and
+  cleanup reserved.
+- `metered_match_data` selects one datum for each pattern. For each pattern
+  it searched the finished entries again for the entry of the pattern's
+  channel. Each visited entry charged an inspection of both channels and one
+  comparison.
+
+The entry's channel is only compared, so its copy did no work that the
+selection needs. The positions are fixed when the entries are built, so the
+second search found what the first search had found. The produce path runs
+the selection once for each waiting continuation of a join, so these
+searches repeat. The probe attributed about 14.7 MB of VerificationBytes and
+1 MB of SearchStateBytes to the channel copies, and about 11.5 MB of
+VerificationBytes to the searches of the selection.
+
+**Decision.**
+
+1. An entry borrows its channel (`ChannelData { channel: &'v C, .. }`) from
+   the channel slice of the join, as its values borrow the data views
+   (DR-82).
+2. `metered_channel_data` returns the entries and one position for each
+   channel: the position of the found entry, or the position of the new
+   entry. The position buffer reserves $`n + 1`$ operations and $`8n`$
+   scanned and backing bytes (`POSITION_BYTES`). A compile-time assertion
+   keeps `size_of::<usize>()` at or below 8. So the charge does not depend on
+   the platform's layout (`host-work-budget.md`), and it covers the
+   allocation.
+3. `metered_match_data` takes the positions. For each pattern it reserves
+   one operation and 8 scanned bytes, and then it reads the position. A
+   position list whose length differs from the number of channels, or a
+   position outside the entries, rejects the match with
+   `HostWorkRejected`. The callers produce neither.
+4. The search in `metered_match_data` and the copy in `metered_channel_data`
+   stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨build the entries⟩ ≡
+  reserve the entry buffer (n slots) and the position buffer (n + 1, 8n, 8n)
+  for each channel c of the join, in order:
+    ⟨prepare the values of c⟩                -- unchanged (DR-75, DR-82)
+    j ← channel_position(entries, c)         -- the search of the build, unchanged
+    if j was found:
+      entries[j].values ← values
+      record j
+    else:
+      record |entries|
+      append (a borrow of c, values)
+
+⟨select⟩ ≡
+  for each pair (channel c_i, pattern p_i) with its recorded position k_i:
+    reserve (1 operation, 8 scanned bytes, 0)
+    reject if k_i is outside the entries
+    ⟨match p_i against the values of entries[k_i]⟩   -- unchanged (DR-88)
+```
+
+**Soundness.**
+
+- *Same positions.* An entry never moves after it is appended, and its
+  channel never changes. When the build finds the first equal entry $`j`$
+  for channel $`c_i`$, the entries before $`j`$ stay unequal to $`c_i`$. So
+  the search in the finished entries also finds $`j`$. When the build
+  appends $`c_i`$ at position $`k`$, the entries before $`k`$ are unequal to
+  $`c_i`$, and entry $`k`$ holds $`c_i`$ itself. A reflexive equality finds
+  it. So the recorded position equals the first-equal search in the
+  finished entries (`ChannelPositions.recorded_position_equals_first_equal_search`,
+  `first_equal_search_equals_recorded_positions`).
+- *Same selection.* The selection reads the same (channel, pattern, entry)
+  inputs from the recorded positions as from the searches
+  (`selection_inputs_equal`). The selected candidate copies its channel from
+  the join's channel slice, as before. So the candidates and the COMM do not
+  change.
+- *Reflexivity.* The proof needs only a reflexive equality on channels.
+  `Par` compares its fields and stores floats as raw bits, so its equality
+  is reflexive, also for a NaN payload. The equality ignores
+  `locally_free`, so equal channels need not be identical, and the proof
+  does not need that. A non-reflexive equality breaks the result
+  (`non_reflexive_equality_breaks_recorded_positions`).
+- *Charges.* The position read is reserved before the read
+  (`recorded_attempt_trace_covered`). The legacy search visited $`j + 1`$
+  entries for the entry at position $`j`$, and each visit charged an
+  inspection of both channels and one comparison
+  (`legacy_search_visits_position_plus_one`, `legacy_attempt_charge_uniform`).
+  When one word is at most the charge of one visit, the read charges no more
+  than the search (`recorded_charge_le_legacy`). An inspection reserves
+  three times the size of each node that it visits. So an inspection of a
+  `Par` channel (296 bytes) charges at least 888 bytes, and the premise
+  holds. The `u8` channels of the test spaces have an inspection charge of 3
+  bytes. For them, a search at position 0 charges 6 bytes, 2 bytes less than
+  the word (`small_channel_search_cheaper_than_word_example`).
+- *Buffers.* The entry buffer charges `size_of` of an entry for each slot,
+  as before. An entry over `Par` channels falls from 320 to 32 bytes. The
+  position buffer adds 8 bytes for each slot.
+- *Determinism.* Every charge depends only on the shape of the values, on
+  compile-time sizes and on the constant `POSITION_BYTES`.
+
+**Refinements of the approved design.**
+
+- The approved design did not charge the position buffer or the position
+  reads. The buffer now reserves its slots, and each read reserves one word
+  before it reads.
+- The word is the constant `POSITION_BYTES`, not `size_of::<usize>()`, so a
+  new SearchStateBytes term does not depend on the platform's layout.
+- The selection rejects an inconsistent position list instead of a missing
+  entry. The legacy search marked a missing entry as a failed pattern, but
+  the build gives every channel an entry.
+
+**Scope.** This change is cost-accounting work. Native replay exists only on
+this branch. The change alters host-work charges of protocol 6, which is not
+yet released. Native replay selects the same candidates and builds the same
+COMM. No encoding, root, event or receipt changes.
+
+**Verification.** `ChannelPositions.v` proves these results without axioms:
+
+- `positions_length`, `recorded_position_equals_first_equal_search`,
+  `first_equal_search_equals_recorded_positions`, `selection_inputs_equal`,
+  `recorded_position_names_equal_entry` and `entries_pairwise_unequal`.
+- `legacy_search_visits_position_plus_one`, `legacy_attempt_charge_uniform`,
+  `legacy_trace_reserves_search_charge`, `legacy_attempt_trace_covered`,
+  `recorded_attempt_trace_covered`, `recorded_attempt_charge` and
+  `recorded_charge_le_legacy`.
+- Negative controls: `read_before_reservation_is_not_covered`,
+  `legacy_position_search_charge_example`,
+  `small_channel_search_cheaper_than_word_example`,
+  `pattern_index_names_another_channel_example` and
+  `non_reflexive_equality_breaks_recorded_positions`.
+
+Tests in rspace++ `native_candidate/metered/tests.rs`, against a frozen copy
+of the legacy selection (`legacy_match_data`):
+
+- `recorded_positions_equal_first_equal_search` (128 cases): on repeated
+  channels, with stored data and an incoming datum, each recorded position
+  is the first-equal search in the entries. The entries are pairwise
+  unequal, one for each distinct channel, and each borrows the first
+  occurrence of its channel.
+- `repeated_channel_selection_matches_frozen_legacy_selection` (128 cases):
+  the selection equals the legacy selection on repeated channels,
+  persistent data, an incoming datum and a failed commit. The charges differ
+  by exactly the legacy searches less one word for each pattern. A first
+  version of this test selected data in 1 case of 128. Its values and
+  patterns now come from a small range, so 27 cases of 128 select data.
+- `match_data_position_charge_is_one_word_per_pattern`: over entries without
+  data, the charge is the two selection buffers and one word for each
+  pattern, at positions 0 and 7 and for channels of 2 and 4,097 bytes.
+- `legacy_position_search_charge_grew_with_position_and_channel_size`: the
+  negative control. The legacy charge grows by exactly seven visits from
+  position 0 to position 7, and by two inspections of the larger channels.
+- `channel_data_charge_excludes_channel_copies`: the channel data of one
+  channel charge the same for 2 and for 4,097 bytes.
+- `repeated_channel_consume_accepts_exact_credit_and_rejects_each_smaller_dimension`
+  and `position_buffer_charges_one_word_per_slot_and_prepays_it` (counting
+  allocator).
+- `match_data_rejects_inconsistent_positions`.
+- `models/tests/par_equality_test.rs`: the premise. `Par` equality is
+  reflexive (256 cases, with NaN payloads), and it ignores `locally_free`.
+- The existing every-cut and differential tests of candidate selection pass.
+- Five mutations in a scratch copy fail tests. A wrong position for a found
+  channel and the pattern's own index instead of its position fail seven
+  tests each. A missing position charge fails two. A position buffer without
+  its backing charge fails only `position_buffer_charges_one_word_per_slot_and_prepays_it`,
+  because the cumulative allocation checks of the other tests do not see 8
+  bytes for each slot. A missing length check fails
+  `match_data_rejects_inconsistent_positions`.
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-105 and
+twice with DR-106, under the provisional caps. Every role charged exactly
+the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-105, run 1 | 1,203,070,723 | 140,521,206 | 60,476,133 |
+| DR-105, run 2 | 1,189,831,318 | 140,325,579 | 60,457,440 |
+| DR-106, run 1 | 1,181,480,379 | 139,070,263 | 60,004,315 |
+| DR-106, run 2 | 1,169,835,253 | 138,834,641 | 59,988,090 |
+| Change of the means | −20.8 MB (−1.7 %) | −1.47 MB (−1.0 %) | −471 K (−0.8 %) |
+
+The runs of the two builds do not overlap. The change of VerificationBytes
+is about 1.6 times the largest difference between two runs of one build,
+and the changes of SearchStateBytes and VerificationOperations are about 6
+and 25 times it. The sampled call sites, averaged over the two runs of each
+build, put the saving at the channel copies in `metered_channel_data`
+(about −10.5 MB) and at the searches in `channel_position` (about
+−8.9 MB). The samples resolve steps of 1 MiB. The saving is about 80 % of
+the 26 MB of the plan. In multiples of the original caps, the replay falls
+to 4.38 in VerificationBytes and 1.04 in SearchStateBytes.
+
+**Cross-refs.** DR-75, DR-82, DR-88. Leaf
+`ofp-2-cap-d-d4-channel-positions`.
+
+## DR-107 — The produce selection borrows its incoming datum and moves the value into the result
+
+**Status.** Implemented 2026-10-07 for Phase D item D-D5 of epic 8946 (D-M5
+of the Phase D plan). A read-only design pass checked the approved design
+against the code after DR-106 and corrected it in five places. This record
+includes the corrections.
+
+**Context.** A produce selects a waiting continuation in
+`prepare_metered_produce_candidate` (`native_candidate/metered.rs`):
+
+- `metered_channel_data` copied the produce's value and source into the
+  entry of the produced channel, with their copy and cleanup reserved. It
+  did so at each occurrence of the channel in each join group that it
+  examined.
+- `metered_match_data` copied the value again as the removed value of each
+  candidate that took the incoming datum. It did so for each continuation
+  that it tried, before the commit check, so failed attempts paid too.
+- The native session (`native_session/operations.rs`) dropped its own value
+  after a match, or moved it into the store when nothing matched.
+
+The selection only reads the incoming datum, and the result needs the value
+once. The probe attributed about 23 MB of VerificationBytes and 4.2 MB of
+SearchStateBytes to the copies in the channel data, and about 26 MB and
+4.2 MB to the removed-value copies on the produce path.
+
+**Decision.**
+
+1. The native session passes the incoming datum by value. The selection
+   returns `ProduceSelection::Unmatched(datum)` when nothing matches or when
+   the replay identity rejects the match. Otherwise it returns
+   `ProduceSelection::Matched { prepared, group, source }`. The session
+   stores the returned datum, or it uses the returned source for the
+   counter and the trace.
+2. `metered_channel_data` borrows the incoming datum (`Cow::Borrowed`). The
+   borrow reserves one operation and `size_of::<Cow<Datum<A>>>()` scanned
+   bytes, as each borrow of a cached datum does (DR-82). It reserves no
+   backing.
+3. `metered_match_data` leaves the removed value of an incoming candidate
+   (`datum_index` −1, `INCOMING_INDEX`) at `A::default()`. A stored
+   candidate still copies its removed value.
+4. `fill_incoming` runs once, on the selected match. It reserves one
+   operation for each candidate and one more, 4 scanned bytes for each
+   candidate's index (`INDEX_BYTES`) and twice the size of `A` for the move.
+   Then it moves the value into the first incoming candidate. For each
+   further incoming candidate it reserves a copy and cleanup and copies the
+   value.
+5. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨build the entries⟩ ≡                          -- metered_channel_data
+  at each occurrence of the produced channel:
+    reserve (1 operation, size_of::<Cow<Datum<A>>>() scanned bytes, 0)
+    put (a borrow of the incoming datum, INCOMING_INDEX) before the stored data
+
+⟨push a candidate⟩ ≡                           -- metered_match_data
+  reserve the copies of the channel and of the source
+  if the datum is the incoming datum:
+    removed ← A::default()                      -- owns no allocation
+  else:
+    reserve the copy and cleanup of the value
+    removed ← a copy of the value
+
+⟨select⟩ ≡                                     -- prepare_metered_produce_candidate
+  for each join group and each continuation, as before:
+    if the identity rejects the match: return Unmatched(incoming)
+    if the match is accepted: ⟨fill⟩; return Matched { prepared, group, source }
+  return Unmatched(incoming)
+
+⟨fill⟩ ≡                                       -- fill_incoming
+  reserve (n + 1 operations, 4n + 2 size_of::<A>() scanned bytes, 0)
+  for each candidate, in order:
+    if it is an incoming candidate after the first:
+      reserve the copy and cleanup of the value
+      removed ← a copy of the value
+  the first incoming candidate: removed ← the value (moved)
+```
+
+**Soundness.**
+
+- *Same selection.* The borrowed entry holds the incoming datum itself, so
+  the selection reads the same values
+  (`IncomingDatumMove.borrowed_incoming_selection_equals_owned`, from
+  `NativeSharedReads.shared_selection_equals_deep_selection`).
+- *Same removed values.* After the fill, each incoming candidate holds the
+  produce's value, and each stored candidate keeps its copy
+  (`incoming_fill_equals_copies`, `fill_gives_every_incoming_slot_the_value`).
+  A persistent datum matched through a repeated channel gives several
+  incoming candidates. The first receives the value and each further one a
+  copy, as play gives each one a copy (`fill_moves_once`,
+  `fill_copies_further`). The removed values go back to the interpreter
+  (`result::prepare`), which reads them, so each must be the produce's
+  value.
+- *No default value leaves the selection.* A default removed value exists
+  only inside `prepare_metered_produce_candidate`. The fill replaces it
+  before the selection returns, and an error drops the whole selection.
+  The selection owns the incoming datum, so the session can store only the
+  datum that the selection gives back.
+- *Rejections.* A rejected reservation returns an error and drops the
+  datum. The session dropped its data on the same error before D-D5. The
+  selection writes neither the store nor the counters, so every cut leaves
+  them unchanged.
+- *Charges.* Each new step reserves before it works (`fill_trace_covered`).
+  The default value owns no allocation, so its creation and its drop cost
+  nothing (premise test). When one borrow and the fill pass cost no more
+  than a copy of the value and of the source, the new charge is at most the
+  legacy charge (`moved_charge_le_legacy`, `unmatched_charge_le_legacy`).
+  The premise fails for the `u8` values of the test spaces, where a pass
+  can cost more than the copies (`tiny_value_pass_exceeds_copies_example`).
+  The measurement below shows the decrease for the production payload.
+- *Determinism.* Every charge depends only on the shape of the values, on
+  compile-time sizes and on the constants `INDEX_BYTES` and
+  `INCOMING_INDEX`. No new SearchStateBytes term uses `size_of`.
+
+**Corrections to the approved design.**
+
+- `ProduceSelection::Matched` also carries the index of the join group,
+  which the retirement needs (DR-96).
+- The borrow charges the full `Cow` slot, as each borrow of a cached datum
+  does, not one pointer.
+- The fill is new work. It reserves its pass before it reads the indices
+  and moves the value.
+- The default removed value is sound only because it owns no allocation. A
+  premise test pins that for `ListParWithRandom`.
+- Two D-D4 tests compared the removed values of the selection directly.
+  They now fill the incoming candidates first, and their charge relation
+  counts the legacy copies of the incoming value.
+
+**Scope.** This change is cost-accounting work. Native replay exists only on
+this branch. The change alters host-work charges of protocol 6, which is not
+yet released. Native replay selects the same candidates, returns the same
+removed values and builds the same COMM. No encoding, root, event or receipt
+changes.
+
+**Verification.** `IncomingDatumMove.v` proves these results without
+axioms:
+
+- `incoming_fill_equals_copies`, `fill_gives_every_incoming_slot_the_value`,
+  `selection_differs_only_at_incoming`, `fill_moves_once`,
+  `fill_copies_further`, `fill_without_incoming_moves_nothing` and
+  `borrowed_incoming_selection_equals_owned`.
+- `fill_trace_covered`, `fill_trace_reserved`, `moved_charge_le_legacy`,
+  `unmatched_charge_le_legacy` and
+  `legacy_incoming_charge_counts_two_copies`.
+- Negative controls: `legacy_incoming_charge_example` (210 against 28),
+  `first_only_fill_differs_example`, `unfilled_selection_differs_example`,
+  `copy_first_fill_is_not_covered_example` and
+  `tiny_value_pass_exceeds_copies_example`.
+
+Tests in rspace++ `native_candidate/metered/tests.rs`, against a frozen copy
+of the selection before D-D5 (`legacy_prepare_produce`), which counts its
+copies of the incoming value and of its source:
+
+- `produce_selection_matches_frozen_legacy_produce` (128 cases): on one to
+  three join groups with repeated channels, stored and persistent data,
+  peeks, failed commits and replay identities, the selection equals the
+  frozen selection. It returns the input datum or the input source. Its
+  charge differs from the frozen charge by exactly the frozen copies less
+  the borrows, the fill pass and the further copies of the fill. Wildcard
+  patterns are three times as likely as the others, so 57 of 129 cases
+  select data (10 with two or more incoming candidates). Three runs of
+  2,000 cases pass.
+- `incoming_datum_is_borrowed_during_selection`: a value of 65,536 bytes
+  allocates and charges what a value of 1 byte does, except the matcher's
+  binding of the matched value. The removed value is the incoming value
+  itself.
+- `legacy_incoming_charge_counts_two_copies`: the negative control. The
+  frozen selection copies the value twice and the source once. Its
+  allocations and its charge exceed the current ones by exactly those
+  copies, less the borrow and the fill pass.
+- `stored_produce_stores_the_incoming_datum`: without a match, and with a
+  replay identity that rejects the match, the selection gives back the
+  input datum itself.
+- `incoming_removed_datum_is_the_produce_value`: one and three incoming
+  candidates hold the value. Only the first holds the original allocation,
+  and the candidates equal those of play.
+- `matched_selection_without_the_trigger_drops_the_value`: a replay identity
+  can select stored data only.
+- `incoming_fill_accepts_exact_credit_and_rejects_each_smaller_dimension`,
+  `every_incoming_fill_cut_rejects_without_unpaid_copy` and
+  `fill_incoming_charges_one_pass_and_each_further_copy` (counting
+  allocator).
+- `default_list_par_with_random_owns_no_allocation` (rholang): the premise.
+- The amended D-D4 tests and the existing every-cut and differential tests
+  of candidate selection pass.
+
+Two observations came from the tests:
+
+- The first selection on a fresh space fills the cache of the channel data
+  and makes more reservations (627 against 608 in one fixture). The charge
+  tests therefore run warm.
+- The first version of the produce property test also compared the
+  selection with play. It found that play and the metered selection choose
+  other data after a continuation that fails its commit matched a channel
+  twice. The frozen selection before D-D5 does the same, so D-D5 does not
+  cause it. pgmcp bug 10137 records it, and the oracle is the frozen
+  metered selection.
+
+Six mutations in a scratch copy fail tests:
+
+- A default removed value for every candidate fails six tests, among them
+  both frozen-legacy property tests.
+- A fill of the first incoming candidate only fails five tests.
+- A copy in the fill without its reservation fails three tests, among them
+  the every-cut test with the counting allocator.
+- A borrow without its reservation fails the two tests with exact charge
+  relations.
+- A selection that gives back a default datum when the identity rejects the
+  match fails `stored_produce_stores_the_incoming_datum`.
+- An incoming index of 0 instead of −1 fails eight tests.
+
+
+**Measurement.** The D-G0 probe ran the gateway test twice with DR-106 and
+twice with DR-107, under the provisional caps. Every role charged exactly
+the same usage. The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-106, run 1 | 1,181,480,379 | 139,070,263 | 60,004,315 |
+| DR-106, run 2 | 1,169,835,253 | 138,834,641 | 59,988,090 |
+| DR-107, run 1 | 1,115,096,284 | 135,174,339 | 57,868,930 |
+| DR-107, run 2 | 1,102,623,236 | 135,097,087 | 57,853,668 |
+| Change of the means | −66.8 MB (−5.7 %) | −3.82 MB (−2.7 %) | −2.13 M (−3.6 %) |
+
+The runs of the two builds do not overlap. The change of VerificationBytes
+is about 5.4 times the largest difference between two runs of one build,
+and the changes of SearchStateBytes and VerificationOperations are about 16
+and 132 times it. The sampled call sites, averaged over the two runs of
+each build, put about 27.3 MB of the VerificationBytes saving at the
+removed-value copies in `metered_match_data` and about 22.5 MB at the
+copies in `metered_channel_data`. The VerificationBytes saving is about 1.4
+times the 49 MB of the plan. The SearchStateBytes saving is about 45 % of
+the 8.4 MB of the plan, and the samples, in steps of 1 MiB, are too coarse
+to place it. In multiples of the original caps, the replay falls to 4.13 in
+VerificationBytes and 1.01 in SearchStateBytes, which is 0.92 MB above the
+original SearchStateBytes cap.
+
+
+**Cross-refs.** DR-81, DR-82, DR-88, DR-96, DR-106. Leaf
+`ofp-2-cap-d-d5-incoming-datum`.
+
+## DR-108 — The chained worklist slot, the shared-pointer release and the RSpace walker sites in block mode
+
+**Status.** Part 1, the walker (decisions 1 and 2), implemented 2026-10-07
+for Phase D item D-E1 of epic 8946 (D-O1 Stage B). Part 2, the walker sites
+of rspace++ (decisions 4 to 7), implemented 2026-10-07. A read-only design
+pass took the inventory of the walker sites of rspace++. It found that the
+site switch needs these two walker changes, which the D-E1 item did not
+name. The user approved them as part of D-E1.
+
+**Context.**
+
+- DR-92 reserved `BLOCK_ENTRY_BACKING` (four 16-byte slots, 64 bytes) of
+  SearchStateBytes for each worklist entry that a block-mode walk pushes.
+  The chunked worklist allocates only when the stack grows past its peak.
+  So for a walk whose stack stays low, for example a chain of boxes or a
+  deep continuation, the charge counted every entry while the allocation
+  followed only the peak. The legacy walker reserved only the growth of its
+  worklist vector. A switch of the 139 walker sites of rspace++ to block
+  mode under DR-92 would raise the SearchStateBytes of the replay by about
+  13 to 15 MiB, above its original cap.
+- A block-mode cleanup of store-owned shared pointers
+  (`inspect_shared_pointers_blocks`, `inspect_shared_pointer_slice_blocks`)
+  pushed each pointer as a worklist entry. The entry constant pays the
+  walker's moves and one word that the consumer reads. A release also reads
+  and writes the pointer's strong count, which no charge paid. The legacy
+  walker charged three words for each pointer, which covered that work. The
+  Stage A cleanup in rholang `replay_authority.rs` uses this walk.
+
+**Decision.**
+
+1. The chained worklist slot (W2). The drain frees the slot of the popped
+   entry before it calls the popped entry's `children`. The first entry that
+   those children push takes the free slot and reserves no worklist backing.
+   The root and every further entry reserve `BLOCK_ENTRY_BACKING`, or
+   `BLOCK_DEPTH_ENTRY_BACKING` in a depth walk. A field or an empty
+   container does not take the slot. The scanned charge of each entry does
+   not change.
+2. The shared-pointer release (W1). In a block-mode cleanup of store-owned
+   shared pointers, a shared pointer is an inline field. Its charge adds
+   `BLOCK_SHARED_HEADER_SCANNED` (two words) for the strong count, as a
+   block-mode copy of a shared pointer does (DR-94 decision 5). The same
+   applies to a slice of shared pointers.
+3. The replaced lines stay in the source, commented out with their reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨drain⟩ ≡
+  while an entry e can be popped:
+    slot_free ← true                         -- the slot of e is free
+    e.children(walker)
+
+⟨push an entry⟩ ≡                             -- block mode, not inline, not empty
+  reused ← slot_free;  slot_free ← false
+  reserve (3 operations, E scanned bytes, if reused then 0 else 4 slots)
+  push the entry on the chunked worklist
+
+⟨push a store-owned shared pointer⟩ ≡         -- block-mode cleanup
+  reserve (3 operations, F + 2 words scanned bytes, 0)
+```
+
+**Soundness.**
+
+- *Worklist.* The chunked worklist never frees a chunk (DR-92), so it
+  allocates only when the stack grows past its previous peak. A pop lowers
+  the height by one, so the first push after a pop never allocates. Suppose
+  that the popped entries push $`k_1, k_2, \ldots`$ entries. Then the height
+  never exceeds $`1 + \sum_i (k_i - 1)^+`$, the root plus the further
+  entries, for every order of the pops
+  (`WalkerBlockCharge.run_peak_le_charged_pushes`,
+  `walk_peak_le_charged_pushes`, `charged_pushes_independent_of_step_order`).
+  So the bounds of DR-92 for a peak hold for the entries that reserve
+  backing (`chain_slot_charge_covers_worklist`, and
+  `chain_slot_charge_covers_worklist_for_slot` for the 24-byte depth
+  entries). The scanned slack of every entry still pays the header moves of
+  the chunk vector. The reserved backing never exceeds that of DR-92
+  (`charged_pushes_le_entries`).
+- *Release.* A release reads the pointer and reads and writes the strong
+  count. One field word and a header of two words pay that work
+  (`shared_release_charge_covers_work`). The walk does not visit the payload,
+  whose release was prepaid when it entered the store (DR-83).
+- *Determinism.* The k of an entry depends only on the entry's own value, and
+  the charge sums the k of the popped entries. So every role charges the
+  same.
+
+**Effect on the sites in block mode.** The chained slot lowers the
+SearchStateBytes of every block-mode walk: the Stage A sites (DR-94), the
+depth walks of the nested encodes (DR-93) and the sites of D-D1 to D-D5.
+The release changes the charge of the Stage A cleanup in
+`replay_authority.rs`. No other VerificationBytes term changes.
+
+**Scope.** This change is cost-accounting work. The block-mode walker exists
+only on this branch. The change alters host-work charges of protocol 6,
+which is not yet released. No value, encoding, root, event or receipt
+changes.
+
+**Verification (part 1).** `WalkerBlockCharge.v` proves these results without
+axioms, in its section for D-E1:
+
+- `run_peak_le_charged_pushes`, `walk_peak_le_charged_pushes`,
+  `charged_pushes_independent_of_step_order` and `charged_pushes_le_entries`.
+- `chain_slot_charge_covers_worklist` and
+  `chain_slot_charge_covers_worklist_for_slot`.
+- `shared_release_charge_covers_work`.
+- Negative controls: `free_root_push_uncovered_example` (a free root leaves
+  chunk 0 unpaid), `per_entry_backing_overcharges_chain_example` (DR-92
+  reserved four slots for a chain whose peak is one) and
+  `shared_release_without_header_uncovered_example` (8 of 24 bytes).
+
+Tests in `shared/src/rust/clone_backing/tests.rs`:
+
+- `chain_slot_backing_never_exceeds_per_entry_backing` (256 cases): the
+  backing equals the root and the further entries of an independent count,
+  and never exceeds one slot set for each entry.
+- `chain_slot_backing_covers_worklist_allocations`: a node of 600 children,
+  a chain of 10,000 boxes and a mix of both allocate at most their backing.
+  The chain reserves one slot set and allocates exactly one chunk.
+- `chain_slot_charges_the_root_and_each_further_child`: a field before the
+  entry does not take the slot, and a second entry reserves backing.
+- `shared_release_walk_charges_pointer_and_strong_count`: one pointer
+  charges its bytes, a field word and the header. A vector of five pointers
+  charges the same for small and for large payloads.
+- The independent oracles of the block rules (`Tree` here, `Par` in rholang)
+  now state the chained slot, and they still equal the walker exactly. The
+  chunk-model, depth-walk and empty-container tests state it too. The
+  allocation-coverage tests pass unchanged.
+
+Four mutations in a scratch copy fail tests:
+
+- A free root push fails eleven tests, among them the three
+  allocation-coverage tests.
+- A field that takes the slot fails two tests, among them the rholang
+  oracle.
+- A slot that is never cleared fails nine tests, among them the
+  allocation-coverage tests.
+- A release without the header fails
+  `shared_release_walk_charges_pointer_and_strong_count`.
+
+
+**Measurement (part 1).** The D-G0 probe ran the gateway test twice with
+DR-107 and twice with part 1 of DR-108, under the provisional caps. Every
+role charged exactly the same usage. The replay of the gateway funding
+block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-107, run 1 | 1,115,096,284 | 135,174,339 | 57,868,930 |
+| DR-107, run 2 | 1,102,623,236 | 135,097,087 | 57,853,668 |
+| DR-108 part 1, run 1 | 1,115,496,469 | 124,281,345 | 57,860,329 |
+| DR-108 part 1, run 2 | 1,088,851,334 | 123,896,655 | 57,833,274 |
+| Change of the means | −6.7 MB (−0.6 %) | −11.05 MB (−8.2 %) | −14 K (0.0 %) |
+
+The VerificationBytes runs of the two builds overlap. Their change is about
+a quarter of the largest difference between two runs of one build
+(26.6 MB), so part 1 does not change VerificationBytes measurably, as
+expected. The SearchStateBytes runs do not overlap, and their change is
+about 29 times the largest difference between two runs of one build. The
+SearchStateBytes of the producer's execution also fall by about 11 MB. In
+multiples of the original caps, the replay is now at 4.11 in
+VerificationBytes and 0.92 in SearchStateBytes, which is below the original
+SearchStateBytes cap.
+
+**Decision (part 2).**
+
+4. The wrappers. `rspace++/src/rspace/native_backing.rs` gets six block-mode
+   wrappers. Each is a thin call of the shared block walks (DR-92):
+   - `reserve_blocks_copy_and_cleanup` and
+     `reserve_blocks_slice_copy_and_cleanup` prepay one clone and its
+     release.
+   - `inspect_blocks_slice` prepays one traversal of the elements of a slice.
+   - `reserve_blocks_cleanup` prepays one release, which reads each block
+     once, as an inspection does.
+   - `reserve_shared_blocks_copy_and_cleanup` prepays the copy of a
+     store-owned vector of shared pointers and the release of the copy. It
+     pays the strong counts and skips the payloads (DR-83, decision 2).
+   - `reserve_shared_blocks_cleanup` prepays the release of one store-owned
+     shared pointer.
+
+   The per-level wrappers compile only for tests. They remain the reference
+   charges of the tests.
+5. The site switch. Every production walker call of rspace++ moves to the
+   block wrapper that prepays the same work (audit below). The legacy store
+   `hot_store/native.rs` has lines that only the test oracles reach. They
+   switch with the same mapping, so that a later item can make the per-level
+   walker test-only. The export `changes` of the digest store is a test function
+   that runs on unlimited meters, so it stays per-level. Each old call stays
+   in the source, commented out with its reason.
+6. The second traversals. Three key reads of the native session read each
+   channel twice. The lock reads the channel for the SipHash, and the store
+   key encodes it with bincode. A per-level inspection charges each inline
+   byte three times, which paid both reads. A block inspection prepays one
+   traversal. So each read adds a second block inspection before its key:
+   `inspect_blocks(channel)` in `get_data_prepared` and in `get_joins`, and
+   `inspect_blocks_slice(channels)` in `get_continuations`.
+7. The lock paths `channel_hashes` and `produce_lock` read each channel once,
+   for the SipHash. Each uses one `inspect_blocks(channel)`. In
+   `channel_hashes`, this replaces the inspection of a one-element slice, so
+   all lock sites inspect the channel through a reference.
+
+**Algorithm (part 2, literate form).**
+
+```text
+⟨session key read of channel c⟩ ≡
+  reserve one operation
+  inspect_blocks(c)                     -- prepays the SipHash pass
+  h ← SipHash(c);  acquire the locks of h
+  inspect_blocks(c)                     -- prepays the bincode pass of the key
+  k ← Blake2b(bincode(c))               -- the writer reserves its output bytes
+  read the store entry of k
+
+⟨copy of a stored value v⟩ ≡
+  reserve_blocks_copy_and_cleanup(v)    -- one clone of v and one release
+  v′ ← clone(v)
+```
+
+**Soundness (part 2).** Each block call prepays the work in the column
+"Prepaid work" of the audit:
+
+- A copy and cleanup prepays one clone and one release
+  (`WalkerBlockCharge.block_copy_covers_walk_and_clone`, with the release as
+  the consumer traversal of `block_inspection_covers_walk_and_traversal`).
+- An inspection, or the release of a value that the store owns, prepays one
+  traversal (`block_inspection_covers_walk_and_traversal`).
+- The release of a store-owned shared pointer prepays the pointer and its
+  strong count (`shared_release_charge_covers_work`, part 1).
+- A key read prepays its two traversals with two inspections. The writer of
+  the key still reserves its output bytes (DR-96, decision 5).
+
+**Audit (part 2).** The table has one row per production call line. The
+lines of `hot_store/native.rs` that only the test oracles reach have one row
+per method. All paths are under `rspace++/src/rspace/`. "Copy" means one
+clone and its later release.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `hot_store/native_store.rs:35` (`reserve_key`) | channel | the copy of a new entry key into an `Arc`, released with the entry | block copy | cold `data`, `data_view` and `joins`, and `install_join` |
+| `hot_store/native_store.rs:48` (`reserve_slice_key`) | channel slice | the copy of a new group key into an `Arc`, released with the entry | block slice copy | cold `continuations` and `continuation_views`, and `install_continuation` |
+| `hot_store/native_store.rs:101` (`check_channel`) | stored channel | one side of the key-collision comparison | block inspection | each found entry of a channel |
+| `hot_store/native_store.rs:102` (`check_channel`) | sought channel | the other side of the comparison | block inspection | each found entry of a channel |
+| `hot_store/native_store.rs:122` (`check_group`) | stored channels | one side of the key-collision comparison | block slice inspection | each found entry of a group |
+| `hot_store/native_store.rs:123` (`check_group`) | sought channels | the other side of the comparison | block slice inspection | each found entry of a group |
+| `hot_store/native_store.rs:487` (`data`) | cached data | the copy returned to the caller | block copy | warm data read (`get_data_prepared`, installation) |
+| `hot_store/native_store.rs:500` (`data`) | decoded data | the copy kept in the cache | block copy | cold data read |
+| `hot_store/native_store.rs:539` (`data_view`) | decoded data | the release of the data moved into the cache | block release | cold data view (operation readers) |
+| `hot_store/native_store.rs:571` (`joins`) | installed joins | the copy returned to the caller | block copy | join read of an installed channel |
+| `hot_store/native_store.rs:586` (`joins`) | cached joins | the copy returned to the caller | block copy | warm join read |
+| `hot_store/native_store.rs:599` (`joins`) | decoded joins | the copy kept in the cache | block copy | cold join read |
+| `hot_store/native_store.rs:643` (`installed_copy`) | installed continuation | the copy returned to the caller | block copy | continuation read of an installed group |
+| `hot_store/native_store.rs:678` (`continuations`) | cached continuation | the copy of each continuation returned to the caller | block copy | warm continuation read (`get_continuations`) |
+| `hot_store/native_store.rs:697` (`continuations`) | decoded continuation | the copy of each continuation kept in the cache | block copy | cold continuation read |
+| `hot_store/native_store.rs:772` (`continuation_views`) | decoded continuation | the release of each continuation moved into its `Arc` | block release | cold continuation view (operation readers) |
+| `hot_store/native_store.rs:806` (`store_consume`) | waiting continuation | the release of the stored continuation (DR-83) | block release | every stored consume |
+| `hot_store/native_store.rs:886` (`store_consume`) | vector of continuation pointers | the copy of the vector and its release, with the strong counts, without the payloads | block shared copy | every stored consume that is not a duplicate |
+| `hot_store/native_store.rs:975` (`store_consume`) | stored join | one side of the join comparison | block slice inspection | every stored consume |
+| `hot_store/native_store.rs:976` (`store_consume`) | consume channels | the other side of the join comparison | block slice inspection | every stored consume |
+| `hot_store/native_store.rs:990` (`store_consume`) | join list | the copy of the list before the update | block copy | a stored consume with a new join |
+| `hot_store/native_store.rs:1006` (`store_consume`) | consume channels | the copy of the channels into the join list | block slice copy | a stored consume with a new join |
+| `hot_store/native_store.rs:1073` (`put_datum`) | published datum | the release of the datum moved into the store | block release | every stored produce |
+| `hot_store/native_store.rs:1078` (`put_datum`) | cached data | the copy of the data before the update | block copy | every stored produce |
+| `hot_store/native_store.rs:1191` (`prepare_retire_data`) | cached data | the copy of the data before the removal | block copy | every consume match |
+| `hot_store/native_store.rs:1205` (`prepare_retire_data`) | removed datum | the release of the removed datum | block release | every consume match of a non-persistent datum |
+| `hot_store/native_store.rs:1281` (`retire_produce_match`) | vector of continuation pointers | the copy of the vector and its release, with the strong counts, without the payloads | block shared copy | every produce match of a non-persistent continuation |
+| `hot_store/native_store.rs:1287` (`retire_produce_match`) | retired continuation pointer | the release of the pointer and its strong count, payload prepaid | block shared release | every produce match of a non-persistent continuation |
+| `hot_store/native_store.rs:1387` (`prepare_retire_joins`) | stored join | one side of the join comparison | block slice inspection | the last continuation of a group retires |
+| `hot_store/native_store.rs:1388` (`prepare_retire_joins`) | retired group | the other side of the join comparison | block slice inspection | the last continuation of a group retires |
+| `hot_store/native_store.rs:1400` (`prepare_retire_joins`) | join list | the copy of the list before the removal | block copy | the last continuation of a group retires |
+| `hot_store/native_store.rs:1405` (`prepare_retire_joins`) | removed join | the release of the removed join | block release | the last continuation of a group retires |
+| `hot_store/native_store.rs:1437` (`install_continuation`) | installed continuation | the release of the continuation moved into the store | block release | genesis installation |
+| `hot_store/native_store.rs:1488` (`install_join`) | join list | the copy of the list before the update | block copy | genesis installation |
+| `hot_store/native_store.rs:1498` (`install_join`) | stored join | one side of the join comparison | block slice inspection | genesis installation |
+| `hot_store/native_store.rs:1499` (`install_join`) | installed join | the other side of the join comparison | block slice inspection | genesis installation |
+| `hot_store/native_store.rs:1519` (`install_join`) | installed join | the copy of the join into the list | block slice copy | genesis installation |
+| `replay_rspace/native_candidate/metered.rs:124` (`fill_incoming`) | incoming value | the copy for each incoming candidate after the first (DR-107) | block copy | a produce whose value fills more than one candidate |
+| `replay_rspace/native_candidate/metered.rs:217` (`digest`) | candidate | the bincode pass of the tie digest | block inspection | candidates whose source hashes tie (DR-75) |
+| `replay_rspace/native_candidate/metered.rs:302` (`channel_position`) | channel of an earlier entry | one side of the channel comparison | block inspection | each channel of a selection, against the earlier entries (DR-106) |
+| `replay_rspace/native_candidate/metered.rs:308` (`channel_position`) | sought channel | the other side of the comparison | block inspection | each channel of a selection, against the earlier entries (DR-106) |
+| `replay_rspace/native_candidate/metered.rs:383` (`prepare_metered_produce_counter`) | produce source | the copy of the source into the counter map | block copy | every non-persistent produce of a COMM |
+| `replay_rspace/native_candidate/metered.rs:437` (`metered_candidate_matches`) | candidate source | nothing that the identity does not reserve itself (redundant) | block inspection | replay identity checks |
+| `replay_rspace/native_candidate/metered.rs:521` (`metered_channel_data`) | channel | one side of the trigger comparison | block inspection | every produce selection |
+| `replay_rspace/native_candidate/metered.rs:522` (`metered_channel_data`) | trigger channel | the other side of the comparison | block inspection | every produce selection |
+| `replay_rspace/native_candidate/metered.rs:664` (`metered_match_data`) | channel | the copy into the candidate | block copy | every matched datum |
+| `replay_rspace/native_candidate/metered.rs:665` (`metered_match_data`) | datum source | the copy into the candidate | block copy | every matched datum |
+| `replay_rspace/native_candidate/metered.rs:677` (`metered_match_data`) | stored value | the copy of the removed value | block copy | every matched stored datum |
+| `replay_rspace/native_candidate/metered.rs:740` (`metered_comm`) | datum source | the copy into the COMM | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:825` (`metered_comm`) | produce source | the copy into the repetition counts | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:832` (`metered_comm`) | consume source | the copy into the COMM | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:833` (`metered_comm`) | peeks | the copy into the COMM | block copy | every COMM |
+| `replay_rspace/native_candidate/metered.rs:857` (`prepare_metered_consume_candidate`) | consume source | nothing that the identity does not reserve itself (redundant) | block inspection | every consume selection |
+| `replay_rspace/native_candidate/metered.rs:967` (`prepare_metered_produce_candidate`) | continuation source | nothing that the identity does not reserve itself (redundant) | block inspection | each candidate continuation of a produce |
+| `replay_rspace/native_candidate/metered.rs:1007` (`prepare_metered_produce_candidate`) | selected continuation | the copy of the selected continuation and its release | block copy | every matched produce |
+| `replay_rspace/native_session.rs:96` (`reserve_checkpoint_metadata`) | event log | the copy into the checkpoint and its release | block copy | every session checkpoint |
+| `replay_rspace/native_session.rs:97` (`reserve_checkpoint_metadata`) | produce counters | the copy into the checkpoint and its release | block copy | every session checkpoint |
+| `replay_rspace/native_session.rs:502` (`get_data_prepared`) | channel | the SipHash pass of the lock | block inspection | session data read |
+| `replay_rspace/native_session.rs:511` (`get_data_prepared`) | channel | the bincode pass of the store key (decision 6) | block inspection | session data read |
+| `replay_rspace/native_session.rs:530` (`get_joins`) | channel | the SipHash pass of the lock | block inspection | session join read |
+| `replay_rspace/native_session.rs:539` (`get_joins`) | channel | the bincode pass of the store key (decision 6) | block inspection | session join read |
+| `replay_rspace/native_session.rs:562` (`get_continuations`) | channels | the bincode passes of the group keys (decision 6) | block slice inspection | session continuation read |
+| `replay_rspace/native_session/installation.rs:108` (`install`) | channel of the pattern | one side of the comparison with a chosen datum | block inspection | installation of a continuation |
+| `replay_rspace/native_session/installation.rs:109` (`install`) | channel of a chosen datum | the other side of the comparison | block inspection | installation of a continuation |
+| `replay_rspace/native_session/installation.rs:132` (`install`) | channel | the copy into the chosen list | block copy | installation of a continuation |
+| `replay_rspace/native_session/locks.rs:79` (`channel_hashes`) | channel | the SipHash pass of the lock | block inspection | every consume, the continuation read, and the join locks of every produce |
+| `replay_rspace/native_session/locks.rs:122` (`produce_lock`) | channel | the SipHash pass of the lock | block inspection | every produce |
+| `hashing/native_source.rs:214` (`clone_produce`) | produce source | the copy returned to rholang and its release | block copy | rholang source preparation |
+| `trace/event.rs:115`, `:116`, `:117` (`cost_identity_metered`) | COMM fields | one bincode pass (DR-94) | block inspection | unchanged by this item |
+| `hot_store/native.rs:17` (`inspect_key`) | key | one traversal per step of the persistent-map lookup | block inspection, scaled | uncached data read |
+| `hot_store/native.rs:45` (`lookup`) | each key of the shard | one comparison traversal | block inspection | uncached data read |
+| `hot_store/native.rs:176` (`continuation_identity_metered`) | waiting continuation | the formatting pass of the identity | block inspection | stored consume with a duplicate source hash |
+| `hot_store/native.rs:212` (`native_with`) | key | the shard hash | block inspection | uncached data read |
+| `hot_store/native.rs:243` (`native_get`) | resident data | the copy returned to the caller | block copy | warm uncached data read |
+| `hot_store/native.rs:1318` (`native_data_uncached`) | decoded data | the release of the decoded data | block release | cold uncached data read (`ispace_impl.rs`, `replay_rspace.rs`) |
+| `hot_store/native.rs`, `native_snapshot` (1 line) | key | the shard hash | block inspection | test oracles only |
+| `hot_store/native.rs`, `native_insert_new_with` (4 lines) | key, value | the insert copies and the releases | block copy and inspection | test oracles only |
+| `hot_store/native.rs`, `native_insert_replace` (1 line) | key | the shard hash | block inspection | test oracles only |
+| `hot_store/native.rs`, `reserve_replace`, `reserve_replace_shared`, `reserve_replace_with` (4 lines) | keys, values | the shard copy on replace | block copy and shared copy | test oracles only |
+| `hot_store/native.rs`, `native_data`, `native_data_view` (4 lines) | channel, data | the copies and releases of the legacy reads | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_joins` (1 line) | joins | the copy of the legacy read | block copy | test oracles only |
+| `hot_store/native.rs`, `native_continuations`, `native_continuation_views` (5 lines) | continuations | the copies and releases of the legacy reads | block copy and release | test oracles only |
+| `hot_store/native.rs`, `native_store_consume` (12 lines) | continuation, joins | the legacy publication | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_put_datum` (2 lines) | datum, data | the legacy publication | block copy and release | test oracles only |
+| `hot_store/native.rs`, `prepare_native_retire_data` (7 lines) | data | the legacy retirement | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_retire_produce_match` (4 lines) | continuation pointers | the legacy retirement | block shared copy and release | test oracles only |
+| `hot_store/native.rs`, `prepare_native_retire_joins` (9 lines) | joins | the legacy retirement | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_install_continuation`, `native_install_join` (5 lines) | installed values | the legacy installation | block copy, inspection and release | test oracles only |
+| `hot_store/native.rs`, `native_changes` (6 lines) | store entries | the legacy export | block copy | test oracles only |
+
+**Comparison with the per-level charge.** A block inspection of a record of
+RSpace never charges more VerificationBytes than its per-level inspection. A
+block copy and cleanup can charge more for a small value, in two cases:
+
+- A B-tree node. The block walks read the whole node five times, against
+  four times in per-level mode. A sparse node holds few entries, which save
+  less than this extra read.
+- A small root. The root pays two entry constants (112 bytes), against one
+  more read of its bytes in per-level mode.
+
+So for one value, the excess is at most the bytes of the B-tree nodes plus
+$`\max(0, 112 - s)`$. Here $`s`$ is the size of the root in bytes. For a
+slice of values, the excess is at most the bytes of the B-tree nodes. A
+design check expected "block at most per-level" for all records. A
+property test of 256 cases found a counterexample: a map of one produce
+counter. A probe of 20,000 generated records then measured the two
+effects, and the bounds above hold with a margin of at least 17 bytes. The
+production values (for example a `Par` channel, with a root of more than
+200 bytes) are larger than these test values. The measurement below gives
+the net effect.
+
+**Verification (part 2).** New tests:
+
+- `native_backing/block_tests.rs`:
+  - `rspace_records_block_charges_match_independent_oracle` (256 cases). The
+    records are `Datum`, `WaitingContinuation`, `Produce`, `Consume`,
+    `COMM`, an event log, a counter map and a join list. For one record and
+    for a slice of records, the block walks equal an independent statement
+    of the block rules. This holds for an inspection and for a copy.
+  - `block_wrappers_charge_the_shared_block_walks` (256 cases): each wrapper
+    makes exactly the reservations of the shared walks that it names, in
+    the same order.
+  - `block_charge_le_per_level_for_rspace_records` (256 cases): the
+    comparison above, with its bounds.
+  - `block_walks_cover_copy_and_worklist_allocations` (256 cases): the walks,
+    the clone and its release allocate at most the reserved backing.
+  - `shared_block_wrappers_charge_pointers_and_strong_counts`: the exact
+    charge for one to four pointers, the same for small and large payloads.
+  - `block_wrappers_stop_at_every_cut`: each wrapper returns the meter's
+    error at every cut and reserves nothing after it.
+  - Negative controls: `block_charge_exceeds_per_level_for_bare_scalars`,
+    `block_copy_exceeds_per_level_for_sparse_tree_nodes` and
+    `block_copy_exceeds_per_level_for_small_roots`. The last two state the
+    excess exactly, term by term.
+- `hot_store/native_store/tests.rs`:
+  - `every_native_store_call_accepts_exact_credit_and_rejects_each_smaller_dimension`:
+    the 12 production calls of the store.
+  - `store_consume_release_charge_grows_with_the_waiting_body`: a body that
+    is 4,095 bytes longer adds exactly 4,095 scanned bytes, and nothing else.
+  - `retire_produce_match_charges_each_released_pointer`: each further stored
+    continuation adds exactly 5 operations, 64 scanned bytes and 8 backing
+    bytes, whatever the size of its body.
+  - `nested_values_cover_allocations_at_every_store_cut`: 11 calls on nested
+    values with 4 KiB payloads, at every cut.
+- `hot_store/native/tests.rs`:
+  `uncached_data_read_accepts_exact_credit_and_rejects_each_smaller_dimension`,
+  cold and warm.
+- `replay_rspace/native_candidate/metered/tests.rs`:
+  `produce_selection_with_a_large_continuation_accepts_exact_credit_and_rejects_each_smaller_dimension`.
+  The charge of a 64 KiB body grows by exactly one block copy and release.
+- `replay_rspace/native_session/tests.rs`:
+  `checkpoint_metadata_accepts_exact_credit_and_rejects_each_smaller_dimension`
+  and `session_key_reads_charge_two_channel_traversals`. The charge of each
+  key read grows with the channel by exactly two inspections, the key's
+  encoding, and the store's copy of the channel.
+
+Restated tests, not loosened:
+
+- The frozen selections of DR-106 and DR-107 and the helpers `copy_charge`
+  and `copy_allocation` call the block wrappers, as production does. So the
+  exact relations of DR-106 and DR-107 still hold.
+- Six tests asserted at least two per-level copies. Three of them now
+  assert exactly one block copy and release
+  (`checkpoint_metadata_prepays_clone_and_cleanup`,
+  `returned_produce_clone_reserves_nested_payload_backing_before_copy`,
+  `counter_preparation_prepays_nested_source_cleanup`). The other three
+  assert at least one block copy and release
+  (`warm_cache_copy_prepays_cleanup_before_caller_rejection`,
+  `shared_map_insertion_prepays_copied_entry_cleanup`,
+  `export_late_rejection_uses_prepaid_cleanup_for_earlier_payloads`).
+
+Seven mutations in a scratch copy fail tests:
+
+- `put_datum` charges a release instead of a copy. It fails
+  `nested_values_cover_allocations_at_every_store_cut` (26,532 bytes
+  allocated against 7,464 reserved). With the first fixture, whose payloads
+  had 33 bytes, this mutation passed every test. The worklist backing of the
+  release walk covered the small clone. The fixture now has 4 KiB payloads,
+  and the test checks that premise.
+- The release in `store_consume` reads only the source. It fails
+  `store_consume_release_charge_grows_with_the_waiting_body`.
+- The data, the join or the continuation read has no second traversal. Each
+  fails `session_key_reads_charge_two_channel_traversals`.
+- The selected continuation is inspected instead of copied. It fails three
+  selection tests.
+- The checkpoint copies the log without its release. It fails three
+  checkpoint tests.
+
+Suites (part 2):
+
+- Shared, rspace++ and rholang: 4,256 of 4,256 tests pass.
+- Casper and models with the original caps: 2,141 of 2,148 tests pass. The
+  7 failures are a subset of the 10 known failures of part 1. Three
+  registry tests of DR-101 that failed with the original caps now pass:
+  `another_signer_inserts_into_the_registry_after_a_registry_insert`,
+  `another_signer_looks_up_the_registry_after_a_registry_insert` and
+  `a_registry_lookup_costs_the_same_whoever_wrote_the_registry_last`.
+- Casper with the provisional caps: 1,688 of 1,692 tests pass. The 4
+  failures are the known failures of part 1.
+- The doctests pass. The proof gate passes with 272 modules, as in part 1,
+  because part 2 changes no proof.
+
+**Measurement (part 2).** The D-G0 probe ran the gateway test twice with
+part 2, under the provisional caps. Every role charged exactly the same
+usage, and the self-replay equals each validator. The replay of the gateway
+funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-108 part 1, run 1 | 1,115,496,469 | 124,281,345 | 57,860,329 |
+| DR-108 part 1, run 2 | 1,088,851,334 | 123,896,655 | 57,833,274 |
+| DR-108 part 2, run 1 | 692,100,826 | 121,150,356 | 57,617,237 |
+| DR-108 part 2, run 2 | 688,251,351 | 120,990,821 | 57,630,520 |
+| Change of the means | −412.0 MB (−37.4 %) | −3.02 MB (−2.4 %) | −0.22 M (−0.4 %) |
+
+The VerificationBytes change is about 15 times the largest difference
+between two runs of one build (26.6 MB). The SearchStateBytes change is
+about 8 times that largest difference (0.38 MB). The design estimated about
+690 MB of VerificationBytes after part 2, a SearchStateBytes change of
+−3 to −6 MiB, and about −0.3 M operations. The replays of the two small
+blocks fall by 18 % and 22 % in VerificationBytes. The producer's execution
+does not change. In multiples of the original caps, the replay of the
+gateway block is now at 2.57 in VerificationBytes and 0.90 in
+SearchStateBytes.
+
+**Amendment (DR-109).** The bound of the comparison with the per-level
+charge holds only when every entry has at least 19 bytes. An entry costs
+two entry constants (112 bytes) in block mode, and two pushes of three
+reads of its bytes in per-level mode. A remainder variable of the matcher
+is a chain of smaller entries (DR-109).
+
+**Amendment (DR-110).** Decision 6 extends to the keys of the joins of a
+produce, which encode each join channel after the block copy of the joins.
+`join_keys` inspects each join once before the keys (DR-110, decision 5).
+Without that inspection, the block copies of this record left the key pass
+and the footprint pass over the join channels without a payment.
+
+**Cross-refs.** DR-83, DR-92, DR-93, DR-94, DR-96, DR-106, DR-107. Leaf
+`ofp-2-cap-d-e1-rspace-sites`.
+
+## DR-109 — The matcher walker sites in block mode, with second traversals for membership scans
+
+**Status.** Part 1, the walker sites of the rholang matcher (decisions 1 to
+6), implemented 2026-10-08 for Phase D item D-E2 of epic 8946 (D-O1 Stage
+B). Part 2, the walker sites of `rho-pure-eval` (decisions 7 to 9),
+implemented 2026-10-08 as the second commit of D-E2. A read-only design
+pass took the inventory of the matcher sites. The user decided to put the
+`rho-pure-eval` sites into D-E2 as a second commit.
+
+**Context.**
+
+- After DR-108, the 90 walker sites of the matcher
+  (`rholang/src/rust/interpreter/matcher`) were the largest group of
+  per-level walks in the replay of the gateway funding block: 34 MiB of
+  VerificationBytes and 4 MiB of SearchStateBytes in both probe runs.
+- DR-94 states the precondition of a block-mode site. The site prepays
+  exactly one linear traversal, or one clone and one release. The design
+  pass audited each matcher site against it and found three kinds of site
+  where one per-level charge paid more:
+  - Seven membership scans: `Vec::contains`, `Iterator::position` and
+    B-tree searches. A scan compares the probe with items of the container,
+    so it reads the probe once for each item that it compares. The
+    per-level inspection of the container counted each inline byte three
+    times, which paid both sides.
+  - The scalar connectives (`ConnBool`, `ConnInt`, `ConnString`, `ConnUri`,
+    `ConnByteArray`) test the target with `single_expr`. It clones the
+    target's only expression and drops the clone. The per-level inspection
+    of the target paid those reads. No charge, in either mode, paid the
+    backing of the clone.
+  - The commit guard owns the result of its evaluation. The per-level
+    inspection of the result also paid its release.
+- D-D2 (DR-104, decision 4) compares a ground pattern by reference with two
+  inspections of the pattern (the lockstep bound). That bound holds in block
+  mode unchanged.
+
+**Decision.**
+
+1. The wrappers. `MatcherWork` gets a private `block_walk`, which runs one
+   block walk of the shared walker with the matcher's meter, and three thin
+   wrappers: `inspect_blocks`, `reserve_blocks_copy_and_cleanup` and
+   `reserve_blocks_slice_copy_and_cleanup`. `SpatialMatcherContext`
+   delegates to them, and its `reserve_single_expr_copy` reserves the copy
+   of decision 4. Without a meter, a wrapper walks nothing, as the per-level
+   helpers did. A recorded error still stops the match. The per-level helpers
+   compile only for tests, as reference charges. `match.rs` calls the
+   shared block walks directly.
+2. The site switch. Each of the 90 sites moves to the block call that
+   prepays the same work (audit below). The ground comparison keeps two
+   block inspections of the pattern.
+3. The second traversals. Before each of the seven membership scans, the
+   site inspects the container a second time.
+4. The single expression. Before a scalar connective test, the matcher
+   reserves a block copy and cleanup of the target's only expression, under
+   the condition of `single_expr`.
+5. The guard result. The commit guard inspects its owned result a second
+   time, which pays the release.
+6. Each replaced line stays in the source, commented out with its reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨block wrapper⟩ ≡
+  if the context has no meter: walk nothing (a recorded error still stops the match)
+  run the shared block walk with the matcher's meter
+  if a reservation fails: record the error and stop
+
+⟨membership scan of probe x in container C⟩ ≡     -- contains, position, B-tree search
+  inspect_blocks(x)          -- kept from the per-level code
+  inspect_blocks(C)          -- the container side
+  inspect_blocks(C)          -- the probe side, at most C's reads in lockstep
+  scan C for x
+
+⟨ground comparison of target t with pattern p⟩ ≡
+  inspect_blocks(p); inspect_blocks(p)               -- the lockstep bound (DR-104)
+  match_pars(t, p)
+
+⟨scalar connective test⟩ ≡
+  inspect_blocks(t); inspect_blocks(c)
+  if t has one expression and no sends, receives, news, matches or bundles:
+    reserve_blocks_copy_and_cleanup(t.exprs[0])      -- single_expr copies it and drops the copy
+  single_expr(t) and the variant test
+
+⟨guard result r⟩ ≡
+  r ← eval_metered(guard)
+  inspect_blocks(r)          -- extract_bool
+  inspect_blocks(r)          -- the release of the owned result
+```
+
+**Soundness.**
+
+- An inspection prepays one traversal
+  (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`). A copy
+  and cleanup prepays one clone and one release
+  (`block_copy_covers_walk_and_clone`, with the release as the consumer
+  traversal). A slice copy is the same walk with a block root.
+- A membership scan reads no more of the probe than the container holds,
+  so two inspections of the container cover both sides
+  (`MatcherReadsByReference.membership_probe_reads_le_items`,
+  `membership_item_reads_le_items`,
+  `two_container_inspections_cover_membership_scan`). The model compares
+  the probe with every item. This bounds a scan that stops early and a
+  B-tree search that compares only one path of keys.
+- The ground comparison reads both sides in lockstep
+  (`MatcherReadsByReference.two_pattern_inspections_cover_lockstep_reads`).
+- The copy of the single expression and the release of the guard result are
+  one copy and one traversal of an owned value.
+- The charge of every site depends only on the values and on the order of
+  the matcher's steps, so every role charges the same. One exception
+  remains outside this item (see "Recorded gap").
+
+**Audit.** One row per site, with the two sides of one comparison in one
+row. All paths are under `rholang/src/rust/interpreter/matcher/`. "Copy"
+means one clone and its release. Owned values that a site only reads are
+released where they are consumed. The copy that created them prepaid the
+release (DR-103, as amended by DR-104).
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `spatial_matcher.rs:386` (`merge_set_remainder`) | element | the element side of `contains`, and its move into the vector | block inspection | a set pattern with a remainder |
+| `spatial_matcher.rs:387`, `:392` (`merge_set_remainder`) | vector of unique elements | the container side of `contains`, and the element side (decision 3) | block inspection, twice | a set pattern with a remainder |
+| `spatial_matcher.rs:426` (`merge_map_remainder`) | key | the key side of `position`, and its move | block inspection | a map pattern with a remainder |
+| `spatial_matcher.rs:427`, `:432` (`merge_map_remainder`) | vector of unique entries | the container side of `position`, and the key side (decision 3) | block inspection, twice | a map pattern with a remainder |
+| `spatial_matcher.rs:580`, `:581` (`match_ground_par`) | pattern | both sides of `match_pars` (lockstep, DR-104) | block inspection, twice | every ground pattern |
+| `spatial_matcher.rs:764` (`bind_field_by_reference`) | element of a borrowed field | the locally free predicate | block inspection | a free-variable pattern (DR-105) |
+| `spatial_matcher.rs:772` (`bind_field_by_reference`) | borrowed field | the copy of the field and its release | block slice copy | a free-variable pattern (DR-105) |
+| `spatial_matcher.rs:799`, `:800` (`spatial_match` of pairs) | owned pair target and pattern | nothing beyond the recursion's own charges (redundant) | block inspection, twice | map entries with connectives |
+| `spatial_matcher.rs:813` (`spatial_match` of a connective) | owned target | the reads of the connective arms | block inspection | each connective |
+| `spatial_matcher.rs:814` (`spatial_match` of a connective) | owned connective | its discriminant, and the scan for an `or` body | block inspection | each connective |
+| `spatial_matcher.rs:823` (`spatial_match` of a connective) | the target's only expression | the copy of `single_expr` and its release (decision 4) | block copy | each scalar connective |
+| `spatial_matcher.rs:831` (`and` connective) | owned target | the copy for each conjunct | block copy | each conjunct |
+| `spatial_matcher.rs:841` (`or` connective) | free map | the copy that is saved and restored | block copy | each disjunct |
+| `spatial_matcher.rs:846` (`or` connective) | owned target | the copy for each disjunct | block copy | each disjunct |
+| `spatial_matcher.rs:943` (`spatial_match` of a Par) | owned pattern | the free-variable test, the variable scans, the counts and the connective header (DR-105) | block inspection | every owned pattern with connectives |
+| `spatial_matcher.rs:952` (`spatial_match` of a Par) | owned target | the list lengths and the field moves | block inspection | patterns with connectives that are not one free variable |
+| `spatial_matcher.rs:996` (`spatial_match` of a Par) | connective | the bounds of `min_max_con` | block inspection | each connective of such a pattern |
+| `spatial_matcher.rs:1033` (`match_connective_with_bounds`) | connective | the copy for each candidate | block copy | each candidate subset |
+| `spatial_matcher.rs:1185`, `:1186` (`If`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1197`, `:1198` (`CostSignedTerm`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1209`, `:1210` (`CostStack`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1223`, `:1224` (`Bundle`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1236`, `:1237` (`Send`) | owned target and pattern | the flags (the channel and the data recurse) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1253`, `:1254` (`Receive`) | owned target and pattern | the flags (the binds and the body recurse) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1268`, `:1269` (`New`) | owned target and pattern | the bind count (the body recurses) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1282`, `:1283` (`Expr`) | owned target and pattern | the discriminants and the variable comparison (lists, sets and maps recurse) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1551`, `:1552` (`Match`) | owned target and pattern | nothing beyond the recursion | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1569`, `:1570` (`GUnforgeable`) | owned target and pattern | the comparison | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1586`, `:1587` (`ReceiveBind`) | owned target and pattern | the pattern comparison (the source recurses) | block inspection, twice | term patterns with connectives |
+| `spatial_matcher.rs:1600`, `:1601` (`MatchCase`) | owned target and pattern | the pattern comparison (the source recurses) | block inspection, twice | term patterns with connectives |
+| `list_match.rs:103` (`list_match_single_`) | target | the remainder predicate | block inspection | lists with a remainder and no element patterns |
+| `list_match.rs:136` (`list_match`) | free map | the copy into the match closure | block copy | each bipartite match |
+| `list_match.rs:146` (`list_match`) | targets | the copy for the bipartite match | block copy | each bipartite match |
+| `list_match.rs:154` (`list_match`) | free map of a result | the copy for the aggregation | block copy | each bipartite match |
+| `list_match.rs:162` (`list_match`) | free map | the copy for the aggregation | block copy | each bipartite match |
+| `list_match.rs:172` (`list_match`) | remainder target | the copy into the remainder targets | block copy | each bipartite match with a remainder |
+| `list_match.rs:184` (`list_match`) | target | the probe side of `contains` (redundant after decision 3) | block inspection | each bipartite match |
+| `list_match.rs:185`, `:191` (`list_match`) | remainder targets | the container side of `contains`, and the probe side (decision 3) | block inspection, twice | each bipartite match |
+| `list_match.rs:196` (`list_match`) | target | the copy into the sorted remainder | block copy | each bipartite match with a remainder |
+| `list_match.rs:282` (`match_function`) | owned pattern | the connective flag | block inspection | each match attempt |
+| `list_match.rs:288`, `:289` (`match_function`) | owned target and pattern | both sides of a ground comparison | block inspection, twice | each ground attempt |
+| `list_match.rs:299` (`match_function`) | owned target | the remainder predicate | block inspection | each remainder attempt |
+| `list_match.rs:313` (`match_function`) | free map | the copy returned as the result | block copy | each successful attempt |
+| `fold_match.rs:58`, `:59` (`fold_match`) | target and pattern | the copies for `spatial_match` | block copy, twice | arguments whose pattern uses connectives |
+| `fold_match.rs:99` (`free_check`) | element | the remainder predicate | block inspection | surplus elements of a list remainder |
+| `fold_match.rs:106` (`free_check`) | element | the copy into the binding | block copy | surplus elements of a list remainder |
+| `fold_match.rs:128`, `:129` (`fold_match`) | match cases | the copies for `spatial_match` | block copy, twice | match cases |
+| `fold_match.rs:166` (`free_check`) | match case | the remainder predicate | block inspection | case remainders |
+| `fold_match.rs:173` (`free_check`) | match case | the copy into the binding | block copy | case remainders |
+| `match.rs:33` (`get_with_context`) | remainder variable | the copy for `fold_match` | block copy | every metered match |
+| `match.rs:78` (`get_with_context`) | random state | the copy into the result | block copy | every successful match |
+| `match.rs:79` (`get_with_context`) | cost authority | the copy into the result | block copy | every successful match |
+| `match.rs:201` (`check_commit_metered`) | guard | the emptiness test | block inspection | guarded continuations |
+| `match.rs:247` (`guard_passes_metered`) | bound value | the copy into the environment | block copy | each bound value of a guard |
+| `match.rs:256`, `:261` (`guard_passes_metered`) | owned result | its read, and its release (decision 5) | block inspection, twice | each guard result |
+| `maximum_bipartite_match.rs:84` (`find_matches`) | indexed targets | the copy for each pattern | block copy | each bipartite match |
+| `maximum_bipartite_match.rs:101`, `:102`, `:103` (`find_matches`) | target, pattern and free map | the result copies | block copy, three times | each matched pair |
+| `maximum_bipartite_match.rs:142`, `:144` (`find_match`) | pattern and candidate | the arguments of the match function | block copy, twice | each attempt |
+| `maximum_bipartite_match.rs:152`, `:157` (`find_match`) | indexed candidate | the copies into the search state | block copy, twice | each attempt |
+| `maximum_bipartite_match.rs:233` (`not_seen`) | candidate | the probe side of the search | block inspection | each attempt |
+| `maximum_bipartite_match.rs:234`, `:239` (`not_seen`) | seen targets | the keys side and the probe side (decision 3) | block inspection, twice | each attempt |
+| `maximum_bipartite_match.rs:255` (`add_seen`) | candidate | the probe side, and its move | block inspection | each attempt |
+| `maximum_bipartite_match.rs:256`, `:261` (`add_seen`) | seen targets | the keys side and the probe side (decision 3) | block inspection, twice | each attempt |
+| `maximum_bipartite_match.rs:271` (`get_match`) | candidate | the probe side | block inspection | each reassignment |
+| `maximum_bipartite_match.rs:272`, `:277` (`get_match`) | matches | the keys side and the probe side (decision 3) | block inspection, twice | each reassignment |
+| `maximum_bipartite_match.rs:283` (`get_match`) | matched pattern | the copy pushed as a frame | block copy | each reassignment |
+| `maximum_bipartite_match.rs:308` (`claim_match`) | candidate | the probe side, and its move | block inspection | each claimed match |
+| `maximum_bipartite_match.rs:309`, `:314` (`claim_match`) | matches | the keys side and the probe side (decision 3) | block inspection, twice | each claimed match |
+| `sub_pars.rs:16` (`clone_slice`) | slice of terms | the copy and its release | block slice copy | sub-par enumeration |
+| `sub_pars.rs:39` (`insert_head`) | term | the copy and its release | block copy | sub-par enumeration |
+
+The set and map conversions of the `ESet` and `EMap` arms use the
+`SorterMeter`, which D-E4 switches.
+
+**Comparison with the per-level charge.** The test uses representative
+`Par` values: empty, ground, strings of 1 to 4,096 bytes, sends, variables
+and lists with remainders. For these values, a block walk charges no more
+VerificationBytes than the per-level walk. This holds for an inspection, for
+a copy and cleanup and for a slice copy. Two kinds of small value charge
+more:
+
+- A remainder variable is a chain of entries smaller than 19 bytes
+  (`Option<Var>`, `Var`, `Option<VarInstance>`, `VarInstance`). Each entry
+  costs two entry constants (112 bytes) in block mode, against two pushes
+  of three reads of its 8 bytes (48 bytes) in per-level mode. The copy of a
+  free-variable remainder charges 504 bytes against 216, and a wildcard
+  remainder 600 against 192.
+- A free map with few bindings has a sparse B-tree node. The block walks
+  read the whole node five times, against four.
+
+Both occur at most once or twice in each match. In the probe they add less
+than 0.1 MB. They show that the bound of DR-108 holds only when every entry
+has at least 19 bytes (amendment below).
+
+**Recorded gap.** The metered conversion of a set or a map sorts its
+elements in the iteration order of a randomly seeded hash table. So its
+charge varies from run to run (`SortedParHashSet::create_from_vec_metered`,
+`SortedParMap::create_from_vec_metered`). The D-E2 tests found it. It
+predates this item: the same tests fail against the code before D-E2. The
+user decided to record it and not to fix it in D-E2. It is the pgmcp bug
+`metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`.
+The exact-credit checks below therefore leave out matches that hold a set
+or a map, and they compare only the result for those matches.
+
+**Verification (part 1).** `MatcherReadsByReference.v` proves, without
+axioms, in its section (e): `membership_item_reads_le_items`,
+`membership_probe_reads_le_items` and
+`two_container_inspections_cover_membership_scan`. The negative control
+`probe_and_container_inspections_undercount_scan` shows that one inspection
+of the probe and one of the container pay 12 of the 18 elements that a scan
+can read.
+
+Tests:
+
+- `spatial_matcher.rs`:
+  - `matcher_block_wrappers_charge_the_shared_block_walks` and
+    `matcher_block_wrappers_stop_at_every_cut`: each wrapper makes exactly
+    the reservations of its shared walk, walks nothing without a meter, and
+    stops at every cut with the meter's error.
+  - `ground_comparison_charges_two_block_pattern_inspections`: exactly two
+    inspections of the pattern, the same for targets of 1, 3 and 4,096
+    elements.
+  - `merge_set_remainder_charges_two_container_traversals` and
+    `merge_map_remainder_charges_two_container_traversals`: an exact mirror
+    of the reservations of each scan.
+  - `scalar_connective_test_reserves_the_single_expression_copy`: the exact
+    reservations, and a backing that covers the copy of a 4 KiB string. A
+    target with two expressions, and a connective that does not call
+    `single_expr`, reserve no copy.
+  - `free_variable_copies_of_large_fields_fit_reserved_backing` and
+    `block_walks_cover_matcher_copy_and_worklist_allocations`: the backing
+    covers the copies of 4 KiB payloads.
+  - `block_charge_le_per_level_for_matcher_values`, and the negative
+    controls `block_copy_exceeds_per_level_for_remainder_variables` (exact,
+    term by term) and `block_copy_exceeds_per_level_for_sparse_free_maps`.
+- `list_match.rs`: `list_match_remainder_sort_charges_two_container_traversals`
+  finds the run of one target inspection and two inspections of the
+  remainder targets for each scan, in order.
+  `list_match_copies_fit_reserved_backing` covers 4 KiB targets.
+- `maximum_bipartite_match.rs`:
+  `bipartite_searches_charge_two_container_traversals` states the exact
+  reservations of `not_seen`, `add_seen`, `claim_match` and `get_match`.
+- `match.rs`: `guard_result_charges_an_inspection_and_a_release` mirrors the
+  guard's reservations exactly.
+- `rholang/tests/matcher/match_test.rs`: every one of the 52 tests runs the
+  metered matcher too. With an unlimited meter, it gives the result and the
+  free map of the unmetered matcher. It succeeds with exactly the credit
+  that it reserves, and a credit one unit short in any dimension rejects it
+  with the host error. Matches that hold a set or a map compare only the
+  result (see "Recorded gap").
+- The free-map insert proptest in `list_match.rs` charges its clone with the
+  block copy, as the matcher does.
+
+Eight mutations in a scratch copy fail tests:
+
+- A merge of a set remainder, a `list_match` remainder sort or a bipartite
+  search with one container inspection. Each fails its exact scan test.
+- A ground comparison with one pattern inspection fails the exact ground
+  test.
+- A free-variable field that is inspected but not copied fails the two
+  allocation tests of the free-variable fast path.
+- A guard without the release of its result fails the exact guard test.
+- A single-expression copy that is reserved for the wrong connective fails
+  the scalar connective test.
+- A wrapper that calls the per-level walk fails seven tests, among them the
+  wrapper test.
+
+Suites (part 1):
+
+- Shared, rspace++ and rholang: 4,271 of 4,271 tests pass.
+- Casper and models with the original caps: 2,142 of 2,148 tests pass. The
+  6 failures are a subset of the known failures of DR-108. One more registry
+  test of DR-101 now passes with the original caps:
+  `a_signer_spends_a_deposit_that_another_signer_made`. After DR-108 it
+  stopped at the VerificationBytes limit, with 266.6 MB used of 268.4 MB.
+- Casper with the provisional caps: 1,688 of 1,692 tests pass. The 4
+  failures are the known failures of DR-108.
+- The doctests pass. The proof gate passes with 272 modules and 3,069 closed
+  assumption queries.
+
+**Measurement (part 1).** The D-G0 probe ran the gateway test three times
+with DR-108 and three times with part 1 of DR-109, under the provisional
+caps. The design pass found that the expected change is close to the
+difference between two runs of one build, so each arm has three runs. Every
+role charged exactly the same usage in every run. The replay of the
+gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-108, run 1 | 692,100,826 | 121,150,356 | 57,617,237 |
+| DR-108, run 2 | 688,251,351 | 120,990,821 | 57,630,520 |
+| DR-108, run 3 | 692,867,624 | 121,348,377 | 57,656,887 |
+| DR-109 part 1, run 1 | 664,412,416 | 120,349,146 | 57,602,014 |
+| DR-109 part 1, run 2 | 673,223,881 | 120,837,351 | 57,630,978 |
+| DR-109 part 1, run 3 | 668,777,744 | 120,557,226 | 57,632,746 |
+| Change of the means | −22.3 MB (−3.2 %) | −0.58 MB (−0.5 %) | −0.01 M (0.0 %) |
+
+The VerificationBytes runs of the two builds do not overlap. The largest
+run of DR-109 is 15.0 MB below the smallest run of DR-108. The sampled
+share of the matcher walker in a validator replay falls from 34, 34 and 32
+MiB to 10, 14 and 8 MiB. The design estimated −23 MB (±30 %) and 10 to 14
+MiB. The producer's execution does not change, because it has no matcher
+frames. In multiples of the original caps, the replay of the gateway block
+is now at 2.49 in VerificationBytes and 0.90 in SearchStateBytes.
+
+**Context (part 2).**
+
+- `rho-pure-eval` evaluates the guards of guarded continuations. The
+  metered matcher calls `eval_metered` from `guard_passes_metered`
+  (`rholang/src/rust/interpreter/matcher/match.rs:251`). The crate has
+  eight walker sites in `eval.rs` and `env.rs`. All eight were per-level
+  walks before part 2.
+- An audit of the eight sites against the precondition of DR-94 found two
+  kinds of site where one per-level charge paid more than one traversal:
+  - `single_expr_instance` gets an owned evaluation result from each of
+    its ten callers, and each caller drops the result after the call. The
+    per-level copy and cleanup of the result also paid that release.
+  - `eq_binop` traverses each owned operand three times: the NaN scan, the
+    comparison and the release. The per-level inspection of each operand
+    counted each inline byte three times.
+- The 111 sample files of the three D-G0 probe runs of part 1 hold no stack
+  with a `rho-pure-eval` frame or with `guard_passes_metered`.
+
+**Decision (part 2).**
+
+7. The site switch. Six sites move to the block copy and cleanup:
+   `eval_inner`, the two arguments of `concatenate`, `eval_expr_to_par`,
+   `single_expr_instance` and `Env::get_metered`.
+8. The single-value extraction. `single_expr_instance` inspects its
+   argument a second time. This inspection pays the release of the owned
+   result by the caller.
+9. The equality. `eq_binop` inspects each operand three times, once for
+   each traversal. The per-level code inspected each operand once.
+
+Decision 6 also applies to part 2.
+
+**Algorithm (part 2, literate form).**
+
+```text
+⟨evaluate Par p⟩ ≡
+  reserve_blocks_copy_and_cleanup(p)        -- the accumulator copies the other fields of p
+  reserve(1, |p.exprs|, size(Par) + size(Vec<Expr>))
+  acc ← p without its expressions
+  for each expression e of p:
+    acc ← ⟨concatenate acc and ⟨evaluate expression e⟩⟩
+
+⟨concatenate owned a and b⟩ ≡
+  reserve_blocks_copy_and_cleanup(a)
+  reserve_blocks_copy_and_cleanup(b)
+  reserve(2, |a.locally_free| + |b.locally_free|, 0)
+  clone the elements of a and b into the result, then release a and b
+
+⟨evaluate expression e⟩ ≡
+  reserve_blocks_copy_and_cleanup(e)        -- a ground value or a collection is copied into the result
+  reserve(4, 0, size(Par) + size(Expr))
+  the arm of e
+
+⟨single value of an owned result r⟩ ≡
+  reserve_blocks_copy_and_cleanup(r)        -- the copy of the expression, or of r for the error, and its release
+  inspect_blocks(r)                         -- the release of r by the caller (decision 8)
+
+⟨equality of owned results l and r⟩ ≡
+  repeat 3 times:
+    inspect_blocks(l); inspect_blocks(r)    -- the NaN scan, the comparison, the release (decision 9)
+  the NaN scan of l and r, then l == r
+
+⟨lookup of position i⟩ ≡
+  reserve(probes + 3, probes × size(i32), 0)
+  reserve_blocks_copy_and_cleanup(v)        -- the returned copy of v and its release by the caller
+```
+
+**Soundness (part 2).**
+
+- Each copy-and-cleanup site makes at most one copy of its value and
+  releases the copy once. A block copy and cleanup pays one clone and one
+  release (`WalkerBlockCharge.block_copy_covers_walk_and_clone`).
+- `concatenate` clones the elements of its two owned arguments into new
+  vectors and then releases the arguments. The block copy and cleanup of
+  each argument pays both steps.
+- `single_expr_instance` copies the only expression of its argument, or
+  the whole argument for the error. That copy is a part of the argument, so
+  the block copy pays it. The added inspection pays the release of the
+  argument (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`).
+- The ten callers of `single_expr_instance` are `ENot`, `ENeg` and the two
+  operands of `bool_binop`, `cmp_binop`, `int_binop_checked` and
+  `int_div_or_mod`. Each caller passes an owned evaluation result and drops
+  it after the call.
+- The NaN scan stops at the first NaN, and the comparison stops at the
+  first difference. Each reads at most one traversal of each operand. The
+  release is one traversal. So three inspections of each operand cover the
+  three traversals.
+- The charge of every site depends only on the values, so every role
+  charges the same.
+
+**Audit (part 2).** All paths are under `rho-pure-eval/src/`. The columns
+are the same as in the audit of part 1.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `eval.rs:32` (`eval_inner`) | Par | the copy of its other fields into the accumulator, and its release | block copy | every evaluation |
+| `eval.rs:69`, `:70` (`concatenate`) | owned accumulator and result | the clone of their elements into the result, and their release | block copy, twice | each expression of a Par |
+| `eval.rs:114` (`eval_expr_to_par`) | expression | the copy of a ground value or a collection into the result | block copy | each expression |
+| `eval.rs:302` (`single_expr_instance`) | owned result | the copy of its only expression, or of the result for the error, and the release of that copy | block copy | each operand of a unary, Boolean, ordering or arithmetic operator |
+| `eval.rs:307` (`single_expr_instance`) | owned result | the release of the result by the caller (decision 8) | block inspection | as above |
+| `eval.rs:366`, `:367` (`eq_binop`) | owned operands | the NaN scan, the comparison and the release (decision 9) | block inspection, three times each | each `==` and `!=` |
+| `env.rs:110` (`Env::get_metered`) | bound value | the returned copy and its release | block copy | each bound variable of a guard |
+
+**Comparison (part 2).** A scratch test, which is not committed, measured
+the total charge of eleven evaluations. It ran once with the per-level code
+that precedes part 2 and once with part 2. Each cell gives the per-level
+charge and then the block charge.
+
+| Evaluation | VerificationOperations | VerificationBytes | SearchStateBytes |
+| --- | ---: | ---: | ---: |
+| ground integer | 401 → 339 | 48,643 → 15,649 | 4,976 → 2,928 |
+| ground 4 KiB string | 401 → 339 | 98,083 → 52,801 | 17,264 → 15,216 |
+| ground list of 16 integers | 6,161 → 5,979 | 913,685 → 268,321 | 51,568 → 51,696 |
+| equality of integers | 1,825 → 1,825 | 244,301 → 75,715 | 18,608 → 11,824 |
+| equality of 4 KiB strings | 1,825 → 1,825 | 425,581 → 224,419 | 59,568 → 52,784 |
+| equality of lists of 16 integers | 22,913 → 26,265 | 3,415,695 → 1,127,619 | 174,256 → 180,144 |
+| negation | 1,188 → 1,082 | 154,786 → 46,674 | 13,032 → 7,848 |
+| addition | 1,957 → 1,825 | 261,357 → 77,507 | 20,576 → 13,024 |
+| ordering of 4 KiB strings | 1,958 → 1,826 | 467,267 → 242,595 | 69,728 → 62,176 |
+| lookup of a 4 KiB string | 1,000 → 856 | 197,144 → 99,598 | 31,800 → 27,064 |
+| guard `x == 7 && true` | 4,606 → 4,420 | 605,300 → 177,554 | 43,976 → 28,232 |
+
+Block mode lowers VerificationBytes by 46 to 71 % in every evaluation. It
+lowers SearchStateBytes by 11 to 41 % and VerificationOperations by 0 to
+15 %, except for two lists:
+
+- The equality of two lists of 16 integers charges 14.6 % more
+  VerificationOperations and 3.4 % more SearchStateBytes. Decision 9
+  inspects its operands six times instead of twice. Each inspection charges
+  an operation for each entry that it visits and the backing of its own
+  worklist. A walk that charges several traversals at once would remove
+  this excess. D-E2 does not add such a walk.
+- The ground list of 16 integers charges 128 more bytes of
+  SearchStateBytes (0.2 %). In block mode, each element of the list costs a
+  worklist entry constant of 64 bytes (D-B3, DR-92). The per-level walk
+  charged a doubling worklist instead.
+
+**Verification (part 2).** Part 2 adds no proof. Its soundness uses the
+lemmas of `WalkerBlockCharge.v` that part 1 also uses.
+
+Tests in `rho-pure-eval/src/tests.rs`:
+
+- `equality_charges_three_traversals_of_each_operand` builds the exact
+  charge of an equality of two 4 KiB strings from the crate's functions and
+  the shared walks. The parts are the outer evaluation, the two operand
+  evaluations and three block inspections of each result.
+- `single_value_extraction_charges_a_copy_and_the_release_of_its_operand`
+  builds the exact charge of a negation in the same way: the outer
+  evaluation, the operand evaluation, and a block copy and an inspection of
+  the operand's result.
+- `metered_environment_copy_rejects_unfunded_arc_cleanup` now uses the
+  block copy for its limit. A credit for the lookup and the block copy
+  rejects the lookup, and so does a credit that is one byte short of the
+  cleanup. The full credit passes.
+- The existing checks of exact credit and of rejection one unit short in
+  each dimension pass without change. They cover the guard
+  `x == 7 && true` and the environment push and lookup.
+
+Six mutations in a scratch copy fail tests:
+
+- An equality with two inspections of each operand fails the exact
+  equality test.
+- A single-value extraction without the inspection of decision 8 fails the
+  exact negation test.
+- An evaluation with the per-level copy of its Par, or a concatenation that
+  inspects its result instead of copying it, fails both exact tests.
+- A lookup that reserves only the block copy, or the per-level copy and
+  cleanup, fails the environment test.
+
+Suites (part 2):
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,314 of 4,314 tests pass.
+- Casper and models with the original caps: 2,142 of 2,148 tests pass. The
+  6 failures are the same as after part 1.
+- Casper with the provisional caps: 1,688 of 1,692 tests pass. The 4
+  failures are the same as after part 1.
+- The doctests pass.
+
+**Measurement (part 2).** Part 2 does not run the D-G0 probe. The probe
+runs of part 1 sample no `rho-pure-eval` frame (see the context of part 2),
+so part 2 cannot change the measured usage of the gateway block.
+
+**Amendment (DR-110).** The substitution copies the same chains of small
+entries (`Option<Var>`) in block mode. So its variable copies also charge
+more than the per-level walk did (DR-110, comparison).
+
+**Amendment (DR-111).** D-E4 switched the set and map conversions to block
+mode (DR-111, decision 5). The construction keeps its iteration order, so
+bug 475811 stays open.
+
+**Cross-refs.** DR-88, DR-92, DR-94, DR-103, DR-104, DR-105, DR-108. Leaf
+`ofp-2-cap-d-e2-matcher-sites`.
+
+## DR-110 — The accounting and interpreter walker sites in block mode, with reservations of their own for the RSpace footprint and the join keys
+
+**Status.** Implemented 2026-10-08 for Phase D item D-E3 of epic 8946 (D-O1
+Stage B). A read-only design pass took the inventory of the walker sites in
+the rholang accounting and interpreter code and audited each site against
+DR-94. The implementation first checked the load-bearing claims of the
+design in the code. It corrected two of them (decisions 12 and 10).
+
+**Context.**
+
+- The D-G0 probe attributed each walker sample of the gateway block's
+  validator replay to the walker's caller (three runs, after DR-109 part 1).
+  VerificationBytes were 633 to 642 MiB, of which the walker sampled 408 to
+  428 MiB. The per-level sites of this item were:
+  - The source preparation of the replay session: 128 to 135 MiB. The
+    inspection of the continuation took 104 to 112 MiB of it.
+  - The channel inspections of the observation construction: about 10 MiB.
+  - The canonical signature in `authority.rs`: about 12 MiB, sampled under
+    the frame of the metered sorter.
+  - The other sites: less than 5 MiB together.
+- DR-94 kept three kinds of site per-level, because the block mode would not
+  pay all of their work:
+  - An owned value that a site compares and then drops. The surplus of the
+    per-level charge also paid the release.
+  - The channel inspections of the observation construction. Their surplus
+    paid the scheduler footprint and the cold-read keys of the RSpace source
+    preparation, which have no reservations of their own.
+  - The source preparation itself, and the checkpoint copies.
+- DR-96 replaced the cold-read keys of the operation's own channels with key
+  digests, so those reads no longer exist. The keys of the joins of a
+  produce remain. They encode each join channel with bincode.
+- DR-108 changed the copies of the joins to block copies, which prepay only
+  the clone and the release. Its decision 6 gave second traversals to the
+  three read-only key reads of the session, but not to the join keys of the
+  produce.
+- DR-93, with its correction note, states the rule for a prost encode site:
+  the site's inspection prepays its own length computation, and
+  `reserve_nested_encode` prepays `Message::encode`.
+
+**Decision.**
+
+1. The wrappers. The rholang walker module gets three block wrappers:
+   `inspect_blocks_slice`, `inspect_shared_pointers_blocks` and
+   `reserve_nested_encode`. The per-level `reserve_copy_and_cleanup`,
+   `reserve_slice_copy_and_cleanup` and `inspect` compile only for tests, as
+   reference charges. The per-level `inspect_slice` and the test-only
+   `reserve_slice` have no caller left, so they are commented out.
+2. The source preparation. The replay session charges the source of an
+   operation in `charge_produce_source` and `charge_consume_source`. Each
+   value gets two block inspections. The first prepays the source pass,
+   whose writer reserves only the bytes that it writes. The second prepays
+   the release of the value after the operation.
+3. The observation channels. The produce channel and the consume channels
+   get one block inspection each, for their prost lengths. The per-level
+   helpers `inspect_value` and `inspect_slice` are commented out.
+4. The footprint. `locked_footprint` inspects each channel and each join
+   channel once before its bincode pass. The replay (`authenticate_footprint`)
+   and the producer (`start_operation`) both use it.
+5. The join keys. A produce builds the keys of its joins with `join_keys`,
+   which inspects each join once before the key digests (the form of DR-108,
+   decision 6).
+6. The owned temporaries. An owned value that a site compares and then drops
+   gets two block inspections: the comparison and the release. The rule
+   applies to `inspect_owned_authority` and to the sorted part in the
+   signature validation. A reducer copy gets a block inspection for its
+   release and a block copy with the owned meter (`reserve_reducer_copy`).
+7. Rule B, the canonical signature. `canonical_cost_signature_metered`
+   inspects the canonical signature twice on every path, for the comparison
+   and for its release. Its consumers pay no release for the signature or
+   its parts:
+   - The region map inspects the canonical signature once, for the
+     comparison.
+   - The conversion of a quoted or named atom inspects the part once, for its
+     length computation. The nested encode prepays the encode.
+8. The lane and funding channels. The lane inspects its sorted channel three
+   times: for the length computation, the release of the sorted channel and
+   the release of the shadowed unsorted channel. The third inspection is
+   new. The funding channel inspects its sorted channel once, for the
+   release of the unsorted channel. Each caller pays its own read of the
+   returned channel (decisions 12 and 13).
+9. The checkpoint of the replay authority. Each state value gets a block copy.
+   The events and the rows hold shared observations whose payloads were
+   prepaid at birth. So the cleanup of their copies visits each shared pointer
+   but not its payload (the C5 rule, DR-83). The other values get a block copy
+   and cleanup. The copy of the generation pointer and its release are new
+   charges.
+10. The legacy result events. The authority of each legacy event gets three
+    charges:
+    - A block copy and cleanup, for the clone into the event and its release.
+    - A block inspection, for the length computation of the key.
+    - A nested encode reservation, for `Message::encode` (DR-93).
+
+    The key reserves its own output bytes, so the reservation adds none. The design pass had omitted the
+    inspection. The correction note of DR-93 shows that the site needs it.
+11. The mergeable checkpoint. `copy_mergeable_for_checkpoint` charges a block
+    copy and cleanup of the map and one more block inspection. `evaluate`,
+    the only caller, clears the map after the checkpoint, which releases the
+    original entries.
+12. The Casper callers of the funding channel. `measured_birth_channel`
+    (prepaid receipts) and `born_resource` (direct wallet funding) inspect the
+    returned channel once, for their length computations. The surplus of the
+    per-level inspection in `funding_sig_channel_metered` paid that read
+    before. The design pass had not found these callers.
+13. The stack produce source. `produce_source_metered` inspects the channel
+    and the datum once each, for the two bincode passes of
+    `Produce::create_metered`. The surplus of the per-level copy of the cells
+    paid the datum pass before. The channel pass had no payment when the
+    funding channel was not sorted.
+14. The substitution. `copy_metered` charges a block copy and cleanup. The
+    copy charge of an expression substitution becomes a block copy with the
+    owned meter.
+15. Each replaced line stays in the source, commented out with its reason. One
+    inspection in `native_cost_signature.rs` is commented out as redundant,
+    because `get_metered` prepays the copy of the name and its release (the
+    precedent of DR-94, decision 4).
+
+**Algorithm (literate form).**
+
+```text
+⟨source preparation of a produce (channel c, data d)⟩ ≡     -- replay session
+  inspect_blocks(c); inspect_blocks(d)        -- the source pass: hash c, encode d
+  inspect_blocks(c); inspect_blocks(d)        -- the release of c and d after the operation
+
+⟨source preparation of a consume (channels C, patterns P, continuation k)⟩ ≡
+  inspect_blocks_slice(C); inspect_blocks_slice(P); inspect_blocks(k)   -- the source pass
+  inspect_blocks_slice(C); inspect_blocks_slice(P); inspect_blocks(k)   -- the releases
+
+⟨footprint of channels C and joins J⟩ ≡     -- replay and producer
+  for each channel c of C, then of each join of J:
+    inspect_blocks(c)                         -- the bincode pass reads c
+    channel_bytes(c)                          -- its writer reserves the output
+
+⟨join keys of a produce with joins J⟩ ≡
+  for each join j of J: inspect_blocks_slice(j)   -- the key pass reads j
+  OperationKeys::build(J)                     -- its writer reserves the output
+
+⟨owned temporary v that a site compares and drops⟩ ≡
+  inspect_blocks(v)                           -- the comparison
+  inspect_blocks(v)                           -- the release
+
+⟨canonical signature s of the input t⟩ ≡    -- Rule B
+  s ← sort(t); validate(s)
+  inspect_blocks(s); inspect_blocks(s)        -- the comparison and the release of s
+  inspect_blocks(t)                           -- the comparison
+  if s ≠ t: reject
+  return s                                    -- consumers pay no release for s or its parts
+
+⟨encode site of a value v with an output buffer⟩ ≡     -- DR-93 with its correction
+  inspect_blocks(v)                           -- the site's length computation
+  reserve_nested_encode(v, output bytes)      -- Message::encode
+
+⟨checkpoint copy of the replay authority⟩ ≡
+  reserve_blocks(events); inspect_shared_pointers_blocks(events)
+  reserve_blocks_slice(rows); inspect_shared_pointer_slice_blocks(rows)
+  reserve_blocks_copy_and_cleanup(v) for each other state value v
+  reserve_blocks(generation); inspect_shared_pointers_blocks(generation)
+
+⟨mergeable checkpoint of the map m⟩ ≡
+  reserve_blocks_copy_and_cleanup(m)          -- the copy and its release
+  inspect_blocks(m)                           -- evaluate clears m, which releases its entries
+```
+
+**Soundness.**
+
+- A block inspection prepays one traversal
+  (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`). A block
+  copy and cleanup prepays one clone and one release
+  (`block_copy_covers_walk_and_clone`, `block_copy_backing_covers_allocation`).
+  A shared-pointer cleanup prepays the release of a copied pointer whose
+  payload was prepaid at birth (`shared_release_charge_covers_work`,
+  `ResultBackingCoverage.shared_row_cleanup_releases_no_payload`). A nested
+  encode reservation prepays `Message::encode`
+  (`NestedEncodeCost.depth_weighted_charge_covers_encode`).
+- A bincode pass (a source pass, the footprint or a key pass) reads each block
+  of a value at most once. Bincode encodes `locally_free` as empty bytes, so
+  the pass reads that block less. The writer reserves the output. So one
+  inspection and the writer's charge cover the pass (the argument of DR-108,
+  decision 6).
+- Each value of an operation is released once. The second inspection of
+  the source preparation pays that release. The releases occur as follows:
+  - The produce channel at the end of the produce.
+  - The consume channels at the end of the consume or in the interpreter.
+  - The data, the patterns and the continuation in the store, in the
+    interpreter or at the return of a denial.
+- Rule B holds because `canonical_cost_signature_metered` creates each
+  canonical signature once, and the signature is released once. Its consumers
+  compare it, move its parts into a conversion or a region map, or drop it.
+  None of them clones it without a copy charge of its own.
+- The charge of every site depends only on the values, so every role charges
+  the same.
+
+**Determinism.** The per-level walker charges the growth of its pending
+vector from the peak height of its stack. For a hash map, that peak depends
+on the iteration order of the entries, and `RandomState` gives a different
+order in each process. Two validators could therefore charge different
+amounts for the mergeable checkpoint or for a copy of the environment map
+(pgmcp bug
+`per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`).
+A block walk charges the same for every order
+(`WalkerBlockCharge.charged_pushes_independent_of_step_order`,
+`worklist_charge_independent_of_traversal_order`). The test
+`mergeable_and_env_copies_are_independent_of_hash_order` confirms both
+facts on 64 hash seeds.
+
+**Recorded gaps.** This item records the following and does not change them:
+
+- The store also prepays the release of a stored datum or a stored
+  continuation. On that path, the second inspection of the source preparation
+  pays the same release again, as the per-level charge did. A charge that
+  depends on the outcome would need the outcome before the source
+  preparation.
+- The Casper callers of the funding channel encode it into a key without a
+  nested encode reservation, as before this item. The flat channel encodes
+  of DR-93 are the same kind of site.
+- The reducer evaluates the guard of a `match` case with the unmetered
+  `rho_pure_eval::eval` (`reduce.rs`, D-E2 finding).
+- The design pass reported two items without a check in the code. In the
+  reducer, `produce_inner` and `consume_inner` make clones and source hashes
+  without host metering. `reserve_authority_tree_insert` charges about 19 MiB
+  of SearchStateBytes in each run.
+
+**Audit.** One row per site. "Copy" means one clone and its release. Paths
+are under `rholang/src/rust/interpreter/` unless a crate name starts them.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `accounting/native_runtime/checked_operations/trace/replay/session/operations.rs:41`, `:42` (`charge_produce_source`) | channel and data | the source pass | block inspection | every replayed produce |
+| `…/session/operations.rs:44`, `:45` (`charge_produce_source`) | channel and data | the release after the operation (decision 2) | block inspection | every replayed produce |
+| `…/session/operations.rs:65` to `:67` (`charge_consume_source`) | channels, patterns, continuation | the source pass | block inspection (slices for channels and patterns) | every replayed consume |
+| `…/session/operations.rs:69` to `:71` (`charge_consume_source`) | channels, patterns, continuation | the releases after the operation (decision 2) | block inspection (slices for channels and patterns) | every replayed consume |
+| `accounting/observation_construction.rs:206` | produce channel | one length computation | block inspection | every produce introduction |
+| `accounting/observation_construction.rs:266` | consume channels | one length computation each | block slice inspection | every consume introduction |
+| `accounting/native_runtime/operations.rs:210` (`locked_footprint`) | each channel and join channel | the bincode pass of the footprint (decision 4) | block inspection | every operation, replay and producer |
+| `rspace++/src/rspace/replay_rspace/native_session/operations.rs:43` (`join_keys`) | each join | the key pass of its channels (decision 5) | block slice inspection | every replayed produce with joins |
+| `accounting/native_runtime/replay_authority.rs:349`, `:350` | events | the copy, and a cleanup of its pointers only (C5) | block copy, shared cleanup | every native checkpoint |
+| `…/replay_authority.rs:352`, `:353` | rows | the copy, and a cleanup of its pointers only (C5) | block slice copy, shared cleanup | every native checkpoint |
+| `…/replay_authority.rs:354` to `:358` | realized, reserved, frontier, stack births, introductions | copy | block copy | every native checkpoint |
+| `…/replay_authority.rs:361`, `:362` | generation pointer | the copy and the release of the pointer (new) | block copy, shared cleanup | every native checkpoint |
+| `accounting/native_runtime/replay_authority/result.rs:47` (`bounded_legacy_events`) | authority of a legacy row | the clone into the event and its release | block copy | each legacy event |
+| `…/result.rs:51` | authority of a legacy row | the length computation of the key (decision 10) | block inspection | each legacy event |
+| `…/result.rs:55` | authority of a legacy row | `Message::encode` into the key | nested encode reservation | each legacy event |
+| `rho_runtime.rs:1665`, `:1666` (`copy_mergeable_for_checkpoint`) | mergeable map | the copy, and the release of the entries that `evaluate` clears (decision 11) | block copy, block inspection | every replay evaluation |
+| `accounting/mod.rs:562` (`inspect_owned_authority`) | owned canonical authority | the comparison and the release | block inspection, twice | the identity checks (`:1085`, `:1795`) |
+| `accounting/mod.rs:2606` (`signature_with_host_work`) | signature | copy, released by the caller | block copy | stack produces without an authority |
+| `accounting/authority.rs:153` (`canonical_cost_signature_metered`) | owned canonical signature | the comparison and the release (Rule B) | block inspection, twice | every canonical signature |
+| `accounting/authority.rs:204` (signature validation) | owned sorted part | the comparison and the release | block inspection, twice | each quoted or named part |
+| `accounting/authority.rs:334`, `:351` (`cost_atom_to_sig_metered`) | part of a canonical signature | the length computation (release by Rule B) | block inspection | each quoted or named atom |
+| `accounting/authority.rs:503` (region map) | owned canonical signature | the comparison (release by Rule B) | block inspection | a region that repeats an identity |
+| `accounting/authority.rs:709` (`cost_signature_lane_metered`) | owned sorted channel | the length computation, the release of the sorted channel and the release of the unsorted one (decision 8) | block inspection, three times | each lane with unforgeable atoms |
+| `accounting/authority.rs:799` (`funding_sig_channel_metered`) | sorted channel | the release of the unsorted channel | block inspection | each funding channel with two or more keys |
+| `accounting/authority/fallback_metered.rs:38` | ground bytes | copy | block copy | each fallback ground atom |
+| `substitute/native_cost_signature.rs:68` | name in the environment | nothing (redundant) | commented out | a bound level in a signature |
+| `substitute/native_cost_signature.rs:120` | owned substituted signature | its release after the sort | block inspection | each substituted signature |
+| `substitute/native_par.rs:85` (`copy_metered`) | environment map, locally free bits, variables | copy | block copy | the substitution |
+| `substitute/native_expr.rs:141` (`substitute_expr_metered`) | consumed expression | the output construction, with the operations doubled for the input's release | block copy (owned meter) | each substituted expression |
+| `reduce.rs:1825`, `:1857`, `:1920`, `:1991`, `:2017` (`reserve_reducer_copy`) | signature, body, cells, authority, datum cells | copy, with the operations doubled by the owned meter | block inspection and block copy | the signed term and the stack paths |
+| `reduce.rs:2024` (`produce_source_metered`) | channel and datum of the stack produce | the two bincode passes (decision 13) | block inspection, twice | each stack produce |
+| `casper/src/rust/util/rholang/costacc/prepaid_receipts/physical.rs:158` (`measured_birth_channel`) | returned funding channel | the length computation (decision 12) | block inspection | each measured prepaid birth |
+| `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs:315` (`born_resource`) | returned funding channel | the length computation (decision 12) | block inspection | each retained birth cell |
+
+**Comparison with the per-level charge.** Block mode charges more than the
+per-level walk for some small values:
+
+- A copy and cleanup of a 32-byte vector of bytes charges 328
+  VerificationBytes and 160 SearchStateBytes, against 272 and 288. The two
+  roots cost two entry constants. This applies to the fallback ground atoms
+  and to the copies of the locally free bits.
+- The copies of variables in the substitution copy the chains of entries
+  smaller than 19 bytes that DR-109 measured.
+- A sparse B-tree node in a checkpoint copy is read five times, against four
+  (DR-108).
+- These new charges have no per-level counterpart:
+  - The footprint and join-key inspections.
+  - The generation pointer.
+  - The reducer's source passes.
+  - The third lane inspection.
+  - The length inspection of the legacy events.
+  - The inspections of the Casper callers.
+
+Each of these paths contributes less than 0.2 MiB in each probe run.
+
+**Verification.** No new proof is necessary. Each site uses the lemmas of the
+soundness section, applied once for each prepaid traversal. Tests:
+
+- `session/operations/tests.rs`:
+  `source_preparation_charges_two_block_traversals_of_each_value` states the
+  exact charge of both source preparations from the shared block walks, for
+  small and 4 KiB values. It also checks exact credit and rejection one unit
+  short in each dimension.
+- `native_runtime/tests/operations.rs`:
+  `footprint_charges_one_block_traversal_per_channel_and_join_channel` pads
+  the `locally_free` bytes of a channel, which bincode encodes as empty. The
+  footprint charge grows by exactly one block inspection of the padding for
+  each occurrence of the channel, and the footprint bytes do not change.
+- rspace++ `native_session/tests.rs`:
+  `produce_join_keys_charge_one_traversal_per_join_channel` states the exact
+  charge of `join_keys` and checks that its keys are those of
+  `OperationKeys::build`.
+- `native_runtime/tests/observation_construction.rs`:
+  `introduction_channel_inspections_are_single_block_traversals`.
+- `replay_authority/tests/backing.rs`: the restated
+  `authority_checkpoint_prepays_cloned_state_cleanup` states the exact
+  checkpoint charge in every dimension.
+  `authority_checkpoint_charge_is_independent_of_observation_payloads` fails
+  on the per-level cleanup. `authority_checkpoint_backing_covers_allocations`
+  checks the backing against the bytes that the clones allocate.
+- `replay_authority/result.rs`:
+  `legacy_event_keys_charge_copy_and_nested_encode` compares two authorities.
+  The difference of the charges is exactly the difference of the block copy
+  and cleanup, the length inspection, the nested encode and the key bytes.
+- `rho_runtime.rs`: `replay_checkpoint_charges_mergeable_copy_and_clear`, and
+  `mergeable_and_env_copies_are_independent_of_hash_order` (see
+  "Determinism").
+- `native_runtime/clone_backing/tests.rs`:
+  `native_runtime_block_wrappers_charge_the_shared_block_walks`.
+- `accounting/mod.rs`:
+  `owned_authority_comparison_charges_traversal_and_release`, and the restated
+  `metered_signature_copy_preserves_value_and_rejects_before_clone`, which
+  now checks both sides of the boundary.
+- `accounting/authority.rs`: four tests count the runs of block inspections
+  in the reservation log. They pin Rule B (runs 3, and 3, 3, 2 with a
+  repeated region), the validation (3), the quoted atom (an exact total), the
+  lane (3) and the funding channel (1).
+- `substitute/native_par.rs`:
+  `copy_metered_charges_exactly_a_block_copy_and_cleanup`.
+- `reduce_economic_failure_tests.rs`:
+  `reducer_copy_charges_a_block_inspection_and_an_owned_block_copy`,
+  `stack_produce_source_charges_both_bincode_passes`, and
+  `cost_signed_term_and_stack_accept_exact_credit_and_reject_each_shorter_dimension`.
+- Casper: `measured_birth_channel_inspects_the_returned_channel_once` and
+  `born_resource_inspects_the_returned_channel_once` restate each charge
+  from public functions in every dimension.
+
+Twenty-four mutations in a scratch copy fail tests. Each mutation fails at
+least one of the tests above:
+
+- One inspection less in the source preparation (the continuation or the
+  data), or a per-level inspection of the produce values.
+- No footprint inspection, no join-key inspection, or a per-level channel
+  inspection in the observation construction.
+- A checkpoint cleanup of the events that walks the payloads, or a checkpoint
+  value that is inspected instead of copied.
+- Legacy events without the nested encode or without the length inspection.
+- A mergeable checkpoint without the inspection for the cleared entries.
+- One inspection of an owned authority, of the canonical signature or of the
+  sorted part.
+- One more inspection of a quoted atom, a repeated region or the funding
+  channel, or one less of the lane channel.
+- A stack produce source without its two inspections, a reducer copy with a
+  per-level inspection, or a substitution copy that inspects instead of
+  copying.
+- A new wrapper that calls the per-level walk.
+- A Casper caller without its inspection.
+
+**Scope.** Cost-accounting work. Host-work reservations change. No
+encoding, root, event or receipt changes. The Casper edits are in two
+cost-accounting modules, and they only add reservations.
+
+Suites:
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,333 of 4,333 tests pass.
+- Casper and models with the original caps: 2,144 of 2,150 tests pass. The
+  6 failures are the same as after DR-109.
+- Casper with the provisional caps: 1,690 of 1,694 tests pass. The 4
+  failures are the same as after DR-109.
+- The doctests pass. DR-110 changes no proof.
+
+**Measurement.** The D-G0 probe ran the gateway test three times with DR-110,
+under the provisional caps. The baseline is the three runs of DR-109 part 1.
+Part 2 of DR-109 changed only `rho-pure-eval`, which the probe never samples.
+Every role charged exactly the same usage in every run. The replay of the
+gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-109 part 1, run 1 | 664,412,416 | 120,349,146 | 57,602,014 |
+| DR-109 part 1, run 2 | 673,223,881 | 120,837,351 | 57,630,978 |
+| DR-109 part 1, run 3 | 668,777,744 | 120,557,226 | 57,632,746 |
+| DR-110, run 1 | 593,625,680 | 121,574,487 | 60,940,425 |
+| DR-110, run 2 | 594,516,051 | 121,697,030 | 60,954,279 |
+| DR-110, run 3 | 594,902,408 | 121,977,191 | 60,984,078 |
+| Change of the means | −74.5 MB (−11.1 %) | +1.17 MB (+1.0 %) | +3.34 M (+5.8 %) |
+
+The largest run of DR-110 is 69.5 MB below the smallest run of DR-109. The
+workload of the gateway test varies a little from run to run: the baseline
+runs made 912 to 916 reduction steps. The third baseline run has the same
+execution counts as the three runs of DR-110, and its VerificationBytes fall
+by 73.9 to 75.2 MB. The design estimated −66 MiB (−55 to −78 MiB) of
+VerificationBytes, +1 MiB of SearchStateBytes and +4 to +6 % of
+VerificationOperations.
+
+The sampled share of the session source preparation in a validator replay
+falls from 128 to 135 MiB to 57 to 67 MiB. The footprint inspections add 2
+to 4 MiB. The producer's execution of the gateway block falls from 159.3 MB
+to 150.3 MB of VerificationBytes (−8.9 MB), and its SearchStateBytes stay at
+about 65.8 MB. In multiples of the original caps, the replay of the gateway
+block is now at 2.21 in VerificationBytes and 0.91 in SearchStateBytes.
+
+The probe does not compare receipts between the two builds, because the
+deploys of the test vary between runs. The suites establish the outcome
+equality.
+
+**Amendment (DR-111).** The Casper sites `resource_equal_metered`
+(`producer.rs`) and `reserve_presentation_copy` (`runtime_manager.rs`) are
+now in block mode (DR-111, decisions 6 and 7). The samples that the probe
+attribution labelled "level" at `authority.rs:719` and
+`fallback_metered.rs:94` were nested encode reservations, not per-level
+walks. The attribution script did not count `reserve_nested_encode` as a
+block entry point.
+
+**Cross-refs.** DR-76, DR-83, DR-89, DR-92, DR-93, DR-94, DR-96, DR-108,
+DR-109. Leaf `ofp-2-cap-d-e3-accounting-sites`. Bug
+`per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`.
+
+## DR-111 — The sorter, set and map construction and Casper walker sites in block mode, with the score-tree release prepaid at birth
+
+**Status.** Implemented 2026-10-08 for Phase D item D-E4 of epic 8946 (D-O1
+Stage B). A read-only design pass took the inventory of the remaining
+per-level walker calls and audited each site against DR-94. The
+implementation checked the load-bearing claims of the design in the code and
+in the probe source. It corrected one claim of the D-E3 attribution (see
+"Context"). Rule S is part of this item by user decision ("Include in
+D-E4").
+
+**Context.**
+
+- After DR-110, the production per-level walker calls are in two places:
+  - The models crate: 67 calls of the `SorterMeter` methods `clone`,
+    `inspect` and `clone_slice`, on 66 lines. They are in the metered sorter
+    and in the set and map construction.
+  - Casper: two inspections in `resource_equal_metered` (`producer.rs`) and
+    one slice copy of the authority presentations (`runtime_manager.rs`).
+- The rholang crate reaches the models walks only through the metered sorter
+  and through the set and map conversions. Its own per-level wrappers already
+  compile only for tests (DR-110, decision 1).
+- The attribution of the D-E3 probe labelled samples at `authority.rs:719`
+  (5 to 11 MiB) and at `fallback_metered.rs:94` (3 to 6 MiB) as per-level
+  walks. In the probe source, both lines are `meter.nested_encode(..)`. The
+  attribution script did not count `reserve_nested_encode` as a block entry
+  point. So this item lowers VerificationBytes very little. Its value is
+  different:
+  - It removes the last production per-level callers, which D-E5 requires.
+  - It lowers SearchStateBytes.
+  - It closes the score-tree gap of DR-94.
+- DR-94 recorded that the score trees of the metered sorter are released
+  without a VerificationBytes charge. The owned-backing convention of DR-83
+  and DR-89 prepays releases in operations only.
+- DR-109 recorded that D-E4 switches the set and map conversions. The charges
+  of the set and map construction depend on the iteration order of a
+  `HashSet` or `HashMap`, which varies between processes (pgmcp bug
+  `metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`). By user decision, that bug is filed and not fixed here.
+
+**Decision.**
+
+1. The wrappers. `SorterMeter` gets three block wrappers:
+   - `clone_slice_blocks`, a block slice copy and cleanup.
+   - `hash_insert_blocks`, three block inspections of an owned value that an
+     insert moves into a hash table.
+   - `score_vec(c)`, a vector of `c` score trees whose release is prepaid
+     (Rule S, decision 4).
+
+   The per-level `clone`, `inspect` and `clone_slice` compile only for tests,
+   as reference charges.
+2. The sorter copies. The 58 copies of the metered sorter become block copies
+   (`clone_blocks`). They are the copies of these values:
+   - The terms and the payloads of score leaves.
+   - The `locally_free` bytes, the remainders and the paths.
+   - The containers whose fields the sorter replaces.
+   - The owned values that the set and map conversions consume.
+
+   The eight big-endian bytes of a `u64` become a block slice copy
+   (`clone_slice_blocks`).
+3. The injection scan of a `new`. The copy of the injections is a block copy.
+   One block inspection of the copy prepays the loop over it. Each sorted
+   injection term is dropped after its score, so one block inspection
+   prepays its release.
+4. Rule S. Every vector of score trees prepays one read of each slot.
+   `score_vec(c)` reserves `c · T` VerificationBytes, with
+   `T = size_of::<Tree<ScoreAtom>>()`, and then charges `vec(c)`. The rule
+   applies at the 31 births of score vectors. Each slot is read once after
+   its birth, when its tree moves out or when the vector is released.
+5. The set and map construction.
+   - An insert of an owned value into a hash table with reserved capacity
+     gets three block inspections. The insert hashes the value once. Then it
+     compares the value with an equal element in lockstep (at most two
+     traversals), or it moves the value into the table (one traversal).
+   - A map value that an insert moves gets one block inspection.
+   - The copies are block copies.
+   - The iteration order is unchanged, so bug 475811 stays open.
+6. The Casper comparison. `resource_equal_metered` inspects each borrowed
+   authority once with a block inspection, for the reads of `==`.
+7. The presentation copy. `reserve_presentation_copy` charges a block slice
+   copy and cleanup of the authority presentations. An empty slice charges
+   nothing, as before.
+8. Each replaced line stays in the source, commented out with its reason.
+
+**Algorithm (literate form).**
+
+```text
+⟨sorter copy of a part x⟩         ≡ clone_blocks(x)               -- one clone and its release
+⟨score vector of capacity c⟩      ≡ reserve(0, c·T, 0); vec(c)    -- each slot is read once: a move out or the release
+⟨injection scan of a new⟩         ≡ l ← clone_blocks(injections); inspect_blocks(l)
+                                     for (k, p) in l:
+                                       s ← sort(p); inspect_blocks(s.term)   -- the release of the sorted term
+                                       clone_blocks(k)
+⟨insert of an owned v into a hash table⟩ ≡ inspect_blocks(v) ×3   -- the hash, then a lockstep comparison or the move
+⟨insert of a map value w⟩         ≡ inspect_blocks(w)             -- the move in, or the move out of a replaced value
+⟨borrowed comparison a = b⟩       ≡ inspect_blocks(a); inspect_blocks(b)
+⟨presentation copy p⟩             ≡ reserve_blocks_slice_copy_and_cleanup(p)
+```
+
+**Soundness.** No new theorem is necessary.
+
+- A block inspection prepays one traversal
+  (`WalkerBlockCharge.block_inspection_covers_walk_and_traversal`). The sites
+  apply it once for each hash pass, move, loop or release.
+- A block copy and cleanup prepays one clone and one release
+  (`block_copy_covers_walk_and_clone`,
+  `block_copy_backing_covers_allocation`).
+- One comparison reads at most two traversals of the probe
+  (`MatcherReadsByReference.two_pattern_inspections_cover_lockstep_reads`).
+  A borrowed side of a comparison takes one traversal (the DR-94
+  precondition).
+- The sums over elements do not depend on their order
+  (`block_charge_independent_of_sibling_order`,
+  `charged_pushes_independent_of_step_order`).
+- Rule S counts slots. Each slot is read once, either by a move out or by
+  the release. That is the shape of the owned-backing coverage of DR-89.
+- `NestedEncodeCost` is unchanged, because this item adds no encode site.
+
+**Determinism.** This item removes no walk of a `RandomState` map. None of
+the walked types holds a hash map:
+
+- The prost terms, in which `ESet` and `EMap` are vectors.
+- The `BTreeMap` of the injections.
+- `Sig`, and the vector of `CostSignature` presentations.
+
+The set and map construction keeps its order, so it keeps the variation of
+bug 475811. That bug stays open by user decision. This item adds no
+dependence on order.
+
+**Recorded gaps.** This item records the following and does not change them:
+
+- Bug 475811: the charges of the set and map construction depend on the
+  iteration order of a hash table.
+- The extra comparisons of hash-tag collisions and the control-byte scans of
+  the hash tables are not metered.
+- The sorted temporaries that the `ESet` and `EMap` arms of the sorter drop
+  release sorter vectors without a VerificationBytes charge. They are
+  `par_set.ps.sorted_pars`, the `ps` of the second conversion, and their map
+  counterparts.
+- The sorter charges the roots of `Expr` and `CostSignature` with the header
+  reservations. It does not charge the roots of `Par`, `Send`, `Receive`,
+  `New`, `Match`, `If`, `Bundle`, `Connective`, `GUnforgeable` or `Var`.
+- Rule B and the release inspections of the lane pay again for parts that
+  the block copies of the sorter already prepay. The design estimates −2 to
+  −5 MB of VerificationBytes for their removal (follow-up).
+- The Casper key encodes of DR-110 still have no nested encode reservation.
+- The nested encodes of the lane and region charge 8 to 17 MiB in each
+  replay, by entry depth. A charge by message depth is a follow-up.
+
+**Audit.** One row per site or group of sites. "Copy" means one clone and its
+release. Paths are under `models/src/rust/rholang/sorter/` unless a crate
+name starts them.
+
+| Site | Value | Prepaid work | Mode | Reached by |
+|------|-------|--------------|------|------------|
+| `cost_accounting_sorter.rs:166`, `:172` | ground bytes: the term and the score leaf | copy | block copy | every ground signature |
+| `unforgeable_sort_matcher.rs:34`, `:39`, `:44`, `:49`, `:58` | the id, key or signature of an unforgeable name, for its score leaf | copy | block copy | every unforgeable name |
+| `unforgeable_sort_matcher.rs:66` | the unforgeable term | copy | block copy | every unforgeable name |
+| `expr_sort_matcher.rs:1184`, `:1193`, `:1202`, `:1214`, `:1226`, `:1238`, `:1247`, `:1256`, `:1268`, `:1290`, `:1311`, `:1325`, `:1334`, `:1343`, `:1352`, `:1361` | the term of a ground expression (15 kinds and an absent instance) | copy | block copy | every ground expression |
+| `expr_sort_matcher.rs:1207`, `:1219`, `:1231`, `:1261`, `:1274`, `:1279`, `:1296` | the payload of a string, URI, byte array or big integer, the two parts of a rational, and the unscaled bytes of a fixed point, for their score leaves | copy | block copy | those ground kinds |
+| `expr_sort_matcher.rs:1317` | the eight big-endian bytes of a `u64`, for its score leaf | copy | block slice copy | every `u64` |
+| `expr_sort_matcher.rs:1062`, `:1066`, `:1085`, `:1089`, `:1116`, `:1120`, `:1124`, `:1128` | `locally_free`, the remainders and the zipper path of lists, path maps and zippers | copy | block copy | every list, path map and zipper |
+| `expr_sort_matcher.rs:1138`, `:1171` | the tuple and the method, whose fields the sorter replaces after the copy | copy | block copy | every tuple and method |
+| `expr_sort_matcher.rs:1162` | the method name, for its score leaf | copy | block copy | every method |
+| `expr_sort_matcher.rs:1377`, `:1405` | the set and the map that the conversions consume | copy | block copy | every set and map |
+| `par_sort_matcher.rs:112`, `send_sort_matcher.rs:52`, `receive_sort_matcher.rs:190`, `match_sort_matcher.rs:49`, `if_sort_matcher.rs:45`, `new_sort_matcher.rs:107` | `locally_free` | copy | block copy | every container of these kinds |
+| `new_sort_matcher.rs:29`, `:32` | a URI of a `new`: the term and the score leaf | copy | block copy | each URI |
+| `new_sort_matcher.rs:52`, `:55` | the injections | copy, and one traversal for the loop (decision 3) | block copy, block inspection | every `new` |
+| `new_sort_matcher.rs:63` | a sorted injection term | its release (decision 3) | block inspection | each injection |
+| `new_sort_matcher.rs:70` | an injection key, for its score leaf | copy | block copy | each injection |
+| `new_sort_matcher.rs:104` | the injections of the output term | copy | block copy | every `new` |
+| `connective_sort_matcher.rs:61` | a variable reference | copy | block copy | each variable-reference connective |
+| `var_sort_matcher.rs:35` | a variable | copy | block copy | every variable |
+| `cost_accounting_sorter.rs:146`, `:240`, `:309`, `:337`, `unforgeable_sort_matcher.rs:29`, `expr_sort_matcher.rs:836`, `:849`, `:872`, `:893`, `:1155`, `:1409`, `:1446`, `par_sort_matcher.rs:81`, `:138`, `send_sort_matcher.rs:33`, `receive_sort_matcher.rs:24`, `:51`, `:142`, `:162`, `match_sort_matcher.rs:27`, `:79`, `if_sort_matcher.rs:31`, `new_sort_matcher.rs:39`, `:58`, `:66`, `:87`, `bundle_sort_matcher.rs:30`, `connective_sort_matcher.rs:47`, `:124`, `score_tree.rs:113`, `:127` | the slots of a score vector (31 births) | one read of each slot (Rule S, decision 4) | `score_vec` | every score tree |
+| `models/src/rust/sorted_par_hash_set.rs:40` | an owned element of the input | the hash, and a lockstep comparison or the move | block inspection, three times | every set construction |
+| `models/src/rust/sorted_par_hash_set.rs:47` | an element of the sort input | copy | block copy | every set construction |
+| `models/src/rust/sorted_par_hash_set.rs:63`, `:64` | a sorted element | the hash and the comparison or move, and the copy into the table | block inspection three times, block copy | every set construction |
+| `models/src/rust/sorted_par_map.rs:42`, `:43` | an owned key and its value | the hash and the comparison or move of the key, and the move of the value | block inspection three times, block inspection | every map construction |
+| `models/src/rust/sorted_par_map.rs:59`, `:60` | a sorted key and its value | the hash and the comparison or move, and the copies into the table | block inspection three times, two block copies | every map construction |
+| `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs:385`, `:387` (`resource_equal_metered`) | the two borrowed authorities | the reads of `==` (decision 6) | block inspection | each retained-resource comparison |
+| `casper/src/rust/util/rholang/runtime_manager.rs:318` (`reserve_presentation_copy`) | the authority presentations | copy (decision 7) | block slice copy | each offered certificate with presentations |
+
+**Comparison with the per-level charge.** The comparison of DR-110 applies
+to the copies of the sorter. A copy and cleanup of a 32-byte vector charges 328 VerificationBytes and 160
+SearchStateBytes in block mode, against 272 and 288 per level. So the small
+copies charge more VerificationBytes and fewer SearchStateBytes, and the large
+copies charge less of both. These charges are new and have no per-level
+counterpart:
+
+- Rule S: `c · T` VerificationBytes for each score vector of capacity `c`.
+- The second and third inspections of a hash insert. The per-level code made
+  one inspection.
+- The inspection of the injection copy and the release of each sorted
+  injection term.
+
+The measurement below gives the total effect.
+
+**Verification.** No new proof is necessary. Each site uses the lemmas of the
+soundness section, applied once for each prepaid traversal. Tests:
+
+- `models/src/rust/rholang/sorter/block_tests.rs` (new):
+  - `sorter_block_wrappers_charge_the_shared_block_walks`: each wrapper
+    makes exactly the reservations of its shared walk. A hash insert makes
+    three block inspections. `score_vec` reserves the slot reads before the
+    charge of `vec`. Each wrapper accepts its exact credit and is rejected one
+    unit short in each dimension.
+  - `sorter_block_wrappers_stop_at_every_cut`: the wrappers and two sorts
+    stop at their first rejected reservation, for every position of the
+    rejection.
+  - `ground_signature_sort_charges_two_block_copies_and_score_vectors`: the
+    exact reservation log of a ground signature, for 32 bytes and 4 KiB.
+  - `ground_expression_sorts_charge_block_copies`: the exact reservation logs
+    of the 15 ground kinds and of an absent instance. Each metered result
+    equals the unmetered sort.
+  - `private_unforgeable_sort_charges_a_leaf_copy_and_a_term_copy`: the exact
+    reservation log of a private name, for 32 bytes and 4 KiB.
+  - `score_vectors_prepay_one_read_per_slot`: a ground atom reads 3 slots. A
+    compound of `m` ground atoms reads `5m + 1` slots. A channel with two
+    private names reads 12 slots.
+  - `locally_free_copies_are_single_block_copies`: a 4 KiB pad of
+    `locally_free` grows the charge by exactly one block copy. The test covers
+    a par, send, receive, match, if, new, list, path map, zipper (both fields),
+    tuple and method. A longer method name grows the charge by exactly two
+    block copies.
+  - `new_injection_scan_charges_copy_iteration_and_release`: the copy of the
+    injections is followed by one inspection of the copy, and each sorted
+    injection term gets one inspection.
+  - `sorts_accept_exact_credit_and_reject_each_shorter_dimension`: a ground
+    and a compound signature, a channel and a string expression.
+- `models/src/rust/rholang/sorter/metered.rs`:
+  `block_clones_reject_when_nested_cleanup_is_unfunded`, the block
+  restatement of `clones_reject_when_nested_cleanup_is_unfunded`. A credit for
+  the copy alone, or the whole charge less one byte, is rejected, and the
+  exact credit is accepted, for `clone_blocks` and `clone_slice_blocks`. The
+  per-level test stays as the reference.
+- `models/src/rust/sorted_par_hash_set.rs` and `sorted_par_map.rs`:
+  `set_construction_charges_hash_inserts_and_block_copies` and
+  `map_construction_charges_hash_inserts_and_block_copies` state the exact
+  logs. The input gives one distinct element twice. So the comparison path
+  runs, and the result does not depend on the order (bug 475811).
+- `rholang/src/rust/interpreter/accounting/native_runtime/clone_backing/tests.rs`:
+  `sorter_copies_fit_reserved_backing` measures, with the counting allocator
+  of the test binary, that the backing a sort reserves covers every byte the
+  sort allocates. The cases are a 4 KiB ground signature, a string and a
+  byte-array expression, and unforgeable ids. They also include a tuple, a
+  set and a map of 4 KiB strings.
+- Casper: `resource_comparison_inspects_each_authority_once` states the exact
+  charge of the comparison. A 4 KiB authority on either side grows it by one
+  block inspection. The test also checks exact credit and rejection one unit
+  short.
+  `presentation_copy_charges_a_block_slice_copy_and_cleanup` states the exact
+  charge at two sizes, no charge for an empty slice, and exact credit with
+  rejection one unit short.
+- The outcome tests of the sorter, the set and map type mappers and the
+  matcher pass unchanged.
+
+Twenty-six mutations in a scratch copy, built with `-D warnings`, fail
+tests. Each mutation fails at least one of the tests above, and none fails
+to compile:
+
+- A ground signature whose term copy is per-level, or whose score-leaf copy
+  is inspected instead of copied. The allocation test fails on the second.
+- A private name whose term copy is per-level, or whose score-leaf copy is
+  not charged.
+- A string term copy, a `u64` slice copy, or a `locally_free` copy of a par,
+  a receive or a zipper that is per-level.
+- A tuple copy, a set input copy or a map value copy that is inspected
+  instead of copied. The allocation test fails on each of them.
+- An injection scan without the inspection of the copy, or without the
+  release of the sorted term.
+- `score_vec` without the slot reads, or a `score_vec` that ignores a
+  rejection.
+- A hash insert with two inspections, or a map value without its inspection.
+- A slice wrapper that calls the per-level walk, or a `clone_blocks` that does
+  not prepay the release of its copy.
+- A rational denominator or a method name copied without a charge.
+- A Casper comparison without the inspection of one side, or with a
+  per-level inspection of the other.
+- A presentation copy that is per-level, or that is inspected instead of
+  copied.
+
+**Scope.** Cost-accounting work. Host-work reservations change. No
+encoding, root, event or receipt changes. The Casper edits are in two
+cost-accounting sites, and they only change reservations.
+
+Suites:
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,334 of 4,334 tests pass.
+- Casper and models with the original caps: 2,158 of 2,164 tests pass. The
+  6 failures are the same as after DR-110.
+- Casper with the provisional caps: 1,692 of 1,696 tests pass. The 4
+  failures are the same as after DR-110.
+- The doctests pass. Clippy passes with the CI flags (`-D warnings`).
+  DR-111 changes no proof.
+
+**Measurement.** The D-G0 probe ran the gateway test three times with
+DR-111, under the provisional caps. The baseline is the three runs of DR-110. Every role
+charged exactly the same usage in every run. The replay of the gateway
+funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-110, run 1 | 593,625,680 | 121,574,487 | 60,940,425 |
+| DR-110, run 2 | 594,516,051 | 121,697,030 | 60,954,279 |
+| DR-110, run 3 | 594,902,408 | 121,977,191 | 60,984,078 |
+| DR-111, run 1 | 594,837,063 | 120,102,695 | 60,941,263 |
+| DR-111, run 2 | 591,249,098 | 120,104,728 | 60,908,889 |
+| DR-111, run 3 | 595,126,036 | 120,170,784 | 60,939,460 |
+| Change of the means | −0.61 MB (−0.1 %) | −1.62 MB (−1.3 %) | −30 K (0.0 %) |
+
+The workload of the gateway test varies a little from run to run. Run 3 of
+DR-111 has the same execution counts as the three runs of DR-110. They are
+914 reduction steps, 2,140 primitive calls, 8,110 substitution bindings and
+71,200 search candidates. Run 2 made 916 reduction steps and 2,113 primitive
+calls. Against the runs with the same counts, run 3 charges 0.22 to 1.50 MB
+more VerificationBytes and 1.40 to 1.81 MB fewer SearchStateBytes. The design
+estimated +1.4 MB of VerificationBytes (Rule S), −1.8 MB of SearchStateBytes
+and about −26 K VerificationOperations.
+
+The producer's execution of the gateway block charges 151.0 to 151.3 MB of
+VerificationBytes and 64.0 to 64.3 MB of SearchStateBytes. For DR-110, it
+charged 150.3 to 150.4 MB and 65.8 MB. In multiples of the original caps, the
+replay of the gateway block is at 2.21 in VerificationBytes and 0.89 in
+SearchStateBytes.
+
+The attribution now counts `reserve_nested_encode` as a block entry point.
+It assigns the VerificationBytes samples of a validator replay to their
+callers. In run 3 of DR-110, it finds 6 MiB of per-level walker samples.
+They are at
+`cost_accounting_sorter.rs:162` (3 MiB), `:166` (2 MiB) and
+`unforgeable_sort_matcher.rs:52` (1 MiB) of that source, the sites of this
+item. Run 3 of DR-111 has no per-level walker sample. The samples at
+`authority.rs:719` and `fallback_metered.rs:94` are block samples of nested
+encodes.
+
+The probe does not compare receipts between the two builds, because the
+deploys of the test vary between runs. The suites establish the outcome
+equality.
+
+**Cross-refs.** DR-83, DR-89, DR-92, DR-93, DR-94, DR-109, DR-110. Leaf
+`ofp-2-cap-d-e4-models-shared-casper-sites`. Bug
+`metered-set-and-map-construction-charges-depend-on-hashset-hashmap-iteration-order-nondeterministic-host-work-475811`.
+
+## DR-112 — The per-level walker becomes a test oracle (the global switch)
+
+**Status.** Implemented 2026-10-08 for Phase D item D-E5 of epic 8946, the
+last item of D-O1 Stage B. By user decision, the oracle stays reachable
+through a cargo feature that only test builds enable ("Feature for test
+builds").
+
+**Context.**
+
+- DR-92 added the block mode next to the legacy per-level mode. Its decision
+  4 kept every production call site on the per-level mode until the site
+  switched.
+- DR-94 and DR-108 to DR-111 switched every production site to block mode:
+  - Stage A (DR-94).
+  - D-E1, the RSpace sites (DR-108).
+  - D-E2, the matcher, the candidate selection and `rho-pure-eval` (DR-109).
+  - D-E3, the accounting and interpreter sites (DR-110).
+  - D-E4, the sorter, the set and map construction and two Casper sites
+    (DR-111).
+- A census after DR-111 found 32 calls of the per-level entry points in 10
+  files. Every one of them is test code: a test file, a `#[cfg(test)]`
+  function or a test module. Shared itself calls them only from the
+  per-level entry points.
+- The probe of DR-111 found no per-level walker sample in a validator replay.
+- The per-level walk charges the inline bytes of a value once per nesting
+  level. The negative control of DR-92,
+  `legacy_level_charge_grew_with_inline_nesting_depth`, shows it. Its
+  pending-vector growth also depends on the traversal order (bug
+  `per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`).
+- The tests of models, rholang and rspace++ use the per-level walk as a
+  reference charge. A `#[cfg(test)]` item of shared is not visible to the
+  tests of another crate.
+
+**Decision.**
+
+1. Shared gets the cargo feature `level-walker-oracle`. The per-level code
+   compiles only under `#[cfg(any(test, feature = "level-walker-oracle"))]`:
+   - The per-level push term, now `push_level_entry`.
+   - The per-level allocation term, the per-level fallback of
+     `opaque_allocation` and the per-level drain.
+   - The per-level worklist fields `pending` and `capacity`.
+   - The private walks `walk` and `walk_slice`.
+   - The public per-level entry points `reserve`,
+     `reserve_copy_and_cleanup`, `reserve_slice`,
+     `reserve_slice_copy_and_cleanup`, `inspect`, `inspect_slice`,
+     `inspect_shared_pointers` and `inspect_shared_pointer_slice`.
+2. The `[dev-dependencies]` of models, rholang and rspace++ enable the
+   feature. The workspace uses resolver 2, so a dev-dependency feature
+   applies only to builds that include test targets. A production build,
+   for example `cargo build -p node`, contains no per-level code. A new
+   production call of the per-level walk therefore fails to compile.
+3. Every production walk is a block walk. The block entry points do not
+   change.
+4. Each replaced line stays in the source as a comment. The comment gives
+   the reason: "inline bytes lie in the enclosing block; per-level charging
+   counted them once per nesting level".
+
+**Algorithm (literate form).**
+
+```text
+⟨push of a value v⟩ ≡
+  [oracle builds only] if the walk is per-level: push_level_entry(v), return
+  push_block_entry(v)
+⟨allocation of b bytes⟩ ≡
+  [oracle builds only] if the walk is per-level: the legacy charge, return
+  block(b, visited, allocated)
+⟨drain⟩ ≡
+  the depth worklist of a depth walk, else
+  [oracle builds only] the per-level stack of a per-level walk, else
+  the chunked worklist
+```
+
+**Soundness.** No charge changes. After DR-111, every production site calls
+a block entry point, and the census confirms it. The gated code is not part
+of a production build. The proofs of the block mode (DR-92) do not change.
+
+**Determinism.** The per-level walk was the only walker path whose charge
+could depend on the iteration order of a hash map (bug a8bd6b). A production
+build no longer contains it.
+
+**Audit.** The walker entry points after this item:
+
+| Entry points | Mode | Production builds | Test builds |
+| --- | --- | --- | --- |
+| `inspect_blocks`, `reserve_blocks`, `reserve_blocks_copy_and_cleanup`, `inspect_blocks_slice`, `reserve_blocks_slice`, `reserve_blocks_slice_copy_and_cleanup`, `inspect_shared_pointers_blocks`, `inspect_shared_pointer_slice_blocks`, `inspect_blocks_depth`, `reserve_nested_encode` | block | yes | yes |
+| `reserve`, `reserve_copy_and_cleanup`, `reserve_slice`, `reserve_slice_copy_and_cleanup`, `inspect`, `inspect_slice`, `inspect_shared_pointers`, `inspect_shared_pointer_slice` | per-level | no | yes, with `level-walker-oracle` |
+
+The audit tables of the switched sites, one row per site or group of sites:
+
+| Record | Item | Audit rows |
+| --- | --- | ---: |
+| DR-94 | Stage A | 28 |
+| DR-108 | D-E1, the RSpace sites (part 2) | 89 |
+| DR-109 | D-E2, the matcher, the candidate selection and `rho-pure-eval` | 70 |
+| DR-110 | D-E3, the accounting and interpreter sites | 33 |
+| DR-111 | D-E4, the sorter, the set and map construction and the Casper sites | 26 |
+
+**Verification.** No new proof is necessary.
+
+- A compile-time negative control. In a scratch copy, a production function
+  of the models library that calls `shared::rust::clone_backing::inspect`
+  fails to compile without the feature (`E0425`). The copy then restored the
+  file.
+- `cargo check -p node` passes without the feature.
+- `legacy_level_charge_grew_with_inline_nesting_depth` passes against the
+  oracle, with the other 18 walker tests of shared.
+- The tests of models, rholang and rspace++ that use per-level reference
+  charges pass unchanged, through the dev-dependency feature.
+
+**Scope.** Cost-accounting work. No charge, encoding, root, event or receipt
+changes. The cargo features change in four manifests. `Cargo.lock` does not
+change.
+
+Suites:
+
+- Shared, rspace++, rholang and `rho-pure-eval`: 4,334 of 4,334 tests pass.
+- Casper and models with the original caps: 2,158 of 2,164 tests pass. The
+  6 failures are the same as after DR-111.
+- Casper with the provisional caps: 1,692 of 1,696 tests pass. The 4
+  failures are the same as after DR-111.
+- The doctests pass. Clippy passes with the CI flags (`-D warnings`).
+  DR-112 changes no proof.
+
+**Measurement.** The D-G0 probe ran the gateway test three times with DR-112, under the
+provisional caps. Every role charged exactly the same usage in every run.
+The replay of the gateway funding block:
+
+| Build | VerificationBytes | SearchStateBytes | VerificationOperations |
+| --- | ---: | ---: | ---: |
+| DR-111, run 1 | 594,837,063 | 120,102,695 | 60,941,263 |
+| DR-111, run 2 | 591,249,098 | 120,104,728 | 60,908,889 |
+| DR-111, run 3 | 595,126,036 | 120,170,784 | 60,939,460 |
+| DR-112, run 1 | 595,123,769 | 120,207,561 | 60,939,337 |
+| DR-112, run 2 | 592,169,252 | 120,120,524 | 60,928,030 |
+| DR-112, run 3 | 595,157,089 | 120,239,688 | 60,950,905 |
+
+Runs 1 and 3 of DR-112 have the same execution counts as run 3 of DR-111.
+They differ from it by at most 31 KB of VerificationBytes, 69 KB of
+SearchStateBytes and 11 K VerificationOperations. Run 2 of each build made
+916 reduction steps. These differences lie within the run-to-run variation
+of one build. For example, the three runs of DR-110 with equal counts spread
+over 1.28 MB of VerificationBytes. Bug 475811 is one known source of that
+variation. So the probe shows no change in the charges, as the design
+predicts.
+
+**Cross-refs.** DR-92, DR-94, DR-108, DR-109, DR-110, DR-111. Leaf
+`ofp-2-cap-d-e5-global-switch`. Bug
+`per-level-walks-of-randomstate-hashmaps-charge-worklist-growth-that-depends-on-iteration-order-nondeterministic-host-work-a8bd6b`.
+
+## DR-113 — Exhaustion of the signed limit is a classified user failure
+
+**Status.** Implemented 2026-10-09 for epic 8946. It implements the exhaustion
+row that DR-64 adopted. By user decision it follows DR-115 ("Fix R1 first") and
+comes before DR-114 ("DR-64, then the ban removal").
+
+**Context.**
+
+- DR-64 adopted this row: exhaustion of the signed limit in a capped part is a
+  classified user failure. An overrun of an exact part is a correctness failure
+  with no charge.
+- The native meter mapped every exhaustion to `OutOfPhlogistonsError`, a
+  certificate failure. The proposer then rejected the offer as a candidate with
+  a non-user failure. The deploy never reached a block, and nobody paid for the
+  granted work.
+- Until gap G1 lands, every live contract binds the signed limit as its bound.
+  So every native exhaustion today is exhaustion of the signed limit.
+
+**Decision.**
+
+1. A native execution contract names the source of its bound:
+   `NativeBoundSource::SignedLimit` or `NativeBoundSource::Certificate`.
+2. The guard requires a signed-limit bound to equal the signed limit
+   (`BoundSourceMismatch` otherwise). A certified bound is at most the limit,
+   as before.
+3. Exhaustion takes the class of the source. Under `SignedLimit`,
+   `BoundExceeded` and a charge `Overflow` give
+   `InterpreterError::SignedLimitExhausted`, a classified user failure. Under
+   `Certificate` they give `OutOfPhlogistonsError`, as before.
+4. Overflow follows the user decision of 2026-10-08 ("User failure"). After
+   the zero-factor short-circuit, an overflow of the product or of the running
+   sum means that the exact charge exceeds `u64::MAX`, and so every bound. A
+   sizing overflow in `authority_units` is host work
+   (`FundingSearchError::AllocationFailed`), never a charge.
+5. Replay classifies a denial as play does. `NativeReplayEpoch::denial` is a
+   required method, and `publish_denial` returns the denial of the epoch. The
+   checked budget evidence stores the bound source of the contract that checked
+   it. `require_grant` treats the new variant as a mismatch, as it treats
+   `OutOfPhlogistons`.
+6. Casper binds every live contract with `SignedLimit`: play, the producer
+   rebind, the replay rebind, the replay runtime configuration and the replay
+   evidence. The three family paths with no caller bind `Certificate` and keep
+   their behavior.
+7. The error collapse in `reduce.rs` puts the new variant after
+   `OutOfPhlogistonsError`. A mixed failure still reports the non-user error,
+   and the full error list still reaches the classification.
+8. The retained charge needs no code change. A classified user failure retains
+   the fresh work and the fee, $`\mathrm{fresh} \cdot \mathrm{price} + 1`$,
+   within the signed ceiling $`\mathrm{phloLimit} \cdot \mathrm{price} + 1`$.
+   A refund of an unused hold is vacuous until G1 adds holds.
+9. Legacy deploys, allocation denials, the legacy meter, the token budget and
+   host-work rejection keep their variants and classes.
+
+| Error source | Variant | Class | Effect |
+| --- | --- | --- | --- |
+| Native meter under `SignedLimit`: `BoundExceeded` or charge `Overflow` | `SignedLimitExhausted` | User (new) | Roll back, charge $`\mathrm{fresh} \cdot \mathrm{price} + 1`$, publish as failed |
+| Native meter under `Certificate`: `BoundExceeded` or charge `Overflow` | `OutOfPhlogistonsError` | Certificate (unchanged) | Reject, no charge |
+| Sizing overflow in `authority_units` | `ReduceError` | Unclassified | Reject, no charge |
+| Host-work limit | `HostWorkRejected` | Platform (unchanged) | Reject, no charge |
+
+**Interactions.**
+
+- DR-72: signed-limit exhaustion no longer reaches the candidate rejection, so
+  the proposer does not quarantine it.
+- DR-102: no role-dependent code changes. Every validator gives the same
+  receipt.
+- G1: an exact part will bind `Certificate`. The scalar bound may stay the
+  limit only under `SignedLimit`.
+
+**Verification.**
+
+- Failing first: on the code before this record,
+  `signed_limit_exhaustion_is_published_as_a_charged_user_failure` fails with
+  "the offer's block is not created". The recorded rejection is "native offered
+  execution has non-user failure".
+- With this record the test passes. The block publishes the deploy as failed,
+  and all three validators accept it with equal receipts. The receipt holds
+  $`0 < \mathrm{phloUsed} \le \mathrm{phloLimit}`$, and the payer pays exactly
+  its `rev_spent`.
+- `signed_limit_exhaustion_is_a_classified_user_failure` runs the same charge
+  under both sources. It checks the error, the class and the retained-charge
+  permission. `a_signed_limit_bound_is_the_signed_limit` checks the guard.
+- Rocq `SignedLimitExhaustion.v` uses the standard library only and no axiom.
+  It proves 16 theorems, four of them negative controls: charging every
+  exhaustion, never charging an exhaustion, one shared class, and a class
+  derived by comparing the bound with the limit. Each control breaks a
+  required property. The proof gate passes in cost-accounting mode: 274 modules
+  and 3105 closed assumption queries.
+- Suites: rholang and rspace++ pass 4103 of 4103. On casper, block-storage and
+  the node HTTP handlers, the committed caps pass 1934 of 1940 and the
+  provisional caps pass 1936 of 1940. All failures are the known ones of
+  DR-116.
+
+**Amendment (DR-124, 2026-10-11).** Item 6 no longer holds. Every live
+contract now binds the bound source of the check before execution. A complete
+estimate binds `Certificate` with the bound $`B`$, and an incomplete estimate
+binds `SignedLimit` with the signed limit. The three family paths with no
+caller keep `Certificate`.
+
+**Cross-refs.** DR-64, DR-72, DR-102, DR-114, DR-115, DR-124.
+`cost-accounting-impl/economic-failure-policy-decisions.md`.
+
+## DR-114 — Native funded execution records and replays external-service replies
+
+**Status.** Implemented 2026-10-09 for epic 8946 (pgmcp item 10904). By user
+decision it follows DR-115 ("Fix R1 first") and DR-113 ("DR-64, then the ban
+removal").
+
+**Terms.**
+
+- P1 is `cost-accounted-rho.tex`, and PM is
+  `prediction_markets_cost_accounted_rho_20260629.tex`. Both are at
+  publications revision `0bf7817`.
+- A *recorded process* is one of the twelve processes in
+  `is_native_recorded_op`. They are GPT-4, DALL-E 3, text-to-audio, three
+  Ollama processes, gRPC tell and five Chroma processes.
+- A *record* is the reply that play stores in `Produce.output_value` of the
+  produce that triggers a recorded call.
+- The *record room* is the number of reply bytes that one deploy may record.
+
+**Context.**
+
+- Two bans stopped every protocol-6 user deploy from using 16 system
+  processes:
+  1. `Definition::to_dispatch_table` returned
+     `ReduceError("native funded execution forbids external service calls")`
+     for the twelve recorded processes and for stdout, stderr and their
+     acknowledged forms. Commit `068d51c65` added the list with no decision
+     record. Its only written basis was
+     `offered-funded-production-integration-proposal.md:92`.
+  2. `spawn_offered_runtime` gave offered play `ExternalServices::noop()`.
+     GPT-4 then recorded an empty answer as a success, and gRPC and Chroma
+     faked success.
+- The ban error was unclassified. The producer rejected the candidate unpaid,
+  and DR-72 quarantined it. The proposer did the work for free.
+- 68 tracked Rholang files use `rho:io:stdout`. UC-CA-064, UC-CA-112,
+  UC-CA-118, TM-CA-026 and TM-CA-055 require replay evidence, not a ban.
+- No publication forbids a service call. PM:354-389 ("Why replicated
+  determinism is the wrong target") prescribes the design:
+  - A replaying validator must not dial the service. It must see the value
+    that the proposer saw.
+  - For a nondeterministic service the invariant is a non-repudiable
+    commitment: the proposer signs the block that carries the interaction.
+- P1:1295-1315 ("Cross-party service invocation") makes the client pay for
+  the call. P1:1636-1664 runs system contracts under the free signature
+  $`s_0`$.
+- The File I/O FIPS specifies oracle mode. The node that runs the deploy owns
+  the effect, and a native primitive echoes the captured output on replay.
+- The implementation map found three gaps in design v2:
+  - G-A. A reply that the signed limit denied (DR-113) left no record. Replay
+    then produced an empty reply and failed closed, so the deploy was unpaid.
+  - G-B. A persistent send to a recorded process never recorded. The
+    persistent branch drops the dispatch result, so play called the service
+    once for each iteration until exhaustion.
+  - G-C. The record placement check changes three pinned trace tests.
+- The map also corrected design v2 on the reply closure of `ContractCall`
+  (W6):
+  - The closure dispatches through a table with no entries, so it cannot run
+    a system process.
+  - A user holds only a write-only bundle of a system channel, and only
+    `eval_send` removes a bundle.
+  - Thus no reply fires a recorded process, and the closure needs no record.
+
+**User decisions.**
+
+| ID | Verbatim answer | Effect |
+| --- | --- | --- |
+| U1 | "Unban stdout/stderr + recorded outputs" | No process stays banned. |
+| U2 | "Regardless, we cannot have that list!" and "we cannot, however, ban them!" | The list and the no-op services of offered play go. |
+| U3 | "it'll likely have to be a record-and-replay design ... you can get two different responses from the same request parameters" | Play calls a service once and records the reply. Replay returns the record and never calls. |
+| U4 | "Or we can retrofit the legacy behavior into the cost-accounting model for them if their intended behavior cannot be deduced" | A case that the sources do not decide keeps dev's behavior inside the cost model. |
+| U5 | "It should be the same as with the File I/O API, right? I imagine it is just the proposer, but please verify." | Verified: oracle mode. Chroma `get_meta` and the three Chroma writes are recorded and run in play only. |
+| U6 | "Model it like the File I/O API. If that API does not model the necessary behavior, then go with your recommendation." | File I/O does not model exhaustion, so DR-113 came first. |
+| U7 | "Print in play only (Recommended)" | stdout and stderr format and print in play only. |
+| U8 | "Replies, success unchanged (Recommended)" | A failure is a paid `[false, code, message]` reply. A success keeps dev's bare value. This is the explicit approval that the failure policy requires. |
+| U9 | "DR-64, then the ban removal (Recommended)" and "Fix R1 first (Recommended)" | DR-115, then DR-113, then this record. |
+| U10 | "Charged user failure (Recommended)" | A system-process shape error is a classified user failure (option A). |
+
+U10 answered a question about a wrong arity or call shape of an
+external-service call. The map then found that a wrong-arity send never
+fires: each install binds exactly its arity, and the matcher rejects a length
+mismatch (W8). So the typed variant takes effect in two places:
+
+- an argument error of any system process in native funded execution, for
+  example `sha256Hash!(42, *ack)`;
+- a persistent send to a recorded process (P2), because a recorded call is
+  one linear request with one reply.
+
+Both places follow from the approved variant. The user confirmed both on
+2026-10-09: "Confirm both (Recommended)".
+
+**Decision.**
+
+1. The forbidden list and its branch stay as comments with the reason. In
+   native funded execution the dispatcher sends the 16 processes to a native
+   driver. The legacy path runs dev's handlers, `non_deterministic_ops()` and
+   dev's failure marking unchanged.
+2. Offered play gets the services of the node
+   (`RuntimeManager::spawn_offered_play_runtime`). Every replay keeps
+   `ExternalServices::noop()`, so no replay can call a service.
+3. The 16 processes take these paths:
+
+   | Process | Class | Native play | Native replay |
+   | --- | --- | --- | --- |
+   | `stdout`, `stderr` | deterministic, no reply | prepay the formatting, format, print | no format, no print |
+   | `stdoutAck`, `stderrAck` | deterministic, `Nil` reply | as above, then `Nil` on the ack | `Nil` on the ack |
+   | GPT-4, DALL-E 3, text-to-audio, Ollama chat, generate and models, Chroma query | recorded (dev's set) | one call, the room check, the record, the reply | the record on the ack, no call |
+   | gRPC tell | recorded, no ack | one call, the record (`[Nil]` or a failure) | the record, no call |
+   | Chroma `get_meta`, create, upsert, delete | recorded (native only, U5) | one call, the record, the reply | the record on the ack, no call |
+
+4. A failure is a reply, never an abort (U8). The reply is
+   `[false, code, message]`, built by `io::response::err`:
+
+   | Failure | Code | Message |
+   | --- | --- | --- |
+   | An argument with the wrong content in a well-formed call | `EXT_BAD_ARG` | `"<process>: invalid argument"` |
+   | A service error or a disabled Ollama service | `EXT_FAILED` | `"<process>: external service failed"` |
+   | A success that does not fit the record room | `EXT_OUTPUT_TOO_LARGE` | `"<process>: external output exceeds the record room"` |
+
+   The message is fixed text. It never carries the provider's text, because
+   a provider error can echo a masked key. Disabled OpenAI, gRPC and Chroma
+   services keep dev's empty successes (U4). A disabled Ollama service fails,
+   so it gives `EXT_FAILED`.
+5. The record room bounds the bytes that a service controls. Let $`T`$ be
+   the replay telemetry limit, $`L`$ the deploy-log byte limit and $`E`$ the
+   evidence byte limit. Casper's `native_record_room` sets
+
+   ```math
+   \mathrm{room} = \min\left(\left\lfloor \frac{T}{3} \right\rfloor,\ \left\lfloor \frac{L}{3} \right\rfloor,\ \left\lfloor \frac{E}{2} \right\rfloor\right) = \min(2796202,\ 2796202,\ 2097152) = 2097152 \text{ bytes.}
+   ```
+
+   - The trace telemetry counts three copies of a record: the introduction,
+     the COMM copy and the repetition key.
+   - The offered deploy log counts two copies in its byte check and three in
+     its clone-byte check.
+   - The replay evidence counts two copies with 64 bytes for each item.
+   - A success reply $`(p_1, \ldots, p_k)`$ takes
+     $`\sum_{j=1}^{k} (|p_j| + 64)`$ bytes of room, where $`|p|`$ is the
+     encoded length. Replay takes no room.
+   - The room adds no policy parameter, and its default is zero, so a
+     configuration without a room records no success (fail closed).
+   - A failure reply takes no room. Its size is small and fixed, and the meter
+     charges it as a reply produce. The general deploy-log limits bound its
+     count, as they bound any other datum.
+6. The evidence rules check every record:
+   - E1 (`record_placement`, in `bind_trace`): a produce copy is never
+     failed. A copy is deterministic exactly when it carries no record. A
+     record sits only on the introduction of a matched produce slot and on
+     the COMM copy that the slot selected. The two copies are equal. A
+     violation is `Telemetry`.
+   - E2 (`NativeExecution::produce`, in native replay): a returned produce
+     may carry a record only when it fires a linear call of a recorded
+     process. Otherwise replay fails with "native replay found a recorded
+     output on an unrecorded call". E2 stops a block from handing a forged
+     record to the user's code.
+   - The replay session already compares every produce update exactly, and
+     `check_complete` rejects a record that replay did not use.
+7. G-A: when the signed limit denies a reply, the driver returns
+   `ProduceFailureWithOutput` with the encoded reply. The reducer keeps the
+   record on the trigger and raises the cause. Replay produces the same reply
+   and meets the same denial, so the deploy is a charged user failure
+   (DR-113).
+8. P2: a persistent send to a recorded process raises
+   `SystemProcessShapeError` before any service call.
+9. Option A (U10): in native funded execution the dispatcher maps an
+   `IllegalArgumentError` of any system process to
+   `SystemProcessShapeError`. The classification puts it in the user class,
+   and the node HTTP handler maps it to 400 `illegal_argument`.
+
+**Algorithm.** One recorded call, in the literate form of
+`SystemProcesses::native_recorded_call`. First the driver reads the process
+signature and splits the call. Then it takes one of two branches. Replay
+delivers the record. Play calls the service once and turns every outcome into
+one reply. Last, the driver produces the reply on the ack.
+
+```text
+procedure NATIVE-RECORDED-CALL(process, arguments, budget)
+  (name, arity, acknowledged) ← SIGNATURE(process)
+  (produce, replaying, record, values) ← UNAPPLY(arguments)
+  if |values| ≠ arity then
+    raise IllegalArgumentError(name)        ▹ the dispatcher maps it to SystemProcessShapeError
+  (request, ack) ← SPLIT(values, acknowledged)
+  if replaying then
+    if record = [] then raise BugFound("native replay of <name> has no recorded output")
+    reply ← record                          ▹ the service is never called
+  else
+    RESERVE-RECORD-SCAN(budget)             ▹ host work for update_produce
+    case SERVICE-CALL(process, request) of
+      Reply(r):    if TAKE-ROOM(budget, Σ (|p| + 64) over r)
+                   then reply ← r
+                   else reply ← FAILURE(name, EXT_OUTPUT_TOO_LARGE)
+      BadArgument: reply ← FAILURE(name, EXT_BAD_ARG)
+      Failed:      reply ← FAILURE(name, EXT_FAILED)
+  if acknowledged then
+    if PRODUCE(reply, ack) fails with cause then
+      raise ProduceFailureWithOutput(cause, ENCODE(reply))   ▹ G-A keeps the record
+  return reply                              ▹ the dispatcher records it on the trigger
+```
+
+The dispatcher writes the returned reply into the trigger produce with
+`update_produce`. That call replaces the introduction, the COMM copy and the
+repetition key together, so E1 sees equal copies.
+
+**Charging.**
+
+- The deploy pays the call COMM, the call datum introduction, the reply
+  introduction and the reply COMM, as for any user COMM. The handler, the
+  service work and the formatting carry no phlo, because system processes run
+  under $`s_0`$.
+- Phlo agrees by construction. `comm_charge` reads only the matched data and
+  the channel count. The reply introduction reads the ack channel and the
+  reply datum. Neither reads `output_value`.
+- Host work in play, with $`S`$ the scanned bytes of the message, $`D`$ its
+  block depth and $`n`$ the native operations so far:
+
+  | Reservation | Dimension | Units |
+  | --- | --- | --- |
+  | Print formatting (`reserve_native_print`) | SearchStateBytes | $`2S(D+1)`$ |
+  | Print formatting (`reserve_native_print`) | VerificationBytes | $`2S(D+1)^2`$ |
+  | Record scan (`reserve_native_record_scan`) | VerificationOperations | $`4n + 4`$ |
+  | Record scan (`reserve_native_record_scan`) | VerificationBytes | $`32(4n + 4)`$ |
+
+**Effects outside the checkpoint.**
+
+- No replay calls a service. This holds in oracle mode, which U5 selects.
+- One dispatched call COMM causes at most one service call in one play. A
+  deploy can run in play more than once: after a failed proposal attempt,
+  after an orphaned block or on another proposer. Thus the bound is one call
+  per play.
+- Nothing external is undone on rejection or orphaning: gRPC messages,
+  Chroma writes, audio files and printed lines stay. The rollback rows of the
+  failure policy cover tuplespace state only.
+- Only a record in a finalized block is a consensus fact. The proposer is
+  accountable for it (PM:377-389).
+- The remaining unpaid path is a host-work rejection after calls. It is a
+  platform failure, as the failure policy requires.
+
+**Interactions.**
+
+- DR-64 and DR-113: a reply that the signed limit denies is a charged user
+  failure (G-A).
+- DR-72: these calls no longer reach the candidate rejection.
+- DR-100: replay charges stay independent of the schedule. A room race in
+  play is a recorded outcome, and replay never recomputes it.
+- DR-102: no code depends on the role. Every validator gives the same
+  receipt.
+
+**Scope and activation.**
+
+- The legacy path is byte-identical. The Casper change is one function, the
+  play spawn in `execution.rs` and the room function.
+- E1 and E2 make native evidence stricter. Protocol 6 is unreleased, so the
+  change needs a fresh protocol-6 genesis and no migration.
+- Every node of a network needs the same `chromadb` feature build, because an
+  unknown process is a `BugFoundError`.
+
+**Residual risks.**
+
+- The phlo price does not cover a provider's money cost.
+- OpenAI has no timeout, so a provider that hangs stalls proposals.
+- Prompts and replies are public in the block.
+- The formatting bound is conservative. A deep print can meet
+  `HostWorkRejected` and go unpaid.
+- This record reports these dev defects and does not fix them:
+  - Legacy persistent sends never record.
+  - Legacy Chroma `get_meta` and the Chroma writes run in replay.
+  - `openai_service.rs` can panic on `choices[0]`.
+  - Reply buffering has no bound.
+  - The temporary dispatcher has an empty table.
+
+**Verification.**
+
+- Failing first: on the code before this record, the end-to-end tests
+  `offered_deploy_records_an_external_reply_and_validators_replay_it` and
+  `a_malformed_system_call_is_published_as_a_charged_user_failure` fail with
+  "the offer's block is not created". The recorded rejection is "native
+  offered execution has non-user failure".
+- With this record both tests pass:
+  - Node 0 asks a mocked GPT-4. The trigger produce in the block log carries
+    the reply. The three validators replay the block with no-op services and
+    give equal receipts. The post-state of each validator holds the recorded
+    reply.
+  - The malformed call is published as failed. The payer pays exactly its
+    `rev_spent`. The datum that the deploy produced first is rolled back.
+- `recorded_calls.rs` plays and replays each case with different services:
+  - A GPT-4 reply and a gRPC tell replay from the record. Only play reaches
+    the gRPC client.
+  - The three failure replies and a disabled Ollama service replay.
+  - A reply past the signed limit keeps its record (G-A).
+  - A persistent send (P2) and a malformed system call (option A) are
+    charged user failures.
+  - Replay rejects a forged record on a COMM of the user's contract (E2).
+  - Replay rejects a recorded call whose record is removed from every copy.
+  - Prints carry no record, and the recorded set holds dev's set.
+- The property test `parallel_recorded_calls_replay_call_by_call` (64 cases)
+  runs one to four parallel calls under a generated room. Each call gets one
+  reply, and the successes fill the room exactly. Replay gives each call the
+  reply that play gave it.
+- `native_record_room_fits_every_record_copy` checks the Casper room against
+  the copy counts of the three carriers.
+- The E1 tests reject a record outside a selected trigger, a failed copy and
+  unequal copies. `native_funded_runtime_runs_stdout_and_charges_the_call`
+  replaces the pin of the ban.
+- Mutation controls on the committed-caps tree. Each mutation fails exactly
+  its tests, and the other tests pass:
+
+  | Mutation | Failing tests | Observed cause |
+  | --- | --- | --- |
+  | E2 and P2 off | the forged-record test and the P2 test | replay accepts the forged record (`Ok(())`), and the persistent send leaves the native recording incomplete |
+  | G-A off | the signed-limit test | the trace does not bind (`Telemetry`) |
+  | Replay calls the service | both replay tests, the failure-reply test and the signed-limit test | replay diverges from play |
+
+- Rocq `RecordedExternalReplay.v` uses the standard library only and no
+  axiom. It proves 14 theorems. Six of them are negative controls: a live
+  replay, a first-in-first-out replay and admission without the room check.
+  The other three controls are an abort on a failed service, a replay
+  without the placement check and a shared call identity. Each control breaks
+  a required property. The proof gate passes in cost-accounting mode with 275
+  modules and 3119 closed assumption queries.
+- Suites: rholang and rspace++ pass 4113 of 4113. The property test and the
+  missing-record test came after that run. A focused run of 35 tests on the
+  final tree, which includes every DR-114 test, passes. On casper, block-storage and the node HTTP
+  handlers, the provisional caps pass 1939 of 1943 and the committed caps
+  pass 1938 of 1944. All failures are the known ones of DR-116.
+
+![The DR-114 record-and-replay sequence. Native play on the proposer charges the call, runs the recorded-call driver, calls the external service once and records the reply on the trigger produce. A persistent send, an argument error, a full room, a service failure and a denied reply each take their own branch. Replay checks the record placement (E1) and the recorded call (E2). It delivers the record with no-op services and compares the charges, the receipts and the post-state root.](diagrams/native-external-record-replay-sequence.svg)
+
+**Cross-refs.** DR-64, DR-72, DR-100, DR-102, DR-113.
+`cost-accounting-impl/economic-failure-policy-decisions.md`,
+`cost-accounting-impl/offered-funded-production-integration-proposal.md`,
+`cost-accounting-impl/economic-failure-observation.md`.
+
+## DR-115 — A failed offered deploy keeps its committed settlement in the merge index
+
+**Status.** Implemented 2026-10-08 for bug 10986 (R1) of epic 8946. By user
+decision it lands before DR-113 and DR-114 ("Fix R1 first"). The numbers
+DR-113 and DR-114 stay reserved for the signed-limit exhaustion rule and the
+external-service ban removal.
+
+**Context.**
+
+- A protocol-6 offered deploy can end in a classified user failure. Execution
+  then rolls back its user events and keeps its settlement: the payer debit,
+  the fee, the receipts and the prepaid consumption.
+- The adopted failure policy keeps the authorized billable work and the fee
+  for such a failure (`cost-accounting-impl/economic-failure-policy-decisions.md:84`).
+  So the charge must survive every merge.
+- `block_index::new` skipped every failed user deploy. Sometimes the block of a
+  failed offered deploy was a merged branch and not the merge base. The merged
+  state then lost the settlement. Every validator computed the same merge, so
+  there was no fork, but the payer did not pay.
+- DR-57 made a failed-body settlement a merge effect. The merge 1d325b996
+  ("restore dev Casper", 2026-10-01) restored the dev merge index. That merge
+  removed the DR-57 rule together with the older Casper code.
+- Dev has the same skip for legacy deploys. That loss is a finding for the
+  Casper team and is outside this record.
+- The probe of this record reproduced the loss at 22ce46079. The merged state
+  kept the payer at its genesis balance of 9,000,000 REV. The receipt shows a
+  charge of 6,311 REV.
+
+**Decision.**
+
+1. `ProcessedIndexDeploy` gets the provided method `committed_log`. Its default
+   keeps the dev rule: the whole log of a successful deploy, nothing for a
+   failed deploy.
+2. `ProcessedUserDeploy` overrides it:
+   - A legacy deploy keeps the default.
+   - A successful offered deploy keeps its whole log.
+   - A failed offered deploy indexes the suffix `log[U..]`.
+3. U is the number of user events that the committed operation journal
+   records. A rejected operation logs 0 events, a stored one logs 1 and a
+   matched one logs 2.
+4. Replay binds the same prefix `log[..U]` to the native user trace. The
+   counting function moved unchanged from `replay.rs` to `offered_evidence.rs`,
+   so the merge and replay use one definition.
+5. The index entry uses the stored mergeable map of the deploy. For a failed
+   offered deploy, that map holds only the wallet channels.
+6. The suffix must hold at least the committed wallet settlement events
+   (`wallet_settlement_log_events`). Otherwise the index fails closed with an
+   error. A decode error also fails closed.
+7. The applied set keeps the documented meaning of `applied_from_scope`, by user
+   decision (variant M2'). A kept chain of a failed offered deploy enters it,
+   because its settlement is in the merged state.
+8. The old skip stays in the source as a comment with its reason.
+
+![The merge index of a failed offered deploy. The deploy log of block A holds
+four segments in order. They are the rolled-back user events U, the empty
+grant-issue segment G, the wallet settlement events W and the receipt events R.
+The committed evidence fixes U through its operation journal. The rule
+committed_log takes log[U..] for a failed offered deploy, the whole log for a
+success and nothing for a failed legacy deploy. The deploy index then holds
+the events W and R and the wallet map. The merge applies the kept chain, so the
+merged pre-state keeps the payer debit, the fee, the receipts and the prepaid
+consumption. A conflicting chain is rejected with a record instead.](diagrams/failed-offered-merge-index.svg)
+
+*Source: `diagrams/failed-offered-merge-index.puml` (PlantUML, shared palette).*
+
+**Algorithm (literate form).**
+
+```text
+⟨committed log of a processed deploy d⟩ ≡
+  if d succeeded: return the whole log of d
+  if d is a legacy deploy: return none                  (the dev rule)
+  return ⟨committed suffix of d⟩
+
+⟨committed suffix of d⟩ ≡
+  E ← decode the committed native cost evidence of d
+  J ← decode the operation journal of E                 (the replay limits)
+  U ← the sum of width(row) over J                      (Rejected 0, Stored 1, Matched 2)
+  require U ≤ |log(d)| and |log(d)| − U ≥ E.wallet_settlement_log_events
+  return log(d)[U..]                                    (the wallet settlement, then the receipts)
+
+⟨index entry of d⟩ ≡
+  if ⟨committed log of d⟩ is none: no entry
+  otherwise: the events of ⟨committed log of d⟩, with the stored mergeable map of d
+```
+
+The boundary is the replay boundary. With the journal width
+$`w(\mathrm{Rejected}) = 0`$, $`w(\mathrm{Stored}) = 1`$ and
+$`w(\mathrm{Matched}) = 2`$, the indexed events are
+
+```math
+\mathrm{index}(d) = \mathrm{log}(d)\left[U..\right], \qquad U = \sum_{j \in J} w(j).
+```
+
+**Soundness.** The suffix is exactly the committed part of the log.
+
+- Play builds the log as the user events, then the grant-issue events, then the
+  settlement events (`offered_candidate.rs:430-441`).
+- A user failure reverts the soft checkpoint and gives an empty grant-issue log
+  (`execution.rs:379-406`).
+- The settlement runs at the reverted root. It writes the wallet settlement
+  events, then the receipts (`producer.rs:1203-1204`).
+- Replay binds `log[..U]` to the user trace and checks the empty grant-issue
+  segment. It rigs `log[U..U+W]` for the wallet settlement and `log[U+W..]` for
+  the receipts (`replay.rs:423-449`, `acceptance.rs:107-130`).
+- Replay requires that every COMM of the rigged segments is consumed
+  (`settlement.rs:224`, `replay.rs:570`). So a validated block has exactly this
+  partition.
+- The merge applies the state change of each channel that a kept chain's events
+  touch. The index no longer holds a rolled-back user event.
+
+**Merge outcomes.** The global `costCursorLock` (bug 11004) makes any two
+cursor-bearing offered settlements in sibling blocks conflict. So the outcome
+depends on the sibling:
+
+| Failed block A is in scope, and the sibling is the base | Before DR-115 | With DR-115 |
+| --- | --- | --- |
+| The sibling is empty, legacy-only or carries a slash | The charge is lost silently. | The charge is kept. |
+| The sibling carries an offered settlement | The charge is lost silently. | A is rejected with a record. |
+| A is the base, and an offered sibling S is in scope | S is rejected. | S is rejected. |
+| A and an offered sibling S are both in scope | S is applied, and A's charge is lost. | Cost adjudication decides. |
+
+- A rejected offered deploy reaches the open G6 recovery error on its owner. By
+  user decision, G6 follows this record directly ("R1 now, G6 next").
+- DR-115 also merges an offered descendant of A on the same branch. The
+  descendant consumes the cursor datums that A's settlement produced. Before
+  DR-115 the merge rejected that descendant as unavailable.
+
+**Determinism.** The index depends only on the block bytes and the protocol-6
+limit constants. The decode uses a fresh host-work budget with the protocol-6
+limits. That budget has at least the headroom of the replay that validated the
+block. The decode reads no clock, random value or node state.
+
+**Verification.**
+
+- Probe `a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_branch`:
+  - Before the fix, it failed at the payer-debit assertion: the payer kept
+    9,000,000 REV, and the receipt shows 6,311 REV.
+  - With DR-115 it passes. It also checks the boundary U = 3 of its term and
+    the merge chain index against an index of exactly `log[3..]`.
+  - It checks that a journal that does not decode fails closed.
+  - It checks the fee, the applied set, and the state of every channel that
+    the suffix produces on.
+- Probe `a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped`:
+  - Before the fix, it failed with "charged = false, rejected = false".
+  - With DR-115 the merge rejects the deploy with a record. The probe also
+    checks that the successful sibling keeps its whole log in the index.
+- Probe `a_failed_offered_deploy_in_two_sibling_blocks_is_charged_once`:
+  - Two validators include the same failed offer in sibling blocks.
+  - The merged state charges the payer exactly once, and the merge rejects
+    the second copy with one record. This is the Rust test of the TLA+
+    invariant `AtMostOneSettlementPerDeploy`.
+- Unit and property tests:
+  - `committed_settlement_suffix` splits the log exactly and fails closed on
+    truncation, in 256 fixed-seed cases each.
+  - Failed and successful legacy deploys keep the dev rule.
+- Mutations: the mutation suite kills all 10 mutations of the table below, on
+  the committed caps.
+- TLA+ `FailedSettlementMergeIndex` explores 648 distinct states and holds 8
+  invariants. Nine unsafe configurations each refute their target invariant.
+- Rocq `FailedSettlementMergeIndex.v` uses the standard library only and no
+  axiom. Its 20 headline theorems and controls are closed under the global
+  context. The cost-accounting proof gate passes (273 modules, 3,089 closed
+  assumption queries).
+- Bug 11008 records a finding: native offered execution rejects `{}.xxx()`
+  (MethodNotDefined) as a non-user failure. So the probes use `1 + "a"`
+  (OperatorExpectedError) instead.
+
+| Mutation | The change | Killed by |
+| --- | --- | --- |
+| `skip` | A failed offered deploy gets no index (the old rule). | All three probes |
+| `full-log` | A failed offered deploy indexes its whole log. | Probe 1 (the index comparison) |
+| `success-suffix` | A successful offered deploy indexes no event. | Probe 2 (the sibling index) |
+| `legacy` | A failed legacy deploy gets an index. | `a_failed_legacy_deploy_keeps_no_index` |
+| `wallet-map` | The index of a failed deploy gets an empty mergeable map. | Probe 1 (the balances and the channel state) |
+| `user-prefix` | The suffix is `log[..U]`. | All three probes, both suffix unit tests and both property tests |
+| `boundary-low` | The suffix starts at $`U - 1`$. | Probe 1, both suffix unit tests and both property tests |
+| `boundary-high` | The suffix starts at $`U + 1`$. | All three probes, both suffix unit tests and one property test |
+| `wallet-only` | The suffix drops the receipts. | One suffix unit test and one property test |
+| `swallow-decode` | A decode error gives $`U = 0`$. | Probe 1 (the malformed journal) |
+
+The probes have no prepaid receipts. So only the unit and property tests kill
+`wallet-only`.
+
+**Scope.** Cost-accounting work with the smallest Casper diff, by user decision
+("Keep casper changes to an absolute minimal"). The Casper merge change is the
+`committed_log` method and its use in `block_index::new`. No proto, evidence,
+block-body or mergeable-data format changes. The dev legacy loss, the DR-57
+lifecycle projection (variant M3) and G6 stay outside this record.
+
+**Activation.** Protocol 6 is unreleased and needs a fresh offered genesis
+(DR-66). The change activates atomically with the branch binary, as A9 does.
+Dev and legacy chains are byte-identical.
+
+**Amendment (DR-116, 2026-10-09).** The G6 recovery error is gone. A
+rejected failed offered deploy is final: its owner buffers nothing, and the
+rejection removes an earlier buffer entry with the same identity.
+
+**Amendment (DR-125, 2026-10-12).** The note on bug 11008 above rests on a
+wrong premise. `{}.xxx()` never raised `MethodNotDefined`. The reducer raised
+`ReduceError("Unimplemented method: xxx")`, which is Unclassified. DR-125
+raises `MethodNotDefined`, a user failure, so such a deploy is now a charged
+user failure. The text above stays as the record of that time.
+
+**Amendment (audit 2026-10-12).** "Merge outcomes" describes the global
+`costCursorLock`. DR-119 removed that lock on 2026-10-10 (commit
+`7ab849b56`). An existing cursor now takes no lock, and a first use takes one
+of 256 bucket locks (`SystemVault.rho:63-72, 186-229`). So two sibling
+settlements conflict only when they share a cursor scope, or when first uses
+on both sides fall in one bucket (DR-119). Since DR-120, the v6 merge rule
+decides v6 merges instead of dev's cost adjudication. The table and the text of
+"Merge outcomes" describe the time before DR-119, and they stay as that
+record.
+
+**Cross-refs.** DR-57, DR-64, DR-66, DR-69, DR-101, DR-113, DR-114. E2E-052,
+CA-P-203, TM-CA-193, UC-CA-184. Bugs 10986, 11004 and 11008.
+
+## DR-116 — Recovery carries offered envelopes
+
+**Status.** Implemented 2026-10-09 for gap G6 of epic 8946. It implements
+DR-69 (decision D6). By user decision it follows DR-115 directly ("R1 now, G6
+next").
+
+**Context.**
+
+- The owner of a merge-rejected offered deploy marked the honest merge block
+  invalid. The error was "offered-funded recovery requires an envelope
+  buffer". The owner then forked away from the chain.
+- The rejected-deploy buffer held legacy deploys only, so no proposer retried
+  an offered deploy.
+- Three lookups found legacy deploys only: the pool release at the verdict,
+  the admission check and the status lookup.
+- A validator that is not the deploy-inclusion leader includes its own fresh
+  work through a fallback. The fallback counted legacy pending deploys only.
+  Under protocol 6 that validator never included a fresh offer while an
+  unfinalized deploy block was in its scope.
+
+**Decision.**
+
+1. Storage. The rejected-deploy buffer gets the LMDB table
+   `rejected_envelope_buffer`, keyed by the 32-byte deploy id. The legacy table
+   keeps its type and its bytes, so no migration is necessary.
+2. Populate. Only the owner buffers a rejected offer, as DR-55 requires for a
+   legacy deploy. The owner is the sender of the rejected copy's carrier.
+3. Failed deploys. Casper treats a failed deploy as final, and this record
+   keeps that rule (user rule "stick with Casper's existing behavior"). A
+   failed offered deploy that a merge rejects is not buffered. The rejection
+   also removes an earlier buffer entry with the same identity.
+4. Retry. The offered retry stage makes the decisions of the legacy stage in
+   the same order: the expiry purge, the terminal purge, the canonical win,
+   the scope and retry gate, the floor-clock validity, and the frontier
+   deferral with its lease.
+5. A block takes at most one recovered envelope, as its selected candidate. A
+   block holds one offer until gap G2 lands.
+6. The quarantine of DR-72 also removes the buffer entry of the candidate.
+7. Identity lookups. `contains_sig` and `remove_by_sig` of the pending store
+   and of the buffer accept a deploy id. A 32-byte key names the envelope
+   table, and a legacy signature is never 32 bytes. So the pool release, the
+   admission check and the status lookup cover both formats with no
+   call-site change.
+8. Fallback. Under offered activation the fallback counts the stored offered
+   envelopes (`fresh_local_envelope_stats`). The stale-work signal counts them
+   too. The legacy branch does not change.
+9. Nothing consensus-visible changes. The populate, retry, quarantine and
+   fallback decisions are node-local, so this record adds no formal model.
+
+**Test migration.** A harness seam meets the DR-69 obligation, so no test
+needs a rewrite.
+
+- `casper/tests/helper/offered_deploy.rs` builds offered envelopes with the
+  signatures of `construct_deploy`. `OfferedDeploy::sig` holds the 32-byte
+  deploy id, as `RejectedDeploy::sig` does.
+- The `TestNode` deploy methods take `impl TestDeploys`, so they accept both
+  formats. An empty list `&[]` needs no type annotation.
+- `GenesisBuilder::offered_v6()` builds the protocol-6 genesis: the offered
+  policy, header version 6 and minimum phlo price 1.
+- Staged proposals call `create_with_adopted_policy` with the node's adopted
+  policy. On a legacy genesis this is the same call as `create`.
+- A typical port changes the import line and the genesis line. The old lines
+  stay in the source as comments.
+
+Two scenario rules follow from open gaps. Each changed line names its gap.
+
+- One key signs a contested cell's seed and every reader of that cell. A
+  deploy that consumes another signer's datum needs that signer's funding
+  (P1 Rule 4), and cross-signer funding is gap G3.
+- A block that only fills a sibling slot carries no offer. Under bug 11004
+  (the global `costCursorLock`) any two offered siblings conflict.
+
+| Test file | Tests | Result |
+| --- | ---: | --- |
+| `batch2/recovery_cycle_spec.rs` | 2 | Pass |
+| `batch2/retry_gate_spec.rs` | 2 | Pass. The premature retry is staged through `compute_deploys_checkpoint_envelopes`. |
+| `batch2/exactly_once_spec.rs` | 4 | Pass. The neutral branch N1 is empty (bug 11004). |
+| `batch2/loss_priority_spec.rs` | 2 | Pass. The costlier write adds two COMMs, because the native compute dimension counts COMMs, not arithmetic. One test stays ignored, as on dev. |
+| `batch2/slash_recovery_spec.rs` | 4 | Pass |
+| `batch2/finalized_eviction_spec.rs` | 2 | Pass. The pool check uses `contains_sig`. |
+| `batch2/finalized_win_pending_rejection_spec.rs` | 3 | Pass |
+| `batch2/orphan_reinclusion_spec.rs` | 2 | Pass |
+| `batch2/floor_erasure_reproduction_spec.rs` | 1 | Pass |
+| `batch2/verdict_convergence_spec.rs` | 6 | Pass. The sibling S and the neutral branch N1 are empty (bug 11004). |
+| `batch2/map_cell_convergence_spec.rs` | 4 | Pass. The soak test stays ignored, as on dev. |
+| `batch2/populate_cache_shadow_spec.rs` | 1 | Pass |
+| `sync/recovery_purge_race_spec.rs` | 1 | Pass |
+| `api/offered_funded_api_test.rs` | 21 | Pass, with `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` re-enabled |
+
+These tests stay on legacy deploys:
+
+| Tests | Reason |
+| --- | --- |
+| `recovery_repeat_deploy_misfire_spec.rs` (3), `recovery_no_double_apply.rs` (1) | They build blocks by hand and execute nothing. `repeat_deploy` and `canonical_won_sigs` read `identity_bytes()` for both formats. |
+| `dedup_orphan_recovery_spec.rs` (1), `multi_validator_recovery_spec.rs` (1) | The orphan half needs two user deploys in one block (gap G2). |
+| Seven recovery tests of `block_creator_spec.rs` | They call the legacy public `prepare_user_deploys`. The offered stage has no public entry point, and the migrated tests above cover it end to end. |
+| Four recovery tests of `pending_deploys_test.rs` | The pending-deploys API returns legacy-typed deploys. An offered listing is an API change (G7 or G5). |
+
+**Residuals.**
+
+- In-scope recovery. The offered selection skips a pending envelope whose
+  identity is in scope, so the rejected-in-scope pool exemption does not carry
+  offers. DR-69 names in-scope recovery. No migrated test needs it.
+- The pending-deploys API lists legacy deploys only.
+- The scenario rules above end when gap G3 and bug 11004 are closed.
+
+**Verification.**
+
+- The three family runs are in `target/verification/g6/`
+  (`c4-family-run1.log` to `c4-family-run3.log`). All 55 tests pass: the 34
+  migrated recovery tests and the 21 offered API tests.
+- Two unit tests check the identity lookups of the pending store and of the
+  buffer.
+- The traffic phase of
+  `three_validator_same_payer_merge_keeps_purses_single_valued_and_live` now
+  checks that every validator includes its own traffic offer. Negative
+  control: with the offered branch of the fallback disabled, the test fails
+  with "validator 0 must include its own traffic deploy". With the branch
+  restored, it passes.
+- Committed caps, `-p casper -p block-storage`: 1914 of 1920 tests pass. The 6
+  failures are the known ones of DR-115: two registry tests and two gateway
+  tests that need the Phase D caps, and the two legacy-charge tests of I6.
+- Provisional caps, the same packages: 1916 of 1920 tests pass. The 4 failures
+  are the known ones: the gateway test (gap G3), the 64-source test, and the
+  two legacy-charge tests of I6.
+
+**Cross-refs.** DR-55, DR-69, DR-72, DR-101, DR-115. Bugs 10986 and 11004. Leaf
+`ofp-3-recovery-offered-format`.
+
+## DR-117 — Each COMM authority region is validated once (the canonical authority witness)
+
+**Status.** Implemented 2026-10-09 for Phase D item D-F1 of epic 8946
+(`ofp-2-cap-d-f1-canonical-authority`). The user chose the core scope: "Core
+only (Recommended)".
+
+**Context.**
+
+- A COMM charges its authority, which is the set of regions of its
+  participants. Before this record, a granted COMM canonicalized that
+  authority five times, in play and in native replay:
+  - V1: the merge of the participants (`merge_authorities_metered`), after a
+    copy of every region.
+  - V2 and V3: the instantiation of persistent regions
+    (`instantiate_persistent_regions_metered`), before and after the new
+    identities.
+  - V4: the native observation in replay (`into_native_metered`) or the
+    producer's reservation in play (`reserve_authority_identity`).
+  - V5: the demand computation (`authority_demand_metered`).
+- Each canonicalization checks each identity, validates each signature, sorts
+  the regions by identity and rejects two different signatures with one
+  identity. Its output is canonical. V2, V4 and V5 therefore returned their
+  input, and V3 only re-sorted by the new identities with the same conflict
+  check.
+- This work is host work, not phlo. The phlo charge of a COMM reads only the
+  matched data and the channel count, and the authority decides only who
+  pays. Receipts and cost traces do not depend on the number of
+  canonicalizations.
+- The D-E5 probe at HEAD 55431d1c1 measured the gateway funding block. It put
+  the repeated work at about 14 to 15 MB of VerificationBytes per validator
+  and 20 to 22 MB in producer execution.
+
+**Decision.**
+
+1. `authority.rs` defines `CanonicalAuthority`, a witness with a private
+   field. Only canonicalization and the rekey of a witness construct it. It
+   has no `Default`, no deserialization and no public constructor.
+2. The merge reads the regions in place (`merge_canonical_metered`). It
+   reserves one unit for each participant, as before, and canonicalizes the
+   borrowed regions in participant order. The copy was only the input of the
+   canonicalization, and nothing read it afterwards. The copying body stays,
+   unchanged, as the test oracle `merge_authorities_metered_legacy`.
+3. The instantiation rekeys the witness (`rekey_metered`). It keeps the
+   identity order and the conflict check of a repeated new identity. It does
+   not validate the signatures again, and it moves the identities that do not
+   change instead of copying them.
+4. A COMM observation carries the witness (`MeasuredCommObservation`). The
+   native observation moves it, with no canonicalization and no copy. The
+   empty-authority check stays, with its error.
+5. The producer reserves from the witness (`reserve_comm_authority_canonical`),
+   and the demand reads it in place (`authority_demand_from_canonical_metered`).
+   The legacy entry `reserve_comm_authority_measured` canonicalizes its
+   `&CostAuthority` once and then uses the same core.
+6. Three validations stay on purpose:
+   - the validation of persistent participants before the merge, because it
+     decides the error order
+   - the DR-101 resolution of residue seals
+   - the boundary validation of introductions in
+     `register_introduction_authority`.
+7. Two parts of the planned item are not adopted (user decision). The replay
+   demand keeps its canonicalization, because a witness there needs a new
+   carrier through the replay observation path for about 2 MB per validator.
+   The introduction registry keeps owned authorities. A shared registry
+   touches about ten sites for about 1 MB in producer execution and 2 MB per
+   validator.
+
+Validations of one region of a granted COMM:
+
+| Path | Before | After |
+| --- | --- | --- |
+| Play (producer execution) | 5 | 1 |
+| Native replay, granted COMM | 5 | 2 (the merge and the replay demand) |
+| Native replay, denied COMM | 4 | 1 |
+| A persistent participant | one more | one more |
+| A resolved residue seal (DR-101) | one more | one more |
+
+**Why the results are unchanged.**
+
+- The merge passes the same regions, in the same participant order, to the
+  same canonicalization. The value and the first error are the same.
+- A witness has 32-byte identities in strictly ascending order and canonical
+  signatures, and the validation of a canonical signature returns it
+  unchanged. A new canonicalization of a witness therefore returns it, and
+  the only error it can give is a host-work rejection.
+- The rekey visits the witness in identity order, as V3 did after V2, and it
+  keeps the conflict check. Its output is the output of V3.
+- The demand reads the lanes of the same signatures in the same identity
+  order.
+- Each stage reserves no more than before, and play and replay run the same
+  code. A COMM that fitted its host-work budget before still fits, with the
+  same result.
+
+**Verification.**
+
+- Rocq `CanonicalAuthorityWitness.v` uses the standard library only and no
+  axiom. It proves eight theorems:
+  - `canonical_idempotent_on_outputs`: a canonical output is a witness, and a
+    new canonicalization returns it.
+  - `canonical_regions_eq_canonical_of_merged_copy`: the merge in place
+    equals the merge of a copy.
+  - `rekey_of_canonical_eq_canonical_of_rekey`: the rekey of a witness equals
+    the canonicalization of the rekeyed regions.
+  - `witness_pipeline_eq_legacy_pipeline`: the witness pipeline returns the
+    value and the first error of the five-canonicalization pipeline.
+  - `witness_charge_le_legacy_charge`: its charge is no greater.
+  - Three negative controls:
+    - five validations against one
+    - a rekey without the conflict check, which accepts a collision
+    - a merge in reverse participant order, which reports another first error.
+- The proof gate passes in cost-accounting mode: 276 modules and 3127 closed
+  assumption queries.
+- Rust tests in `authority.rs`:
+  - `canonical_witness_pipeline_matches_legacy_pipeline` (256 cases) uses
+    valid, invalid and conflicting authorities. It checks three properties:
+    - The values and the errors are equal.
+    - The charge is no greater in any dimension.
+    - Under a limit that does not reject the legacy pipeline for host work,
+      the results are equal.
+  - `merge_from_borrowed_regions_copies_no_intermediate_region` checks with
+    the counting allocator that the merge in place allocates exactly what the
+    canonicalization allocates, and less than the copying merge.
+  - `legacy_pipeline_recanonicalized_each_stage` (negative control) counts the
+    signature inspections: five runs before, one run after.
+  - `rekey_keeps_the_conflict_check_of_new_identities` forces a collision of
+    new identities.
+  - `block_mode_authority_sites_accept_exact_credit` covers the merge in
+    place, the rekey and the demand of a witness.
+- The exact-usage A/B on the gateway funding block ran three times for each
+  arm (`target/verification/d-f1/probe-A1` to `probe-B3`). Arm A is HEAD
+  `55431d1c1`, and arm B adds this record. The table gives the mean of the
+  three runs:
+
+  | Role | Dimension | Arm A | Arm B | Change |
+  | --- | --- | --- | --- | --- |
+  | Validator replay | VerificationBytes | 593.96 MB | 579.81 MB | −14.2 MB |
+  | Validator replay | SearchStateBytes | 120.16 MB | 112.57 MB | −7.6 MB |
+  | Validator replay | VerificationOperations | 60.93 M | 58.44 M | −2.5 M |
+  | Producer execution | VerificationBytes | 151.16 MB | 134.73 MB | −16.4 MB |
+  | Producer execution | SearchStateBytes | 64.14 MB | 52.98 MB | −11.2 MB |
+  | Producer execution | VerificationOperations | 44.67 M | 40.05 M | −4.6 M |
+
+  No dimension rises for any role. In every run all validator replays agree
+  exactly, and the producer self-replay equals the validator replay. The test
+  outcome is unchanged: the known gateway failure of gap G3.
+- Suites: rholang and rspace++ pass 4119 of 4119. On casper, block-storage and
+  the node HTTP handlers, the provisional caps pass 1940 of 1944 and the
+  committed caps pass 1938 of 1944. All failures are the known ones of
+  DR-116.
+
+**Side findings, not in scope.**
+
+- DR-101 recomputes the payer region of each seal (`residue.rs`), about 8 MB
+  per validator and 14 MB in producer execution.
+- `region_demands` runs an unmetered signature canonicalization.
+- `prepare_authority_stack_transfer` canonicalizes twice.
+
+**Cross-refs.** DR-94, DR-101, DR-110, DR-112. Phase D (`ofp-2-cap-phase-d`).
+
+## DR-118 — An introduction reuses the reducer's measurement of its value
+
+**Status.** Implemented 2026-10-09 for Phase D item D-F2 of epic 8946
+(`ofp-2-cap-d-f2-introduction-measurement`). The user approved the design
+changes of the implementation map ("Approve all four (Recommended)") and one
+commit for D-F2a and D-F2b ("One commit (Recommended)").
+
+**Context.**
+
+- An introduction charges the prost length of its channels, its patterns and
+  its value, plus fixed event bytes (`produce_introduction_charge`,
+  `consume_introduction_charge`). This length feeds the cost trace and the
+  receipts.
+- The observer walked the whole value to compute that length: the producer
+  observer in play, and the replay observer in native replay. Each walk was a
+  block inspection that prepaid the prost length computation.
+- The reducer had already computed the lengths of the datum's terms, of the
+  body and of the guard. The phlo charge of the substitution measures each
+  substituted term (`substitute_and_charge`), and the reducer then dropped the
+  length.
+- The D-F1 probes measured the walks that D-F2 can remove on the gateway
+  funding block. They cost 33.2 ± 3.4 MB of VerificationBytes per validator
+  and 36.0 ± 3.5 MB in producer execution.
+
+**Decision.**
+
+1. The substitution returns its measured length (`substitute_and_measure`,
+   `substitute_no_sort_and_measure`). The charging forms delegate to them, so
+   the phlo charge does not change.
+2. The reducer composes the measurement:
+   - `eval_send` frames the length of each substituted datum term.
+   - `eval_receive` composes the length of the continuation's `ParWithRandom`
+     from the substituted body's length, and it measures the guard.
+   - The composition uses the helpers of prost. It follows the prost rule for
+     default fields: an empty bytes field and an absent optional message add
+     no bytes.
+3. The introduction registry stores an `IntroductionRecord`: the authority and
+   an optional `IntroductionMeasurement` (`Produce { pars }` or
+   `Consume { body, guard }`).
+   - A repeated registration of one identity must have the same authority.
+     When both registrations carry a measurement, the measurements must be
+     equal. Otherwise the registration fails with `EventIdentityConflict`.
+   - In every other case the first record stays. A later `None` keeps a
+     measurement, and a later measurement keeps a `None`.
+4. The observers read the record.
+   - With a measurement, they walk only the unmeasured parts. For a datum
+     these are the channel, the seal and the stack. For a continuation they
+     are the channels, the patterns and the authority.
+   - They also reserve the inline field reads: the length of the random
+     state, or the body variant and the guard presence.
+   - Without a measurement, or when the continuation does not have the
+     measured shape, they walk the whole value as before.
+5. Three kinds of site pass no measurement, because the reducer does not build
+   their value from substituted terms. They are the peek re-produce, the
+   cost-stack datum, and every value that reaches RSpace without the reducer.
+6. The user approved four changes to the planned design:
+   - The record carries component lengths, not a full `ByteCharge`. A full
+     charge needs the authority lengths, and the reducer does not compute
+     them.
+   - A send to a `bundle+` name keeps the measured data. Only its channel is
+     walked, as every channel is.
+   - Channels and patterns stay walked. Measuring them would save only 2 to
+     3 MB more, and it would add code.
+   - No new TLA+ model. Registry updates of different identities commute
+     (proved in Rocq), and `IntroductionAuthorityRegistry.tla` already models
+     the race of a lookup before its registration.
+
+**Why the results are unchanged.**
+
+- Each measured length is the prost length of the exact value that the
+  reducer moves into the datum or the continuation. The composition follows
+  the framing of prost, so the composed length equals the walked length.
+- The event identity hashes a value with `locally_free` written as empty
+  (`models/build.rs:93-99`), but prost counts `locally_free`. So the identity
+  does not bind the measured length.
+- Reuse is still sound, because a repeated introduction of one identity in a
+  deployment is a clone of the same value. A persistent re-introduction
+  clones its data or its body, and a peek re-produce restores the stored
+  clone.
+- The conflict check rejects two different measurements of one identity. Test
+  builds also compare every premeasured charge with the walked charge.
+- The reducer registers an introduction before it submits the operation, so
+  the observer of that operation finds the record. An unregistered
+  introduction has no measurement, and its observer walks.
+- Play and replay run the same code. A deployment that fitted its host-work
+  budget before still fits, with the same values, errors, receipts and cost
+  trace.
+
+**Verification.**
+
+- Rocq `IntroductionMeasurementReuse.v` uses the standard library only and no
+  axiom. It proves 18 theorems:
+  - Framing: `premeasured_datum_eq_walked`,
+    `premeasured_continuation_eq_walked`,
+    `premeasured_continuation_none_iff_mismatch`,
+    `premeasured_observation_eq_walked` and `varint_len_boundaries`.
+  - Read coverage: `walked_trace_covered`, `premeasured_trace_covered`,
+    `fallback_trace_covered`, `premeasured_charge_independent_of_body` and
+    `premeasured_reserves_le_walked`.
+  - Registry: `registry_conflict_rejects_in_both_orders`,
+    `registry_equal_measurements_accepted`,
+    `registry_first_measurement_persists`,
+    `registry_unmeasured_entry_stays_unmeasured` and
+    `registry_updates_on_distinct_identities_commute`.
+  - Three negative controls: `naive_framing_differs_from_prost`,
+    `walked_charge_grows_with_premeasured_body` and
+    `unchecked_registry_accepts_two_lengths`.
+- The proof gate passes in cost-accounting mode: 277 modules and 3145 closed
+  assumption queries.
+- Rust tests:
+  - `byte_accounting.rs`:
+    - property tests of the produce, body and consume measurements against
+      prost (256 cases each, with the empty random state in a fixed share);
+    - the framing at every varint boundary and the overflow rejection;
+    - the negative control `naive_framing_differs_from_prost_on_default_fields`.
+  - `substitute.rs`: `measure_wrappers_return_the_charged_prost_length`.
+  - `accounting/mod.rs`: `conflicting_measurement_registration_rejects_in_both_orders`
+    and `registrations_of_distinct_identities_commute`.
+  - Observation tests: equal observations, a charge independent of the
+    measured sizes, the exact credit, the inspected parts and the fallback
+    walk. The negative control is
+    `walked_introduction_charge_grew_with_the_premeasured_body`.
+  - `premeasured_introductions_replay_for_every_measured_shape` replays a
+    term with several data, a guard, a join, a peek, a persistent send, a
+    persistent receive and a `bundle+` send.
+- Mutation controls, each run once and then restored:
+  - Without the empty-field rule, 7 tests fail.
+  - Without the stack inspection, the test of the inspected parts fails.
+  - With conflicting measurements accepted, the registry test fails.
+- The exact-usage A/B on the gateway funding block ran three times for each
+  arm. Arm A is HEAD `03bdaaffc` (the D-F1 arm B runs,
+  `target/verification/d-f1/probe-B1` to `probe-B3`). Arm B adds this record
+  (`target/verification/d-f2/probe-B1` to `probe-B3`). The table gives the
+  mean of the three runs:
+
+  | Role | Dimension | Arm A | Arm B | Change |
+  | --- | --- | --- | --- | --- |
+  | Validator replay | VerificationBytes | 579.81 MB | 552.23 MB | −27.6 MB |
+  | Validator replay | SearchStateBytes | 112.57 MB | 111.64 MB | −0.9 MB |
+  | Validator replay | VerificationOperations | 58.44 M | 56.59 M | −1.9 M |
+  | Producer execution | VerificationBytes | 134.73 MB | 104.59 MB | −30.1 MB |
+  | Producer execution | SearchStateBytes | 52.98 MB | 51.91 MB | −1.1 MB |
+  | Producer execution | VerificationOperations | 40.05 M | 38.08 M | −2.0 M |
+
+  No dimension rises for any role. In every run all validator replays agree
+  exactly, and the producer self-replay equals the validator replay. The test
+  outcome is unchanged: the known gateway failure of gap G3. The implementation
+  map predicted about −29 MB and −30.5 MB, within its error of ±3.4 MB.
+- Suites: rholang and rspace++ pass 4135 of 4135, with the 16 new tests. On
+  casper, block-storage and the node HTTP handlers, the provisional caps pass
+  1940 of 1944 and the committed caps pass 1938 of 1944. All failures are the
+  known ones of DR-116 and DR-117.
+
+**Side findings, not in scope.**
+
+- In native replay the consume source preparation walks each continuation
+  twice (`session/operations.rs:67` and `:71`). That costs about 59 MB per
+  validator.
+- The COMM datum inspection (`observation_construction.rs:377`, about 4.2 MB
+  per role) walks data that the produce introduction already measured.
+
+**Cross-refs.** DR-76, DR-94, DR-110, DR-117. Phase D (`ofp-2-cap-phase-d`).
+
+## DR-119 — Cost cursors take a creation lock per bucket, and an existing cursor takes no lock (bug 11004)
+
+**Status.** Implemented 2026-10-10 for bug 11004 of epic 8946, as design v4
+of `G9 and bug 11004` specifies (commit C2). The user approved it on
+2026-10-10 together with DR-120: "Go with option 1 [build the merge rule, then
+the lock fix, with the Casper edits listed] so long as these changes are
+necessary, directly related to cost-accounting and not just nice-to-haves, and
+don't change much of Casper."
+
+**Context.**
+
+- Each settlement of an offered deploy moves two cost cursors of its cohort:
+  the resource cursor and the fee cursor (`applyCostWithTwoCursors` in
+  `SystemVault.rho`). `ensureCostCursor` creates a cursor at its first use.
+- Before this record, `ensureCostCursor` consumed one global lock datum on
+  every call, also for a cursor that existed (`SystemVault.rho:52,56,145-167`
+  at commit b496df9d8). So every two cursor-bearing settlements consumed one
+  base datum.
+- The race check of the merge (`merging_logic.rs:290-331`) then made every two
+  sibling offered blocks conflict, and the merge kept only one of them.
+- P1 says that the results of different signatures draw from disjoint pools
+  and cannot conflict (P1:356-359). P1 also says that throughput grows with
+  the number of non-conflicting token supplies (P1:336-342).
+- The epic excludes any global funding lock. E2E-037 requires that
+  independent exact effects survive a merge.
+- The global lock had a purpose. The cursor map is a TreeHashMap of depth 2
+  (`SystemVault.rho:59`). One leaf of the map holds the keys whose keccak256
+  hashes share their first two bytes (`Registry.rho:85-91,130-139`).
+- Two sibling first uses of different scopes in one new leaf each produce
+  their own leaf datum. No merge check sees the duplicate. The merged leaf
+  then holds two maps, and a later lookup can miss an existing cursor. So the
+  creations in one leaf must stay serialized.
+- `FeeCursorBranchMerge.tla` at HEAD did not model the lock. Its invariant
+  `IndependentScopesSurvive` held in the model and failed in the code.
+
+**Decision.**
+
+1. **No lock for an existing cursor.** `ensureCostCursor` first looks the
+   scope up in the cursor map. The TreeHashMap lookup only peeks at the map
+   nodes (`nodeGet`, `Registry.rho:79-83`). The race check counts no peeked datum,
+   because a peek goes to `produces_peeked` and not to `produces_consumed`
+   (`event_log_index.rs`). A settlement on an existing cursor therefore
+   consumes only the revision cell and the position cell of its own scope.
+2. **One creation lock per bucket.** The bucket of a scope is the first byte
+   of keccak256(`scope.toByteArray()`), the hash that the TreeHashMap uses.
+   SystemVault seeds 256 lock datums `@(*costCursorBucketLock, b)`, one for
+   each $`b \in \{0, \dots, 255\}`$, when it starts (`SystemVault.rho:66-72`).
+   A leaf is the first two bytes of the hash, so each leaf lies in one bucket.
+3. **First use.** When the lookup finds no cursor, `ensureCostCursor` takes
+   the lock of the scope's bucket with a plain receive. Under the lock it looks
+   the scope up again, because the first lookup can be stale. It creates the
+   map entry and the two cells only when the second lookup also finds no
+   cursor. Then it releases the lock (`SystemVault.rho:189-229`).
+4. **One ensure after the other.** `applyCostWithTwoCursors` ensures its
+   resource scope first and its fee scope second (`SystemVault.rho:347-350`).
+   A creation makes a new leaf with the value 0 before it writes the entry. A
+   lookup that reads that 0 fails on `0.get` (`Registry.rho:113`). In
+   sequence, no lookup of a settlement reads a leaf that the same settlement
+   still creates.
+5. **The old lines stay as comments.** The two new names follow `initVault`,
+   so every earlier name of the `new` keeps its value. The global lock name
+   stays declared for the same reason. Each replaced line stays in the file as
+   a comment with its reason.
+
+**The conflict rule.** Two settlements that start from one state conflict
+exactly when one of these conditions holds:
+
+- They share a cursor scope. Two settlements on one existing cursor consume
+  its revision cell. Two first uses of one scope consume the lock of its
+  bucket.
+- A first use on each side falls in one bucket. The two settlements then
+  consume one lock datum.
+
+A lookup of an existing cursor conflicts with nothing. This holds also when
+the other settlement creates a cursor in the same leaf. The interior nodes of
+the TreeHashMap are bitmaps that the merge combines with `BitmaskOr`
+(`docs/casper/README.md`, section "Mergeable Channels"). So two creations in
+different buckets also compose on the interior nodes that they share.
+
+**Why the rule is sound.** Each law below is a theorem of
+`CostCursorBuckets.v`, and the TLA+ models check it on bounded scenarios.
+
+- B1: one leaf lies in one bucket (`same_leaf_same_bucket`). So two creations
+  in one leaf take one lock, and a merge keeps at most one of them
+  (`kept_creations_distinct_leaves`). The merged map never holds two datums
+  for one leaf.
+- L6: settlements on the existing cursors of distinct scopes claim disjoint
+  datums (`existing_scopes_disjoint_claims`), so they survive together
+  (`independent_existing_scopes_survive`). Two settlements on one existing
+  cursor conflict (`same_scope_existing_settlements_conflict`).
+- The check under the lock is necessary. A creation that trusts a stale
+  lookup duplicates the cells of a scope that another worker created in
+  between. `FeeCursorCellsCreateOnStaleReadUnsafe.cfg` shows this
+  counterexample.
+
+**Shared buckets.** Two cohorts with random scopes share a bucket with a
+probability of about $`4/256`$, because each cohort has two scopes. A cohort
+creates its two cursors once, at its first settlement. A shared bucket
+therefore needs two concurrent first settlements. It costs one deferral of one
+of them, and the owner re-proposes the deferred deploy (DR-120).
+
+**Casper footprint.** C2 changes one Casper source file,
+`casper/src/main/resources/SystemVault.rho` (+88 / −18 lines, with the old
+lines kept as comments). It changes no other Casper source file. The test
+changes are in cost-accounting test files, among them the `costacc` unit tests
+of `policy_snapshot`. The two restorations of dev lines below are the only
+exception.
+
+**Test migration.** Several offered tests took their conflicts from the
+global lock. They now take them from a shared cohort cursor:
+
+- `an_owner_accepts_a_merge_that_rejects_its_own_offer`: both siblings have
+  one signer.
+- `a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped`
+  and the users of `rejected_failed_offer_merge`: the sibling pays for the
+  same cohort. The expected balance includes the charge of the sibling.
+- `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` now
+  asserts that both siblings survive. Its writers are DEFAULT_SEC and a
+  searched key whose buckets differ from those of DEFAULT_SEC.
+- `verdict_convergence_spec.rs` and `exactly_once_spec.rs` get dev's lines
+  back: the S marker and the N1 spacer. The restore precondition holds. The
+  four scopes of the DEFAULT_SEC and DEFAULT_SEC2 cohorts fall in four
+  distinct buckets (`default_cohort_cursor_scopes_fall_in_distinct_buckets`).
+
+Two facts shaped the API tests:
+
+- DEFAULT_SEC2 is the private key of the Registry's standard deploy
+  (`REGISTRY_PK`). The API refuses an offer that a system key signs, so no API
+  test can sign with DEFAULT_SEC2. The batch2 specs add their deploys without
+  the API, so they can.
+- The extra genesis vault keys are random in each process. A test that needs a
+  bucket relation therefore searches a deterministic key chain and gives the
+  found key its own genesis vault. A funding deploy is no alternative. It must
+  create the vault first, because a transfer to a missing vault leaves its
+  deposit orphaned. Under the committed caps, that deploy exceeded the
+  host-work budget for verification operations.
+
+**E2E-037.** The E2E-037 row claims that independent exact effects survive a
+merge. Before this record, the global lock broke that claim for every two
+cursor-bearing settlements. Now the claim holds for settlements on different
+scopes, except for two first uses in one bucket. The row cites this record.
+
+**Verification.**
+
+- Rocq, axiom-free: `CostCursorBuckets.v` proves B1, L6 and the conflict on a
+  shared leaf. Four proved negative controls cover the global lock, a missing
+  creation lock (twice) and a bucket from the raw scope bytes. All ten
+  theorems are closed under the global context. The proof gate passes in
+  cost-accounting mode: 285 modules and 3245 closed assumption
+  queries.
+- TLA+, through `scripts/lib/tlc-run.sh`:
+  - `FeeCursorBranchMerge` in bucket mode checks CursorCellUnique,
+    WholeEffectAccounting, IndependentScopesSurviveRefined, SameScopeKeepsOne,
+    ValidatorAgreement, NoPhantomEffects and MapLeafUnique
+    (18,432 distinct states).
+  - `FeeCursorBranchMergeGlobalLockUnsafe` violates
+    IndependentScopesSurviveRefined. `FeeCursorBranchMergeNoCreationLockUnsafe`
+    and `FeeCursorBranchMergeBucketCoarseningUnsafe` violate MapLeafUnique.
+    The Empty, Money and Order controls still violate their invariants.
+  - `FeeCursorCells` with the lock-free lookup passes (3,568 distinct
+    states). `FeeCursorCellsCreateOnStaleReadUnsafe` violates
+    ExactlyOnePairPerInitializedScope, and the four earlier controls still
+    violate their invariants.
+  - The configurations are registered in
+    `scripts/check-cost-accounted-rho-tla-invariants.sh` and
+    `scripts/check-tlc-source-binding.sh`.
+- Rust:
+  - `settlement_conflict_iff_same_scope_or_same_bucket_first_use` plays two
+    settlements from one state in 256 generated cases. Dev's conflict check
+    on their event logs agrees with the conflict rule in every case. The cases
+    cover seven kinds, among them a first use in the leaf of an existing
+    cursor. The tally of one run, as no conflict and conflict per kind, is
+    `[[42, 0], [29, 0], [0, 40], [0, 35], [0, 27], [41, 1], [41, 0]]`.
+  - Against the SystemVault of commit b496df9d8, the same property test
+    fails. Its shrunk counterexample is a first use beside an existing cursor
+    of the other side, and the two settlements conflict on the global lock. So
+    the test detects the global lock.
+  - `offered_funded_api_test.rs`: `first_use_cursors_in_distinct_buckets_compose`,
+    `first_use_cursors_in_one_bucket_keep_one`,
+    `three_signers_compose_on_the_v6_fast_path` and
+    `a_failed_offer_charge_survives_beside_another_signer`. The last two are
+    the two API tests that DR-120 deferred to this record. The three-signer
+    merge takes the v6 fast path.
+- Suites:
+  - On casper, block-storage and the node HTTP handlers, the provisional caps
+    pass 1984 of 1988, with the same four known failures as for DR-120.
+  - The committed caps pass 1981 of 1988. Six failures are the known ones of
+    DR-116 and DR-117. The seventh,
+    `initializing_spec::make_transition_to_running_once_approved_block_received`,
+    counted seven transport requests instead of five under load. It passed in
+    the three other full runs of this record and in three isolated runs.
+  - The 13 offered-genesis specs, all 33 offered API tests, the 33 v6 merge
+    tests and the unchanged dev suites pass: `multi_parent_casper_merge_spec`,
+    `compute_parents_post_state_regression_spec`, `finalized_protection_spec`,
+    `registry_key_merge` and `floor_fork_reproduction_spec`.
+  - `precharge_report_shape_spec` passes, so the transfer channel that
+    `transfer_unforgeable` derives from SystemVault keeps its value.
+  - C2 changes no rholang or rspace++ code.
+  - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+    warnings`, the workspace doctests and the documentation syntax gate pass.
+
+**Side finding, not in scope.** When the merge base falls back to the floor,
+the settled-sig probe still walks the lineage of the main parent
+(`interpreter_util.rs:1871-1882`). The dedup step then drops the main parent's
+own chain as settled, although the floor's state does not hold it. The deploy
+is neither applied nor rejected. A three-sibling merge in which the floor is
+another sibling shows this. The code belongs to dev's floor fallback, and this
+record does not change it.
+
+**Cross-refs.** DR-15, DR-101, DR-115, DR-116, DR-120, E2E-037, P1. Bug 11004.
+
+## DR-120 — The interim v6 merge rule: compose a conflict-free scope, else one ordered pass (gap G9)
+
+**Status.** Implemented 2026-10-10 for gap G9 of epic 8946 (leaf
+`ofp-g9-merge-elimination`), as design v4 of `G9 and bug 11004` specifies. The
+user approved it on 2026-10-10: "Go with option 1 [build the merge rule, then
+the lock fix, with the Casper edits listed] so long as these changes are
+necessary, directly related to cost-accounting and not just nice-to-haves, and
+don't change much of Casper." Two more user decisions of 2026-10-10 apply:
+
+- The ordered pass stays as design v4 specifies it.
+- The deploy formats select the merge rule. An earlier draft read a shard flag
+  (`offered_funded_v6_active`) that three more Casper files had to carry. The
+  user dropped the flag by Occam's razor: the formats already carry the
+  information, so the flag added Casper edits and no information.
+
+**Context.**
+
+- P1 says that the results of different signatures are "composed without
+  merge analysis". Only shared data channels take "a natural serialization
+  order" (`cost-accounted-rho.tex`, P1:344-366). P1 calls merge analysis
+  "expensive, complex, and a persistent source of bugs" (P1:300-307).
+- Greg's expectation is that merge logic causes most performance problems and
+  should mostly go away.
+- Dev's merger runs the full analysis on every multi-parent merge:
+  - the settled probes
+  - the settled and base partitions
+  - the branches and the conflict map
+  - an exhaustive search over rejection options (`conflict_set_merger.rs`
+    `resolve_conflicts`).
+- DR-15 called the merge path fully realized. But no conflict-free scope
+  skipped the analysis (see the DR-15 amendment).
+- DR-119 needs a bounded resolver inside execute-then-merge.
+
+**Decision.**
+
+1. **The rule.** `v6_merge::rule_for` returns `OfferedV6` when a parent or a
+   scope block that is not the genesis block holds an offered user deploy. It
+   returns `Dev` otherwise. A `Dev` merge is dev's merger, byte for byte. The
+   dispatch reads the parents first, from memory. It reads the scope blocks
+   only when no parent decides. It reads them in sorted order, so a block
+   that the store lacks fails the same way on every node.
+   - Formats do not mix on a valid chain. v6 validation rejects a block with
+     a legacy user deploy (`validation_dispatcher.rs:76-82,124-130`), and
+     legacy replay refuses an offered term (`offered_block.rs:779-783`).
+     So the rule needs no fail-closed format check.
+   - The genesis block has no parents and stores its deploys in the legacy
+     format on every shard (`genesis.rs:280-284`), so it is exempt.
+   - On a legacy shard, `rule_for` reads each scope block from the block
+     store once. This is the cost of the rule on a legacy merge.
+2. **The fast path** (`v6_merge/fast.rs`). It composes the scope without merge
+   analysis when the predicate P holds. P is the conjunction of F1 to F13:
+
+   | Check | Condition |
+   |---|---|
+   | F1 | The base is the main parent, and its state holds the floor |
+   | F2 | The actual blocks: the scope blocks off the base's main chain |
+   | F3 (P2) | Every user deploy carries a fee-cursor transition (`fee_next_cursor`). A legacy deploy is an error |
+   | F4 | The raw chains of the actual blocks, stamped with their prior losses (`stamp_prior_rejections`), as the slow path stamps them |
+   | F5 | No user deploy id repeats in the raw list |
+   | F6 (P3) | No chain's validity window is closed at the floor |
+   | F7 (P4) | No chain conflicts with the base's own content |
+   | F8 | The branches |
+   | F9 | Every branch passes the pre-check (`ledger::branch_valid`) |
+   | F10 (P5') | No two chains conflict, with chains as units |
+   | F11 (P6) | Dev's availability walk rejects no chain |
+   | F12 (P7) | No branch mixes folded and plain changes with another, and the overfill dry run flags no channel |
+   | F13 (P8) | The full set's sign splits fit, one merge type per channel, and every contributor channel ends in $`[0, \mathrm{MAX}]`$ |
+   | F14 | Compose every chain |
+
+3. **The ordered pass** (`v6_merge/ordered.rs`). It replaces dev's
+   rejection-option search at its single call site (`dag_merger.rs`
+   `merge_with_rule`, the `OfferedV6` arm). Dev's rows before and after the
+   search stay as they are.
+   - S1 rejects the late chains and the chains that depend on them.
+   - S2 groups the other chains into branches.
+   - S3 rejects each branch that fails the pre-check. It runs dev's
+     availability walk on each other branch, and the survivors form one
+     candidate.
+   - S4 builds dev's conflict map over the candidates. The map includes dev's
+     same-user-deploy-id pass (`dag_merger.rs:1732-1760`).
+   - S5 walks the candidates once, in the order K. It keeps a candidate only
+     when all three monotone checks pass:
+     - the candidate conflicts with no kept candidate
+     - it mixes no folded and plain change with them
+     - every sign split stays in range, with one merge type per channel
+       (`PurseLedger::try_add`).
+   - S6 repeats four steps until none of them changes the kept set:
+     - lineage closure, per chain
+     - the conflict re-check after a candidate shrinks
+     - the overfill dry run
+     - the final balances.
+
+     A step that fails drops one whole candidate: the last one by K that can
+     cure the failure. The step prefers unpinned candidates.
+   - S7 returns the kept candidates and the rejected chains. Dev's later
+     lineage step then finds nothing, because S6 closed lineage over the same
+     rejected set and ancestry is transitive.
+   - Each rejected chain keeps the witness of the step that rejected it. The
+     pass logs the witnesses at debug level.
+4. **The order K** (`v6_merge/order.rs`). K compares two candidates by these
+   keys, in this order:
+   - not pinned: a settled candidate comes first (#341)
+   - the highest prior-loss count, descending (#294)
+   - the sum of the prior-loss counts, descending
+   - the lowest source height
+   - dev's `compare_branches`.
+
+   K is a strict total order on candidate sets.
+5. **The ledger** (`v6_merge/ledger.rs`). For each IntegerAdd channel, the
+   ledger keeps the sum of the positive diffs and the sum of the negative
+   diffs in `i128`. Assume that the positive sum is at most `i64::MAX` and
+   the negative sum is at least `i64::MIN`. Then every partial sum lies
+   between the two sums, in every order. So no fold overflows.
+   - The pre-check bounds the user parts and the system parts separately, and
+     then together. This covers the folds of `compute_branch_derived` and of
+     the availability walk.
+   - Only a contributor, a chain whose mergeable map holds the channel with
+     any diff, enters the ledger. A negative failure drops the last negative
+     contributor, or else the last contributor of any sign. The second case
+     covers a negative base value (HIGH-1).
+6. **Claims** (`v6_merge/claims.rs`). The number override of compose writes
+   the base value plus the folded diffs, so it loses a plain change on the
+   same channel (`rholang_merging_logic.rs:116-176`). A candidate that mixes
+   folded and plain changes with the kept set is therefore rejected.
+7. **Compose and the dry run** (`v6_merge/compose.rs`). The dry run folds the
+   kept chains' changes with `StateChange::combine` in compose's canonical
+   order. It then applies the guard of compose to each channel. So it flags
+   exactly the channels on which compose would fail.
+8. **Copy, do not move.** `compose.rs` copies these parts of dev's merge:
+   - the guarded channel action (`dag_merger.rs:1539-1576`)
+   - the multi-writer set (`:2007-2023`)
+   - the apply closure (`:1595-1601`)
+   - the reader (`:1447-1451`) and the base readers (`:1793-1800`).
+
+   Each copy cites its dev lines, and dev keeps its own code. The test
+   `fast_path_equals_dev_merge_when_dev_rejects_nothing` calls dev's `merge`
+   and fails if the originals drift.
+
+**Same-signer siblings.** Two same-signer siblings conflict on their cohort's
+cursor cells. The v6 rule keeps one, chosen by K. This defers the other. It is
+not P1's serialization. P1 rejects a second same-signer deployment only when
+funds are exhausted (P1:2245-2269). Otherwise P1 serializes both
+(P1:360-363). Under G9 only the loser's owner re-proposes it
+(interpreter_util.rs:2143). The owner waits until the rejection settles in the
+floor (validate.rs:601-717), and only while the validity window is open. A
+failed loser ends custody without a charge (interpreter_util.rs:2184-2201).
+The deferral therefore depends on the owner's liveness and on the validity
+window.
+
+**Differences from dev's resolver.**
+
+- When two candidates tie on losses, height and costs, K keeps the one that
+  `compare_branches` puts first, which has the lexicographically smaller
+  deploy id. Dev's resolver keeps the other one, because it rejects the option
+  that sorts first (`conflict_set_merger.rs:1029-1064`). No spec depends on
+  the tie.
+- Dev's resolver checks number channels with a prefix fold in branch order
+  (`conflict_set_merger.rs:1180-1223`). The fold depends on the order: with
+  base 1, the diff -3 fails before +3 and passes after it. The ledger reads
+  the sign splits and the final balance of the whole set, which no order
+  changes. In 2 of the 103 generated scenarios in which the fast path
+  composed, dev's merge rejected a chain. The drift guard therefore compares
+  the two paths only where dev rejects nothing.
+
+**Corrections found during verification.**
+
+- The chain-level conflict map alone does not empty dev's settled partition.
+  When no chain is settled, the settled log is empty. A chain then conflicts
+  with it only through its own produce that touches a base join
+  (`merging_logic.rs:262-470`). That produce also conflicts with the base
+  log, so F7 rejects the chain. The proof and the comment on
+  `has_chain_level_conflict` now name F7.
+- The chain-level map has no same-user-deploy-id pass. F5 covers repeated
+  deploy ids on the fast path.
+
+**Why the rule is sound.** Each law below is a theorem of the Rocq modules,
+and the TLA+ model checks it on bounded scenarios.
+
+- L5: under P, the ordered pass keeps every candidate and rejects nothing. So
+  the fast path and the slow path reach one state
+  (`fast_path_equals_ordered_pass`, `chain_level_p5_empties_settled_partition`,
+  `stamped_walk_matches_slow_path`).
+- L7: a scope copy of a deploy that the base settled consumes a fee-cursor
+  datum that the base no longer holds. So the fast path declines
+  (`scope_copy_of_base_deploy_fails_fast_path`).
+- The repair loop ends within one more round than the kept chains. Its
+  result has no conflict, no folded mixing, no overfill and no invalid
+  balance, and its lineage is closed (`repair_loop_terminates_valid`,
+  `lineage_recheck_restores_conflict_freedom`).
+- Every user deploy id survives at most once (`survivor_ids_exactly_once`).
+- L8: a pinned candidate is dropped only in these cases
+  (`pinned_kept_unless_forced`):
+  - by the pre-check, or by its own unavailability
+  - by an S5 check against earlier candidates, which are all pinned
+  - by the conflict re-check against an earlier pinned candidate
+  - by the repair loop, when no unpinned kept candidate can cure the failure.
+    Dev's tripwire still fires in this case.
+- L9: the first unpinned candidate in K loses in S5 only to pinned
+  candidates (`first_unpinned_in_k_not_lost_to_later`). It can still lose to
+  the pre-check, to unavailability and to S6.
+- The arrival order of the branches does not change the result
+  (`ordered_pass_perm_invariant`).
+
+**Casper footprint.** The approved footprint is `interpreter_util.rs`,
+`dag_merger.rs`, `conflict_set_merger.rs` and `costacc/mod.rs`. C1 touches no
+other Casper file.
+
+| Dev file | + | − | Edit |
+|---|---|---|---|
+| `util/rholang/interpreter_util.rs` | 26 | 1 | `rule_for` and the fast-path dispatch before the merge, and the call to `merge_with_rule` |
+| `merging/dag_merger.rs` | 69 | 10 | A dev-signature `merge` wrapper, the rename to `merge_with_rule(rule, …)`, the `OfferedV6` arm, one import, and `pub(crate)` on the availability walk and the window rule |
+| `merging/conflict_set_merger.rs` | 8 | 2 | `pub(crate)` on `compare_branches` and `branch_losses`. rustfmt wraps each signature, so each takes four lines |
+| `util/rholang/costacc/mod.rs` | 1 | 0 | `pub mod v6_merge;` |
+
+**Verification.**
+
+- Rocq, axiom-free, each registered theorem closed under the global context:
+  - `CursorLinearity.v`: L7, with three proved negative controls.
+  - `V6MergeLedger.v`: the sign splits, the pre-check, the final balance, the
+    merge types and the repair victim, with five proved negative controls.
+  - `V6MergeOrder.v`: `k_eq_iff_same_branch`, `k_strict_total`,
+    `k_pinned_first`, `ordered_pass_perm_invariant`, and the control
+    `nc_position_tiebreak_not_perm_invariant`.
+  - `V6MergeOrderedPass.v`: the fourteen laws of design v4, the two
+    hypotheses of the sort (`sort_by_k_perm`, `sort_by_k_pinned_first`), and
+    twelve proved negative controls.
+  - The proof gate passes in cost-accounting mode: 284 modules and 3235
+    closed assumption queries. The 54 new queries are closed.
+- TLA+, through `scripts/lib/tlc-run.sh`:
+  - `MCCursorDuplicateDetection`: the safe configuration passes (377
+    distinct states). The three controls violate `DuplicateNeverFastPath`
+    (twice) and `ExactlyOnceCharge`.
+  - `MCV6MergeSerialization`: the safe configuration checks Agreement,
+    NoConflictingSurvivors, NoFoldedMixing, NoOverfill, OverfillMatchesGuard,
+    ChainFoldNoOverflow, PurseValid, SettledKept, BaseWins,
+    ExactlyOncePerDeployId, FastEqualsSlow, HighestLossKeptQualified and
+    NoMergeAbort over 11,306 scenarios. Each of the eighteen controls violates
+    its named invariant.
+  - The models are registered in
+    `scripts/check-cost-accounted-rho-tla-invariants.sh` and
+    `scripts/check-tlc-source-binding.sh`. The second script fails at HEAD
+    before this record, because the merge 1d325b996 removed
+    `formal/tlaplus/uptime/`, which the script reads. The new block runs
+    before that read and passes for all 23 configurations.
+- Rust:
+  - `v6_merge/tests.rs`: 33 unit and property tests pass. The six property
+    tests run 256 cases each. In 256 generated scenarios the fast path
+    composes 103, and the ordered pass rejects a chain in 152. Every witness
+    kind occurs except the mixing and lineage-conflict witnesses, which
+    `folded_mixing_rejects_plain_change` and
+    `partial_lineage_conflict_is_rechecked` cover.
+  - `offered_funded_api_test.rs`: `two_signers_on_one_registry_key_keep_one_by_k`,
+    `same_signer_siblings_keep_one_and_the_owner_buffers_the_other`,
+    `permuted_secondary_parents_give_the_same_v6_root`,
+    `duplicate_offer_in_two_siblings_is_charged_once` and
+    `scope_copy_of_a_base_offer_takes_the_slow_path`.
+  - Two more planned API tests need DR-119, because the global cost-cursor
+    lock makes every two charged offers conflict. They land with DR-119.
+    `floor_erasure_reproduction_spec` and
+    `exactly_once_spec::floor_covered_effect_survives_a_late_record` cover
+    settled content, and they run under the v6 rule.
+- Suites:
+  - On casper, block-storage and the node HTTP handlers, the provisional caps
+    pass 1978 of 1982 and the committed caps pass 1976 of 1982. All failures
+    are the known ones of DR-116 and DR-117, the same sets as for DR-118.
+  - The 13 offered-genesis specs, all 29 offered API tests and the unchanged
+    dev suites (`multi_parent_casper_merge_spec`,
+    `compute_parents_post_state_regression_spec`, `finalized_protection_spec`,
+    `registry_key_merge`, `floor_fork_reproduction_spec`) pass.
+  - C1 changes no rholang or rspace++ code.
+  - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+    warnings`, the workspace doctests and the documentation gates pass.
+
+**Cross-refs.** DR-15 (amended), DR-115, DR-116, DR-118, DR-119, P1. Leaf
+`ofp-g9-merge-elimination`.
+
+---
+
+## DR-121 — Names that a receive body creates are dynamic for the funding analysis
+
+**Status.** Implemented 2026-10-09 for G1-3 of epic 8946 (leaf
+`ofp-1-lexical-authority`). The user approved it on 2026-10-09: "Implement it
+if it is necessary for cost-accounting." It is necessary. Without it, the
+pre-execution funding check attributes demand to names that the reducer never
+allocates. DR-119 and DR-120 stay reserved.
+
+**Context.**
+
+- The pre-execution funding check (DR-64) resolves the names that a deploy
+  binds with `new` (`lexical.rs`). Then it analyzes the deploy's demand
+  (`delta_sigma.rs`).
+- The reducer runs a receive body with `Blake2b512Random::merge` of the
+  continuation's randomness and the randomness of every matched datum
+  (`dispatch.rs:61-77`). A `new` in the body allocates its names from a split
+  of that merged state.
+- The resolver gave a receive body the split of the receive's own randomness.
+  That rule does not read the datum, so the resolver claimed names that the
+  reducer does not allocate. The analyzer then attributed the demand of a
+  region signed with such a name to a lane that the runtime never uses.
+
+**Decision.**
+
+1. The resolver does not resolve the names that a receive body creates, at any
+   depth inside the body. A `new` there adds holes to the scope stack, so the
+   signatures that name its binders stay bound levels.
+2. The analyzer maps a bound level to `DynamicAuthority` (`signature_lane` in
+   `delta_sigma.rs`). Under DR-64 item 2, unprovable demand contributes no
+   known demand, and the offer is capped.
+3. Names bound outside the receive keep their resolved values inside the body.
+   The reducer substitutes them into the continuation before the COMM, so they
+   do not depend on the datum.
+4. The recursive oracle gets a flag `resolve_receive_bodies`. With the flag
+   set, the oracle is HEAD's resolver. Without it, the oracle follows this
+   record. The parity tests of DR-67 use the second form.
+
+**Why the rule is sound.**
+
+- Two different data give two different merged states. A collision-free
+  allocation gives two different states two different names. So no rule that
+  reads only the continuation can give the binder its name for every datum.
+- The analyzer therefore must not claim any name for such a binder. A bound
+  level makes the claim impossible, and the dynamic classification keeps the
+  check conservative.
+
+**Verification.**
+
+- Rocq `ReceiveBodyNames.v` imports `StackSafeLexicalResolver.v` and uses no
+  axiom.
+  - `receive_body_names_depend_on_datum`: if the merge separates data and the
+    allocation is collision-free, two different data give the body two
+    different names.
+  - `no_datum_independent_rule_is_sound` and `parent_split_rule_is_refuted`: a
+    rule that reads only the continuation disagrees with the reducer on one of
+    two different data. The second theorem instantiates the first with the
+    rule of G1-2.
+  - `witness_parent_split_rule_is_refuted` and
+    `two_datum_witness_refutes_parent_split`: a concrete instance without
+    premises. The reducer gives the data 1 and 2 the names 93 and 155, and the
+    rule of G1-2 claims 0.
+  - `receive_bodies_allocate_nothing`: with receive bodies unresolved, the
+    one-pass resolver handles a receive body as a substitution. It allocates
+    no name, and it puts the outer names into the body.
+  - `machine_refines_one_pass_resolver` of `StackSafeLexicalResolver.v` holds
+    for both values of `resolve_receive_bodies`. So it also covers the
+    machine of this record, in which the flag is off.
+    `dynamic_machine_refines_one_pass_resolver` is that instance.
+  - `dynamic_machine_leaves_receive_body_names_bound` and
+    `parent_split_machine_names_receive_body_binders` run the machine on one
+    receive body. With the flag off, the signature keeps its bound level. With
+    the flag on, the machine claims the name 157.
+  - The proof gate passes in cost-accounting mode: 280 modules and 3181
+    closed assumption queries. Each of the 9 registered theorems of the
+    module is closed under the global context.
+- Rust tests in `lexical/native_names_tests.rs`:
+  - `funding_resolver_names_match_native_allocation` runs one program in the
+    reducer, where each `new` sends its name to an observation channel. It
+    compares each name that the resolver claims with the name that the reducer
+    sent. It covers these cases:
+    - a URN binding
+    - a nested `new`
+    - a `new` in a match case
+    - a `new` in a receive body (a delayed activation)
+    - an outer name inside the receive body.
+
+    It also checks that the analyzer reports `DynamicAuthority` for the
+    program.
+  - The test went in first, against the committed resolver of G1-2. It
+    failed at the assertion for the receive body: the resolver claimed a
+    private name for the binder `received` instead of a bound level. The
+    assertions for the URN binding, the nested `new`, the match case and the
+    outer name inside the receive body passed. After the fix, the test passes.
+  - `head_resolver_claimed_another_name_for_a_receive_body` shows that HEAD's
+    resolver claimed a name that the reducer does not allocate.
+- Suites:
+  - rholang and rspace++ pass 4151 of 4151, with the 2 new tests. The parity
+    tests of DR-67 run the oracle with `resolve_receive_bodies` off.
+  - The rholang doctests pass. `cargo fmt --check` and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass.
+  - No production code calls the resolver yet, so the Casper suite does not
+    apply.
+
+**Amendment (audit 2026-10-12).** Two statements of this record are stale.
+
+- DR-119 and DR-120 were reserved at G1-3. Both are now committed
+  (`7ab849b56`, `b496df9d8`).
+- At G1-3 no production code called the resolver. Since G1-6 the check calls
+  it in play and in every replay. `estimate_offered_term`
+  (`delta_sigma/estimate.rs:337`) calls
+  `resolve_lexical_names_for_funding_metered` at `:348`.
+
+**Cross-refs.** DR-64, DR-67. Leaves `ofp-1-lexical-authority` and
+`ofp-1-stack-safe-lexical`.
+
+## DR-122 — The linear pre-execution cost estimate (G1-4a)
+
+**Status.** Implemented 2026-10-11 for step G1-4a of gap G1 of epic 8946. It
+follows [the linear cost estimate design](cost-accounting-impl/linear-cost-estimate.md)
+and the binding amendments of 2026-10-11 to implementation map v5. The user
+adopted the design on 2026-10-10. The user decided that *linear* in the name
+of the estimate refers to the linear resource proof of the cost-accounting
+papers (decision U2). Under the same decision, the analysis keeps the exact
+sizes of the reducer's own functions and meters every part. No production
+path calls the analysis yet. Step G1-4b adds the check that uses it.
+Amended 2026-10-11 by the G1-4a fix, after an independent review of
+32af15f0c. The review findings H-1 to H-3, M-1 to M-6 and LOW 1 to LOW 8 are
+fixed. The items below state the fixed design, and each change names its
+finding. A second independent review of 8527aa6e2 found one high, two
+medium and six low findings. A second fix commit resolves them, and each
+change names its re-review finding.
+
+**Context.**
+
+- P1 asks the validator to compute the demand of a deployment "**Before**
+  executing any part of the deployment" (P1:2191). DR-64 asks for the known
+  demand of every lane from the envelope and the original root only.
+- Design section 5 specifies one analysis with two outputs: the raw counts
+  $`V(s,k)`$ with the estimate $`B`$, and the completeness of the estimate
+  under rules X1 to X8.
+- The independent check of the map (arbitration H1 and H2) found two metering
+  gaps. The reused plan, the region chains and the seals do more than linear
+  work. The evaluation of data had no work limit for `matches`, method calls,
+  big-number arithmetic and `%%`. Both ran before any charge.
+
+**Decision.**
+
+1. **The interface.** `delta_sigma::estimate::linear_cost_estimate` takes the
+   resolved term, the funding signature, the schedule, an evaluator and the
+   host-work budget. It returns a `CostEstimate`: the raw counts keyed by lane
+   and schedule class, `bound_phlo`, the canonical signature of every counted
+   lane, and the completeness with the first failed rule.
+   `estimate_offered_term` parses with the host-work charge of replay, resolves
+   with the metered funding resolver, estimates, and drops both terms with an
+   iterative teardown. The evaluator replaces the design's URN map (map gap
+   fill G-1). The analysis reads its URN map and evaluates with a copy whose
+   metering and substitution meters are one fresh unlimited machine
+   (arbitration M1). It returns an error when a reduction session is active,
+   in every build (review LOW 1).
+2. **Four walks, each on a heap work stack (DR-67).**
+   - The metering pre-pass computes four metrics of every `Par` and
+     `CostSignature` once, bottom-up (arbitration M4). They are the message
+     height, a length bound, the variable count and the number of environment
+     copies. The pre-pass also counts the work of the plan and of the vector
+     fold.
+   - `static_authority_plan` decides rule X1 and gives the compute row when X1
+     holds.
+   - Pass 1 gives every de Bruijn level a binder kind (design section 5.2). It
+     checks rules X2 to X8 and sizes every send and receive. It also emits the
+     post-order program of the vector fold, which is the program
+     `compile_term` of `StackSafeDemandWalk.v`.
+   - Pass 2 runs that program on a value stack. A merge moves the smaller map
+     into the larger one.
+3. **Sizes.** Pass 1 evaluates, substitutes and measures every value with
+   the reducer's own functions (`eval_expr`, `substitute_and_measure`,
+   `substitute_no_sort_and_measure`). Each size that pass 1 computes is the
+   size that the run stores for that value. The raw counts are upper bounds.
+   The tables and the branches take maxima, and a merge of regions only
+   shrinks a seal. Review LOW 8 corrects the earlier claim of exact sizes.
+   The sizing environment has one entry for every level:
+   - a private name with a 32-byte identity for a fresh level
+   - the bound value for a URN or injection level
+   - a poison marker for a pattern level
+
+   A substituted introduced value that contains the marker breaks rule X6.
+   Seal lengths come from running totals of region field lengths per scope,
+   so no seal is built (arbitration H1). G1-4a moves the length formulas of
+   `byte_accounting.rs` into six helpers: `datum_bytes`,
+   `continuation_bytes`, `produce_introduction_bytes`,
+   `consume_introduction_bytes`, `datum_transfer_bytes` and
+   `comm_trace_bytes`. The reducer's charge functions call these helpers, so
+   the estimate and the meter share the formulas.
+4. **Narrowed rule X4 (arbitration H2).** The analysis evaluates a datum only
+   when every form in it has a known work limit. These forms are literals,
+   collections, fixed-width arithmetic, comparisons and boolean operators.
+   They also include `++` on strings, byte arrays and lists, and `%%` with a
+   literal map. The map must have string keys and string, integer, boolean or
+   URI values. The analysis walks each datum first without recursion, and it
+   charges the limit before the evaluation:
+   - In the limit, $`z`$ is the exact prost length of the datum plus the
+     output growth of all forms. The height of the datum is $`h`$, and $`n`$
+     is the nesting depth of its compound expressions. The local symbols $`z`$,
+     $`t`$, $`g`$ and $`a`$ are those of design section 5.6.
+   - At each nesting level, the reducer copies or scans the subtree of each
+     compound expression up to $`c = 4`$ times. The evaluation builds the new
+     value, `update_locally_free_par` clones each element, and
+     `reserve_host_primitive` measures the expression. A binary operator
+     also clones its operand (`reduce.rs:288-302`, `:2261`, `:3339`,
+     `:3496`).
+   - The expressions of one level have disjoint subtrees, so all levels
+     together cost at most $`z \cdot c \cdot (n + 1)`$ (re-review MEDIUM-1).
+     The first fix charged $`z`$ once, so a string under 79 nested lists
+     paid about 0.9 MB for about 280 MB of copies.
+   - A datum with a set, a map or a comparison also pays
+     $`z \cdot (h + 1) \cdot (\lceil \log_2 (z + 2) \rceil + 1)`$, because
+     only those forms sort (review H-3). A flat list of 100,000 integers
+     still fits the offered limits.
+   - For a template of $`t`$ bytes and $`K`$ keys of at most $`g`$ bytes, a
+     `%%` also costs its loop work $`t \cdot (t + K \cdot (g + 3))`$.
+   - If $`a`$ bounds the rendered length of each value, the output of a `%%`
+     has at most $`t + \lfloor t / 3 \rfloor \cdot a + 16`$ bytes. A
+     placeholder has at least 3 bytes, and the 16 bytes cover the framing of
+     the new string. This output bound is a gap fill. Without it, a short
+     template with a long value would allocate an unmetered string.
+   - Any other form (`matches`, method calls, PathMap, zipper, big-number
+     arithmetic, set difference) leaves the participant unsized with reason
+     `DataEvaluation`, and the estimate is incomplete. Channels go through
+     the same walk.
+   - The runtime evaluates the same forms without a host-work limit
+     (`reduce.rs:1467-1474`). That gap belongs to the interpreter owners, and
+     G1-4a does not change evaluation code.
+5. **Metering of every walk (arbitration H1).** The analysis charges each
+   count before its walk runs. The G1-4a fix changes the charges that the
+   review found too low or too high:
+   - The pre-pass charges the width of each node at entry and at exit. The
+     width is the node, its top-level items and its nested children. The
+     marker scan charges the same width once (review LOW 3).
+   - The analysis charges the plan its steps, its region links
+     (`chain_links`) and its map entries (`merge_entries`). At a node $`v`$
+     with signed depth $`d`$, $`n_{\mathrm{io}}`$ is the number of sends and
+     receives, and $`n_{\mathrm{bind}}`$ is the number of signed binds. If
+     $`v`$ is at an execution position, $`n_{\mathrm{cell}}`$ is its number of
+     stack cells, and otherwise it is zero. The node has
+     $`(d + 1)(n_{\mathrm{io}} + 2 n_{\mathrm{cell}}) + n_{\mathrm{bind}}`$
+     region links.
+   - A combine at a child touches the lanes of the child and of the enclosing
+     scopes and the supply of the parent (review H-2). For a child $`w`$,
+     $`\ell(w)`$ counts the signed scopes and signed binds in the plan subtree
+     of $`w`$. The supply bound $`\sigma(v)`$ counts the stack cells in the
+     plan subtree of $`v`$. Each item and each child of $`v`$ costs
+     $`2(d + 1) + 2 \sigma(v) + 4`$ map entries. Each child $`w`$ adds
+     $`4(\ell(w) + 1)`$, and each item adds 2 more (re-review LOW 4). The
+     count adds nothing for the other nodes of a
+     subtree, so a wide term costs its width and not its width times its
+     size. Before the fix, each node added one entry to every enclosing
+     subtree count, and 8,000 parallel sends already exceeded the offered
+     limit. On the deep chain of DR-123 item 10, the analysis requests
+     10,800,008 verification operations in total at
+     100,000 levels.
+   - The review proposed $`2(\ell(w) + 1)`$ for each child. The plan merges a
+     case of a match or a branch of an `if` twice. It first merges the case
+     into its alternative, and then it merges the alternative into the node.
+     Each merge reads the lane map and the transfer map. So the fix charges
+     four entries for each lane of a child, and the count bounds the work of
+     every merge.
+   - The analysis charges the vector fold the program length and three walks
+     of each region link. `contribute` can walk the chain of a receive three
+     times (review LOW 3). The maps of the fold hold lane
+     entries, at most one for each of the $`L`$ region links. A merge moves
+     the smaller map into the larger one, so the merges cost
+     $`L \cdot (\lceil \log_2 (L + 2) \rceil + 1)`$ verification operations
+     (review H-2).
+   - The conversion of a signature to its lane costs twice its length bound
+     in verification bytes. Its later clone costs its length bound in
+     structural bytes (review LOW 3).
+   - The analysis charges each sizing call before it runs. Its bindings are
+     the bucket count of the environment map, once for the call, and once
+     more for each environment copy. `Substitute::reserve_host_work` charges
+     the size of the map for the call (`substitute.rs:77-100`). `Env::shift`
+     clones every bucket of the map at each binder of the substituted term
+     (`substitute.rs:686`, `:690`, `:728`, `:769`, `:782`). `pop` never
+     shrinks the map (review M-4). These binders are receive bodies and
+     conditions, `new` bodies, and match case sources and guards. Its bytes
+     are the input bound, the output bound, the bytes of each environment
+     copy and the marker scan. A sorted substitution also pays
+     $`o \cdot \lceil \log_2 (o + 2) \rceil`$ bytes for its output bound
+     $`o`$ (review LOW 4). Evaluation is charged as item 4 states.
+   - The review offered two fixes for the copies: a sparse environment of the
+     free levels of each term, or the capacity charge. The first fix charged
+     the capacity of the live map. A sparse environment needs
+     `locally_free`, which is not reliable after the funding resolver,
+     because the resolver clears it in the signatures that it substitutes.
+   - The capacity of a live map after removals depends on the hash seed. It
+     also depends on the group width of the processor, which is 16 on x86_64
+     and 8 on aarch64. So two validators could charge different bindings for
+     one deploy, and only one of them could reject it (re-review HIGH-1).
+   - So the pre-pass now sizes the map once, with room for $`2P + 2`$
+     entries. Here $`P`$ bounds the binders that pass 1 holds at once. The
+     walk of the plan computes $`P`$. It visits every position of pass 1, and
+     it adds the binders of each `new`, receive body and match case as pass 1
+     does.
+   - The map then never holds more than half of its room. So a full table
+     rehashes in place, and its bucket count $`b(2P + 2)`$ never changes. A
+     copy costs $`b(2P + 2)`$, a pure function of the term, computed as the
+     standard map computes it. The allocation is charged $`2P + 2`$ bindings
+     before it runs, and pass 1 stops with an internal error if it ever holds
+     more than $`P`$ binders.
+   - The work of nested receive bodies is therefore metered, also where it
+     grows with the square of the nesting depth.
+   - An exhausted budget returns `HostWorkRejected`, and the check rejects the
+     deploy with no charge.
+6. **Stack safety (arbitration M4).** For a value $`x`$, $`h(x)`$ is its
+   message height, and $`h_{\mathrm{env}}`$ is the largest message height in
+   the sizing environment. The value reaches a recursive function of the
+   reducer only when $`h(x) + h_{\mathrm{env}} + 8 \le 256`$. The constant 8
+   is a margin, and 256 is the depth bound of `SorterMeter::enter`. A higher
+   value has no size, with the new reason `UnsizedValue`, and the estimate is
+   incomplete. Pass 1 runs on one explicit stack segment of 64 MiB
+   (`stacker::grow`). A test sizes a datum at the bound on a 256 KiB thread
+   in a debug build. A signature taller than the bound never reaches the
+   recursive conversions (review M-2). `lane_of` checks the height first, and
+   the plan and the static signature list run only when every signature
+   fits. A taller signature makes the estimate incomplete with
+   `UnsizedValue`, and the estimate returns no deep signature. A test runs a
+   signature of 1,000 levels on a 256 KiB thread.
+7. **Known demand of an incomplete estimate (design section 6.2, map gap fill
+   G-4).** A participant without a size or with a dynamic region contributes
+   nothing. A participant on a channel that is not fresh contributes no
+   transfer and no trace. When rule X1 fails, the compute row is the count of
+   the vector fold. Otherwise it is the plan's count, which also counts
+   participants in data and one unit for each empty signed body. The review
+   (M-3) proposed the vector's row. The fix keeps the plan's row, and the
+   user may override this choice. P1 `def:token-demand` makes the signed
+   layers inside sent data demand,
+   $`\Delta_s(\mathtt{send}\;x\;U) = \Delta_s(U)`$ (P1:2002-2027), and design
+   section 5.5 uses the plan's count. `PlanComputeDominates.v` proves that
+   the plan's row is at least the vector's row for every lane, so the plan's
+   row also bounds the realized compute.
+8. **The scope of rule X3.** A fresh level may occur only as a channel and in
+   a cost signature. The analysis checks guards, match targets, match patterns
+   and guards, conditions and the top-level expressions of execution
+   positions. Data and patterns are closed by rules X4 and X5. The normalizer
+   builds a receive guard in the scope of the receive's binders. So the
+   analysis reads the guard at the base of the bind count. The receive's own
+   levels in the guard are then not fresh levels (review M-1).
+   - The reducer stores a nested guard after the body substitution of the
+     nearest enclosing receive. That substitution gives each level outside
+     that receive its value. The guard sizing at depth 1 does not see these
+     values.
+   - So a guard that names a URN, injection or unknown level has no size,
+     and the estimate is incomplete (reviews M-5 and LOW 2). Before this
+     rule, a nested guard on the URN of `rho:io:stdout` gave a complete
+     estimate, and the run measured 4 introduction bytes more.
+   - A pattern level from outside the nearest enclosing receive reaches the
+     marker scan of that receive's body (rule X6). So in a complete estimate
+     a stored guard keeps its variables, and its sizing is its size.
+   - A guard on a URN level outside every receive keeps its variable too,
+     but the rule also makes it incomplete. An exact rule would track the
+     nearest enclosing receive of each guard.
+9. **The client sizing rule (design section 14).** Clients sign a phlo limit at
+   least as large as the estimate. The estimate is a pure function of the
+   envelope and of public consensus inputs, so a client can compute it before
+   signing.
+10. **Linearity (decision U2).** The work of the analysis grows with the term
+    plus its region links, its merged map entries and its sized bytes. The
+    environment copies of its substitutions add to that work. It is not
+    linear in the term in the worst case, and the host-work budget bounds it.
+    The comments of `delta_sigma.rs` that called the plan linear-time with
+    constant work per node are corrected.
+11. **Signatures with variables (review H-1).** A cost signature whose
+    quoted or named process still holds a variable names another lane at run
+    time. The reducer substitutes inside the quote. A variable is an
+    `EVar`, a remainder, a variable reference or a `BoundLevel`. Pass 1 and
+    `signature_lane` of the plan make such a signature dynamic. The scan
+    uses a heap work stack, and a recursive test oracle checks it.
+    - The differential generator now makes `#P` signatures, and it found one
+      more case. A quote of a name that the resolver binds can lie inside a
+      receive body. The reducer substitutes the body under the shift of the
+      receive's binders, and the substitution keeps a prefix of each
+      `locally_free`. The resolver had cleared that field, so the stored
+      continuation was 3 bytes longer than its estimate.
+    - The resolver therefore leaves a signature unchanged when it is outside
+      a resolving position and its quoted or named process has a free level.
+      The analysis then treats the lane as dynamic. At a resolving position
+      the resolved quote stays static, and its sizes are the sizes of the
+      run.
+12. **Unpriced lanes (review LOW 6).** A counted lane without a signature has
+    no units. Its counts drop out, and the estimate is incomplete with
+    `UnsizedValue`. Before the fix, `assemble` returned an error.
+13. **Two cleanups.** One exhaustive operand list of an expression,
+    `expr_operands`, serves the pre-pass, the freshness check and the
+    evaluation bound. The owned teardown has an exhaustive match too, so a
+    new expression form reaches every walk. `dismantle_terms` is the one
+    complete teardown, and the resolver's narrower teardown now delegates to
+    it.
+14. **Notes on three low findings.**
+    - The guard sizing of `size_receive` keeps its marker scan, which can
+      find a marker only through a variable reference of depth 1. The review
+      called the scan a no-op (LOW 2). The study of that finding found the
+      gap of item 8. A comment in `size_receive` states why the sizing at
+      depth 1 is exact under the rules of item 8.
+    - Step G1-4b sets `OnChainPayer` before the check treats an estimate as
+      complete (review LOW 5, DR-123).
+    - OPEN: `estimate_offered_term` calls the recursive parser outside the
+      stack segment (review LOW 7, re-review LOW 3). That recursion is not
+      new, and it belongs to the interpreter. The user decided that the
+      normalizer pushdown machine of feature/mettail (07853de05) fixes it
+      when it merges, so no fix commit changes it.
+
+**Why the rules are sound.** Design section 11 gives the argument, and
+`ClosedDemandBound.v` mechanizes it. Every process that runs is a subterm at an
+execution position and runs at most once (X1, X8). Every partner of a COMM is a
+participant of the deploy (X2, X3, collision freedom and unique deploys). Each
+participant joins at most one COMM (X1, X7). Every introduced value has its
+estimated size (X4 to X6 and the exact sizing). The charge of one COMM is at
+most the contributions of its participants, and the branch maximum dominates
+every selection. `PlanComputeDominates.v` extends the bound to the plan's
+compute row. `EstimateBinderKinds.v` shows that a static signature names one
+lane in every run.
+
+**Findings outside G1-4a.**
+
+- The normalizer rejects a join with two binds on one channel
+  (`ReceiveOnSameChannelsError`). The estimate still counts such a join as a
+  multiset, and a test builds one in code.
+- Uniform signing wraps the continuation of a signed receive in a signed term
+  with an empty body. The plan therefore counts one more compute unit for it.
+  Directly nested signed terms collapse into one scope with a compound
+  signature.
+- `Env::shift` copies the whole environment at each binder of a substitution.
+  The runtime charges the environment size once for each substitution call
+  (`substitute.rs:77-100`), so its copies at nested binders have no
+  host-work charge. That gap belongs to the interpreter owners.
+- The runtime charges the sort of a sorted substitution linearly, without a
+  logarithmic factor (review LOW 4). The estimate pays the factor. That gap
+  of the runtime belongs to the interpreter owners.
+- The machine resolver of G1-2 and the recursive resolver of HEAD differ on
+  a quote with a free level inside a binder body. HEAD substituted the whole
+  body of a `new` under the shift of the binders, and the machine
+  substituted each signature at shift 0. No generated program and no corpus
+  program has such a quote. The G1-4a fix leaves such a quote unchanged
+  outside a resolving position (item 11).
+
+**Verification.**
+
+- Rocq, with no axiom:
+  - `ClosedDemandBound.v`: `complete_estimate_sound` with
+    `branch_max_dominates`, `closed_intro_bound`, `closed_comm_bound`,
+    `closed_transfer_bound`, `closed_trace_bound`,
+    `merged_authority_charges_less`, `fresh_unescaped_no_foreign_match` (with
+    a witness of its hypotheses) and `units_applied_once`.
+  - Twelve proved negative controls in `ClosedDemandBound.v` give a run above
+    the estimate. They cover these cases:
+    - a public channel, a persistent receive and a peek
+    - a received value in data, and a datum sized before evaluation
+    - a received value in a nested introduction
+    - a method call in process position
+    - the minimum over branches
+    - an introduction charged to signed-bind regions
+    - units applied twice
+    - a repeated join channel counted as a set
+    - lane membership instead of region multiplicity
+  - `EstimateDemandWalk.v`: the vector algebra instantiates the walk section
+    of `StackSafeDemandWalk.v` (`vector_program_equals_recursion`,
+    `vector_walk_refines_recursion`). The merge order does not matter
+    (`swapped_vector_run_equals_run`). The program length is linear in the
+    term (`vector_program_length_is_linear`). The control
+    `swapped_trace_run_breaks_the_refinement` shows that the swap needs a
+    commuting combine.
+  - `EstimateBinderKinds.v`: `kinds_channels_fresh`, `kinds_no_escape`,
+    `kinds_poison_free_introductions` and
+    `full_environment_matches_runtime_free_levels`, with the controls
+    `nc_uri_as_fresh_in_receive_body` and `nc_poison_flags_own_levels`.
+  - The G1-4a fix reads the guard of a receive at the base of its bind count
+    in `EstimateBinderKinds.v` (review M-1). The control
+    `nc_guard_base_zero_flags_own_level` shows that a check at base 0 rejects
+    `for (@n <- x where n > 3)`. The fixed check still rejects a guard that
+    names a fresh level.
+  - The same module no longer checks pattern kinds in a guard, which the
+    code never checked (review M-5). A guard names no fresh, URN or
+    injection level, so every outer level of a checked guard has a pattern
+    kind (`checked_guard_levels_are_patterns`). The control
+    `nc_guard_with_urn_level_is_sized_too_small` shows that the body
+    substitution of an enclosing receive gives a URN level of a nested guard
+    its value (item 8).
+  - The same module models signatures (review H-1).
+    `static_signature_names_one_lane` shows that a signature without a
+    variable has one value in every run. The control
+    `nc_quote_with_variable_is_not_static` gives two runs that evaluate the
+    quote of a matched variable to two signatures. The rule before the fix
+    called that quote static. `keep_until_compose` and the control
+    `nc_shift_zero_resolution_loses_stored_entries` model the `locally_free`
+    prefix of item 11.
+  - `PlanComputeDominates.v` (review M-3): `plan_compute_dominates_vector`
+    and `plan_bounds_realized_compute`. The witness `plan_counts_data_layers`
+    is the term of review M-3, and the control
+    `nc_plan_without_own_counts_breaks_the_bound` refutes a plan that drops
+    the seal regions of the participants.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 288 modules and
+    3284 closed assumption queries. The 39 new queries cover the three new
+    modules. After the G1-4a fix it passes with 290 modules and 3316 closed
+    assumption queries, and the 12 new queries cover the new theorems.
+- Limits of the Rocq statements (review M-5):
+  - `complete_estimate_sound` takes the conclusions of rules X1 to X8 as
+    premises of the model. A run selects participants of the term
+    (`selects`), its COMMs form a sub-multiset of them (`run_valid`), and the
+    sizes of the participants are given. The theorem therefore mechanizes
+    Lemmas 5 and 6 of design section 11. Lemmas 1 to 4 rest on the code
+    checks and on the Rust tests.
+  - `fresh_unescaped_no_foreign_match` takes collision freedom and unique
+    deploys as section hypotheses. A witness satisfies them.
+  - The compute row of `ClosedDemandBound.v` is the vector's row.
+    `PlanComputeDominates.v` relates it to the plan's row.
+  - `PlanComputeDominates.v` defines `own_count` as the vector's count of a
+    participant, so `own_count_is_compute` holds by reflexivity (re-review
+    MEDIUM-2). `plan_compute_dominates_vector` therefore shows only that
+    counts of zero or more keep a sum or a maximum at least as large.
+  - The model does not follow these parts of the code:
+    - the walk of the plan along the chain of enclosing scopes
+    - the deploy lane outside every scope
+    - the receive with signed binds outside every scope
+    - the unit lanes
+  - A Rust property test checks the dominance of the plan on the code, on
+    generated programs and on the corpus.
+  - `checked_guard_levels_are_patterns` proves only that every outer level
+    of a checked guard has a pattern kind. It does not model the two
+    substitutions of a stored guard. Item 8 gives that argument, and Rust
+    tests check it.
+  - The twelve negative controls of `ClosedDemandBound.v` each drop a premise
+    of the model. None of them runs a rule check of the code. The rule tests
+    and the runtime differential tests cover those checks.
+  - `EstimateBinderKinds.v` reads the free indices of a guard as a list, as
+    the code reads the `locally_free` of a guard. For a quoted process of a
+    signature, the code counts the variables of the syntax tree instead.
+    The resolver clears `locally_free` in the quotes that it substitutes.
+    The list of the model stands for those variables (re-review MEDIUM-2).
+    The first fix said that the model reads them as the code reads
+    `locally_free`, which described the rule that review H-1 removed.
+  - Most negative controls of the two modules check facts of lists or fixed
+    numbers. None of them runs a rule check of the code.
+  - `EstimateBinderKinds.v` does not model expressions, the copy of fields,
+    or the hash of a signature into a lane.
+- Limits of the charges (re-review LOW 5 and LOW 6):
+  - Two charges can be low by a small constant factor. The merge count of
+    the plan has no logarithmic factor for the inserts into its lane maps.
+    The merge charge of the fold can be about two times too low when small
+    maps with shared keys merge into large ones.
+  - The nested copies of `Env::shift` stay alive along the recursion of one
+    substitution. Their peak memory is about the depth times the bucket
+    count times 304 bytes, and no dimension charges it. This behavior of the
+    interpreter is older than G1-4a.
+- Rust tests in `delta_sigma/estimate/`:
+  - `tests.rs`:
+    - the named programs of design sections 10 and 12
+    - a generated program for each rule X1 to X8 and for `DataEvaluation`, in
+      32 cases with random contexts
+    - the narrowed evaluation: a long `%%` template and a nested `%%` chain
+      are rejected for host work, and a shallow chain stays complete
+    - a costly `matches` and a chain of big-integer multiplications, which
+      stay unsized
+    - exact seal and introduction lengths against the reducer's charge
+      functions
+    - the emitted program and the host-work charges of each shape, with one
+      environment copy charged for each binder of a sized term
+    - the exact-charge test of every charged dimension: the exact budget
+      gives the same estimate, and one unit less rejects
+    - the counted witness of the raw counts, and the iterative teardown
+  - `stack_safety_tests.rs`:
+    - parity of the work-stack passes with the recursive oracle on 256
+      generated programs and on the Rholang corpus
+    - the binder count of pass 1 against the resolver's count at every
+      visited node of the corpus (a test-only hook in `lexical.rs`)
+    - a term nested 100,000 deep on a 256 KiB stack, through the passes and
+      the public entry
+    - the oracle on a term above the sizing bound, and the sizing bound on a
+      small debug stack
+    - the rejection of the environment copies of a `new` of 100,000 names
+      under the offered limits
+    - a guard that the generated programs reach both analyses
+  - `runtime_tests.rs`:
+    - measured at most estimated for every lane and class, and usage at most
+      $`B`$, under the native meter
+    - twelve named programs and 48 generated complete programs
+    - a guard that most generated programs reach the runtime with a complete
+      estimate
+    - the budget, cost log, event log and evaluation counters of the runtime,
+      unchanged by the estimate
+  - The tests that the G1-4a fix adds:
+    - the five quote forms of item 11, two static controls, and the plan's
+      `signature_lane` on a quote with a variable
+    - 30,000 parallel sends, a match with 2,000 cases and a list of 100,000
+      integers under the offered limits
+    - guards on received values, and a guard that lets a fresh name escape
+    - guards that name a URN level, outside every receive and nested, which
+      have no size
+    - a nested guard on an outer pattern level, which is incomplete
+    - a nested guard on the pattern of the enclosing receive, which stays
+      complete
+    - a nested guard on a URN level through the runtime, whose estimate is
+      now incomplete
+    - a signature of 1,000 levels on a 256 KiB stack
+    - the capacity charge of an environment copy
+    - a live reduction session (LOW 1) and an unpriced lane (LOW 6)
+    - `#P` signatures in the generated programs of the parity and runtime
+      tests
+    - the variable scan against its recursive oracle on 512 generated
+      signatures, and on a signature nested 100,000 deep on a 256 KiB stack
+    - the free-level scan of the resolver against its recursive oracle on
+      512 generated signatures, and on compounds nested 100,000 deep
+    - three more named runtime programs: a guard on the received value, and
+      the quotes of a closed process and of a resolved name
+    - a quoted name that resolves only in a resolving position
+    - The chain-link test and the copy test follow the new charges.
+  - The tests that the second G1-4a fix adds:
+    - equal estimates and equal usage in every dimension in 32 runs with
+      fresh hash seeds (HIGH-1). The program has 64 outer names and 40
+      receives that push and pop many binders.
+    - the bucket count of the standard map for 305 capacities, and a sized
+      map that never grows through 64 rounds of pushes and pops
+    - the peak binder count of the pre-pass, at least the peak of pass 1 on
+      generated programs and on the corpus
+    - the same two counts, equal on a deep term
+    - a string under 60 nested lists, charged at least 60 times its length
+      (MEDIUM-1)
+    - the same string under one list, charged less than 10 times its length
+    - the plan's compute count, at least the vector's for every lane on 256
+      generated programs and on the corpus (MEDIUM-2)
+    - a guard that most sampled programs reach that comparison
+    - `where` guards and bundles in the generated programs of the parity and
+      runtime tests (LOW 2). A guard names the own pattern, an enclosing
+      pattern or a URN.
+    - `#*x` and `#v` inside receive bodies in the generated programs of the
+      resolver, with the same rule in its recursive oracle (LOW 1)
+    - a guard that many generated programs of the resolver hold such a quote
+    - The copy test follows the fixed bucket count, and the capacity test
+      stays as commented-out code.
+- Negative control of the copy charge: with the environment size charged once
+  per call only, the copy test sees no growth with the outer names. The wide
+  term is then rejected for bytes, not for bindings.
+- Suites:
+  - rholang and rspace++ pass 4192 of 4192 in release, with 13 skipped. The
+    G1-3 baseline was 4151 of 4151, and G1-4a adds 41 tests.
+  - The 100,000-level test runs for about 266 s in release with an unlimited
+    budget. The environment copies of its sized receive bodies take most of
+    that time.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Amendment (DR-124, 2026-10-11).**
+
+- The estimate has a new incomplete reason, `ForeignLane`. The check of step
+  G1-6 sets it when a lane outside the client lanes has known demand.
+- `CostEstimate::retain_client_lanes` keeps the client lanes. It computes
+  $`B`$ for them with the formula of the analysis, weight times units times
+  count. It charges its walk to the host-work budget before the walk.
+- The plan and the counts of the analysis do not change.
+- Review finding M-3 now affects the counts only. A layer such as
+  `{% Nil %}[alice]` inside send data still counts. Its lane leaves the holds
+  when no source is located at the purse of `alice` or permits `alice` (the
+  G1-6 fix). When a source permits `alice`, the check holds that demand.
+
+**Amendment (audit 2026-10-12).**
+
+- At G1-4a no production path called the analysis, as the status above
+  states. Since G1-6 the check calls it in play and in every replay.
+- Item 4 states that the runtime evaluates the same forms without a host-work
+  limit (`reduce.rs:1467-1474`). That is partly wrong. The runtime charges
+  each of these forms one primitive call and its input bytes. The charge is
+  `reserve_host_primitive` (`reduce.rs:288-303` at `e38ff0de8`), applied at
+  `:2182-2187` and `:2238-2270`. The runtime does not charge the work that the
+  form does. Examples are the quadratic loop of `%%`, the matcher of `matches`
+  and the growth of big-number products.
+
+**Cross-refs.** DR-64, DR-65, DR-67, DR-101, DR-113, DR-118, DR-121, DR-124.
+
+## DR-123 — The check before execution of an offered deploy (G1-4b)
+
+**Status.** Implemented 2026-10-11 for step G1-4b of gap G1 of epic 8946. It
+follows section 6 of
+[the linear cost estimate design](cost-accounting-impl/linear-cost-estimate.md)
+and the binding amendments of 2026-10-11 to implementation map v5. No
+production path calls the check yet. Step G1-6 makes it live in play and
+replay.
+
+**Context.**
+
+- P1 rejects an underfunded deployment "with an 'insufficient phlogiston'
+  error" before execution, with no state change and no tokens consumed
+  (P1:2208-2212). Supply covers all of a hold or none of it (P1:1990-1992).
+- DR-64 items 3 to 5 ask for holds of the known demand and of the complete
+  remainder at $`R_0`$. When the holds do not fit, the offer is rejected
+  with no effect. DR-122 gives the estimate $`B`$ and its completeness.
+- The arbitration of the map adds four rules. A witness above the settlement
+  limits rejects (M3). On-chain purses fund the fee only before execution
+  (LOW 5). The check reads the production limits of the family (LOW 8), and
+  the block time is an input through the grant checks (LOW 10).
+
+**Decision.**
+
+1. **The interface.** `gate_offered_candidate` takes an `OfferedGateInput`:
+   - the envelope, the prepared candidate, the selected schedule and its
+     bytes, and the adopted minimum price
+   - the wallet snapshot at $`R_0`$, which depends on the block time through
+     its grant checks (arbitration LOW 10)
+   - the reducer of the offered runtime, for its URN map (DR-122)
+   - `offered_funded_v6_production_limits().family` (arbitration LOW 8)
+   - `offered_funded_v6_host_work_limits()`, from which each call builds its
+     own budget (DR-102)
+
+   It returns an `OfferedGate` or an `OfferedGateRejection`. The gate holds
+   the kind of the estimate, $`B`$, the resource bound, the bound source and
+   the hold of each purse in canonical custody order. Only the check builds
+   it.
+2. **The estimate.** The term, its normalizer environment and its seed come
+   from the envelope, and the funding signature comes from its signers
+   (`runtime.rs:152`). `estimate_offered_term` gives the estimate. A
+   host-work error of the parser, the resolver or the analysis is the
+   rejection `HostWork` (design section 6.3 item 3). Any other error means
+   that the term does not parse or normalize, and the rejection is `Invalid`.
+3. **The kind.** An estimate is complete only when the analysis is complete
+   and no signed source is an on-chain payer. Design section 5.3 and review
+   LOW 5 state this rule. Otherwise the reason is the first failed rule of
+   the analysis, or `OnChainPayer`. The check decides the kind before it
+   chooses the bound.
+4. **The limit.** An estimate above the signed limit is the rejection
+   `EstimateAboveLimit` (design section 6.3 item 1).
+5. **The witness and the obligations (design section 6.1).**
+   - The raw counts fill a counted witness whose required and fresh
+     resources are those counts. Each resource has the key of the measured
+     path: the encoded supply channel of the lane's authority, the schedule
+     class, the selected schedule bytes and the authority as a `Sig`.
+   - The check converts each lane signature with the metered conversions of
+     `born_resource` (`producer.rs`). Their sorter stops at 256 nesting
+     levels. A deeper signature rejects the offer, so the check never
+     recurses past that bound (DR-67).
+   - The signed controls check the bound, which is $`B`$ for a complete
+     estimate and $`\mathrm{phloLimit}`$ for an incomplete one.
+   - `check_counted_phlo_execution` checks the witness with the settlement
+     limits. A witness or an obligation set above those limits is the
+     rejection `SettlementLimits`, before execution and with no charge
+     (arbitration M3). There is no `WitnessLimit` reason.
+   - The projection gives one obligation for each lane and class, of
+     $`w_k \cdot u(s) \cdot V(s,k) \cdot \mathrm{phloPrice}`$, plus the fee of
+     one atomic unit.
+6. **The eligibility.** The permission test of `select_rooted_native_family`
+   moves to `source_permits`, which the check shares. The refactor keeps
+   every decision and every host-work charge. Before execution, an on-chain
+   purse funds the fee only, because no run has shown its authority (map
+   gap fill G-5). That rule is conservative: after execution the run can
+   show the authority (arbitration LOW 5).
+7. **The holds (design sections 6.1 and 6.2).**
+   - `select_phlo_funding_family` places the known demand and the fee with
+     one requirement and the canonical cursors. The capacities come from the
+     snapshot: the balance at $`R_0`$, the hold cap and the debit cap.
+   - An incomplete estimate also holds the remainder
+     $`R = (\mathrm{phloLimit} - B) \cdot \mathrm{phloPrice}`$. The remainder
+     fills the signed sources in canonical custody order, which is ascending
+     custody. Each source takes at most its balance, its hold cap and its
+     debit cap, minus its known hold.
+   - An on-chain purse takes no part of the remainder. Design section 6.2
+     now states this rule.
+   - The holds fit completely or the offer is rejected. The rejection text
+     starts with "insufficient phlogiston" (P1:2210). The causes are
+     `NoPlacement`, `RemainderLeft` and `ExposureExceeded`.
+   - Supply counts SystemVault balances only.
+8. **Holds are fit checks.** The holds move no funds (DR-5). Settlement
+   debits the measured use, so each hold equals its debit after execution
+   and the unused part never leaves the purse (design section 8.1).
+9. **The amended wording of DR-64 (design section 8.6).**
+   - **Item 4.** A hold is the fit check at $`R_0`$. A complete estimate
+     holds its cost plus the fee. An incomplete estimate holds the known
+     demand of each lane and class, plus the complete remainder.
+   - **Item 6.** SystemVault reserves the measured debit. The refund is
+     implicit: the unused part never leaves the purse.
+   - **Obligation.** "A dynamic offer holds up to the limit and gets the rest
+     back" now means that the rest never leaves the purse.
+   - **Rejection text.** The rejection for holds that do not fit is
+     "insufficient phlogiston" (P1:2210). It replaces "insufficient
+     certified funding".
+10. **Exhaustion inside the analysis.** The analysis meters its walks
+    (DR-122 item 5) and can exhaust a host-work dimension. The check maps
+    that exhaustion to the rejection `HostWork`, with no charge. Measured
+    after the second G1-4a fix under `offered_funded_v6_host_work_limits()`,
+    on the deep term of the stack-safety tests (one `new`, one send and one
+    receive per level):
+    - Up to 614 levels, the estimate fits.
+    - From 615 levels on, the sizing substitutions exhaust the substitution
+      bytes, $`2^{28}`$, first.
+    - From 5,402 levels on, the environment copies exhaust the substitution
+      bindings, $`2^{28}`$, first (DR-122 item 5). Each copy costs the fixed
+      bucket count of the map that the pre-pass sizes from the peak binder
+      count (re-review HIGH-1). With the capacity of the live map, this
+      threshold was 11,000 levels.
+    - The merge count of the plan grows linearly on this term (DR-122,
+      review H-2). At 100,000 levels the analysis requests 10,800,008
+      verification operations in total, far below $`2^{30}`$.
+
+    Both deciding limits are equal under the committed and the provisional
+    caps. The final values come from the committed arm, and an earlier run
+    in the provisional arm gave the same first two thresholds. At 615 levels
+    the analysis uses 177,120 verification bytes and no search-state bytes,
+    far below the limits of both arms. Before the first fix, the estimate
+    fitted up to 620 levels. From 5,703 levels on, the merge count of the
+    plan alone exhausted the verification operations. The test of this
+    mapping narrows only the verification operations.
+
+**Why the check is sound.** `BoundKindSoundness.v` proves that the check binds
+`Certificate` only for a complete estimate. It never binds `Certificate` for
+an offer with an on-chain payer. It rejects an estimate above the limit and holds exactly
+$`B \cdot \mathrm{phloPrice} + 1`$ or $`\mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1`$.
+Every bound that it binds passes the guard of the execution contract. The
+remainder fill is complete or rejects. A run that passes a certified bound
+restores its pre-state and pays nothing.
+
+**Verification.**
+
+- Rocq, with no axiom:
+  - `BoundKindSoundness.v`: `classification_conservative`,
+    `onchain_payer_is_never_certified`, `estimate_above_limit_rejected`,
+    `complete_hold_is_exact`, `incomplete_hold_is_full_limit`,
+    `bound_is_admissible`, `custody_fill_complete_or_reject` (from
+    `fill_parts_within_rooms`, `fill_conserves` and `fill_unplaced_iff`) and
+    `overrun_rollback_effect_free`, which reuses `SignedLimitExhaustion.v`.
+  - Four proved negative controls refute these wrong rules:
+    - an incomplete estimate treated as complete, where a recursive run
+      passes the certified bound and pays nothing
+    - a partial remainder hold, against P1:1990-1992
+    - a check without the limit test, whose bound the guard refuses
+    - a check that ignores the on-chain payer
+  - `EndToEndAuthority.v`: `left_branch_fits_held_limit` and
+    `right_branch_fits_held_limit` extend the two branch lemmas to the
+    remainder. `remainder_hold_completes_limit` and
+    `implicit_refund_never_leaves_purse`, with its pointwise form, extend
+    `pointwise_refund_is_unused_reservation`.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 289 modules and
+    3304 closed assumption queries. The 20 new queries cover the new module
+    and the five new theorems.
+- Rust tests in `direct_wallet_funding/execution/gate/tests.rs`, with one
+  property test of 256 cases for each invariant:
+  - the total hold, $`B \cdot \mathrm{phloPrice} + 1`$ or
+    $`\mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1`$
+  - the placement: known demand and the fee on eligible sources, exact cover
+    of every obligation, and the remainder in canonical custody order
+  - the caps of each source and the total exposure
+  - a brute-force oracle: the check rejects exactly when an exhaustive search
+    finds no fit
+  - determinism, also after earlier use of a budget
+  - feasibility: realized use at most the estimate settles at $`R_0`$
+  - the on-chain rule, and `Certificate` only for a complete estimate
+  - a guard that the generated instances reach acceptance, rejection and
+    placed remainders
+- Unit tests:
+  - an estimate above the limit
+  - the holds of a worked complete and incomplete estimate
+  - a remainder short by one atomic unit, and a total above the exposure
+  - the rejection text
+  - a witness above the settlement limits
+  - a deep chain that exhausts the analysis
+  - the host-work and syntax errors of the parse
+  - a real complete estimate whose witness passes the bound $`B`$
+  - a lane signature deeper than the sorter's bound of 256 levels, which
+    rejects the offer without recursion
+  - a shallow lane signature, whose metered location equals the location of
+    the measured path
+- `family_selection.rs`: a property test of 256 cases shows that
+  `source_permits` decides every key as the inline test did, with the same
+  host-work charge.
+- Mutation controls: a partial remainder, an on-chain purse that takes the
+  remainder, and an on-chain offer classified complete each fail the tests.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1776 of 1780 tests pass with
+    the provisional caps, and 1774 of 1780 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps.
+  - rholang and rspace++ pass 4192 of 4192 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Amendment (DR-124, 2026-10-11).**
+
+- Step G1-6 makes the check live in play and in every replay.
+- The check holds only the client's demand. Before item 3 decides the kind,
+  the check removes every lane that no source of the envelope is located at
+  or permits for at least one class (the G1-6 fix). Such a lane with counts
+  makes the estimate incomplete with the reason `ForeignLane`.
+- $`B`$ in items 4, 5 and 7 counts the client lanes only. Item 7 places the
+  known demand of the client lanes exactly as before.
+
+**Amendment (audit 2026-10-12).**
+
+- Since G1-6 the check is live. The status line above predates that step.
+- Item 6 and the context say that an on-chain purse funds the fee only before
+  execution. In effect it funds nothing. `authorize_wallets` rejects a
+  fee-permitted on-chain source (`direct_wallet_funding.rs:237-240`, error
+  `OnchainFee`), so the fee test is always false for an on-chain purse.
+- The gate property test `an_on_chain_purse_holds_at_most_the_fee`
+  (`execution/gate/tests.rs:637-662`) exercises fee-permitted on-chain
+  sources. Production rejects that state.
+- P1 checks the tokens of a funding slot at acceptance (P1:1553-1555). A
+  correction of the gap fill G-5 for funding slots is pending (G3).
+
+**Cross-refs.** DR-5, DR-64, DR-65, DR-102, DR-113, DR-122, DR-124.
+
+## DR-124 — The live check holds only the client's demand (G1-6)
+
+**Status.** Implemented 2026-10-11 for step G1-6 of gap G1 of epic 8946. It
+makes the check of DR-123 live in play and in every replay. It amends DR-113
+item 6, DR-122 and DR-123. It records the user decision of 2026-10-11 "Hold
+only the client's $`\Delta_c`$ (Recommended)" and its basis in P1 and P2. The
+G1-6 fix of the same day corrects item 4: a lane that a source permits is a
+client lane too (see **Correction**).
+
+**Context.**
+
+- P1 asks for the check "**Before** executing any part of the deployment"
+  (P1:2191). A rejection changes no state and consumes no tokens
+  (P1:2210-2212). DR-123 built the check, but no production path called it.
+- The first live run made one passing test fail:
+  `offered_replay_usage_is_identical_across_roles`. Its installer signs a
+  funding slot `[entry -o slot]` inside a stored continuation.
+- The check placed the demand of the lanes `entry` and `slot` on the
+  installer's sources. No source can be located at those purses. The names
+  come from the deploy identity, and that identity commits to the sources.
+  So the check rejected an offer that P1 presents as deployable
+  (P1:1534-1630).
+- The user decided to hold only the client's own demand, as P1's acceptance
+  protocol does. The user added that the rule must stay true to the
+  cost-accounting papers and to the semantics of their syntax.
+
+**Decision.**
+
+1. **Live sites.** Play (`evaluate_native_offered`) and the witness replay of
+   every role (`replay_native_offered_witness`) run the check before any
+   runtime entry. Each first spawns the offered runtime, so the check reads
+   the URN map of that runtime. The replay spawn moves above the controls
+   (map gap fill G-8). Both read the wallet snapshot at $`R_0`$,
+   `offered_funded_v6_production_limits().family` and the consensus
+   host-work limits. The attempt keeps the result of the check.
+2. **The bound and its source.** Five live sites bind the resource bound and
+   the bound source of the check. They are play, the producer rebind, the
+   replay rebind, the replay runtime configuration and the replay evidence.
+   This amends DR-113 item 6, which bound every live contract with
+   `SignedLimit`. A complete estimate binds `Certificate` with the bound
+   $`B`$. An incomplete estimate binds `SignedLimit` with the signed limit.
+3. **Rejection.** A rejection of the check becomes a runtime error with the
+   text of the check. Play maps it to the typed candidate rejection of DR-72,
+   which quarantines the envelope. Replay fails the block. In both cases the
+   runtime is never entered, no state changes and no tokens are consumed.
+4. **Client lanes (the user decision, as corrected).** A lane is a *client
+   lane* when a source of the envelope may pay it.
+   - A source is located at the purse of the lane. The supply channel of the
+     lane's signature then equals the custody location of the source. That
+     location is the supply channel of the signature of the source's payer
+     (`supply_reader.rs`). The lane key is a digest of the same channel
+     (`Sig::lane_hash`), so the check compares lane keys.
+   - Or a source permits the lane for at least one class (the G1-6 fix). A
+     permission names its lane by the encoded supply channel, so its lane key
+     is the digest of its location (`location_lane_key`,
+     `permitted_lanes`).
+   - The deploy lane is always a client lane.
+   - A source is eligible for a class of a lane only when it permits that
+     lane and class, as before. So a class of a client lane with known demand
+     and no permitting source rejects the offer before execution. Fewer
+     permitted classes never exclude a lane that keeps one permission or a
+     located source. A client cannot drop the demand of its own lane by
+     restricting its permissions.
+   - A lane that is not a client lane is a *foreign lane*.
+5. **The holds.** The check keeps the known demand of the client lanes and
+   removes every foreign lane (`CostEstimate::retain_client_lanes`). A removed
+   lane with counts makes the estimate incomplete with the new reason
+   `ForeignLane`. The client then holds its signed limit under the margin rule
+   of P1. $`B`$ in the check counts the client lanes only. The limit test, the
+   remainder and the certified bound read that value.
+6. **What stays.** Client lanes are placed exactly as in DR-123. A class of a
+   client lane without an eligible source still rejects before execution with
+   "insufficient phlogiston". Foreign work that executes in the deployment is
+   token-gated by G3 (DR-68). Until G3, settlement keeps its behavior for that
+   work. A complete estimate has demand on client lanes only, so the
+   soundness of the certified bound does not change.
+7. **Correctness failures.** The producer logs a correctness failure when a
+   run passes its certified bound (design section 9). It also logs one when a
+   `Certificate` offer fails the selection after execution (arbitration
+   LOW 6). The log target is `f1r3fly.cost_accounting.correctness`. Both
+   offers are rejected with no charge.
+8. **Test hooks.** These hooks exist only in builds with the feature
+   `test-utils`. The per-node recorder of `offered_acceptance.rs` keeps records
+   of runtime entries, check decisions, correctness failures and URN-map
+   comparisons. It also carries
+   two hooks of one node: skip the check, and remove the counts of the
+   estimate. No production build contains them.
+9. **The 64-source test.** Four of its sources permit its lane `payer`, one
+   class each, so `payer` is a client lane. Its estimate stays complete, and
+   the offer holds $`B \cdot \mathrm{phloPrice} + 1`$ under `Certificate`.
+   Each class lands on the source that permits it, and the fee lands on the
+   first source. The first implementation of item 4 made `payer` a foreign
+   lane, and the test then held its signed limit under `SignedLimit`.
+
+**Correction (G1-6 fix, 2026-10-11).** As the coordinator relayed it, the
+user's option said "hold only the lanes the envelope's sources may pay". The
+first implementation (e64261134) narrowed that to "a source is located at the
+purse of the lane". The 64-source test showed the gap. Four of its sources
+permit its lane `payer`, but no source is located at that purse, so `payer`
+became a foreign lane.
+
+- A signed lane permission is how a client sponsors a lane. The client's own
+  purse funds it, so the demand of the lane is the client's demand in P2's
+  located-purse form. P2 checks one local linear proof per purse, and local
+  proofs compose (`prop:local-suff`, P2:1520-1527). The G1-6 fix adds the
+  permitted lanes to item 4.
+- The eligibility rule does not change. In the check and in settlement, a
+  source is eligible only for the classes that it permits (`source_permits`).
+  So a source located at a lane is not eligible for a class of that lane that
+  it does not permit. The loophole control of item 4 depends on this rule.
+- No source can be located at the fresh names of the deploy itself or permit
+  them. The deploy identity commits to the sources and their permissions. So
+  the funding-slot installer still passes the check and holds its signed
+  limit.
+
+**Basis in P1 and P2.** The user decision of 2026-10-11 adopts the reading
+of the acceptance protocol.
+
+- The acceptance protocol computes and checks the client's demand only: "the
+  exact demand $`\Delta_c(D)`$ ... If $`\Sigma_c \geq \Delta_c^{\max}`$, the
+  deployment is accepted" (P1:2191-2200).
+- `def:token-demand` lets $`\Delta_c`$ count only the layers signed by
+  $`c`$ (P1:2002-2027). It recurses through receive bodies, but a layer
+  signed by another signature adds nothing to $`\Delta_c`$. A layer that the
+  client signs inside a stored receive body still counts. Rule X1 makes a
+  persistent receive incomplete, so the signed limit covers it.
+- `def:sugar-uniform` gives a signed receive and its continuation one
+  signature each (P1:1251-1271). `def:sugar-lollipop` gives
+  $`\{\mathtt{for}(y \leftarrow x)\{P\}\}_{s_1 \multimap s_2}`$ the meaning
+  $`\{\mathtt{for}(y \leftarrow x)\{\{P\}_{s_2}\}\}_{s_1}`$. Signature
+  $`s_1`$ "authorizes and funds the communication", and $`s_2`$ "authorizes
+  and funds the continuation" (P1:1273-1315). "Neither party can impose costs
+  on the other beyond what the sugar makes explicit" (P1:1313-1314). Compound
+  signatures compose (P1:1317-1327).
+- Funding slots: "Anyone who knows the channel can deposit tokens there. The
+  linear proof at acceptance time checks whether tokens are present on the
+  funding slot, not who deposited them" (P1:1553-1555). And "the
+  continuation runs once the slot is funded" (P1:1584-1586). The check of a
+  slot's tokens belongs to the deployment in which the continuation runs.
+- P2 decomposes the linear proof into "one local linear proof per purse"
+  (P2:1514), and local proofs compose (`prop:local-suff`, P2:1520-1527). The
+  client's purses are the envelope's sources. A source may pay the lane at
+  whose purse it is located and each lane that it permits. So those lanes
+  carry the client's demand (the G1-6 fix). Each other purse has its own
+  local proof when its surface executes.
+- The earlier design applied `def:funding-proof`, which covers every
+  signature, at acceptance (P1:2047-2058).
+- Consequence for review finding M-3 of DR-122: a deploy whose send data
+  carry `{% Nil %}[alice]` needs no source for `alice`. When a source permits
+  `alice`, the layer is the client's sponsored demand, and the check holds it.
+  The compute count of the plan stays as `def:token-demand` defines it. Only
+  the holding changes.
+
+**Region attribution in the code.** The code attributes regions as the papers
+do. The outer receive of the installer is unsigned, so its introduction opens
+a region of the deploy that runs it (`reduce.rs:1520-1531`). That
+introduction is the installer's demand, and the check holds it. The
+normalizer desugars `[entry -o slot]` as `def:sugar-lollipop` states
+(`normalizer/cost_accounting/desugar.rs:66-85`). So the communication belongs
+to `entry`, and the continuation belongs to `slot`. A fired body runs with an
+empty authority, and its unsigned work charges the deploy that triggers it
+(DR-101). Design section 13 records how that charge differs from uniform
+signing.
+
+**Why the check stays sound.** `BoundKindSoundness.v` proves the decision
+rules over estimates with client and foreign lanes:
+
+- A certified estimate has demand on client lanes only
+  (`certified_estimate_has_only_client_lanes`).
+- A foreign lane with demand forces an incomplete estimate
+  (`foreign_lane_forces_incomplete`, `foreign_lane_is_never_certified`), and
+  the offer holds its signed limit (`foreign_lane_holds_the_signed_limit`).
+- The limit test reads the client's demand (`limit_test_uses_client_demand`).
+  An estimate with client lanes only keeps its decision
+  (`client_lanes_keep_the_check`).
+- A negative control keeps an estimate with a foreign lane complete. The
+  check then certifies the client's demand alone, and a run that does the
+  foreign work passes that bound and pays nothing
+  (`nc_foreign_lane_as_complete_breaks_the_bound`).
+- Since the G1-6 fix, a lane is a client lane exactly when a source is
+  located at it or permits it (`client_iff_located_or_permitted`,
+  `permitted_lane_is_client`).
+- Dodge freedom: when every lane keeps its client status, fewer permitted
+  classes reject the offer before execution or keep its decision
+  (`narrowing_rejects_or_keeps_the_decision`, from `narrowed_restriction` and
+  `narrowed_unplaceable`).
+- A sixth negative control excludes a permitted lane by class. A narrowed
+  offer then lowers its certified bound from 6 to 1, and a run that does all
+  the work pays nothing. The rule of item 4 rejects the narrowed offer
+  (`nc_class_exclusion_breaks_dodge_freedom`).
+
+**Verification of the first implementation (e64261134).** The G1-6 fix
+supersedes the items that depend on the located-only rule. Its own
+verification follows this list.
+
+- Rocq, with no axiom:
+  - `BoundKindSoundness.v` gains lanes with a located flag, the restriction
+    to client lanes and the check over it. It proves
+    `foreign_demand_false_iff`, `client_phlo_of_client_lanes`,
+    `certified_estimate_has_only_client_lanes`,
+    `foreign_lane_forces_incomplete`, `foreign_lane_is_never_certified`,
+    `foreign_lane_holds_the_signed_limit`, `limit_test_uses_client_demand`
+    and `client_lanes_keep_the_check`.
+  - A fifth proved negative control,
+    `nc_foreign_lane_as_complete_breaks_the_bound`, keeps an estimate with a
+    foreign lane complete. A run that does the foreign work then passes the
+    certified bound and pays nothing.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 290 modules
+    and 3325 closed assumption queries. The 9 new queries cover the new
+    theorems, lemmas and control.
+- Rust tests in `delta_sigma/estimate/tests.rs`:
+  - a property test of 64 cases: the restriction to every counted lane keeps
+    the estimate, $`B`$ included
+  - a property test of 64 cases: the metered units equal the units, with one
+    structural item for each signature node
+  - a foreign lane leaves the estimate and makes a complete estimate
+    incomplete with `ForeignLane`
+  - an earlier reason stays first, and client lanes keep completeness
+  - a client lane without a static signature is rejected, after the charge
+- Rust tests in `direct_wallet_funding/execution/gate/tests.rs`:
+  - a property test of 256 cases: with every lane a client lane, the
+    restriction changes no decision
+  - a property test of 256 cases: a foreign lane leaves the holds, and a
+    counted foreign lane gives the hold of the signed limit
+  - the client lanes are the deploy lane and the lanes of the located
+    sources, and the set charges its work first
+  - the loophole control: restricted class permissions do not make a client
+    lane foreign
+- `casper/tests/api/offered_admission_api_test.rs`, 12 tests on networks of
+  one to three nodes:
+  - an underfunded offer never enters the runtime and pays no fee
+  - a complete offer holds its estimate under `Certificate`, and an
+    incomplete offer holds its limit under `SignedLimit`
+  - an estimate above the signed limit rejects, and a limit equal to the
+    estimate is accepted
+  - a forced overrun of a certified bound rejects with no charge and logs a
+    correctness failure
+  - validators reject the block of a producer that skips the check
+  - play, replay and the native replay environment share one URN map
+  - existing outcomes keep their class under incomplete estimates
+  - a funding-slot installer passes the check and holds its signed limit
+  - a send of `{% Nil %}[alice]` needs no source for `alice`
+  - a client-lane class without an eligible source rejects before execution
+  - restricted class permissions do not exclude a client lane
+  - a lane that a source only permits is a foreign lane (the G1-6 fix
+    disables and inverts it)
+- Suites:
+  - casper (nextest, release, 8 test threads): 1792 of 1796 tests pass with
+    the provisional caps, and 1790 of 1796 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each fails at its earlier assertion with its
+    earlier message.
+  - With the provisional caps,
+    `offered_replay_usage_is_identical_across_roles` passes again. Its
+    installer passes the check.
+  - With the provisional caps, the gateway call test passes its installer
+    step. It still fails at its call step with `NoNewDeploys`, as before
+    G1-6. A diagnostic run showed that the cause is now the check. The
+    estimate of the call is incomplete, so the call holds
+    $`250000 \cdot 2 + 1 = 500001`$ atomic units. The private entry and slot
+    purses are on-chain purses, which take no part of the remainder (DR-123,
+    map gap fill G-5). The gateway purse has a cap of 300,000, so 200,001
+    atomic units fit no source. Step G3 meets this rejection first.
+  - With the committed caps, both gateway tests fail at their funding step,
+    as before G1-6.
+  - The dense variant of the 64-source test passes the check. Its lane
+    `payer` is foreign, so it holds its signed limit. With the committed caps
+    it executes and is then rejected with no charge, because its metered live
+    read exceeds the host-work budget. With the provisional caps it is
+    accepted, which is the known failure of that test.
+  - rholang and rspace++ pass 4223 of 4223 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Verification of the G1-6 fix.**
+
+- Rocq, with no axiom: `BoundKindSoundness.v` gives each lane its located
+  flag, its permitted classes and its demand for each class.
+  - The client lane is located or permitted
+    (`client_iff_located_or_permitted`, `permitted_lane_is_client`). The
+    eight results and the control of the first implementation hold for the
+    new predicate.
+  - `check_placed` rejects a client lane with a class that has demand and no
+    permission. Dodge freedom follows from `narrowing_keeps_a_client_lane`,
+    `narrowing_keeps_placed_classes`, `narrowing_keeps_unplaceable_lanes`,
+    `narrowed_client_phlo`, `narrowed_foreign_demand`,
+    `narrowed_unplaceable` and `narrowed_restriction`.
+  - The sixth proved negative control,
+    `nc_class_exclusion_breaks_dodge_freedom`, satisfies the premise of the
+    dodge-freedom theorem and breaks its conclusion.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 290 modules
+    and 3336 closed assumption queries. The 11 new queries
+    cover the new theorems, lemmas and control.
+- Rust tests in `delta_sigma/estimate/tests.rs`: a property test of 64 cases
+  checks the lane key of an encoded supply channel and its charge. That key
+  is the lane key of the signature of the channel. A unit test shows that the
+  digest charges first.
+- Rust tests in `direct_wallet_funding/execution/gate/tests.rs`, with 256
+  cases for each property test:
+  - the permitted lanes are the lanes of the permissions, with one digest
+    for each permission
+  - fewer permitted classes reject the offer or keep its kind, estimate,
+    bound and total hold, when every lane keeps a permission
+  - with every counted lane permitted, the restriction changes no decision
+  - the case of the 64-source test: each class lands on the source that
+    permits it, and the fee on the fee source
+  - a permitted lane without a permission for a class with demand rejects,
+    and without any permission the lane is foreign
+- `offered_admission_api_test.rs`: the permit-only test is disabled and
+  inverted. Three tests are new.
+  - Four sources each permit one class of the lane `payer`. The estimate is
+    complete, the offer holds $`B \cdot 2 + 1`$ under `Certificate`, and
+    each class lands on the source that permits it.
+  - A permitted lane without a source for a class with demand rejects
+    before execution. The same term with every class permitted is accepted
+    under `Certificate`.
+  - A send of `{% Nil %}[alice]` holds the demand of `alice` when a source
+    permits `alice`.
+- The 64-source test: a diagnostic run showed the check record
+  `complete`, $`B = 2860`$, `Certificate` and a total hold of 5721 in play
+  and in both replays. Settlement charged the four permitting purses, one
+  class each, and the fee on the first purse.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1799 of 1803 tests pass with
+    the provisional caps, and 1797 of 1803 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each fails at its earlier assertion with its
+    earlier message.
+  - The gateway and replay-usage outcomes stay as before the fix. With the
+    provisional caps, `offered_replay_usage_is_identical_across_roles`
+    passes, and the gateway call test still fails at its call step with
+    `NoNewDeploys`.
+    With the committed caps, both tests fail at their funding step. The
+    permissions of the call name only the lanes at whose purses its sources
+    are located, so the fix does not change its client lanes.
+  - The dense variant of the 64-source test now has a complete estimate
+    under `Certificate`. With the committed caps it executes and is then
+    rejected with no charge, because its metered live read exceeds the
+    host-work budget. With the provisional caps it is accepted, which is the
+    known failure of that test.
+  - rholang and rspace++ pass 4225 of 4225 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Amendment (audit 2026-10-12).** The first sentence of "Region attribution
+in the code" overstates. The code attributes the regions of the deploy's own
+terms as the papers do. One case differs. A fired stored body runs with an
+empty authority, so its unsigned work charges the triggering deploy
+(`reduce.rs:382-406`). Design section 13 records how that charge differs from
+uniform signing.
+
+**Cross-refs.** DR-64, DR-68, DR-72, DR-101, DR-102, DR-113, DR-122, DR-123.
+Design sections 5.3, 6, 7, 9 and 16 of
+[the linear cost estimate](cost-accounting-impl/linear-cost-estimate.md).
+
+## DR-125 — A call of an unknown method is a classified user failure (bug 11008)
+
+**Status.** Implemented 2026-10-12 for bug 11008 of epic 8946. The user chose
+"Reuse MethodNotDefined (Recommended)", option B of the root-cause plan.
+
+**Context.**
+
+- Bug 11008 reported that native offered execution rejects `{}.xxx()` as a
+  non-user failure. The producer then rejects the offer with "native offered
+  execution has non-user failure" and charges nothing. So the work is free,
+  although a user failure pays its billable work and fee (DR-113).
+- The report named the wrong cause. `{}.xxx()` never raised
+  `MethodNotDefined`. The method table of the reducer has no `xxx`, so the
+  reducer raised `ReduceError("Unimplemented method: xxx")`.
+- Two sites raised it: the call in process position (`eval_expr`) and the
+  call in an operand (`eval_expr_to_expr`).
+- The classifier maps `ReduceError` to Unclassified on purpose, because the
+  variant has many causes. Classification follows the variant, never the
+  message (economic-failure-policy-decisions.md).
+- `MethodNotDefined` was raised only when a known method met a receiver of the
+  wrong type, such as `1.nth(0)`.
+
+**Amendment (DR-128, 2026-10-12).** The `1.nth(0)` example was wrong at HEAD
+`e38ff0de8`. That call raised `ReduceError` with this message:
+`Error: nth applied to something that wasn't a list or tuple.`. Since DR-128 it
+raises `MethodNotDefined`, so the example now holds. The text above stays as
+written.
+
+- `1 + "a"` takes another path. It raises `OperatorExpectedError`, a user
+  failure, and is already charged (DR-115).
+- A failing-first probe confirmed the cause at HEAD 88f4176db. The proposer
+  rejected the offer with "native offered execution has non-user failure".
+
+**Decision.**
+
+1. At both sites, the reducer raises the existing user variant
+   `MethodNotDefined { method, other_type: "any type" }`. The old
+   `ReduceError` lines stay as comments.
+2. The reducer does not inspect or copy the receiver to name its type, because
+   that work would be unmetered host work.
+3. `economic_failure.rs`, `errors.rs` and the HTTP mapping do not change.
+   `MethodNotDefined` is already a user failure (`economic_failure.rs:112`).
+   It is already in the same HTTP 422 arm as `ReduceError`
+   (`node/src/rust/web/shared_handlers.rs:409-410`).
+4. The negative control stays: `ReduceError` remains Unclassified
+   (`economic_failure/tests.rs`).
+
+**Consensus notes.**
+
+- Play and replay classify identically. Both run the same reducer, and every
+  check calls the same pure `classify_errors`. Replay compares the class with
+  the committed `failure_class`.
+- Metering and host work do not change. The method-call charge precedes the
+  lookup, and the classifier reserves one operation per error for either
+  variant.
+- The error text is not consensus-visible. The evidence carries only the
+  failure class.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+- A mixed failure still blocks publication.
+
+**Other user-caused ReduceError sites.** They stay Unclassified, and this
+record does not change them. Examples in `reduce.rs`:
+
+- division by zero and modulo by zero
+- an index out of bounds, and arithmetic overflow
+- a send on a channel that is not writeable
+- `nth` on a value that is not a list or a tuple
+- a method call on an expression that is not singular
+- the two errors of `eval_single_expr`
+
+**Amendment (DR-128, 2026-10-12).** DR-128 classifies these sites as user
+failures. It adds six typed variants and reuses `MethodNotDefined` and
+`OperatorNotDefined`. The join that signs some clauses but not all stays an
+unclassified `ReduceError`, because that rejection is a separate gap.
+
+**Formal models.** No formal file changes. `EconomicFailureSummary.v` models
+the four failure classes. It takes the mapping from error variants to classes
+as given.
+
+**Verification.**
+
+- A failing-first probe tested the root cause before the fix. The probe
+  `an_unknown_method_is_published_as_a_charged_user_failure` in
+  `casper/tests/api/offered_funded_api_test.rs` ran at HEAD 88f4176db.
+  - Hypothesis: the proposer rejects `{}.xxx()` as a non-user failure and
+    charges nothing.
+  - Result: confirmed. The proposer created no block, and it recorded the
+    rejection "native offered execution has non-user failure".
+- After the fix, the probe passes on three validators. It calls the unknown
+  method at the top level and after a COMM.
+  - The proposer publishes each deploy as failed, and every validator holds
+    the same receipt.
+  - The charge is the billable work and the fee. The payer pays exactly that
+    charge, and the write of the deploy rolls back.
+- Rholang tests in `reduce_economic_failure_tests.rs`:
+  - one unit test for each site. Each test asserts the error
+    `MethodNotDefined`, the user class alone and the retained charge.
+  - a property test with a fixed seed. It generates 16 method names, checks
+    that the method table lacks each name, and checks both sites for each
+    name.
+- The negative control in `economic_failure/tests.rs` still passes.
+  `ReduceError` stays Unclassified.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1806 of 1810 tests pass with
+    the provisional caps, and 1804 of 1810 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the G1-7 baseline test
+    by test, with the same messages.
+  - The two I6 tests keep their known messages.
+    `replay_should_match_in_case_of_user_execution_error` calls `{}.xxx()`
+    in one branch. It still fails at `interpreter_util_test.rs:2014` with a
+    cost of 236560 against the expected 300000.
+    `compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing`
+    still fails at `runtime_manager_test.rs:780`.
+  - rholang and rspace++ pass 4228 of 4228 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Cross-refs.** DR-66, DR-113, DR-114, DR-115. Bug 11008.
+[The economic failure observation](cost-accounting-impl/economic-failure-observation.md)
+and
+[the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).
+
+## DR-126 — The prepaid selection searches forward (bug 11420)
+
+**Status.** Implemented 2026-10-12 for bug 11420 of epic 8946. Step H1 of G3
+design v5 (section 1.1) is the design, and the user approved the step.
+
+**Context.**
+
+- A captured stack can hold cells of several lanes. Each born cell takes its
+  location from its own authority (`born_resource` in `producer.rs`).
+- The selection `select_measured_demand` gives each cell of a receipt record
+  one measured demand occurrence. A cell takes only a free occurrence of its
+  match class: its resource shape and the current form of its stack cell.
+- Before this record, every cell scanned the occurrences from position 0. So
+  each cell took the least free matching occurrence anywhere.
+- The encoder copies the positions of a draw in cell order
+  (`encode_measured_prepaid_delta` in `offered_evidence.rs`). The canonical
+  check of the evidence needs strictly increasing positions in each draw
+  (`NativePrepaidDeltaV1::check` in `sections.rs`), and encoding runs that
+  check.
+- So a stack `[a, b]` against a run that measured lane b before lane a gave
+  the positions `[1, 0]`. Encoding then failed as Noncanonical after
+  execution.
+- The producer wrapped the error as `OfferedCandidateRejected` and
+  quarantined the envelope. The executed work was free.
+
+**Decision.**
+
+1. Cell j of a record searches only the free occurrences above the occurrence
+   of cell j − 1. A miss ends the prefix. Each cell then reads each position
+   at most once in a record.
+2. The rest of the selection does not change. The first strictly longest
+   prefix of each stack wins. The used positions and the drawn receipt
+   records stay excluded, and the draw limit applies as before.
+3. The selection moved to the generic function `select_prefixes` in
+   `demand.rs`. The unit test and the property test call the same function
+   that production calls. `select_measured_demand` keeps its entry limit, its
+   reservations and its comparison in the same order.
+4. The cell match stays by form, as the binding section of
+   [prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md)
+   requires.
+
+**Why no valid evidence changes.** Let $`M_c`$ be the set of occurrence
+positions of match class $`c`$. Only cells of class $`c`$ take positions in
+$`M_c`$.
+
+- Lemma 1, agreement. Suppose the old positions $`p_0 < \dots < p_{k-1}`$ of
+  a record strictly increase. Each $`p_j`$ is the least free position of
+  $`M_{c_j}`$, and it lies above $`p_{j-1}`$. So the forward search finds the
+  same $`p_j`$. Where the old scan finds no position for cell k, the forward
+  scan finds none either.
+- Lemma 2, no gain. The forward prefix of a record is never longer than the
+  old prefix. Suppose the forward scan placed cells 0 to k and the old scan
+  stopped at cell k, of class c. Let n be the number of class-c cells among
+  cells 0 to k. The old scan placed n − 1 of them and covered every free
+  position of $`M_c`$. The forward scan placed all n on distinct free
+  positions of $`M_c`$. So $`n \le n - 1`$, which is false.
+- The theorem. Take the stacks in captured order. Suppose the old scan keeps
+  record r, the first record of greatest length L, and r is canonical.
+  - By Lemma 1, the forward scan gives r the same positions.
+  - By Lemma 2, every other record gets at most its old length. The records
+    before r stay shorter than L.
+  - So the forward scan also keeps r, and both scans mark the same positions
+    as used.
+- Every committed block passed the canonical check. So no committed block
+  changes, and the draw limit sees the same draws.
+
+**Consensus notes.**
+
+- Play and replay run the same selection, so they give the same positions.
+- The forward scan reads fewer positions, so it reserves less host work for
+  the search and the comparisons. No evidence records host work.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+- A run whose old positions were not canonical now settles. The cells above
+  the end of the prefix stay in their stack, and the run pays their
+  occurrences fresh.
+
+**Formal model.** `PrepaidOccurrenceSelection.v` models the scan with match
+classes as natural numbers. It proves `forward_agrees_on_increasing_prefix`,
+`forward_never_lengthens`, `forward_preserves_canonical_selection` and
+`forward_selection_canonical`. The negative control
+`nc_cell_order_positions_noncanonical` computes the positions `[1, 0]` of the
+old rule. `forward_selection_on_the_bug_example` computes both rules on the
+example of the bug. The module has no axiom, and the proof gate queries each
+theorem with `Print Assumptions`.
+
+**Verification.**
+
+- Failing first, at HEAD ee9ef21df:
+  - The API test `a_stack_funds_its_first_cell_when_the_run_measures_its_second_lane_first`
+    in `offered_prepaid_api_test.rs` births `a :: b :: ()` with one class
+    for each lane. Its consumer measures lane b before lane a, because a peek
+    on `@"draw-b"` waits for the stored lane b datum.
+  - Hypothesis: the producer quarantines the consumer after execution.
+    Result: confirmed. The proposer created no block and recorded "native
+    evidence section contains a noncanonical field".
+  - With the selection moved and the old scan kept, the unit test
+    `a_stack_against_occurrences_in_reverse_order_draws_a_forward_prefix`
+    failed with `Err(Noncanonical)`. The property test against a test copy of
+    the old selection found the counterexample occurrences `[(1, 1), (2, 0)]`
+    with a stack of forms `[0, 1, 0]`.
+- After the fix:
+  - The unit test draws one cell at position 1, and the delta encodes.
+  - The property test (1024 cases) finds the old selection again wherever it
+    is canonical, and a canonical selection everywhere else.
+  - The API test settles on three validators with equal receipts. Its draw
+    takes the born stack with strictly increasing positions. This run also
+    measures lane b after lane a, so cell b takes that later occurrence.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1809 of 1813 tests pass with
+    the provisional caps, and 1807 of 1813 with the committed caps. 14 tests
+    are skipped. The three new tests pass.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the ee9ef21df run test by
+    test.
+  - Two committed-cap messages show another host-work usage number for the
+    two registry tests. Two repeats at the same build gave other numbers
+    again, so that number varies from run to run.
+- The proof gate passes in cost-accounting-only mode with 292 modules and 3353
+  closed assumption queries.
+- `cargo fmt --check`, the workspace doctests and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass. The
+  documentation syntax and formal source substance checks pass.
+
+**Cross-refs.** DR-66, DR-87, DR-113. Bug 11420. G3 design v5 section 1.1.
+[Prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md).
+
+## DR-127 — The capture keys measured purse heads by lane (bug 11419)
+
+**Status.** Implemented 2026-10-12 for bug 11419 of epic 8946. Step H2 of G3
+design v5 (section 1.2) is the design, and the user approved the step.
+
+**Context.**
+
+- The capture of measured purse stacks
+  (`read_measured_prepaid_stacks_with_births` in `physical.rs`) reads the
+  stacks of each measured channel at the funding root.
+- It kept one head for each encoded channel. A second head of another form
+  failed the run with "one measured purse channel has conflicting heads". The
+  births repeated that check.
+- One lane can appear in two authority forms. `[foo]` gives the ground atom
+  `Ground(canon_ground("foo"))` (`sig.rs`). A name bound to `@"foo"` gives a
+  `Name` signature after substitution (`substitute.rs`).
+- Both forms convert to the same `Sig::Ground` bytes (`cost_signature_to_sig`
+  in `authority.rs`). So they name one channel and one lane, because the lane
+  key is the digest of the channel.
+- So a run that used both forms failed after execution with no charge, with
+  or without a slot.
+
+**Decision.**
+
+1. The capture keeps the first head of each channel and accepts a later head
+   of another form. The births get the same change. The old checks stay as
+   comments.
+2. A later head names the same channel, so it names the same lane. Decoding
+   reads only the lane: `decode_purse_inventory` compares lane keys and
+   derives the channel from the head (`supply.rs`). So the kept head changes
+   no output.
+3. The cell match of the selection stays by form. The binding section of
+   [prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md)
+   requires that the complete stored `CostSignature` equals the measured
+   purse authority. DR-1 keeps ground and quote as distinct sorts. So a cell
+   funds only the occurrences of its own form.
+
+**Why no committed run changes.**
+
+- Every settlement path runs the capture before the selection, in play and
+  in replay.
+- Before this record, the capture rejected every run with two forms on one
+  measured channel. So no committed block holds such a run.
+- For every other run, the capture reads the same channels with the same
+  heads as before.
+
+**Consensus notes.**
+
+- Play and replay run the same capture, so they read the same stacks.
+- The removed head comparisons reserved no host work. So every host-work
+  reservation of the capture keeps its order and amount.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+
+**Known limit.** With an on-chain slot listed, the observation map of
+`family_selection.rs` still fails for two forms (G3 design v5 section 7.8).
+G3-0 fixes that case.
+
+**Formal model.** No formal file changes. No Rocq module models the capture
+of measured purse heads. `PrepaidReceiptStorage.v`,
+`PrepaidResourceDischarge.v` and `AggregatedAcquisitionDemand.v` model the
+receipts, their discharge and the aggregated demand.
+
+**Verification.**
+
+- Failing first:
+  - The API test `a_lane_in_two_authority_forms_settles` in
+    `offered_capture_api_test.rs` uses a client that permits lane foo. Its
+    term signs one layer with `[foo]` and another with `[n]`, where n is bound
+    to `@"foo"`. The offer lists no slot.
+  - Hypothesis: the capture rejects the second form after execution, and the
+    producer quarantines the offer. Result: confirmed at HEAD ee9ef21df and at
+    HEAD ce6581a56. The proposer recorded "one measured purse channel has
+    conflicting heads".
+  - With the new tests in place and the old checks, the unit test
+    `a_run_with_both_forms_of_a_lane_captures_its_stacks` failed with the
+    same message. The property test found a minimal input. It has one
+    measured head of the ground form, one birth head of the name form and no
+    stored stack.
+  - The unit test `both_authority_forms_of_a_lane_name_one_channel` passed
+    before and after the fix. Both forms give one channel key and one lane
+    key.
+- After the fix:
+  - The unit tests and the property test (128 cases) pass. The capture of a
+    run does not depend on the form that comes first, and it equals the
+    capture of the ground form alone.
+  - The API test settles on three validators with equal receipts.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1813 of 1817 tests pass with
+    the provisional caps, and 1811 of 1817 with the committed caps. 14
+    tests are skipped. The four new tests pass.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the run of DR-126 test
+    by test.
+  - Two committed-cap messages show another host-work usage number for the
+    two registry tests. Two repeats at the same build gave other numbers
+    again, so that number varies from run to run.
+- `cargo fmt --check`, the workspace doctests and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass. The
+  documentation syntax and formal source substance checks pass.
+
+**Cross-refs.** DR-1, DR-66, DR-126. Bug 11419. G3 design v5 section 1.2.
+[Prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md).
+
+## DR-128 — Deterministic user reducer errors are classified user failures (bug 11414)
+
+**Status.** Implemented 2026-10-12 for bug 11414 of epic 8946. The user
+approved the design `design-v1` with one change: the site of a partly signed
+join stays out (item 7).
+
+**Context.**
+
+- A deterministic user reducer error is an evaluation error whose cause is in
+  the user's term alone, such as a division by zero. Every node raises it at
+  the same place.
+- The classifier `classify_errors` maps `ReduceError` and
+  `IllegalArgumentError` to Unclassified on purpose, because each variant has
+  many causes (`economic_failure.rs`).
+- The producer joins the recorded summary with `classify_errors` after
+  execution. A class other than User gives "native offered execution has
+  non-user failure", and the producer quarantines the offer (`producer.rs`).
+  Replay applies the same check (`replay.rs`).
+- So a user could run a term that ends in such an error with no block and no
+  charge. DR-125 closed one site, a call of an unknown method. Bug 11414 lists
+  the others.
+- The policy charges an accepted deterministic failure of user code
+  ([policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md)).
+  It also forbids a default to User for an unknown variant, so each variant
+  needs an explicit class.
+
+**Decision.**
+
+1. Six new variants of `InterpreterError` name the user failures. Each holds
+   the old message, and each shows as "Reduce error: <message>". So the error
+   text and the HTTP status (422, `rholang_execution_error`) do not change.
+2. `classify_errors` maps the six variants to User. `ReduceError` and
+   `IllegalArgumentError` stay Unclassified.
+3. The reducer raises the new variants at 38 sites of `reduce.rs`. Each old
+   line stays as a comment.
+
+   | Variant | Meaning | Sites |
+   | --- | --- | --- |
+   | `DivisionByZero` | A divisor of `/` or `%` is zero | 10: Int, BigInt, BigRat and FixedPoint for `/` and `%`, and the sized integers for `/` and `%` |
+   | `ArithmeticOverflow` | An integer result does not fit its type | 6: Int negation, Int32 negation, Int product, Int quotient and remainder of `i64::MIN` by `-1`, and the sized product, quotient or remainder |
+   | `ArgumentOutOfRange` | An integer method argument is outside the method's domain | 3: `nth` past the end of a list or tuple, `nth` past the end of a byte array, and a negative `dropHead` count |
+   | `BundlePermissionError` | A send or a receive uses a bundle without that permission | 2: the send and the receive |
+   | `ValueTypeError` | An operand, receiver or argument has a type or shape that the operation rejects | 16: the relational operators, the two checks of `%%` interpolation, the receivers of `hexToBytes`, `bytesToHex` and `toUtf8Bytes`, and the ten checks of `eval_single_expr`, `eval_single_unforgeable`, `eval_to_i64` and `eval_to_bool` |
+   | `TermStructureError` | A process has more than 32767 terms at evaluation | 1: the term count of `eval_inner` |
+
+4. Two sites reuse existing user variants, and their text changes:
+   - A `%` of two floats reaches the arm of equal types, which raises
+     `OperatorNotDefined` for `float` or `float32`. The float arm stays as a
+     comment.
+   - `nth` on a value that is not a list, a tuple or a byte array raises
+     `MethodNotDefined`. The error names `nth` and the type of the value. This
+     makes the `1.nth(0)` example of DR-125 true.
+5. Three system-process sites raise `IllegalArgumentError`: a lookup of an
+   unknown URN (`system_processes.rs`), and a grant issue payload that is not
+   one byte array or that exceeds the wire limit (`offered_grants.rs`).
+   - In native execution the dispatcher makes `IllegalArgumentError` the user
+     failure `SystemProcessShapeError` (DR-114, `dispatch.rs`).
+   - In legacy execution the error stays Unclassified, and HTTP reports it
+     with status 400 (`illegal_argument`).
+6. 22 sites of `reduce.rs` stay `ReduceError`, because the user's term alone
+   cannot raise them:
+   - the payer signature and a stored seal of a residue context
+   - the region construction of a send or a receive, where a conflict needs a
+     hash collision
+   - a signed clause whose signature is not canonical after substitution
+   - a missing bound level, a wildcard or a free variable in `eval_var`, and a
+     variable with no instance
+   - the authority errors of `eval_cost_signed_term` and `eval_cost_stack`, an
+     empty token stack and a Unit stack cell
+   - an expression with no instance, and a sized operand out of its range
+7. The rejection of a join that signs some clauses but not all stays an
+   unclassified `ReduceError`. P1's join schema (def:join-schema, P1:1078-1110)
+   allows any grouping of the clauses under signatures. So that rejection is a
+   separate gap, and it will get its own design. `TermStructureError` covers
+   only the term count.
+
+**Consensus notes.**
+
+- Play and replay call the same pure `classify_errors`, so they give the same
+  class.
+- No committed protocol-6 block holds such a run, because the producer
+  dropped each one. So no committed replay changes.
+- Legacy settlement does not read the classes. A processed deploy stores only
+  its `errored` flag, which stays true.
+- Metering and host work do not change. Each raise keeps its place after the
+  same reservations, and the classifier reserves one operation for each error
+  of any variant.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+- A mixed failure still blocks publication.
+- A reducer defect that returns a value of the wrong shape now charges the
+  user. `MethodNotDefined` and `OperatorExpectedError` already carry this
+  risk.
+- A host-work limit can stop a run before it reaches the term count. With
+  the committed caps, the probe's doubling term stops this way (see
+  Verification). The producer then drops the run with "native offered
+  execution has incomplete byte measurements", as before this change.
+
+**Formal models.** No formal file changes. `EconomicFailureSummary.v` models
+the four failure classes, their union and the retained-charge rule. It takes
+the map from error variants to classes as given. A search of `formal/` finds
+no model that lists `InterpreterError` variants.
+
+**Verification.**
+
+- Failing first, at HEAD `024b4ebcb` with the provisional caps of the
+  working tree:
+  - The offered probes in `offered_funded_api_test.rs` run each case as an
+    owner-direct offer on three validators. A probe has a case at the top
+    level and a case after a COMM. The probe of the term count had one case:
+    a contract that doubles a one-send process fifteen times and then
+    evaluates the 32768 sends.
+  - Hypothesis: each case executes, and the producer then drops it with no
+    block and no charge.
+  - Result: confirmed for all 15 cases of the 8 probes. The proposer recorded
+    "native offered execution has non-user failure" each time. The check
+    before execution rejected no case, so every top-level form stays.
+  - That recorded reason cannot tell the term count from a phlo or host-work
+    stop, because every class other than User gives it. After the fix the
+    probe of the term count passed with the provisional caps. The fix
+    changes nothing before the raise, so that run reached the term count at
+    HEAD too.
+  - The unit tests in `reduce_economic_failure_tests.rs` failed in every
+    case. Each case gave Unclassified with the expected `ReduceError` text,
+    so each term reaches its site. The tests of the six variants have 10, 6,
+    4, 2, 16 and 2 cases, and the property test has 663 cases.
+  - The tests of the two reused variants and of the unknown URN failed on the
+    error value, `ReduceError`.
+  - The negative controls passed: a hand-built `GUint8(256)` and the partly
+    signed join stay an unclassified `ReduceError`.
+- The probe of the term count with the committed caps:
+  - The casper suite with the committed caps failed this probe. The
+    host-work budget stopped the doubling before the term count.
+  - The producer recorded "native offered execution has incomplete byte
+    measurements" with the errors `[HostWorkRejected]`. The run had used
+    268,434,846 of the 268,435,456 permitted verification bytes, and it
+    requested 1,200 more.
+  - The task brief keeps only the unit test if a phlo or host-work limit
+    stops this probe before the term count. So the probe stays as a comment
+    that gives this reason.
+  - The unit test `a_process_with_too_many_terms_is_a_user_failure` covers
+    the site. It runs the same doubling term in the rholang test runtime,
+    where the run reaches the term count. It also evaluates a hand-built
+    process of 32768 terms.
+- After the fix:
+  - The 7 active probes pass on three validators with both cap sets, with
+    the DR-125 probe. Each case is published as failed, and every validator
+    holds one equal receipt. The charge is the billable work and the fee,
+    the payer pays it, and the write rolls back.
+  - Every unit test checks the exact error value, its text and the user class
+    at every site. The property test uses a fixed seed. It covers 32
+    numerators of nine numeric kinds for `/` and `%`, and 32 indices past the
+    end of lists, tuples and byte arrays.
+- Test updates:
+  - `reduce_spec.rs` (8 assertions), `numeric_types_spec.rs` (the macro
+    `assert_err!` and its 12 uses), and the classifier and HTTP tests (the six
+    variants).
+  - One case that the design did not list:
+    `economic_observation_reaches_results_and_isolates_parse_and_reduction_failures`
+    asserted that an abort with `1 / 0` holds User and Unclassified. Now that
+    run holds User alone. A new case pairs the abort with the partly signed
+    join, so the test still checks that a mixed run keeps the unclassified
+    veto.
+- Suites:
+  - rholang and rspace++ (nextest, release): 4238 of 4238 tests pass, with 13
+    skipped.
+  - casper (nextest, release, 8 test threads): 1820 of 1824 tests pass with
+    the provisional caps, and 1818 of 1824 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the run of DR-127 test
+    by test.
+  - With the committed caps, the two registry failures show other host-work
+    usage numbers than the DR-127 run. The two committed runs of this change
+    gave different numbers too, with the same production code. So that number
+    varies from run to run, as DR-127 found.
+- `cargo fmt --check`, the workspace doctests and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass. The node tests
+  of the HTTP mapping pass. The documentation syntax, formal source substance
+  and STE checks pass.
+
+**Cross-refs.** DR-66, DR-113, DR-114, DR-115, DR-125, DR-127. Bug 11414.
+[The economic failure observation](cost-accounting-impl/economic-failure-observation.md)
+and
+[the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).
+
+## DR-129 — Play picks at random again, and replay keeps the canonical order (M34)
+
+**Status.** Implemented 2026-10-13 for the M34 recheck of epic 8946. The
+user approved the M34 restoration plan on 2026-10-12, with these items:
+
+- play back to `dev`'s code
+- the canonical order as the own order of replay
+- E1, E3-a, and the R3 fix after a failing test
+- the tests and the formal updates
+
+E2 stays out.
+
+**Terms.**
+
+- A pick is the candidate that an RSpace operation matches when two or
+  more candidates satisfy its patterns.
+- The canonical order is the order of DR-75. It is lexicographic in source
+  hash, digest and store index.
+- A repeated channel is a channel that one join names more than once at
+  run time.
+- The Stored check is the native replay of an operation that play stored.
+  Replay runs its greedy match with no recorded identity, and a match is a
+  mismatch.
+
+**Context.**
+
+- `dev` shuffles the candidates of each play operation at random
+  (`shuffle_with_index`). DR-75 replaced the shuffle with the canonical
+  order, because it held that play and native replay must choose the same
+  candidate.
+- Every replay role follows the recorded pick. Native replay filters its
+  candidates by the recorded COMM, and legacy replay reads the recorded
+  COMMs. So agreement on the pick needs no shared order.
+- The order matters at the replay boundary in two cases only:
+  - E1, a repeated channel. The COMM records the set of produces, not which
+    datum went to which pattern. Replay works the assignment out again, so
+    another play order gives other bindings. `dev` has this defect too.
+  - E3, the Stored check. Play tries one greedy tuple and stores the
+    operation when a commit guard vetoes it. The greedy pass of replay, in
+    canonical order, can find a tuple that passes and report a mismatch.
+- Play does not count the candidate scan. Replay host work must agree only
+  from replay to replay (DR-79 item 4, DR-100, DR-102).
+- No charge depends on the order beyond the pick. This holds for phlo
+  charges, byte charges, receipts, evidence fields and settlement inputs.
+- The standing rule of the user keeps `dev`'s version of everything that
+  the correctness or the completeness of cost accounting does not need.
+
+**Decision.**
+
+1. Play returns to `dev`'s code. `RSpace::shuffle_with_index` shuffles with
+   `rand::rng()`, as on `dev`. The canonical body stays as a comment.
+2. Replay keeps the canonical order as its own internal order. Directive
+   replay (`native_candidate.rs`) and metered native replay
+   (`native_candidate/metered.rs`) use it. Every replay charges the same
+   host work for it.
+3. E1. `order_repeated_channels` in `space_matcher.rs` gives the list of
+   each repeated channel one stable order by source hash, with the incoming
+   datum of a produce first. The greedy assignment of play is then the
+   assignment that replay finds. The change reaches play consume and
+   produce, legacy replay and the unmetered oracle.
+4. E3-a. `Match::commit_may_veto` (default false) tells whether
+   `check_commit` can veto a continuation. The Rholang matcher answers true
+   for a guard that is present and not empty. The Stored check skips such a
+   continuation in the metered session and in the unmetered oracle. The
+   metered check reserves one operation, as the metered commit check does.
+5. R3. `extract_first_match` restores a rollback in reverse order. A
+   repeated channel is saved once for each match, so the whole list, which
+   is saved first, is written back last. The fix applies because F7 failed
+   first.
+6. The test oracle `deterministic_candidates` and its property test moved
+   from `space_matcher.rs` to `candidate_order.rs`, with no change in
+   behavior.
+7. E2 stays out. Two continuations with one identity and other peeks cannot
+   occur in Rholang, because each continuation carries a random state.
+
+**Algorithm (literate form).** E1 is one chunk at the start of each greedy
+match over the channel-pattern pairs of a join.
+
+```text
+⟨order repeated channels⟩ ≡
+  for each channel x that the pairs name at least twice, at its first pair:
+    L ← the candidate list of x
+    key(c) = (index(c) ≠ −1, h(c))        -- the incoming datum first, then the source hash.
+    if L is not sorted by key:
+      save L in the rollback
+      sort L by key, keeping the order of equal keys.
+```
+
+E3-a adds one step to each candidate continuation of the Stored check.
+
+```text
+⟨Stored check⟩ ≡
+  for each candidate continuation k, in canonical order:
+    reserve one operation
+    if commit_may_veto(k): skip k
+    if the greedy match of k succeeds: report a mismatch
+  accept the stored operation
+```
+
+**Why the parts agree.**
+
+- Play picks, for each pattern, the first datum in its order that matches.
+  A datum before the pick that play did not take fails that pattern.
+- Replay keeps only the recorded data and takes, for each pattern, the
+  first match in its own order. When the two orders agree on the recorded
+  data, replay takes the datum that play took.
+- E1 makes the orders agree for a repeated channel, because phase one of the
+  canonical order sorts by source hash too
+  (`CandidateSourceOrder.filter_commutes_with_canonical_sort`).
+- Data with one source hash have equal pars and random state, so a tie
+  changes no binding.
+- With E1, a continuation with no veto that replay can match is one that
+  play can match too. So the Stored check rejects only a false claim.
+- A continuation that can veto may reject the tuple of play and accept the
+  tuple of replay. E3-a therefore skips it.
+
+**Remaining differences from `dev` in the changed `dev` files.** Each one
+serves cost accounting.
+
+- `ops_produce.rs` and `ops_consume.rs` keep the accounting observer of
+  each operation and its COMM, and the produce counter of the incoming
+  datum in the COMM. Native metering reads them.
+- Both files also retire matched data in descending store index. The
+  native replay session retires in the same order
+  (`native_session/result.rs`), so a repeated channel loses the same data
+  in play and in replay.
+- `space_matcher.rs` keeps E1 and R3 of this record.
+- The `Match` trait of rspace++ keeps `get_metered` and
+  `check_commit_metered` (DR-88) and `commit_may_veto` (this record).
+- `rspace++/Cargo.toml` keeps the serde `rc` feature. The canonical order of
+  replay digests shared continuations, which needs it.
+- The candidate order of play is `dev`'s.
+
+**Consensus notes.**
+
+- The branch accepts only fresh-genesis networks (DR-6, DR-34), so no
+  network mixes `dev` nodes and branch nodes.
+- Play picks at random in every ambiguous operation, as on `dev`. Replay
+  follows the record, so the block of an honest producer replays on every
+  validator.
+- E1 changes the pick of play only for a repeated channel. Protocol 6 is
+  unreleased and activates with the branch binary (DR-66).
+- E3-a changes when native replay accepts a block. It accepts a Stored
+  claim on a continuation whose commit can veto, as `dev`'s replay accepts
+  every Stored claim.
+- No wire, evidence or receipt format changes.
+
+**Residual risks.**
+
+- R1. A dishonest producer can claim Stored on a guarded continuation, as
+  `dev` allows.
+- R2. A matcher that overrides `check_commit` but not `commit_may_veto`
+  makes the Stored check unsound. A unit test pins the Rholang matcher.
+- R6. A user can still grind source hashes to win a join on a repeated
+  channel. No test can catch this.
+- E4. Two data that differ only in Produce metadata need equal pars and
+  random state, so a Rholang run cannot make them.
+- R7. G3 design v7 depends on the shared order: its join residual and its
+  Stored detector. The G3 v8 review must account for this record.
+- A comment in the metered tests cites pgmcp bug 10137. After a vetoed
+  join on a repeated channel, play and the metered selection could choose
+  other data. R3 matches that defect. This record fixes R3 in play, and
+  the comment stays as written.
+
+**Formal models.**
+
+- `NativeCandidateOrder.tla` now lets play pick any candidate that
+  satisfies the pattern. Replay retires the first candidate, in canonical
+  order, that satisfies the pattern and equals the recorded payload.
+- `PlayReplayAgree` now also requires that the two stores keep one
+  multiset. `InsertionIndependent` now states the order of replay. The old
+  definitions stay as comments.
+- The control `NativeCandidateOrderReplaySourceMatchUnsafe` replaces
+  `NativeCandidateOrderReplayNoTieBreakUnsafe`. The new control lets replay
+  follow the recorded source hash only, and it violates `PlayReplayAgree`.
+  The old control violates nothing now. Its cfg keeps a superseded header.
+- `CandidateSourceOrder.v` keeps its 14 theorems. Its header names replay
+  and marks the role in play as superseded. `PROOF_ARTIFACTS.md` says the
+  same.
+- `TranslationFaithfulness.v` has an amendment comment after the PR #466
+  section. The corollary on parallel symmetry models no candidate choice,
+  so it stays true.
+- `NativeCandidateDigestCache.v` does not change.
+
+**Verification.**
+
+- Failing first, in the order of the plan:
+  - F1-F3 (`random_candidate_order_tests`, rspace++) ran at HEAD code. F1
+    picked only one of three data in 200 runs, and F2 fired only one of
+    three continuations. In F3 every run picked the canonical first datum.
+  - After the restore of the shuffle, F1-F3 pass.
+  - F4 (E1) and F5 (E3) first replayed through the legacy replay only. F4
+    failed in 22 of 64 runs, and F5 passed, because that replay has no
+    Stored check. Both now replay through the native replay session too.
+  - After the restore, F4 failed in 66 of 128 runs: 32 of 64 in the native
+    session and 34 of 64 in the legacy replay. F5 failed in 33 of 128 runs,
+    all with the guard that accepts the canonical first datum.
+  - After E1, F4 passes, and F5 still fails in 30 of 128 runs.
+  - After E3-a, F5 passes. F6 passes with 512 cases over nine families of
+    terms. Each family except the repeated channel shows two or more picks,
+    and E1 gives the repeated channel one pick by design.
+  - F7 (R3) passed at HEAD, because the canonical order tried the accepted
+    continuation first. After the restore it failed in 31 of 64 runs, and
+    after E1 and E3-a in 38 and 33 of 64 runs. After the R3 fix it passes.
+  - A unit test pins `commit_may_veto` of the Rholang matcher to the
+    continuations whose commit can veto (risk R2).
+- Tests that the restoration broke. Each fix keeps the old code as a
+  comment:
+  - `store_consumes_greedy_guard_veto_without_exhaustive_search`, rewritten
+    as the plan says. It runs 64 times and replays Store or AcceptedComm,
+    as play stored or fired. The two other directive tests keep their logic,
+    with new comments and `commit_may_veto` overrides.
+  - `compacted_schedule_equals_legacy_schedule` (DR-84), which compared the
+    whole logs of two plays. Two of its four terms meet a choice, so for them
+    it compares the sorted produces and consumes, the COMM count and the root
+  - the frozen metered selection of two charge-parity tests, which now
+    mirrors the one operation of E3-a
+  - the rspace++ source guard, which now requires `dev`'s shuffle
+- The plan named five rholang spec tests that would break. Three broke in
+  three runs: the competing produces, the guarded match and the persistent
+  receive. They now replay each run and require the known outcomes.
+- The other two stay canonical in 72 plays each, because the scheduler runs
+  the sends first. They have a DR-129 note and no other change.
+- Suites (nextest, release), each three times under each cap set:
+  - rholang and rspace++: 4246 of 4246 tests pass in all six runs, with 13
+    skipped. The baselines at `717a33b16` have 4238 of 4238.
+  - casper (8 test threads): 1820 of 1824 tests pass in each provisional
+    run, and 1818 of 1824 in each committed run, with 14 skipped. Each
+    failing set equals the run of DR-128 (`717a33b16`) test by test.
+  - The sorted panic messages equal those of DR-128. The committed runs
+    differ only in the host-work usage numbers of the two registry tests,
+    which vary from run to run (DR-127).
+  - The offered API tests (admission, capture, funded, gateway slot, guard,
+    prepaid, source cap) ran in each casper run. Admission (14 tests),
+    capture, guard and prepaid pass in every run. The other failures are
+    the known failures of each cap set: the two registry tests and two
+    gateway-slot tests under the committed caps, and one gateway-slot test
+    and the source-cap test under the provisional caps.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+  and the workspace doctests pass.
+- The proof gate in cost-accounting-only mode passes: 292 modules and 3,353
+  closed assumption queries. The new comment lines moved the Rocq line count
+  to 113,371, and the verification document now states that count.
+- The TLA gate for `NativeCandidateOrder` passes: the two safe
+  configurations and three refutations, among them the new control.
+- The documentation syntax, formal source substance and STE checks pass.
+
+**Cross-refs.** DR-6, DR-34, DR-66, DR-75, DR-79, DR-88, DR-100, DR-102,
+DR-107. [The canonical candidate order diagram](diagrams/canonical-candidate-order.svg).
+
+**Amendment on the F1R3Lang branch (2026-10-16).** On
+`feature/f1r3lang-mettail-only`, user decision 6 removes E3-a. User
+decision 4 keeps the complete guard search of defect D1 in play and in
+native replay. The random play order, E1 and R3 stay. Phase 11 of
+[the `where`-clause plan](../../plans/where-clauses-and-match-guards-2026-04-29.md#8-implementation-phasing)
+records the decision, its tests and the accepted risk of a search with no
+step cap.
+
+## DR-130 — The branch keeps its fixes of `dev` defects while `dev` leaves them
+
+**Status.** Decided by the user on 2026-10-13 for epic 8946. The user
+said: "Keep and document the bug fixes so long as they do not conflict
+with dev's changes; if dev fixes them another way, revert to dev's
+approach".
+
+**Terms.**
+
+- A carried fix is a change on this branch that corrects a defect that
+  `dev` still has.
+- The merge base is `93e38575e`, the `dev` merge of 2026-10-06. `dev`
+  means `origin/dev` at `0f3943d64`.
+- An overlap is a `dev` change since the merge base that touches the
+  lines of a carried fix.
+
+**Context.**
+
+- The standing rule of the user keeps the version of `dev` for everything
+  that the correctness or the completeness of cost accounting does not
+  need (DR-129).
+- A read-only audit of this branch against `dev` found ten carried fixes.
+  Cost accounting needs five of them. It does not need the other five.
+
+**Decision.**
+
+1. The branch keeps the ten carried fixes in the table below.
+2. A carried fix stays only while it does not conflict with a `dev`
+   change.
+3. If `dev` fixes a defect in another way, the branch takes the fix of
+   `dev` and drops its own.
+4. For a fix that cost accounting needs, the merge also checks that the
+   fix of `dev` meets the same requirement. The test that pins the
+   requirement stays.
+5. The report to `dev` lists each carried fix. `dev` can then take the
+   fix or correct the defect in its own way.
+6. This record covers only the fixes that exist now. A `dev` defect that
+   is found later goes to the report to `dev`. The branch fixes it only
+   if cost accounting needs the fix (DR-129).
+
+**Carried fixes.** The last column compares the lines of each fix with the
+`dev` changes since the merge base.
+
+| Row | Defect on `dev` | Fix on this branch | Needed by cost accounting | Overlap with `dev` |
+|---|---|---|---|---|
+| R6 | A join that takes two data from one channel removes them in ascending index order. The first removal shifts the second index, so the wrong datum goes. | Remove in descending index order (`ops_produce.rs`, `ops_consume.rs`, `replay_rspace.rs`) | Yes. Native replay must agree on joins that repeat a channel. | None |
+| K1 | The DER to R‖S conversion of secp256k1-eth pads R and S at the wrong end. About 1 signature in 128 then fails verification (`6a4c71ec0`). | Left-pad R and S to 32 bytes (`secp256k1_eth.rs`) | Yes. Cosigned envelopes with mixed algorithms need it (DR-2). | None |
+| H16 | `getBlockData` and `getDeployData` hold a read guard across `produce().await`. | Release the guard before `produce` (`system_processes.rs`) | Yes. The reduction scheduler needs it (`1af280644`). | None. `dev` changed other parts of the file. |
+| W13 | The formal gate passes the source inventory to `jq` as one argument. Above 128 KiB, the call fails with E2BIG. | Pass the inventory on standard input (`scripts/ci/check-formal-gate.sh`) | Yes. The formal tree of this branch is above the limit. | None |
+| W12 | Two audit scripts scan `docs/theory`, which exists on neither branch. So they check nothing. | Scan `docs/casper/theory` (`scripts/audit/check-rocq-line-refs.sh`, `check-source-line-refs.sh`) | Yes. The scripts then check the cost-accounting documents. | None |
+| R17 | The state importer and exporter panic on a malformed chunk from a peer. | Return errors (`rspace_importer.rs`, `rspace_exporter.rs`, `engine/initializing.rs`) | No | None. `dev` changed other parts of `initializing.rs`. |
+| R12 | Merge indexing panics on an affected consume that has no join record. | Skip that consume (`merger/state_change.rs`, `798dc5772`) | No | None |
+| H22 | The numeric merge panics on a malformed datum in `decode_rnd`. | Return `MergeError`, and require one distinct datum or two distinct random states (`rholang_merging_logic.rs`) | No | Yes. `dev` reworked the numeric merge for BigInt balances (`b2a858a3a`, `8d0341cfe`). Its `decode_rnd` still panics. |
+| H12 | `Cost::to_proto` casts a negative cost to a large unsigned value. | Convert with `try_from` (`accounting/costs.rs`) | No | None. `dev` added code in another part of the file. |
+| H34 | A test resets replay to the post-state root of play. | Reset replay to the pre-state root (`non_deterministic_processes_spec.rs`) | No. The change is in a test only. | None |
+
+**At the next `dev` merge.**
+
+- H22: take the BigInt rework of `dev`. Apply the H22 fix again only
+  where it leaves the logic of `dev` unchanged. The same file carries the
+  merged `cost_authority` of the numeric merge. Cost accounting needs that
+  change, so the merge carries it into the new code of `dev`.
+- Every other row: check whether `dev` fixed the defect. If it did, apply
+  items 3 and 4 of the decision.
+
+**Cross-refs.** DR-2, DR-129. The report to `dev` and the audit are local
+artifacts and are not in the repository.

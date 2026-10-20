@@ -2203,6 +2203,9 @@ fn would_close_cycle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the seam of the tests that require a panic.
+    use crate::rust::interpreter::panic_child::PanicChild;
 
     // --- LockId newtype discipline --------------------------------
 
@@ -3725,9 +3728,21 @@ mod tests {
     /// pre-wiring regression that would otherwise sweep every
     /// stray sentinel-scoped entry.
     #[test]
-    #[should_panic(expected = "sentinel")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "sentinel")]
     fn release_all_for_deploy_panics_on_zero_sentinel() {
+        let child = PanicChild::new(
+            module_path!(),
+            "release_all_for_deploy_panics_on_zero_sentinel",
+        );
+        if !child.is_child() {
+            child.expect_panic("sentinel");
+            return;
+        }
         let reg = LockRegistry::new();
+        child.subject_reached();
         let _ = reg.release_all_for_deploy(&[0u8; 32]);
     }
 
@@ -5720,9 +5735,21 @@ mod tests {
     /// at the API boundary.  Same discipline as
     /// `release_all_for_deploy`.
     #[test]
-    #[should_panic(expected = "sentinel")]
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the test expected a panic. A child process now runs the subject, and
+    // this process checks the exit status and the stderr of the child.
+    // #[should_panic(expected = "sentinel")]
     fn cancel_all_waiters_for_deploy_panics_on_zero_sentinel() {
+        let child = PanicChild::new(
+            module_path!(),
+            "cancel_all_waiters_for_deploy_panics_on_zero_sentinel",
+        );
+        if !child.is_child() {
+            child.expect_panic("sentinel");
+            return;
+        }
         let reg = LockRegistry::new();
+        child.subject_reached();
         let _ = reg.cancel_all_waiters_for_deploy(&[0u8; 32]);
     }
 

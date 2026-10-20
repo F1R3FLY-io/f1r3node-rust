@@ -227,6 +227,28 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
         .find(|(n, _, _)| *n == "Par")
         .map(|(_, _, names)| names.to_vec())
         .expect("Par is in the bincode registry");
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // checkpoint merge e5102e945 appended `cost_signed_terms` (tag 13) and
+    // `cost_stacks` (tag 14) to `Par`. Both come last in declaration order and
+    // in tag order, so they extend both lists without a change of the order
+    // that came before them.
+    // assert_eq!(
+    //     par_serde,
+    //     vec![
+    //         "sends",
+    //         "receives",
+    //         "news",
+    //         "exprs",
+    //         "matches",
+    //         "unforgeables",
+    //         "bundles",
+    //         "connectives",
+    //         "conditionals",
+    //         "locally_free",
+    //         "connective_used",
+    //     ],
+    //     "`Par`'s SERDE order is declaration order: tags 1,2,4,5,6,7,11,8,12,9,10"
+    // );
     assert_eq!(
         par_serde,
         vec![
@@ -241,15 +263,24 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
             "conditionals",
             "locally_free",
             "connective_used",
+            "cost_signed_terms",
+            "cost_stacks",
         ],
-        "`Par`'s SERDE order is declaration order: tags 1,2,4,5,6,7,11,8,12,9,10"
+        "`Par`'s SERDE order is declaration order: tags 1,2,4,5,6,7,11,8,12,9,10,13,14"
     );
     let par_protobuf: Vec<u32> = protobuf["Par"].iter().map(|f| f.tag).collect();
+    // assert_eq!(
+    //     par_protobuf,
+    //     vec![1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    //     "`Par`'s PROTOBUF order is ascending tag — `bundles` (11) and `conditionals` (12) move \
+    //      to the END, past `connectives` (8), `locally_free` (9) and `connective_used` (10)"
+    // );
     assert_eq!(
         par_protobuf,
-        vec![1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        vec![1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
         "`Par`'s PROTOBUF order is ascending tag — `bundles` (11) and `conditionals` (12) move \
-         to the END, past `connectives` (8), `locally_free` (9) and `connective_used` (10)"
+         past `connectives` (8), `locally_free` (9) and `connective_used` (10), ahead of the \
+         two cost fields (13, 14)"
     );
 
     let tc_serde: Vec<&str> = CONFORMANCE_REGISTRY
@@ -257,19 +288,31 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
         .find(|(n, _, _)| *n == "TaggedContinuation")
         .map(|(_, _, names)| names.to_vec())
         .expect("TaggedContinuation is in the bincode registry");
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9): the
+    // checkpoint merge e5102e945 added the plain field `cost_authority` (tag 4)
+    // to `TaggedContinuation`. It follows `guard` in both formats.
+    // assert_eq!(
+    //     tc_serde,
+    //     vec!["guard", "tagged_cont"],
+    //     "`TaggedContinuation`'s SERDE order puts the plain field FIRST — prost-build writes \
+    //      every plain field before every oneof, whatever the `.proto` declared"
+    // );
     assert_eq!(
         tc_serde,
-        vec!["guard", "tagged_cont"],
-        "`TaggedContinuation`'s SERDE order puts the plain field FIRST — prost-build writes \
+        vec!["guard", "cost_authority", "tagged_cont"],
+        "`TaggedContinuation`'s SERDE order puts the plain fields FIRST — prost-build writes \
          every plain field before every oneof, whatever the `.proto` declared"
     );
     let tc_protobuf: Vec<&str> = protobuf["TaggedContinuation"]
         .iter()
         .map(|f| f.name)
         .collect();
+    // assert_eq!(
+    //     tc_protobuf,
+    //     vec!["tagged_cont", "guard"],
     assert_eq!(
         tc_protobuf,
-        vec!["tagged_cont", "guard"],
+        vec!["tagged_cont", "guard", "cost_authority"],
         "★★ `TaggedContinuation`'s PROTOBUF order is THE OPPOSITE: the oneof occupies tags \
          1-2 and `guard` is tag 3, and prost places a oneof at the position of its LOWEST \
          tag. This is the message whose serde order already produced a 95-byte encoding with \

@@ -6,10 +6,13 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::time::Instant;
 
+use rand::seq::SliceRandom;
 use serde::Serialize;
 
 use super::RSpace;
-use crate::rspace::candidate_order::CandidateSource;
+// Changed by DR-129: restored dev's randomized candidate order (user decision
+// 2026-10-12). Play no longer calls the canonical order.
+// use crate::rspace::candidate_order::CandidateSource;
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::internal::*;
@@ -20,7 +23,9 @@ use crate::rspace::rspace_interface::{
     MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, ProduceCommitGuard,
     RSpaceAccountingObserver, RSpaceOperationCompletion, RSpaceOperationSource, commit_produce,
 };
-use crate::rspace::serializers::serializers::CandidateOrderingBytes;
+// Disabled by the merge of feature/cost-accounted-rho: DR-129's random
+// `shuffle_with_index` has no ordering-bytes bound, so nothing here names it.
+// use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Produce};
 
@@ -327,10 +332,25 @@ where
         Ok(None)
     }
 
-    pub(super) fn shuffle_with_index<D: CandidateOrderingBytes + CandidateSource>(
-        &self,
-        t: Vec<D>,
-    ) -> Vec<(D, i32)> {
-        crate::rspace::candidate_order::canonical_candidates(t)
+    // Changed by DR-129: restored dev's randomized candidate order (user
+    // decision 2026-10-12). Native replay follows the recorded pick, so play
+    // does not need the canonical order of DR-75. Replay keeps that order as its
+    // own internal order (`native_candidate.rs`, `native_candidate/selection.rs`).
+    // pub(super) fn shuffle_with_index<D: Serialize + CandidateSource>(
+    //     &self,
+    //     t: Vec<D>,
+    // ) -> Vec<(D, i32)> {
+    //     crate::rspace::candidate_order::canonical_candidates(t)
+    // }
+    pub(super) fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
+        let mut indexed_vec = t
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| (d, i as i32))
+            .collect::<Vec<_>>();
+        if indexed_vec.len() >= 2 {
+            indexed_vec.shuffle(&mut rand::rng());
+        }
+        indexed_vec
     }
 }

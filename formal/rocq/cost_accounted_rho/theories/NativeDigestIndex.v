@@ -57,6 +57,11 @@
    rspace++/src/rspace/hot_store/native_store.rs; tests in
    native_store/tests.rs (digest_collision_is_detected). *)
 
+(* DR-131: host work is removed, so the charge results of this file describe
+   deleted code. collision_check_found, collision_check_absent,
+   collision_check_collision and collision_check_preserves_key_semantics
+   still describe the digest index. *)
+
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 Import ListNotations.
 

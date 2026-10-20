@@ -32,7 +32,6 @@
 use models::rhoapi::{
     Bundle, CostSignature, CostStack, Expr, If, Match, New, Par, Receive, Send, Var, VarRef,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::rholang::par_children::dismantle;
 use models::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
@@ -42,26 +41,17 @@ use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
 use models::rust::rholang::sorter::send_sort_matcher::SendSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::clone_backing::BackingMeter;
 
 use super::accounting::costs::Cost;
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::host_work::HostWorkBudget;
 use super::metering::MeteredMachine;
 use super::substitute_drive::{
     maybe_substitute_var_ref_view, maybe_substitute_var_view, EnvView, SubCtx, SubVal, SubWork,
 };
 
 #[cfg(test)]
-#[path = "substitute/native_cost_signature.rs"]
-mod native_cost_signature;
-#[cfg(test)]
-#[path = "substitute/native_expr.rs"]
-mod native_expr;
-#[cfg(test)]
-#[path = "substitute/native_par.rs"]
-mod native_par;
+mod cost_signature_stack_safety_tests;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/Substitute.scala
 pub trait SubstituteTrait<A> {
@@ -81,26 +71,57 @@ pub struct Substitute {
 }
 
 impl Substitute {
-    fn reserve_host_work<A: prost::Message>(
-        term: &A,
-        env: &Env<Par>,
-        host_work: Option<&HostWorkBudget>,
-    ) -> Result<(), InterpreterError> {
-        let bindings =
-            u64::try_from(env.env_map.len()).map_err(|_| InterpreterError::HostWorkRejected)?;
-        let bytes =
-            u64::try_from(term.encoded_len()).map_err(|_| InterpreterError::HostWorkRejected)?;
-        if let Some(host_work) = host_work {
-            host_work.reserve(
-                HostWorkDimension::SubstitutionBindings,
-                HostWorkUnits::new(bindings),
-            )?;
-            host_work.reserve(
-                HostWorkDimension::SubstitutionBytes,
-                HostWorkUnits::new(bytes),
-            )?;
+    fn substitute_measured<A: prost::Message>(
+        &self,
+        term: A,
+        substitute: impl FnOnce(A) -> Result<A, InterpreterError>,
+    ) -> Result<(A, u64), InterpreterError> {
+        let minimum = i64::from(!self.metering.budget().is_legacy());
+        let input_len = (term.encoded_len() as i64).max(minimum);
+        match substitute(term) {
+            Ok(subst_term) => {
+                let measured = subst_term.encoded_len();
+                self.metering.reserve_substitution(Cost::create(
+                    (measured as i64).max(minimum),
+                    "substitution",
+                ))?;
+                let measured = u64::try_from(measured).map_err(|_| {
+                    InterpreterError::BugFoundError(
+                        "substitution byte count does not fit in u64".to_owned(),
+                    )
+                })?;
+                Ok((subst_term, measured))
+            }
+            Err(error) => {
+                self.metering
+                    .reserve_substitution(Cost::create(input_len, "substitution"))?;
+                Err(error)
+            }
         }
-        Ok(())
+    }
+
+    pub(crate) fn substitute_and_measure<A: prost::Message>(
+        &self,
+        term: A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+    {
+        self.substitute_measured(term, |term| self.substitute(term, depth, env))
+    }
+
+    pub(crate) fn substitute_no_sort_and_measure<A: prost::Message>(
+        &self,
+        term: A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+    {
+        self.substitute_measured(term, |term| self.substitute_no_sort(term, depth, env))
     }
 
     pub(crate) fn substitute_cost_signature(
@@ -118,26 +139,6 @@ impl Substitute {
         }
     }
 
-    /// Metered signature substitution uses the same explicit worklist as the
-    /// unmetered entry. The source branch's recursive native helper is kept as
-    /// a shallow differential oracle, never as the production execution path.
-    pub(crate) fn substitute_cost_signature_metered(
-        &self,
-        signature: CostSignature,
-        depth: i32,
-        env: &Env<Par>,
-        backing: &dyn BackingMeter,
-    ) -> Result<CostSignature, InterpreterError> {
-        match self.sub_drive_with_backing(
-            SubWork::Signature(Some(signature), SubCtx::root(depth)),
-            env,
-            Some(backing),
-        )? {
-            SubVal::Signature(signature) => Ok(signature),
-            _ => unreachable!("metered signature substitution produced a different value"),
-        }
-    }
-
     pub(crate) fn substitute_cost_stack(
         &self,
         stack: CostStack,
@@ -147,23 +148,6 @@ impl Substitute {
         match self.sub_drive(SubWork::Stack(stack, SubCtx::root(depth)), env)? {
             SubVal::Stack(stack) => Ok(stack),
             _ => unreachable!("stack substitution produced a different value"),
-        }
-    }
-
-    pub(crate) fn substitute_cost_stack_metered(
-        &self,
-        stack: CostStack,
-        depth: i32,
-        env: &Env<Par>,
-        backing: &dyn BackingMeter,
-    ) -> Result<CostStack, InterpreterError> {
-        match self.sub_drive_with_backing(
-            SubWork::Stack(stack, SubCtx::root(depth)),
-            env,
-            Some(backing),
-        )? {
-            SubVal::Stack(stack) => Ok(stack),
-            _ => unreachable!("metered stack substitution produced a different value"),
         }
     }
 
@@ -248,39 +232,17 @@ impl Substitute {
     /// implementation is checked against the recursive oracle and protobuf
     /// output length; this method still changes neither charge count, order, nor
     /// value.
-    pub fn substitute_and_charge<A>(
+    pub fn substitute_and_charge<A: prost::Message>(
         &self,
         term: A,
         depth: i32,
         env: &Env<Par>,
-        host_work: Option<&HostWorkBudget>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: prost::Message,
     {
-        Self::reserve_host_work(&term, env, host_work)?;
-        // scala 'charge' function built in here
-        //
-        // ⚠ BEFORE the move — see this method's documentation. The error arm
-        // charges on the input, and after `substitute` takes it there is no
-        // input left to measure.
-        let minimum = i64::from(!self.metering.budget().is_legacy());
-        let input_len = (term.encoded_len() as i64).max(minimum);
-        match self.substitute(term, depth, env) {
-            Ok(subst_term) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (subst_term.encoded_len() as i64).max(minimum),
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.metering
-                    .reserve_substitution(Cost::create(input_len, "substitution"))?;
-                Err(th)
-            }
-        }
+        self.substitute_and_measure(term, depth, env)
+            .map(|(term, _)| term)
     }
 
     /// Substitute WITHOUT sorting, and levy the substitution charge.
@@ -291,35 +253,17 @@ impl Substitute {
     /// defect (`term: &A`, opening with `term.clone()`) and it is on the receive
     /// path: `eval_receive` substitutes the continuation BODY through it, which
     /// is the largest term a receive touches.
-    pub fn substitute_no_sort_and_charge<A>(
+    pub fn substitute_no_sort_and_charge<A: prost::Message>(
         &self,
         term: A,
         depth: i32,
         env: &Env<Par>,
-        host_work: Option<&HostWorkBudget>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: prost::Message,
     {
-        Self::reserve_host_work(&term, env, host_work)?;
-        // scala 'charge' function built in here
-        let minimum = i64::from(!self.metering.budget().is_legacy());
-        let input_len = (term.encoded_len() as i64).max(minimum);
-        match self.substitute_no_sort(term, depth, env) {
-            Ok(subst_term) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (subst_term.encoded_len() as i64).max(minimum),
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.metering
-                    .reserve_substitution(Cost::create(input_len, "substitution"))?;
-                Err(th)
-            }
-        }
+        self.substitute_no_sort_and_measure(term, depth, env)
+            .map(|(term, _)| term)
     }
 
     // pub here for testing purposes

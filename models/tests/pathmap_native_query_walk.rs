@@ -340,8 +340,16 @@ fn bounded_walk_over_split_elements_visits_every_entry_once() {
     let mut visited: Vec<Vec<Vec<u8>>> = Vec::with_capacity(3);
     let mut current: Vec<Vec<u8>> = Vec::new();
     for _ in 0..3 {
-        let mut from_key: Vec<u8> = current.iter().flatten().copied().collect();
-        from_key.push(0x00);
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+        // separator byte joins the key in one expression.
+        // let mut from_key: Vec<u8> = current.iter().flatten().copied().collect();
+        // from_key.push(0x00);
+        let from_key: Vec<u8> = current
+            .iter()
+            .flatten()
+            .copied()
+            .chain(std::iter::once(0x00))
+            .collect();
         match next_value_path(&map, &from_key) {
             Some(segments) => {
                 current = segments.clone();

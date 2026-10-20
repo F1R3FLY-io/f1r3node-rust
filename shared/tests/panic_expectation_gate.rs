@@ -151,6 +151,102 @@ const CATCH_UNWIND_ALLOWLIST: &[Allowed] = &[
          through a differential that compares renders, and neither is a test author's \
          unilateral call.",
     ),
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): a differential test of the overflow profile, from the base of the merge.
+    (
+        "casper/src/rust/safety/initial_fault.rs",
+        2,
+        "TEST HARNESS, DIFFERENTIAL. `ordinary_sum_overflow_matches_the_compiler_profile` \
+         runs the frozen `values().sum()` and production `total_weight` on weights whose \
+         sum overflows. The test passes when both forms take the same disposition. Both \
+         forms return the same sum, or both forms panic. The debug and release profiles \
+         differ in overflow checks, so the test requires neither outcome. A panic of one \
+         form alone fails the test.",
+    ),
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): an attribution wrapper of an F1R3Lang allocation test.
+    (
+        "models/tests/bincode_encoder_space.rs",
+        3,
+        "TEST HARNESS, ATTRIBUTION. `fresh_pathmap_reconstruction::check` runs each \
+         PathMap insert and each create_path under the allocation counter. The two calls \
+         of the interceptor turn any panic into a new panic that names the ordinal, the \
+         path and the payload size. The third occurrence is the import. No outcome \
+         requires a panic, and a panic in either operation fails the test.",
+    ),
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the corpus filters of three stack-safety parity suites of the merge.
+    (
+        "rholang/src/rust/interpreter/accounting/delta_sigma/estimate/stack_safety_tests.rs",
+        1,
+        "TEST HARNESS, CORPUS FILTER. `compile` normalizes one corpus or generated program \
+         for the parity checks of the estimate. The external parser panics on syntax that \
+         it does not implement, for example `select` in `examples/old/*/Cell2.rho`. So a \
+         panic counts as a rejection, as an error does, and the program leaves the corpus. \
+         The file has floors of 40 compiled corpus programs and 56 of 64 compiled generated \
+         programs, so a filter that rejects every program fails.",
+    ),
+    (
+        "rholang/src/rust/interpreter/accounting/delta_sigma/stack_safety_tests.rs",
+        1,
+        "TEST HARNESS, CORPUS FILTER. `compile_corpus_source` normalizes one corpus program \
+         for the parity check of the iterative walks. The external parser panics on syntax \
+         that it does not implement, for example `select` in `examples/old/*/Cell2.rho`. So \
+         a panic counts as a rejection, as an error does, and the program leaves the corpus. \
+         The parity test has a floor of 40 compiled programs, so a filter that rejects every \
+         program fails.",
+    ),
+    (
+        "rholang/src/rust/interpreter/accounting/lexical/stack_safety_tests.rs",
+        1,
+        "TEST HARNESS, CORPUS FILTER. `compile_corpus_source` normalizes one corpus program \
+         for the parity check of the lexical resolver. The external parser panics on syntax \
+         that it does not implement, for example `select` in `examples/old/*/Cell2.rho`. So \
+         a panic counts as a rejection, as an error does, and the program leaves the corpus. \
+         The parity test has a floor of 40 compiled programs, so a filter that rejects every \
+         program fails.",
+    ),
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): the differential harness of the by-reference predicates of the merge.
+    (
+        "rholang/src/rust/interpreter/matcher/has_locally_free.rs",
+        3,
+        "TEST HARNESS, DIFFERENTIAL. `by_reference_tests::same_outcome` runs the owned \
+         predicate and its by-reference form on one generated value. The test passes when \
+         both forms take the same disposition. Both forms return the same answer, or both \
+         forms panic. A panic of one form alone fails the test. The third occurrence is the \
+         import. The test that required a panic of both forms now uses the child-process \
+         seam.",
+    ),
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): two fault-injection tests of the native replay session.
+    (
+        "rspace++/src/rspace/replay_rspace/native_session/tests.rs",
+        2,
+        "TEST HARNESS, INJECTED FAULT. Each of the two tests injects its own panic. \
+         `publication_unwind_permanently_closes_the_session` sets the flag that makes the \
+         test double `Restore::publish` panic. `publication_unwind_closes_before_ticket_cleanup` \
+         calls `panic!` in its own closure. No production code must panic, and each `is_err` \
+         check only confirms that the injected fault fired. The tests check the state after \
+         the unwind. The session stays closed, and the publication guard closes before the \
+         ticket drops. The awaited checks of the first test need the session after the \
+         unwind, and a destructor cannot await.",
+    ),
+    // Added by the merge of feature/cost-accounted-rho (plan step 1.9, panic-expectation
+    // policy test): a fault-injection test of the export of the native replay session.
+    (
+        "rspace++/src/rspace/replay_rspace/native_session/tests/export.rs",
+        2,
+        "TEST HARNESS, INJECTED FAULT. \
+         `persistence_panic_cannot_publish_evidence_or_reopen_the_session` first panics in \
+         its own closure while it holds the history lock. That panic poisons the lock, and \
+         the first interceptor contains it. The export then panics on the poisoned lock, at \
+         the `history lock` expectation of the history repository, and the second \
+         interceptor contains that unwind. The test then checks that the session stays \
+         closed, and that export, checkpoint and completed evidence return errors. These \
+         checks are awaited calls on the session after the unwind, and a destructor cannot \
+         await.",
+    ),
     // ── the token, but not the construct ─────────────────────────────────────
     (
         "rspace++/libs/rspace_rhotypes/tests/ffi_absent_required_child.rs",
@@ -433,7 +529,10 @@ fn every_unwind_interceptor_is_allowlisted_with_a_reason() {
         }
     }
 
-    for (path, _) in &allowed {
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // the loop reads only the keys of the map.
+    // for (path, _) in &allowed {
+    for path in allowed.keys() {
         if !observed.contains_key(path) {
             problems.push(format!(
                 "  ★ STALE ENTRY — {path} is allowlisted but no longer contains the \

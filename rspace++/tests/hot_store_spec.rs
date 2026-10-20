@@ -20,6 +20,12 @@ use serde::Serialize;
 
 // See rspace/src/test/scala/coop/rchain/rspace/HotStoreSpec.scala
 
+// Changed by the merge of feature/cost-accounted-rho (compile blocker C3): the
+// hot store's `put_*` and `remove_*` methods return a `Result` (F1R3Lang), and
+// 41 calls in this file dropped it. Each of those calls now ends in
+// `.expect(..)`, so a refused write fails the property instead of passing
+// unseen. No other text of those calls changed.
+
 type Channel = String;
 type Data = Datum<String>;
 type Continuation = WaitingContinuation<Pattern, StringsCaptor>;
@@ -88,7 +94,7 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_continuations(channels.clone(), history_continuations.clone());
-      hot_store.put_continuation(&channels.clone(), inserted_continuation.clone());
+      hot_store.put_continuation(&channels.clone(), inserted_continuation.clone()).expect("the hot store accepts the continuation");
 
       let cache = hot_store.snapshot();
       history_continuations.insert(0, inserted_continuation);
@@ -103,7 +109,7 @@ proptest! {
       history.put_continuations(channels.clone(), history_continuations.clone());
       hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()));
 
-      hot_store.put_continuation(&channels.clone(),inserted_continuation.clone());
+      hot_store.put_continuation(&channels.clone(),inserted_continuation.clone()).expect("the hot store accepts the continuation");
 
       let cache = hot_store.snapshot();
       cached_continuations.insert(0, inserted_continuation);
@@ -119,7 +125,7 @@ proptest! {
       hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()));
 
       hot_store.install_continuation(&channels.clone(), installed_continuation.clone());
-      hot_store.put_continuation(&channels.clone(), inserted_continuation.clone());
+      hot_store.put_continuation(&channels.clone(), inserted_continuation.clone()).expect("the hot store accepts the continuation");
 
       let cache = hot_store.snapshot();
       cached_continuations.insert(0, inserted_continuation);
@@ -204,7 +210,7 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_data(channel.clone(), history_data.clone());
-      hot_store.put_datum(&channel.clone(), inserted_data.clone());
+      hot_store.put_datum(&channel.clone(), inserted_data.clone()).expect("the hot store accepts the datum");
 
       let cache = hot_store.snapshot();
       history_data.insert(0, inserted_data);
@@ -219,7 +225,7 @@ proptest! {
       history.put_data(channel.clone(), history_data.clone());
       hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_data.clone())]), HashMap::new(), HashMap::new()));
 
-      hot_store.put_datum(&channel.clone(), inserted_data.clone());
+      hot_store.put_datum(&channel.clone(), inserted_data.clone()).expect("the hot store accepts the datum");
       let cache = hot_store.snapshot();
       cached_data.insert(0, inserted_data);
       assert_eq!(cache.data_flat().get(&channel).unwrap().clone(), cached_data);
@@ -284,7 +290,7 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_joins(channel.clone(), history_joins.clone());
-      hot_store.put_join(&channel.clone(), &inserted_join.clone());
+      hot_store.put_join(&channel.clone(), &inserted_join.clone()).expect("the hot store accepts the join");
 
       let cache = hot_store.snapshot();
       history_joins.insert(0, inserted_join);
@@ -300,7 +306,7 @@ proptest! {
       history.put_joins(channel.clone(), history_joins.clone());
       hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
-      hot_store.put_join(&channel.clone(), &inserted_join.clone());
+      hot_store.put_join(&channel.clone(), &inserted_join.clone()).expect("the hot store accepts the join");
       let cache = hot_store.snapshot();
       cached_joins.insert(0, inserted_join);
       assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
@@ -312,7 +318,7 @@ proptest! {
 
       hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
-      hot_store.put_join(&channel.clone(), &inserted_join.clone());
+      hot_store.put_join(&channel.clone(), &inserted_join.clone()).expect("the hot store accepts the join");
       let cache = hot_store.snapshot();
 
       if !cached_joins.contains(&inserted_join) {
@@ -331,7 +337,7 @@ proptest! {
 
       hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
-      hot_store.put_join(&channel.clone(), &inserted_join.clone());
+      hot_store.put_join(&channel.clone(), &inserted_join.clone()).expect("the hot store accepts the join");
       hot_store.install_join(&channel.clone(), &installed_join.clone());
 
       let cache = hot_store.snapshot();
@@ -419,7 +425,7 @@ proptest! {
       shuffled_joins.shuffle(&mut rng);
       let to_remove = shuffled_joins.first().unwrap().clone();
 
-      hot_store.put_continuation(&to_remove.clone(), continuation);
+      hot_store.put_continuation(&to_remove.clone(), continuation).expect("the hot store accepts the continuation");
       let res = hot_store.remove_join(&channel.clone(), &to_remove.clone()).unwrap();
       let cache = hot_store.snapshot();
 
@@ -480,11 +486,11 @@ proptest! {
       // Spawn two threads to run put_datum in parallel and waits for both threads to complete using join.
       let handle1 = std::thread::spawn(move || {
         let hot_store = hot_store1.lock().unwrap();
-        hot_store.put_datum(&channel1_clone, inserted_data1_clone);
+        hot_store.put_datum(&channel1_clone, inserted_data1_clone).expect("the hot store accepts the datum");
       });
       let handle2 = std::thread::spawn(move || {
         let hot_store = hot_store2.lock().unwrap();
-        hot_store.put_datum(&channel2_clone, inserted_data2_clone);
+        hot_store.put_datum(&channel2_clone, inserted_data2_clone).expect("the hot store accepts the datum");
       });
       handle1.join().unwrap();
       handle2.join().unwrap();
@@ -521,11 +527,11 @@ proptest! {
       // Spawn two threads to run put_datum in parallel and waits for both threads to complete using join.
       let handle1 = std::thread::spawn(move || {
         let hot_store = hot_store1.lock().unwrap();
-        hot_store.put_continuation(&channels1_clone, inserted_continuation1_clone);
+        hot_store.put_continuation(&channels1_clone, inserted_continuation1_clone).expect("the hot store accepts the continuation");
       });
       let handle2 = std::thread::spawn(move || {
         let hot_store = hot_store2.lock().unwrap();
-        hot_store.put_continuation(&channels2_clone, inserted_continuation2_clone);
+        hot_store.put_continuation(&channels2_clone, inserted_continuation2_clone).expect("the hot store accepts the continuation");
       });
       handle1.join().unwrap();
       handle2.join().unwrap();
@@ -547,7 +553,7 @@ proptest! {
       let key = channel.clone();
       let datum = Datum::create(&channel, datum_value, false);
 
-      hot_store.put_datum(&key.clone(), datum.clone());
+      hot_store.put_datum(&key.clone(), datum.clone()).expect("the hot store accepts the datum");
       let res = hot_store.get_data(&key).unwrap();
       assert!(check_same_elements(res, vec![datum]));
   }
@@ -559,8 +565,8 @@ proptest! {
       let datum1 = Datum::create(&channel, datum_value.clone(), false);
       let datum2 = Datum::create(&channel, datum_value + "2", false);
 
-      hot_store.put_datum(&key.clone(), datum1.clone());
-      hot_store.put_datum(&key.clone(), datum2.clone());
+      hot_store.put_datum(&key.clone(), datum1.clone()).expect("the hot store accepts the datum");
+      hot_store.put_datum(&key.clone(), datum2.clone()).expect("the hot store accepts the datum");
       let res = hot_store.get_data(&key).unwrap();
       assert!(check_same_elements(res, vec![datum1, datum2]));
   }
@@ -576,7 +582,7 @@ proptest! {
         .collect();
 
       for d in data.clone() {
-        hot_store.put_datum(&key.clone(), d);
+        hot_store.put_datum(&key.clone(), d).expect("the hot store accepts the datum");
       }
 
       let _ = hot_store.remove_datum(&key.clone(), index - 1);
@@ -595,7 +601,7 @@ proptest! {
       let continuation = StringsCaptor::new();
       let wc = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default());
 
-      hot_store.put_continuation(&key.clone(), wc.clone());
+      hot_store.put_continuation(&key.clone(), wc.clone()).expect("the hot store accepts the continuation");
       let res = hot_store.get_continuations(&key).unwrap();
       assert_eq!(res, vec![wc]);
   }
@@ -609,8 +615,8 @@ proptest! {
       let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default());
       let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default());
 
-      hot_store.put_continuation(&key.clone(), wc1.clone());
-      hot_store.put_continuation(&key.clone(), wc2.clone());
+      hot_store.put_continuation(&key.clone(), wc1.clone()).expect("the hot store accepts the continuation");
+      hot_store.put_continuation(&key.clone(), wc2.clone()).expect("the hot store accepts the continuation");
       let res = hot_store.get_continuations(&key).unwrap();
       assert!(check_same_elements(res, vec![wc1, wc2]));
   }
@@ -624,9 +630,9 @@ proptest! {
       let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default());
       let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default());
 
-      hot_store.put_continuation(&key.clone(), wc1.clone());
-      hot_store.put_continuation(&key.clone(), wc2.clone());
-      hot_store.remove_continuation(&key.clone(), 0);
+      hot_store.put_continuation(&key.clone(), wc1.clone()).expect("the hot store accepts the continuation");
+      hot_store.put_continuation(&key.clone(), wc2.clone()).expect("the hot store accepts the continuation");
+      hot_store.remove_continuation(&key.clone(), 0).expect("the hot store removes the continuation");
       let res = hot_store.get_continuations(&key).unwrap();
       assert!(check_same_elements(res, vec![wc1]));
   }
@@ -635,7 +641,7 @@ proptest! {
   fn add_join_should_add_join_for_a_channel(channel in  any::<String>(), channels in vec(any::<String>(), 0..=SIZE_RANGE)) {
       let (_, hot_store) = fixture();
 
-      hot_store.put_join(&channel.clone(), &channels.clone());
+      hot_store.put_join(&channel.clone(), &channels.clone()).expect("the hot store accepts the join");
       let res = hot_store.get_joins(&channel).unwrap();
       assert_eq!(res, vec![channels]);
   }
@@ -644,8 +650,8 @@ proptest! {
   fn remove_join_should_remove_join_for_a_channel(channel in  any::<String>(), channels in vec(any::<String>(), 0..=SIZE_RANGE)) {
       let (_, hot_store) = fixture();
 
-      hot_store.put_join(&channel.clone(), &channels.clone());
-      hot_store.remove_join(&channel.clone(), &channels.clone());
+      hot_store.put_join(&channel.clone(), &channels.clone()).expect("the hot store accepts the join");
+      hot_store.remove_join(&channel.clone(), &channels.clone()).expect("the hot store removes the join");
       let res = hot_store.get_joins(&channel).unwrap();
       assert!(res.is_empty());
   }
@@ -654,9 +660,9 @@ proptest! {
   fn remove_join_should_remove_only_passed_in_joins_for_a_channel(channel in  any::<String>(), channels in vec(any::<String>(), 0..=SIZE_RANGE)) {
       let (_, hot_store) = fixture();
 
-      hot_store.put_join(&channel.clone(), &channels.clone());
-      hot_store.put_join(&channel.clone(), &["other_channel".to_string()]);
-      hot_store.remove_join(&channel.clone(), &channels.clone());
+      hot_store.put_join(&channel.clone(), &channels.clone()).expect("the hot store accepts the join");
+      hot_store.put_join(&channel.clone(), &["other_channel".to_string()]).expect("the hot store accepts the join");
+      hot_store.remove_join(&channel.clone(), &channels.clone()).expect("the hot store removes the join");
       let res = hot_store.get_joins(&channel).unwrap();
       assert_eq!(res, vec![vec!["other_channel".to_string()]]);
   }
@@ -682,9 +688,9 @@ proptest! {
       prop_assume!(continuation1 != continuation2);
       let (_, hot_store) = fixture();
 
-      hot_store.put_continuation(&channels.clone(), continuation1.clone());
+      hot_store.put_continuation(&channels.clone(), continuation1.clone()).expect("the hot store accepts the continuation");
       let snapshot = hot_store.snapshot();
-      hot_store.put_continuation(&channels.clone(), continuation2.clone());
+      hot_store.put_continuation(&channels.clone(), continuation2.clone()).expect("the hot store accepts the continuation");
       assert!(snapshot.continuations_flat().get(&channels).unwrap().clone().contains(&continuation1));
       assert!(!snapshot.continuations_flat().get(&channels).unwrap().clone().contains(&continuation2));
   }
@@ -705,9 +711,9 @@ proptest! {
       prop_assume!(data1 != data2);
       let (_, hot_store) = fixture();
 
-      hot_store.put_datum(&channel.clone(), data1.clone());
+      hot_store.put_datum(&channel.clone(), data1.clone()).expect("the hot store accepts the datum");
       let snapshot = hot_store.snapshot();
-      hot_store.put_datum(&channel.clone(), data2.clone());
+      hot_store.put_datum(&channel.clone(), data2.clone()).expect("the hot store accepts the datum");
       assert!(!snapshot.data_flat().get(&channel).unwrap().clone().contains(&data2));
   }
 
@@ -716,9 +722,9 @@ proptest! {
       prop_assume!(join1 != join2);
       let (_, hot_store) = fixture();
 
-      hot_store.put_join(&channel.clone(), &join1.clone());
+      hot_store.put_join(&channel.clone(), &join1.clone()).expect("the hot store accepts the join");
       let snapshot = hot_store.snapshot();
-      hot_store.put_join(&channel.clone(), &join2.clone());
+      hot_store.put_join(&channel.clone(), &join2.clone()).expect("the hot store accepts the join");
       assert!(!snapshot.joins_flat().get(&channel).unwrap().clone().contains(&join2));
   }
 
@@ -744,9 +750,15 @@ fn to_map_returns_the_union_of_data_and_continuation_key_domains() {
     let datum = Datum::<String>::default();
     let continuation = Continuation::default();
 
-    hot_store.put_datum(&data_channel, datum.clone());
-    hot_store.put_continuation(&waiting_channels, continuation.clone());
-    hot_store.put_continuation(&joined_channels, continuation.clone());
+    hot_store
+        .put_datum(&data_channel, datum.clone())
+        .expect("the hot store accepts the datum");
+    hot_store
+        .put_continuation(&waiting_channels, continuation.clone())
+        .expect("the hot store accepts the continuation");
+    hot_store
+        .put_continuation(&joined_channels, continuation.clone())
+        .expect("the hot store accepts the continuation");
     hot_store.install_continuation(&joined_channels, continuation);
 
     let mapped = hot_store.to_map();
@@ -848,7 +860,9 @@ fn bitmap_backed_hot_store_restores_large_snapshots_after_removal_and_clear() {
         .map(|index| (format!("channel-{index}"), vec![Datum::<String>::default()]))
         .collect();
     for (channel, data) in &initial {
-        hot_store.put_datum(channel, data[0].clone());
+        hot_store
+            .put_datum(channel, data[0].clone())
+            .expect("the hot store accepts the datum");
     }
     let snapshot = hot_store.snapshot();
     assert_eq!(snapshot.data_flat(), initial);
@@ -1302,7 +1316,9 @@ fn the_recorded_case_does_not_duplicate_the_join_it_reinserts() {
         HashMap::new(),
     ));
 
-    hot_store.put_join(&channel.clone(), &inserted_join.clone());
+    hot_store
+        .put_join(&channel.clone(), &inserted_join.clone())
+        .expect("the hot store accepts the join");
     hot_store.install_join(&channel.clone(), &installed_join.clone());
 
     let cache = hot_store.snapshot();

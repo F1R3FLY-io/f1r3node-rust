@@ -1841,7 +1841,7 @@ fn substitute_no_sort_body(depth: usize) {
 /// shift a reading by 60%, so before this subject was committed all four
 /// plausible spellings of the PRE-REPAIR body were measured against each other —
 /// `mem::forget` on both values, `dismantle` on both, `drop` on both, and the
-/// fresh-temporary `s.substitute_and_charge(nested_list(depth), 0, &env, None)
+/// fresh-temporary `s.substitute_and_charge(nested_list(depth), 0, &env)
 /// .map(drop)`. Bisected 2026-07-28, at depths 16 and 128:
 ///
 /// | spelling                | release            | debug                  |
@@ -1878,7 +1878,7 @@ fn subst_and_charge_body(depth: usize) {
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
-        .substitute_and_charge(t, 0, &env, None)
+        .substitute_and_charge(t, 0, &env)
         .expect("stack_depth_gate: substitute_and_charge failed");
     std::mem::forget(out);
 }
@@ -3582,7 +3582,10 @@ fn eval_with_nots_body(depth: usize) {
     let env: Env<Par> = Env::new();
     let out = eval_with(&p, &env, &NoSpatialMatch).expect("stack_depth_gate: eval_with failed");
     // An even number of negations of `true` is `true`; an odd number `false`.
-    let expected = depth % 2 == 0;
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+    // `is_multiple_of` states the parity test directly.
+    // let expected = depth % 2 == 0;
+    let expected = depth.is_multiple_of(2);
     assert_eq!(
         out.exprs.first().and_then(|e| e.expr_instance.as_ref()),
         Some(&ExprInstance::GBool(expected)),
@@ -4482,7 +4485,11 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
     // Θ(depth) "iterative" drivers all escaped through the SAME boundary —
     // `Category -> Vec<Elem> -> Elem` — and a single-collection ladder is exactly
     // how that hid. These two nest through different fields.
-    for (name, lo, hi) in [("clone_send_chain", LO, HI)] {
+    // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+    // loop over one element is a block with one binding.
+    // for (name, lo, hi) in [("clone_send_chain", LO, HI)] {
+    {
+        let (name, lo, hi) = ("clone_send_chain", LO, HI);
         let l = measure_ladder(name, lo, hi);
         println!(
             "  {name}: {} KiB @ {lo} -> {} KiB @ {hi} = {} B/level",

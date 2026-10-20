@@ -122,11 +122,10 @@ fn numeric_merge_retains_distinct_regions_for_the_same_signature() {
         let authority = merged.a.cost_authority.as_ref().unwrap();
         assert_eq!(authority.regions.len(), 2);
         assert_eq!(
-            authority_demand(&authority)
-                .unwrap()
-                .0
-                .values()
-                .sum::<u64>(),
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+            // argument is a reference already.
+            // authority_demand(&authority)
+            authority_demand(authority).unwrap().0.values().sum::<u64>(),
             2
         );
     }
@@ -357,7 +356,10 @@ proptest! {
         for output in &outputs {
             required = required.checked_add(&authority_demand(output.a.cost_authority.as_ref().unwrap()).unwrap()).unwrap();
         }
-        prop_assert_eq!(authority_demand(&authority).unwrap(), required.clone());
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+        // argument is a reference already.
+        // prop_assert_eq!(authority_demand(&authority).unwrap(), required.clone());
+        prop_assert_eq!(authority_demand(authority).unwrap(), required.clone());
         let byte_required = ResourceMultiset(required.0.iter().map(|(key, units)| (*key, units * byte_amount)).collect());
         let capacity = required.checked_add(&byte_required).unwrap();
         let before = capacity.clone();
@@ -452,11 +454,10 @@ fn numeric_merge_wide_authority_preserves_live_region_bound() {
             assert_eq!(authority.regions.len(), width);
             assert!(bincode::serialize(&authority).unwrap().len() <= input_bytes);
             assert_eq!(
-                authority_demand(&authority)
-                    .unwrap()
-                    .0
-                    .values()
-                    .sum::<u64>(),
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+                // argument is a reference already.
+                // authority_demand(&authority)
+                authority_demand(authority).unwrap().0.values().sum::<u64>(),
                 (width / 2) as u64
             );
         }
@@ -522,12 +523,16 @@ fn numeric_merge_single_writer_retains_unaccounted_datum() {
 #[tokio::test]
 async fn numeric_merge_following_native_comm_and_replay_preserve_accounting() {
     use models::rust::utils::new_gstring_par;
+    use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::rho_runtime::RhoRuntime;
-    use crate::rust::interpreter::test_utils::resources::create_runtimes;
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-39): the
+    // runtimes below select the CostV1 epoch.
+    // use crate::rust::interpreter::test_utils::resources::create_runtimes;
+    use crate::rust::interpreter::test_utils::resources::create_runtimes_for_epoch;
 
     for merge_type in [MergeType::IntegerAdd, MergeType::BitmaskOr] {
         for (output_unit, consumer_unit) in [(true, true), (true, false), (false, false)] {
@@ -537,8 +542,19 @@ async fn numeric_merge_following_native_comm_and_replay_preserve_accounting() {
             for value in [original.a, merged.a] {
                 let mut manager = InMemoryStoreManager::new();
                 let stores = manager.r_space_stores().await.unwrap();
-                let (mut play, mut replay, _) =
-                    create_runtimes(stores, false, &mut Vec::new()).await;
+                // Changed by the merge of feature/cost-accounted-rho (finding
+                // R1-39): this upstream test models protocol 6, which F1R3Lang
+                // runs in the CostV1 epoch. A Legacy runtime refuses the
+                // cost-bearing event legs of the accounted datum.
+                // let (mut play, mut replay, _) =
+                //     create_runtimes(stores, false, &mut Vec::new()).await;
+                let (mut play, mut replay, _) = create_runtimes_for_epoch(
+                    EventCodecEpoch::CostV1,
+                    stores,
+                    false,
+                    &mut Vec::new(),
+                )
+                .await;
                 let channel =
                     new_gstring_par("numeric-following-comm".to_string(), Vec::new(), false);
                 assert!(play

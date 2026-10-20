@@ -47,6 +47,15 @@ Otherwise,
 
 The [Rocq model](../../../../formal/rocq/node_authority/theories/ReductionDomainIsolation.v) proves domain separation, explicit host-policy rejection, scope restoration, and foreign-roster preservation. The [focused regression](../../../../rholang/src/rust/interpreter/deterministic_reduction.rs) uses equal deploy IDs in two runtimes. It checks A→B→A→B re-entry, B fanout, and A's later guarded publication.
 
+> **Changed by the merge of `feature/cost-accounted-rho` (DR-131, plan step 1.8).**
+> DR-131 removes host work. The merge removes the host-work budget of the reducer, so a frame no longer carries a host-work policy.
+> `root_with_observation` reuses an active frame when `matches_domain` accepts the space, the runtime budget and the coordinator (`rholang/src/rust/interpreter/deterministic_reduction.rs`).
+> The frame then keeps its participant only.
+> The Rocq model changed in the same way. It keeps domain separation, scope restoration and foreign-roster preservation.
+> Its two host-policy theorems, `same_domain_host_mismatch_rejects` and `distinct_explicit_host_work_cannot_reuse`, stay in the file as comments.
+> The merge removes the tests `same_domain_reentry_inherits_its_host_work_policy` and `same_domain_reentry_rejects_a_distinct_host_work_policy`, because they check only the host-work policy.
+> The sentence about a nested host-work policy and the host-work part of the admission rule describe the code before DR-131.
+
 The model represents each opaque Rust identity with a distinct natural-number token. It proves the admission rule, not Rust pointer equality or Tokio scheduling. The Rust regression checks those refinement points.
 
 ## Prevention and remaining audit
@@ -62,6 +71,13 @@ The source audit classified the remaining parent-retiring `split` sites in `eval
 The follow-up audit confirmed three further defects. In a nested A→B run with equal deploy IDs, an error produced by reducer A was recorded in B's failure ledger. A primitive operation owned by A charged B's host-work budget; with A's limit at zero and B's limit high, the A operation incorrectly succeeded. Substitution owned by A also charged B's host-work budget and incorrectly succeeded. All three tests failed before repair and passed afterward.
 
 Failure recording now requires the owning domain at its call site. A detached task records against the explicit session it already carries. Reducer operations use one domain-indexed context selector for participant splits and host-work access. Substitution receives the selected host-work budget as an explicit argument; its general engine no longer reads the ambient context. The unused public ambient host-work reservation helper was removed so a future caller cannot accidentally restore that hidden dependency. This prevents an inner ambient runtime from supplying either the failure ledger or the host-work budget for an outer reducer. The [Rocq model](../../../../formal/rocq/node_authority/theories/ReductionDomainIsolation.v) additionally proves that a failure or accepted host charge cannot modify a foreign domain's ledger, and that an over-limit owner rejects the charge. Its host-work model represents one metering dimension at a time; the Rust tests check identity selection and actual budget rejection.
+
+> **Changed by the merge of `feature/cost-accounted-rho` (DR-131, plan step 1.8).**
+> No reducer has a host-work budget now, so no domain can charge host work to a foreign domain.
+> The Rocq model keeps the host-charge model and its two theorems only as comments: `host_charge_cannot_touch_foreign_domain` and `owner_over_limit_rejects_without_charging_foreign_host`.
+> The failure-ledger theorems stay, and the test `nested_failure_is_recorded_by_its_reducer_not_the_ambient_runtime` still checks failure ownership.
+> The merge removes the tests `nested_host_work_charges_its_reducer_not_the_ambient_runtime` and `nested_substitution_charges_its_reducer_not_the_ambient_runtime`, because they check only metering.
+> Each host-work sentence in this section describes the code before DR-131.
 
 The economic-failure test file was present but not included in the `rholang` test target. The first attempt to run the new regression therefore reported zero tests. After the module was included, two old calls no longer matched the current reducer API, and one test still assumed that parallel child errors appear in the reduction session rather than the completion drive. The test harness was updated to use the reducer's stored `ExecutionSpace`, which is essential because converting its underlying RSpace afresh creates a different wrapper identity. Ten economic-failure tests now run and pass.
 

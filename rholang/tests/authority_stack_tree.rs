@@ -2,16 +2,12 @@ use std::collections::BTreeMap;
 
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostAuthority, CostSignature, CostStack};
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use rholang::rust::interpreter::accounting::authority::{
-    allocate_physical_settlement, apply_physical_settlement,
-    apply_physical_settlement_with_host_work, authority_demand,
-    canonical_authority, cost_region, plan_stack_frontier_with_host_work, stack_branch_id,
-    stack_branches, validate_stack_birth,
+    allocate_physical_settlement, apply_physical_settlement, authority_demand, canonical_authority,
+    cost_region, plan_stack_frontier, stack_branch_id, stack_branches, validate_stack_birth,
     verify_physical_settlement, AuthorityError, AuthorityEvent, AuthorityPhysicalEventDraw,
     AuthorityPhysicalInventory, ResourceMultiset, StackBirthShape,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 fn signature(name: &[u8]) -> CostSignature {
     CostSignature { value: Some(Value::Ground(name.to_vec())) }
@@ -58,16 +54,24 @@ fn one_shared_prefix_then_independent_siblings() {
     let left_id = stack_branch_id(&root_id, &[0]);
     let right_id = stack_branch_id(&root_id, &[1]);
     let branches = stack_branches(root_id, &tree).unwrap();
-    assert_eq!(branches.iter().map(|b| b.transfer_offset).collect::<Vec<_>>(), [0, 1, 2]);
+    assert_eq!(
+        branches
+            .iter()
+            .map(|b| b.transfer_offset)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
     assert_eq!(branches[1].parent_gate, Some((root_id, 1)));
     assert_eq!(branches[2].parent_gate, Some((root_id, 1)));
     assert_eq!(
-        validate_stack_birth(&[prefix.clone(), left.clone(), right.clone()], Some(&tree), None)
-            .unwrap(),
-        StackBirthShape { cell_count: 3, branch_count: 2 },
+        validate_stack_birth(&[prefix.clone(), left.clone(), right.clone()], Some(&tree)).unwrap(),
+        StackBirthShape {
+            cell_count: 3,
+            branch_count: 2
+        },
     );
     assert_eq!(
-        validate_stack_birth(&[prefix.clone(), right.clone(), left.clone()], Some(&tree), None),
+        validate_stack_birth(&[prefix.clone(), right.clone(), left.clone()], Some(&tree)),
         Err(AuthorityError::InvalidStackBirth),
     );
     let inventory = AuthorityPhysicalInventory {
@@ -129,7 +133,7 @@ fn one_shared_prefix_then_independent_siblings() {
 }
 
 #[test]
-fn metered_apply_refuses_before_mutation_and_keeps_linear_budget_parity() {
+fn apply_preserves_unspent_siblings_and_linear_stack_semantics() {
     let prefix = signature(b"prefix");
     let child = signature(b"child");
     let sibling = signature(b"sibling");
@@ -150,23 +154,15 @@ fn metered_apply_refuses_before_mutation_and_keeps_linear_budget_parity() {
     };
     let events = [event(1, std::slice::from_ref(&prefix)), event(2, std::slice::from_ref(&child))];
     let settlement = allocate_physical_settlement(&events, &BTreeMap::new(), &branched).unwrap();
-    let mut tight_limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000));
-    tight_limits.set(HostWorkDimension::SearchCandidates, HostWorkLimit::new(0));
-    let tight = HostWorkBudget::new(tight_limits);
-    let mut unchanged = branched.clone();
-    assert_eq!(
-        apply_physical_settlement_with_host_work(&mut unchanged, &settlement, Some(&tight)),
-        Err(AuthorityError::HostWorkRejected),
-    );
-    assert_eq!(unchanged, branched, "a branch-path budget refusal must be atomic");
-
-    let generous = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000)));
     let mut applied = branched;
-    apply_physical_settlement_with_host_work(&mut applied, &settlement, Some(&generous)).unwrap();
+    apply_physical_settlement(&mut applied, &settlement).unwrap();
     assert!(applied.stack_trees[&root_id].cells.is_empty());
-    assert!(applied.stack_trees[&root_id].parallel_tail[0].cells.is_empty());
-    assert_eq!(applied.stack_trees[&root_id].parallel_tail[1].cells, vec![sibling]);
-    assert!(generous.usage(HostWorkDimension::SearchCandidates).get() > 0);
+    assert!(applied.stack_trees[&root_id].parallel_tail[0]
+        .cells
+        .is_empty());
+    assert_eq!(applied.stack_trees[&root_id].parallel_tail[1].cells, vec![
+        sibling
+    ]);
 
     let linear = AuthorityPhysicalInventory {
         balances: ResourceMultiset::default(),
@@ -178,15 +174,10 @@ fn metered_apply_refuses_before_mutation_and_keeps_linear_budget_parity() {
     let linear_events = [event(3, std::slice::from_ref(&prefix))];
     let linear_settlement =
         allocate_physical_settlement(&linear_events, &BTreeMap::new(), &linear).unwrap();
-    let mut historical = linear.clone();
-    apply_physical_settlement(&mut historical, &linear_settlement).unwrap();
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    let before = budget.usages();
-    let mut metered = linear;
-    apply_physical_settlement_with_host_work(&mut metered, &linear_settlement, Some(&budget))
-        .unwrap();
-    assert_eq!(metered, historical);
-    assert_eq!(budget.usages(), before, "linear application must keep exact host-budget parity");
+    let mut applied = linear;
+    apply_physical_settlement(&mut applied, &linear_settlement).unwrap();
+    assert!(applied.stacks[&root_id].is_empty());
+    assert!(applied.stack_trees.is_empty());
 }
 
 #[test]
@@ -221,8 +212,11 @@ fn frontier_partition_releases_only_live_subtrees_with_original_indices() {
     // These are cumulative pops from a previously verified multi-event
     // settlement, not a claim that a child may pop in its parent's event.
     let pops = BTreeMap::from([(root_id, 2), (left_id, 1)]);
-    let published = plan_stack_frontier_with_host_work(root_id, &tree, &pops, None).unwrap();
-    assert_eq!(tree, before, "the pure planner must not mutate its birth tree");
+    let published = plan_stack_frontier(root_id, &tree, &pops).unwrap();
+    assert_eq!(
+        tree, before,
+        "the pure planner must not mutate its birth tree"
+    );
     assert_eq!(published.len(), 2);
     assert_eq!(published[0].original_root_id, root_id);
     assert_eq!(published[0].original_branch_id, grandchild_id);
@@ -239,29 +233,18 @@ fn frontier_partition_releases_only_live_subtrees_with_original_indices() {
         .flat_map(|part| part.original_transfer_indices.iter().copied())
         .collect::<Vec<_>>();
     all.sort_unstable();
-    assert_eq!(all, vec![3, 4, 5], "one original cell index per surviving occurrence");
-
-    let generous = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
     assert_eq!(
-        plan_stack_frontier_with_host_work(root_id, &tree, &pops, Some(&generous)).unwrap(),
-        published,
+        all,
+        vec![3, 4, 5],
+        "one original cell index per surviving occurrence"
     );
-    assert!(generous.usage(HostWorkDimension::SearchCandidates).get() > 0);
 
-    let mut tight_limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000));
-    tight_limits.set(HostWorkDimension::SearchCandidates, HostWorkLimit::new(0));
-    let tight = HostWorkBudget::new(tight_limits);
     assert_eq!(
-        plan_stack_frontier_with_host_work(root_id, &tree, &pops, Some(&tight)),
-        Err(AuthorityError::HostWorkRejected),
-    );
-    assert_eq!(tree, before, "budget refusal cannot alter the original tree");
-    assert_eq!(
-        plan_stack_frontier_with_host_work(root_id, &tree, &BTreeMap::from([([99; 32], 1)]), None),
+        plan_stack_frontier(root_id, &tree, &BTreeMap::from([([99; 32], 1)])),
         Err(AuthorityError::UnknownStackResource),
     );
     assert_eq!(
-        plan_stack_frontier_with_host_work(root_id, &tree, &BTreeMap::from([(left_id, 2)]), None),
+        plan_stack_frontier(root_id, &tree, &BTreeMap::from([(left_id, 2)])),
         Err(AuthorityError::ExhaustedStackResource),
     );
 }
@@ -272,7 +255,7 @@ fn deep_frontier_partition_is_iterative_and_linear_stacks_stay_separate() {
     let cell = signature(b"deep");
     let linear = CostStack { cells: vec![cell.clone()], parallel_tail: Vec::new() };
     assert_eq!(
-        plan_stack_frontier_with_host_work(root_id, &linear, &BTreeMap::new(), None),
+        plan_stack_frontier(root_id, &linear, &BTreeMap::new()),
         Err(AuthorityError::InvalidStackBirth),
         "legacy linear settlement must retain its historical path",
     );
@@ -280,13 +263,8 @@ fn deep_frontier_partition_is_iterative_and_linear_stacks_stay_separate() {
     for _ in 0..4_096 {
         tree = CostStack { cells: vec![cell.clone()], parallel_tail: vec![tree] };
     }
-    let published = plan_stack_frontier_with_host_work(
-        root_id,
-        &tree,
-        &BTreeMap::from([(root_id, 1)]),
-        None,
-    )
-    .expect("4096-deep frontier traversal is heap-bounded");
+    let published = plan_stack_frontier(root_id, &tree, &BTreeMap::from([(root_id, 1)]))
+        .expect("4096-deep frontier traversal is heap-bounded");
     assert_eq!(published.len(), 1);
     assert_eq!(published[0].authored_path, vec![0]);
     assert_eq!(published[0].original_transfer_indices.len(), 4_096);

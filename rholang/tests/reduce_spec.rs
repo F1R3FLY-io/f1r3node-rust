@@ -35,6 +35,7 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reduce::DebruijnInterpreter;
 use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -55,7 +56,12 @@ fn map_data(
         let entry = DataMapEntry { data, rand };
 
         let row = Row {
-            data: vec![Datum::create(
+            // Changed by the merge of feature/cost-accounted-rho (finding R1-36): the test
+            // space is a Legacy space (`RSpace::create`), so the expected datum carries a
+            // Legacy identity. The epoch-less `create` hashes with the CostV2 layout.
+            // data: vec![Datum::create(
+            data: vec![Datum::create_for_epoch(
+                EventCodecEpoch::Legacy,
                 &channel,
                 ListParWithRandom {
                     pars: entry.data.clone(),
@@ -64,7 +70,8 @@ fn map_data(
                     cost_stack: None,
                 },
                 false,
-            )],
+            )
+            .expect("a datum without cost fields has a Legacy identity")],
             wks: vec![],
         };
 
@@ -83,7 +90,12 @@ fn check_continuation(
     let mut expected_result = HashMap::new();
     expected_result.insert(channels.clone(), Row {
         data: Vec::new(),
-        wks: vec![WaitingContinuation::create(
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-36): the test
+        // space is a Legacy space (`RSpace::create`), so the expected continuation carries
+        // a Legacy identity. The epoch-less `create` hashes with the CostV2 layout.
+        // wks: vec![WaitingContinuation::create(
+        wks: vec![WaitingContinuation::create_for_epoch(
+            EventCodecEpoch::Legacy,
             &channels,
             &bind_patterns,
             &TaggedContinuation {
@@ -93,7 +105,8 @@ fn check_continuation(
             },
             false,
             BTreeSet::new(),
-        )],
+        )
+        .expect("a continuation without cost fields has a Legacy identity")],
     });
 
     if result.len() != expected_result.len() {
@@ -164,7 +177,10 @@ async fn eval_expr_should_handle_long_addition() {
     );
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError(
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-06): the
+        // user failure of DR-128, with the same text, as for `*` and unary `-`.
+        // InterpreterError::ReduceError(
+        InterpreterError::ArithmeticOverflow(
             "Arithmetic overflow in addition: 9223372036854775807 + 9223372036854775807 is not \
              representable as an Int (64-bit signed)"
                 .to_string()
@@ -208,7 +224,9 @@ async fn eval_expr_should_return_error_for_division_by_zero() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Division by zero".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Division by zero".to_string())
+        InterpreterError::DivisionByZero("Division by zero".to_string())
     );
 }
 
@@ -248,7 +266,9 @@ async fn eval_expr_should_return_error_for_modulo_by_zero() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Modulo by zero".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Modulo by zero".to_string())
+        InterpreterError::DivisionByZero("Modulo by zero".to_string())
     );
 }
 
@@ -288,7 +308,9 @@ async fn eval_expr_should_return_error_for_multiplication_overflow() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError(format!(
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError(format!(
+        InterpreterError::ArithmeticOverflow(format!(
             "Arithmetic overflow in multiplication: {} * {}",
             i64::MAX,
             2
@@ -349,7 +371,9 @@ async fn eval_expr_should_return_error_for_negation_overflow() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+        InterpreterError::ArithmeticOverflow("Arithmetic overflow in negation".to_string())
     );
 }
 
@@ -383,7 +407,10 @@ async fn eval_expr_should_return_error_for_addition_overflow() {
     );
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError(
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-06): the
+        // user failure of DR-128, with the same text, as for `*` and unary `-`.
+        // InterpreterError::ReduceError(
+        InterpreterError::ArithmeticOverflow(
             "Arithmetic overflow in addition: 9223372036854775807 + 1 is not representable as an \
              Int (64-bit signed)"
                 .to_string()
@@ -451,7 +478,10 @@ async fn eval_expr_should_return_error_for_subtraction_overflow() {
     );
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError(
+        // Changed by the merge of feature/cost-accounted-rho (finding R1-06): the
+        // user failure of DR-128, with the same text, as for `*` and unary `-`.
+        // InterpreterError::ReduceError(
+        InterpreterError::ArithmeticOverflow(
             "Arithmetic overflow in subtraction: -9223372036854775808 - 1 is not representable \
              as an Int (64-bit signed)"
                 .to_string()
@@ -574,7 +604,9 @@ async fn eval_expr_should_return_error_for_division_overflow() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Arithmetic overflow in division".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Arithmetic overflow in division".to_string())
+        InterpreterError::ArithmeticOverflow("Arithmetic overflow in division".to_string())
     );
 }
 
@@ -714,7 +746,9 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     if let Err(e) = result {
         assert_eq!(
             e,
-            InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // InterpreterError::ReduceError(String::from(
+            InterpreterError::BundlePermissionError(String::from(
                 "Trying to read from non-readable channel."
             ))
         );
@@ -744,7 +778,11 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     if let Err(e) = result {
         assert_eq!(
             e,
-            InterpreterError::ReduceError(String::from("Trying to send on non-writeable channel."))
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // InterpreterError::ReduceError(String::from("Trying to send on non-writeable channel."))
+            InterpreterError::BundlePermissionError(String::from(
+                "Trying to send on non-writeable channel."
+            ))
         );
     }
 }
@@ -803,6 +841,13 @@ async fn eval_of_wide_par_should_not_panic_across_the_split_byte_width_boundary(
     // >= 129 must take the `split_short` path. Each width evaluates a Par of
     // `width` distinct top-level sends and pins the exact per-term randomness
     // recorded in the tuplespace.
+    //
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-38): dev
+    // fixed the same panic in another way. `split_byte` takes a `u8`, so a
+    // width up to 256 splits on one byte, as Scala's wrapped `id.toByte` does.
+    // The reducer uses that rule (`evaluation_random`) since the checkpoint
+    // merge e5102e945, and base and theirs use it too. A carried dev-bug fix
+    // stays only until dev fixes the bug, so the test pins dev's rule.
     for width in [128usize, 129, 256, 257] {
         let (space, reducer) =
             create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -829,10 +874,15 @@ async fn eval_of_wide_par_should_not_panic_across_the_split_byte_width_boundary(
         let result = space.to_map().await;
         let mut expected_elements = HashMap::with_capacity(width);
         for i in 0..width {
-            let split_rand = if width <= 128 {
+            // let split_rand = if width <= 128 {
+            //     base_rand.split_byte(u8::try_from(i).expect("byte split index"))
+            // } else {
+            //     base_rand.split_short(i as i16)
+            // };
+            let split_rand = if width <= 256 {
                 base_rand.split_byte(u8::try_from(i).expect("byte split index"))
             } else {
-                base_rand.split_short(i as i16)
+                base_rand.split_short(i16::try_from(i).expect("short split index"))
             };
             expected_elements.insert(
                 new_gint_par(i as i64, Vec::new(), false),
@@ -2120,10 +2170,21 @@ async fn eval_of_last_method_refuses_arguments_and_non_sequence_receivers() {
             &env,
         )
         .expect_err("an integer has no last element");
-    assert!(
-        wrong_carrier
-            .to_string()
-            .contains("last applied to something that wasn't a list or tuple"),
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-07): `last`
+    // raises the user failure `MethodNotDefined`, as `nth` does since DR-128. The
+    // error still names `last`.
+    // assert!(
+    //     wrong_carrier
+    //         .to_string()
+    //         .contains("last applied to something that wasn't a list or tuple"),
+    //     "the refusal must NAME `last`, got {wrong_carrier:?}"
+    // );
+    assert_eq!(
+        wrong_carrier,
+        InterpreterError::MethodNotDefined {
+            method: "last".to_string(),
+            other_type: "int".to_string(),
+        },
         "the refusal must NAME `last`, got {wrong_carrier:?}"
     );
 }
@@ -2135,6 +2196,10 @@ async fn eval_of_last_method_refuses_arguments_and_non_sequence_receivers() {
 /// produces — so "it was never routed" stays distinguishable from "the receiver failed to
 /// evaluate" and from "it answered the wrong value". Without it, the claim about what the RED
 /// looked like would be unfalsifiable.
+///
+/// Changed by the merge of feature/cost-accounted-rho (finding R1-37): since DR-125, an
+/// unrouted name answers `MethodNotDefined { method, other_type: "any type" }`, so the test
+/// pins that error instead of the old `Unimplemented method` text.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unrouted_method_name_is_reported_as_unimplemented() {
     let (_, reducer) =
@@ -2148,10 +2213,20 @@ async fn an_unrouted_method_name_is_reported_as_unimplemented() {
             &env,
         )
         .expect_err("a name with no `method_table` key cannot be dispatched");
-    assert!(
-        error
-            .to_string()
-            .contains("Unimplemented method: definitelyNotAMethod"),
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-37): DR-125 reports an
+    // unrouted name as the user failure `MethodNotDefined` for any receiver type.
+    // assert!(
+    //     error
+    //         .to_string()
+    //         .contains("Unimplemented method: definitelyNotAMethod"),
+    //     "expected the unrouted-name signature, got {error:?}"
+    // );
+    assert_eq!(
+        error,
+        InterpreterError::MethodNotDefined {
+            method: "definitelyNotAMethod".to_string(),
+            other_type: "any type".to_string(),
+        },
         "expected the unrouted-name signature, got {error:?}"
     );
 
@@ -2248,8 +2323,13 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
     let channel1 = new_gstring_par("result1".to_string(), Vec::new(), false);
 
     let mut expected_result = HashMap::new();
+    // Changed by the merge of feature/cost-accounted-rho (finding R1-36): the space
+    // above is a Legacy space (`RSpace::create`), so each expected datum carries a
+    // Legacy identity. The epoch-less `create` hashes with the CostV2 layout.
     expected_result.insert(vec![channel0.clone()], Row {
-        data: vec![Datum::create(
+        // data: vec![Datum::create(
+        data: vec![Datum::create_for_epoch(
+            EventCodecEpoch::Legacy,
             &channel0,
             ListParWithRandom {
                 pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
@@ -2260,12 +2340,15 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                 cost_stack: None,
             },
             false,
-        )],
+        )
+        .expect("a datum without cost fields has a Legacy identity")],
         wks: vec![],
     });
 
     expected_result.insert(vec![channel1.clone()], Row {
-        data: vec![Datum::create(
+        // data: vec![Datum::create(
+        data: vec![Datum::create_for_epoch(
+            EventCodecEpoch::Legacy,
             &channel1,
             ListParWithRandom {
                 pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
@@ -2278,7 +2361,8 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                 cost_stack: None,
             },
             false,
-        )],
+        )
+        .expect("a datum without cost fields has a Legacy identity")],
         wks: vec![],
     });
 
@@ -5260,7 +5344,9 @@ async fn term_split_size_max_should_limited_to_max_value() {
     assert!(res.is_err());
     assert_eq!(
         res,
-        Err(InterpreterError::ReduceError(
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // Err(InterpreterError::ReduceError(
+        Err(InterpreterError::TermStructureError(
             "The number of terms in the Par is 32768, which exceeds the limit of 32767".to_string()
         ))
     )
@@ -6256,7 +6342,10 @@ fn guard_first_bound_at_most_45() -> Par {
         expr_instance: Some(ExprInstance::ELteBody(models::rhoapi::ELte {
             p1: Some(new_boundvar_par(
                 0,
-                models::create_bit_vector(&vec![0]),
+                // Changed by the merge of feature/cost-accounted-rho (clippy gate): a
+                // slice literal needs no `Vec`.
+                // models::create_bit_vector(&vec![0]),
+                models::create_bit_vector(&[0]),
                 false,
             )),
             p2: Some(new_gint_par(45, Vec::new(), false)),

@@ -182,10 +182,13 @@ impl Shape {
     fn channels(self) -> Vec<String> {
         match self {
             Shape::Wellformed | Shape::ArityMismatch => {
-                let mut v = Vec::with_capacity(2);
-                v.push("ch1".to_string());
-                v.push("ch2".to_string());
-                v
+                // Changed by the merge of feature/cost-accounted-rho
+                // (clippy gate): one `vec!` builds the same elements.
+                // let mut v = Vec::with_capacity(2);
+                // v.push("ch1".to_string());
+                // v.push("ch2".to_string());
+                // v
+                vec!["ch1".to_string(), "ch2".to_string()]
             }
             Shape::NoChannels => Vec::new(),
         }
@@ -194,15 +197,21 @@ impl Shape {
     fn patterns(self) -> Vec<Pattern> {
         match self {
             Shape::Wellformed => {
-                let mut v = Vec::with_capacity(2);
-                v.push(Pattern::Wildcard);
-                v.push(Pattern::Wildcard);
-                v
+                // Changed by the merge of feature/cost-accounted-rho
+                // (clippy gate): one `vec!` builds the same elements.
+                // let mut v = Vec::with_capacity(2);
+                // v.push(Pattern::Wildcard);
+                // v.push(Pattern::Wildcard);
+                // v
+                vec![Pattern::Wildcard, Pattern::Wildcard]
             }
             Shape::ArityMismatch => {
-                let mut v = Vec::with_capacity(1);
-                v.push(Pattern::Wildcard);
-                v
+                // Changed by the merge of feature/cost-accounted-rho
+                // (clippy gate): one `vec!` builds the same elements.
+                // let mut v = Vec::with_capacity(1);
+                // v.push(Pattern::Wildcard);
+                // v
+                vec![Pattern::Wildcard]
             }
             Shape::NoChannels => Vec::new(),
         }

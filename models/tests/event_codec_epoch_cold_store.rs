@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::io::Write;
 
 use models::rhoapi::cost_signature::Value as CostValue;
 use models::rhoapi::expr::ExprInstance;
@@ -8,12 +7,10 @@ use models::rhoapi::{
     TaggedContinuation,
 };
 use models::rust::rholang::bincode_encoder;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::native_source;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::{
-    channel_hash_for_epoch, BincodeByteSink, EventCodecEpoch, StableHashSerialize,
-    COST_CHANNEL_KEY_DOMAIN_V1,
+    channel_hash_for_epoch, event_leg_bytes_for_epoch, hash_produce_for_epoch, EventCodecEpoch,
+    StableHashSerialize, COST_CHANNEL_KEY_DOMAIN_V1,
 };
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::serializers::serializers::{
@@ -78,65 +75,6 @@ fn protocol_v6_cost_stack_positional_bytes_and_channel_hash_remain_exact() {
     );
 }
 
-#[derive(Default)]
-struct RecordingSink {
-    bytes: Vec<u8>,
-    chunks: Vec<usize>,
-    reject_at: Option<usize>,
-}
-
-impl BincodeByteSink for RecordingSink {
-    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), RSpaceError> {
-        if self.reject_at == Some(self.chunks.len()) {
-            return Err(RSpaceError::HostWorkRejected);
-        }
-        self.chunks.push(bytes.len());
-        self.bytes.extend_from_slice(bytes);
-        Ok(())
-    }
-}
-
-#[test]
-fn generated_metered_sink_matches_both_positional_layouts_and_refuses_before_write() {
-    let ordinary = Par::default();
-    let cost = cost_par();
-    let datum = ListParWithRandom {
-        pars: vec![cost.clone()],
-        ..ListParWithRandom::default()
-    };
-    for (legacy, value, expected) in [
-        (true, &ordinary, bincode_encoder::encode_legacy(&ordinary)),
-        (false, &ordinary, bincode_encoder::encode(&ordinary)),
-        (false, &cost, bincode_encoder::encode(&cost)),
-    ] {
-        let mut sink = RecordingSink::default();
-        bincode_encoder::encode_metered_into(value, legacy, &mut sink).unwrap();
-        assert_eq!(sink.bytes, expected);
-        assert!(sink.chunks.len() > 1);
-        for reject_at in 0..sink.chunks.len() {
-            let mut rejected = RecordingSink {
-                reject_at: Some(reject_at),
-                ..RecordingSink::default()
-            };
-            assert!(matches!(
-                bincode_encoder::encode_metered_into(value, legacy, &mut rejected),
-                Err(RSpaceError::HostWorkRejected)
-            ));
-            assert_eq!(
-                rejected.bytes.len(),
-                sink.chunks[..reject_at].iter().sum::<usize>()
-            );
-        }
-    }
-    let mut sink = RecordingSink::default();
-    bincode_encoder::encode_metered_into(&datum, false, &mut sink).unwrap();
-    assert_eq!(sink.bytes, bincode_encoder::encode(&datum));
-
-    let mut sink = RecordingSink::default();
-    bincode_encoder::encode_cost_v1_metered_into(&datum, &mut sink).unwrap();
-    assert_eq!(sink.bytes, bincode_encoder::encode_cost_v1(&datum));
-}
-
 #[test]
 fn cost_v1_refuses_branch_topology_and_cost_v2_round_trips_it() {
     let mut branched = Par::default();
@@ -148,9 +86,8 @@ fn cost_v1_refuses_branch_topology_and_cost_v2_round_trips_it() {
         pars: vec![branched.clone()],
         ..ListParWithRandom::default()
     };
-    let meter = |_: usize, _: usize, _: usize| Ok(());
     assert!(channel_hash_for_epoch(EventCodecEpoch::CostV1, &branched).is_err());
-    assert!(native_source::encode_for_epoch(EventCodecEpoch::CostV1, &datum, &meter).is_err());
+    assert!(event_leg_bytes_for_epoch(EventCodecEpoch::CostV1, &datum).is_err());
     assert!(Datum::create_for_epoch(
         EventCodecEpoch::CostV1,
         &Par::default(),
@@ -186,7 +123,6 @@ fn quoted_stack_par(inner: Par) -> Par {
 
 #[test]
 fn cost_v1_validation_is_transitive_through_deep_signature_quotes() {
-    let meter = |_: usize, _: usize, _: usize| Ok(());
     for depth in [0, 1, 16, 256, 4096] {
         let mut linear = Par::default();
         let mut branched = Par::default();
@@ -200,9 +136,6 @@ fn cost_v1_validation_is_transitive_through_deep_signature_quotes() {
         }
         linear.stable_hash_validate_cost_v1().unwrap();
         assert!(branched.stable_hash_validate_cost_v1().is_err());
-        assert!(branched
-            .stable_hash_validate_cost_v1_metered(&meter)
-            .is_err());
 
         // A datum's direct CostStack is outside its `pars` vector. Its cell
         // quotes must therefore be checked by the same transitive rule.
@@ -216,13 +149,11 @@ fn cost_v1_validation_is_transitive_through_deep_signature_quotes() {
             ..ListParWithRandom::default()
         };
         assert!(direct.stable_hash_validate_cost_v1().is_err());
-        assert!(direct.stable_hash_validate_cost_v1_metered(&meter).is_err());
     }
 }
 
 #[test]
-fn native_source_uses_same_epoch_bytes_and_event_identity_for_model_roots() {
-    let meter = |_: usize, _: usize, _: usize| Ok(());
+fn event_source_uses_same_epoch_bytes_and_event_identity_for_model_roots() {
     let ordinary = Par::default();
     let cost = cost_par();
     let datum = ListParWithRandom {
@@ -230,30 +161,25 @@ fn native_source_uses_same_epoch_bytes_and_event_identity_for_model_roots() {
         ..ListParWithRandom::default()
     };
     assert_eq!(
-        native_source::encode_for_epoch(EventCodecEpoch::Legacy, &ordinary, &meter).unwrap(),
+        event_leg_bytes_for_epoch(EventCodecEpoch::Legacy, &ordinary).unwrap(),
         bincode_encoder::encode_legacy(&ordinary)
     );
     assert_eq!(
-        native_source::encode_for_epoch(EventCodecEpoch::CostV1, &datum, &meter).unwrap(),
+        event_leg_bytes_for_epoch(EventCodecEpoch::CostV1, &datum).unwrap(),
         bincode_encoder::encode_cost_v1(&datum)
     );
-    let native =
-        native_source::produce_for_epoch(EventCodecEpoch::CostV1, &cost, &datum, false, &meter)
-            .unwrap();
-    let value = Produce::create_for_epoch(EventCodecEpoch::CostV1, &cost, &datum, false).unwrap();
-    assert_eq!(native, value);
-    assert!(native_source::produce_for_epoch(
-        EventCodecEpoch::Legacy,
-        &cost,
-        &datum,
-        false,
-        &meter,
-    )
-    .is_err());
+    let native = Produce::create_for_epoch(EventCodecEpoch::CostV1, &cost, &datum, false).unwrap();
+    let channel_hash = channel_hash_for_epoch(EventCodecEpoch::CostV1, &cost).unwrap();
+    assert_eq!(native.channel_hash, channel_hash);
+    assert_eq!(
+        native.hash,
+        hash_produce_for_epoch(EventCodecEpoch::CostV1, &channel_hash, &datum, false).unwrap()
+    );
+    assert!(Produce::create_for_epoch(EventCodecEpoch::Legacy, &cost, &datum, false,).is_err());
 }
 
 #[test]
-fn ordinary_legacy_identity_and_current_meter_chunks_match_their_respective_oracles() {
+fn ordinary_legacy_identity_and_current_bytes_match_their_respective_oracles() {
     let channel = Par::default().with_exprs(vec![
         Expr {
             expr_instance: Some(ExprInstance::GByteArray(vec![1, 2, 3, 4, 5])),
@@ -266,35 +192,38 @@ fn ordinary_legacy_identity_and_current_meter_chunks_match_their_respective_orac
         pars: vec![Par::default()],
         ..ListParWithRandom::default()
     };
-    let meter = |_: usize, _: usize, _: usize| Ok(());
-    let routed =
-        native_source::produce_for_epoch(EventCodecEpoch::Legacy, &channel, &datum, false, &meter)
-            .unwrap();
+    // Changed by the merge of feature/cost-accounted-rho (plan step 1.9, DR-131):
+    // DR-131 removes the native-source produce route that this half compared
+    // with the Legacy identity. `Produce::create` is not a Legacy route: it
+    // hashes the current bytes, which hold the two cost fields of every `Par`.
+    // The Legacy identity is now checked against its byte oracle. An ordinary
+    // channel key is the hash of the channel's Legacy bytes (Route A). The event
+    // preimage is the historical list of three legs, with no domain tag.
+    // let routed = Produce::create(&channel, &datum, false);
+    // assert_eq!(
+    //     routed,
+    //     Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum, false).unwrap()
+    // );
+    let routed = Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum, false)
+        .expect("an ordinary channel and datum are valid in the Legacy epoch");
+    let channel_hash = Blake2b256Hash::new(&bincode_encoder::encode_legacy(&channel));
+    let preimage = bincode::serialize(&vec![
+        channel_hash.bytes(),
+        bincode_encoder::encode_legacy(&datum),
+        bincode::serialize(&false).expect("bool serialization"),
+    ])
+    .expect("event preimage serialization");
+    assert_eq!(routed.channel_hash, channel_hash);
+    assert_eq!(routed.hash, Blake2b256Hash::new(&preimage));
+
     assert_eq!(
-        routed,
-        Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum, false).unwrap()
+        bincode_encoder::encode(&channel),
+        bincode::serialize(&channel).unwrap()
     );
-
-    #[derive(Default)]
-    struct SerdeChunks(Vec<usize>);
-    impl Write for SerdeChunks {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.push(bytes.len());
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-    }
-    let mut serde = SerdeChunks::default();
-    bincode::serialize_into(&mut serde, &channel).unwrap();
-    let mut generated = RecordingSink::default();
-    bincode_encoder::encode_metered_into(&channel, false, &mut generated).unwrap();
-    assert_eq!(generated.chunks, serde.0);
-
-    let mut serde = SerdeChunks::default();
-    bincode::serialize_into(&mut serde, &datum).unwrap();
-    let mut generated = RecordingSink::default();
-    bincode_encoder::encode_metered_into(&datum, false, &mut generated).unwrap();
-    assert_eq!(generated.chunks, serde.0);
+    assert_eq!(
+        bincode_encoder::encode(&datum),
+        bincode::serialize(&datum).unwrap()
+    );
 }
 
 fn encoded_datum(
@@ -402,7 +331,10 @@ fn continuation_and_join_prefixes_select_the_authenticated_layout() {
             BTreeSet::new(),
         )
         .unwrap();
-        let leaf = encode_continuations_for_epoch(epoch, &[stored.clone()]).unwrap();
+        // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+        // `slice::from_ref` makes the one-element slice without a clone.
+        // let leaf = encode_continuations_for_epoch(epoch, &[stored.clone()]).unwrap();
+        let leaf = encode_continuations_for_epoch(epoch, std::slice::from_ref(&stored)).unwrap();
         assert_eq!(leaf, bincode::serialize(&vec![bytes.clone()]).unwrap());
         if epoch == EventCodecEpoch::CostV1 {
             assert_eq!(leaf, encode_continuations(&vec![stored]));

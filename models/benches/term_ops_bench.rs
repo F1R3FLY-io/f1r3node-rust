@@ -252,6 +252,12 @@ const WALL_CLOCK_FLOOR: f64 = 0.90;
 /// the same mechanism re-measured across a rebuild moved 0.08% (1.1519 → 1.1510)
 /// and a ceiling that tracks the measurement stops being a gate.
 ///
+/// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+/// pin test): the merge widened `Par` to 296 B and the clone cut set to three
+/// members. At `CLONE_DESCEND_BUDGET = 3` the measured value is now **1.1109**, so
+/// the headroom is 8.0%. At budget 0 the merged value is 1.2070, over the ceiling.
+/// `models/codegen/schema.rs` records the measurement (MEASURED 2026-10-20).
+///
 /// ⚠ **Not evaluated by this binary** — it needs `valgrind`, which is a separate
 /// process. The header records the exact command, and the number is quoted here so
 /// a reader comparing a fresh measurement has something to compare it *to*.
@@ -265,12 +271,19 @@ const WALL_CLOCK_FLOOR: f64 = 0.90;
 /// | form-B (walk elimination + leaf fast path) | 1.1519 | 0.954× → 0.885×, the WRONG way |
 /// | re-measured at HEAD before the budget | 1.1510 | — |
 /// | `CLONE_DESCEND_BUDGET = 3` | **1.1079** | a work reduction; no throughput claim |
+/// | the merge of `feature/cost-accounted-rho`, `CLONE_DESCEND_BUDGET = 3` | **1.1109** | one run per build under load: no throughput claim |
 const IR_RATIO_CEILING: f64 = 1.20;
 
 /// The measured `Ir` ratio at HEAD, so a drift is visible as a drift rather than as
 /// a pass. ★ `Dr` 1.1876 and `Dw` 1.2143 at the same point; `derived` moved
 /// **+0.0000%** on all three counters, which is the deterministic invariant control.
-const IR_RATIO_MEASURED: f64 = 1.1079;
+///
+/// Changed by the merge of feature/cost-accounted-rho (plan step 1.9, type-size
+/// pin test): measured again on 2026-10-20 at the merged widths. `Ir` 1.1109,
+/// `Dr` 1.1521 and `Dw` 1.1464. The `derived` arm gave the same totals in the
+/// budget-3 and budget-0 builds. The values above are from before the merge.
+// const IR_RATIO_MEASURED: f64 = 1.1079;
+const IR_RATIO_MEASURED: f64 = 1.1109;
 
 fn gint(n: i64) -> Par {
     models::par_from_default! {

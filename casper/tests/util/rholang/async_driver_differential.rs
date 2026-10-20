@@ -90,6 +90,7 @@ struct Program {
 ///   * join_two        — two-source join receive.
 ///   * bounded_loop    — shortslow-style bounded recursion (256): the persistent-contract dispatch chain.
 ///   * bounded_string  — longslow-style: string send + length + bounded recursion.
+///
 /// Full shortslow.rho/longslow.rho (32768) are exercised heap-bounded via the direct-eval test below.
 fn corpus() -> Vec<Program> {
     vec![
@@ -188,8 +189,13 @@ async fn replay_compute_state(
             },
             None,
             false,
-            false,
-            &[],
+            // Changed by the merge of feature/cost-accounted-rho (finding R3-36):
+            // `RuntimeManager::replay_compute_state` takes six arguments, with
+            // `invalid_blocks` and `is_genesis` last. The two arguments below
+            // belong to an older F1R3Lang signature (c7fb2e0ae), which also took
+            // the strict-funding flag:
+            // false,
+            // &[],
         )
         .await
 }

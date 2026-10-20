@@ -334,9 +334,47 @@ async fn offered_funding_uses_all_64_sources_with_one_fee_across_validators() {
     // assert!(barrier.body.deploys.is_empty());
     nodes[0].allow_empty_blocks = true;
     let next = nodes[0].create_block_unsafe(&[]).await.unwrap();
-    assert!(next
-        .body
-        .deploys
-        .iter()
-        .all(|deploy| deploy.identity_bytes() != dense_id.as_slice()));
+    // Changed by DR-131 S9: host work kept the dense offer out of the next
+    // block. Without host work the producer includes it, and every validator
+    // accepts the block with one fee.
+    // assert!(next
+    //     .body
+    //     .deploys
+    //     .iter()
+    //     .all(|deploy| deploy.identity_bytes() != dense_id.as_slice()));
+    assert!(
+        next.body
+            .deploys
+            .iter()
+            .any(|deploy| deploy.identity_bytes() == dense_id.as_slice()),
+        "the producer includes the dense offer"
+    );
+    for node in &mut nodes {
+        assert!(matches!(
+            node.process_block(next.clone())
+                .await
+                .expect("the node processes the block with the dense offer"),
+            Either::Right(_)
+        ));
+    }
+    let dense_producer =
+        BlockAPI::find_offered_settlement_receipt(&nodes[0].engine_cell, &dense_id)
+            .await
+            .expect("the producer reads its receipt of the dense offer")
+            .expect("the producer has a receipt of the dense offer");
+    let dense_validator =
+        BlockAPI::find_offered_settlement_receipt(&nodes[1].engine_cell, &dense_id)
+            .await
+            .expect("the validator reads its receipt of the dense offer")
+            .expect("the validator has a receipt of the dense offer");
+    assert_eq!(dense_producer, dense_validator);
+    assert_eq!(dense_producer.fee_rev, 1);
+    assert_eq!(
+        dense_producer
+            .purses
+            .iter()
+            .map(|row| row.fee_rev)
+            .sum::<u128>(),
+        1
+    );
 }

@@ -4,10 +4,6 @@ use crate::rust::interpreter::accounting::phlo_execution::{
     RetainedBirthFunding, RetainedBirthFundingError, RetainedBirthFundingLimits,
 };
 
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
-
 fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
     let mut columns = Vec::new();
     let births = capture
@@ -43,9 +39,7 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
         obligations: capture.obligations().len(),
         authority_bytes: 1_048_576,
     };
-    let checked = capture
-        .bind_retained_births(&bindings, limits, &budget())
-        .unwrap();
+    let checked = capture.bind_retained_births(&bindings, limits).unwrap();
     assert!(std::ptr::eq(checked.capture(), capture));
     assert_eq!(checked.cells().count(), limits.cells);
     let output = checked
@@ -53,9 +47,7 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
         .map(|(birth, index, column)| (birth.stack_id, index, column.encoded_key().to_vec()))
         .collect::<Vec<_>>();
     let reversed = bindings.iter().rev().copied().collect::<Vec<_>>();
-    let reordered = capture
-        .bind_retained_births(&reversed, limits, &budget())
-        .unwrap();
+    let reordered = capture.bind_retained_births(&reversed, limits).unwrap();
     assert_eq!(
         output,
         reordered
@@ -81,7 +73,7 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
         return;
     }
     assert!(matches!(
-        capture.bind_retained_births(&[], limits, &budget()),
+        capture.bind_retained_births(&[], limits),
         Err(RetainedBirthFundingError::QuantityMismatch)
     ));
     for other in [
@@ -102,17 +94,8 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
             ..limits
         },
     ] {
-        assert!(capture
-            .bind_retained_births(&bindings, other, &budget())
-            .is_err());
+        assert!(capture.bind_retained_births(&bindings, other).is_err());
     }
-    assert!(capture
-        .bind_retained_births(
-            &bindings,
-            limits,
-            &HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)))
-        )
-        .is_err());
     for field in 0..2 {
         let mut altered = births.clone();
         if field == 0 {
@@ -129,7 +112,7 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
             })
             .collect::<Vec<_>>();
         assert!(matches!(
-            capture.bind_retained_births(&replaced, limits, &budget()),
+            capture.bind_retained_births(&replaced, limits),
             Err(RetainedBirthFundingError::DuplicateBirth)
         ));
     }
@@ -144,7 +127,7 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
         })
         .collect::<Vec<_>>();
     assert!(matches!(
-        capture.bind_retained_births(&replaced, limits, &budget()),
+        capture.bind_retained_births(&replaced, limits),
         Err(RetainedBirthFundingError::AuthorityMismatch)
     ));
     let nonretained = capture
@@ -162,16 +145,14 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
                 obligation_positions: positions,
             })
             .collect::<Vec<_>>();
-        assert!(capture
-            .bind_retained_births(&replaced, limits, &budget())
-            .is_err());
+        assert!(capture.bind_retained_births(&replaced, limits).is_err());
     }
     let short = [RetainedBirthFunding {
         birth: &births[0],
         obligation_positions: &columns[0][1..],
     }];
     assert!(matches!(
-        capture.bind_retained_births(&short, limits, &budget()),
+        capture.bind_retained_births(&short, limits),
         Err(RetainedBirthFundingError::CellCount)
     ));
     let mut substituted = columns.clone();
@@ -185,7 +166,7 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
         })
         .collect::<Vec<_>>();
     assert!(matches!(
-        capture.bind_retained_births(&replaced, limits, &budget()),
+        capture.bind_retained_births(&replaced, limits),
         Err(RetainedBirthFundingError::QuantityMismatch)
     ));
 }

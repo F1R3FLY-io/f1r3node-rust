@@ -10,7 +10,10 @@ use serde::Serialize;
 
 use super::{RSpace, RSpaceStore};
 use crate::rspace::errors::{HistoryRepositoryError, RSpaceError};
-use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+// Disabled by the merge of feature/cost-accounted-rho (lint fix): F1R3Lang's
+// `EpochHistoryReader` replaced the `Box<dyn HistoryReader<Blake2b256Hash, ..>>`
+// that named this type, so it was unused at HEAD too.
+// use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use crate::rspace::history::history_reader::EpochHistoryReader;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};

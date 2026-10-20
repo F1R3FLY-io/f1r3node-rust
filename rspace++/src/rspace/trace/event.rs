@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
-use std::mem::size_of;
 use std::sync::Arc;
 
 use proptest_derive::Arbitrary;
@@ -9,13 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::hashing::stable_hash_provider::{
     EventCodecEpoch, StableHashSerialize, channel_hash_for_epoch, channel_hashes_for_epoch, hash,
     hash_consume, hash_consume_for_epoch, hash_produce, hash_produce_for_epoch, hash_vec,
 };
 use crate::rspace::internal::ConsumeCandidate;
-use crate::rspace::native_backing;
 
 // See rspace/src/main/scala/coop/rchain/rspace/trace/Event.scala
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -76,58 +73,30 @@ impl Hash for RestingCOMM {
 impl RestingCOMM {
     /// Protocol-7-only identity. Existing `COMM` and IO event hashes remain
     /// byte-for-byte unchanged in both CostV1 and CostV2.
-    pub fn cost_v2_identity_metered(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Blake2b256Hash, RSpaceError> {
+    pub fn cost_v2_identity(&self) -> Result<Blake2b256Hash, RSpaceError> {
         const DOMAIN: &[u8] = b"f1r3node:rspace-resting-comm:v1";
-        type OrderedSource<'a> = (&'a Blake2b256Hash, &'a Blake2b256Hash, bool, i32);
-
-        let count = self.ordered_produces.len();
-        if count != self.ordered_data_indices.len() {
+        if self.ordered_produces.len() != self.ordered_data_indices.len() {
             return Err(RSpaceError::ProduceCommitProtocolViolation);
         }
-        native_backing::inspect_blocks(&self.consume, meter)?;
-        native_backing::inspect_blocks(&self.peeks, meter)?;
-        let bytes = count
-            .checked_mul(size_of::<OrderedSource<'_>>())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
-        let mut ordered = Vec::new();
-        ordered
-            .try_reserve_exact(count)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        for (produce, index) in self
+        let ordered: Vec<_> = self
             .ordered_produces
             .iter()
             .zip(self.ordered_data_indices.iter().copied())
-        {
-            meter.reserve(
-                1,
-                produce
-                    .channel_hash
-                    .0
-                    .len()
-                    .checked_add(produce.hash.0.len())
-                    .and_then(|n| n.checked_add(size_of::<bool>() + size_of::<i32>()))
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                0,
-            )?;
-            ordered.push((&produce.channel_hash, &produce.hash, produce.persistent, index));
-        }
-        let forward = |operations, scanned, backing| meter.reserve(operations, scanned, backing);
-        native_source::hash(
-            &(
-                DOMAIN,
-                &self.consume.channel_hashes,
-                &self.consume.hash,
-                self.consume.persistent,
-                self.continuation_index,
-                &ordered,
-                &self.peeks,
-            ),
-            &forward,
-        )
+            .map(|(produce, index)| {
+                (&produce.channel_hash, &produce.hash, produce.persistent, index)
+            })
+            .collect();
+        let encoded = bincode::serialize(&(
+            DOMAIN,
+            &self.consume.channel_hashes,
+            &self.consume.hash,
+            self.consume.persistent,
+            self.continuation_index,
+            &ordered,
+            &self.peeks,
+        ))
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        Ok(Blake2b256Hash::new(&encoded))
     }
 }
 
@@ -212,89 +181,6 @@ impl COMM {
         ))
         .expect("COMM cost identity serialization");
         Blake2b256Hash::new(&encoded)
-    }
-
-    pub fn cost_identity_metered(
-        &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Blake2b256Hash, RSpaceError> {
-        type ProduceIdentity<'a> = (&'a Blake2b256Hash, &'a Blake2b256Hash, bool, i32);
-
-        // Changed by D-O1 (DR-94): block accounting charges inline bytes once
-        // per enclosing block. native_backing::inspect_blocks(&self.consume,
-        // meter)?; native_backing::inspect_blocks(&self.peeks, meter)?;
-        // native_backing::inspect_blocks(&self.times_repeated, meter)?;
-        native_backing::inspect_blocks(&self.consume, meter)?;
-        native_backing::inspect_blocks(&self.peeks, meter)?;
-        native_backing::inspect_blocks(&self.times_repeated, meter)?;
-        let map_hash_bytes = self
-            .times_repeated
-            .keys()
-            .try_fold(0_usize, |total, produce| {
-                total
-                    .checked_add(produce.hash.0.len())
-                    .ok_or(RSpaceError::HostWorkRejected)
-            })?;
-        let count = self.produces.len();
-        let bytes = count
-            .checked_mul(size_of::<ProduceIdentity<'_>>())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
-        let mut produces: Vec<ProduceIdentity<'_>> = Vec::new();
-        produces
-            .try_reserve_exact(count)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        for produce in &self.produces {
-            let lookup_bytes = self
-                .times_repeated
-                .len()
-                .checked_mul(produce.hash.0.len())
-                .and_then(|bytes| bytes.checked_add(map_hash_bytes))
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            meter.reserve(
-                self.times_repeated
-                    .len()
-                    .checked_add(1)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                lookup_bytes,
-                0,
-            )?;
-            produces.push((
-                &produce.channel_hash,
-                &produce.hash,
-                produce.persistent,
-                *self.times_repeated.get(produce).unwrap_or(&0),
-            ));
-        }
-        let move_bytes = bytes.checked_mul(2).ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(count, move_bytes, 0)?;
-        shared::rust::fallible_sort::sort(&mut produces, |a, b| {
-            let compared_bytes =
-                a.0.0
-                    .len()
-                    .checked_add(a.1.0.len())
-                    .and_then(|bytes| bytes.checked_add(b.0.0.len()))
-                    .and_then(|bytes| bytes.checked_add(b.1.0.len()))
-                    .and_then(|bytes| {
-                        size_of::<ProduceIdentity<'_>>()
-                            .checked_mul(2)
-                            .and_then(|moves| bytes.checked_add(moves))
-                    })
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-            meter.reserve(1, compared_bytes, 0)?;
-            Ok::<_, RSpaceError>(a.cmp(b))
-        })?;
-        let forward = |operations, scanned, backing| meter.reserve(operations, scanned, backing);
-        native_source::hash(
-            &(
-                &self.consume.channel_hashes,
-                &self.consume.hash,
-                self.consume.persistent,
-                produces,
-                &self.peeks,
-            ),
-            &forward,
-        )
     }
 }
 
@@ -403,24 +289,6 @@ impl Produce {
             output_value: vec![],
             failed: false,
         }
-    }
-
-    pub fn create_metered<C: Serialize, A: Serialize>(
-        channel: &C,
-        datum: &A,
-        persistent: bool,
-        meter: &dyn SourceMeter,
-    ) -> Result<Produce, RSpaceError> {
-        let reserve = |operations: usize, scanned, backing| {
-            meter.reserve(
-                operations
-                    .checked_mul(2)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                scanned,
-                backing,
-            )
-        };
-        native_source::produce(channel, datum, persistent, &reserve)
     }
 
     pub fn new(channel_hash: Blake2b256Hash, hash: Blake2b256Hash, persistent: bool) -> Produce {
@@ -575,9 +443,6 @@ fn recorded_removal_with_hash(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     use super::*;
 
     fn comm() -> COMM {
@@ -592,53 +457,6 @@ mod tests {
             produces: vec![produce.clone()],
             peeks: BTreeSet::new(),
             times_repeated: BTreeMap::from([(produce, 1)]),
-        }
-    }
-
-    #[test]
-    fn metered_produce_preserves_source_bytes_and_rejects_every_reservation_cut() {
-        let channel = vec![vec![1_u8, 2], vec![3_u8; 32]];
-        let datum = vec![9_u8; 77];
-        for persistent in [false, true] {
-            let calls = Cell::new(0_usize);
-            let totals = Cell::new([0_usize; 3]);
-            let unlimited = |operations: usize, scanned: usize, backing: usize| {
-                calls.set(calls.get() + 1);
-                let [old_operations, old_scanned, old_backing] = totals.get();
-                totals.set([
-                    old_operations + operations,
-                    old_scanned + scanned,
-                    old_backing + backing,
-                ]);
-                Ok(())
-            };
-            let actual = Produce::create_metered(&channel, &datum, persistent, &unlimited).unwrap();
-            let expected = Produce::create(&channel, &datum, persistent);
-            assert_eq!(
-                bincode::serialize(&actual).unwrap(),
-                bincode::serialize(&expected).unwrap()
-            );
-            assert!(calls.get() > 3);
-            assert!(totals.get().iter().all(|total| *total > 0));
-
-            for cut in 0..calls.get() {
-                let seen = Cell::new(0_usize);
-                let reject = |_: usize, _: usize, _: usize| {
-                    let current = seen.get();
-                    seen.set(current + 1);
-                    if current == cut {
-                        Err(RSpaceError::HostWorkRejected)
-                    } else {
-                        Ok(())
-                    }
-                };
-                assert!(matches!(
-                    Produce::create_metered(&channel, &datum, persistent, &reject),
-                    Err(RSpaceError::HostWorkRejected)
-                ));
-                assert_eq!(channel, vec![vec![1_u8, 2], vec![3_u8; 32]]);
-                assert_eq!(datum, vec![9_u8; 77]);
-            }
         }
     }
 
@@ -693,35 +511,11 @@ mod tests {
         assert_eq!(original.cost_identity(), reversed.cost_identity());
     }
 
+    /// Changed by DR-131 S6: the metered COMM identity is deleted. The test
+    /// keeps its check that the identity of reversed producers, one of them
+    /// persistent, with a peek, equals the identity of the original order.
     #[test]
-    fn resting_comm_identity_is_domain_separated_and_binds_repeated_channel_order() {
-        let ordinary = comm();
-        let mut resting = RestingCOMM {
-            consume: ordinary.consume.clone(),
-            continuation_index: 0,
-            ordered_produces: vec![ordinary.produces[0].clone(), ordinary.produces[0].clone()],
-            ordered_data_indices: vec![0, 1],
-            peeks: BTreeSet::new(),
-        };
-        let free = |_: usize, _: usize, _: usize| Ok(());
-        let identity = resting.cost_v2_identity_metered(&free).unwrap();
-        assert_ne!(identity, ordinary.cost_identity());
-
-        resting.ordered_data_indices.reverse();
-        assert_ne!(identity, resting.cost_v2_identity_metered(&free).unwrap());
-        resting.ordered_data_indices.reverse();
-        resting.continuation_index = 1;
-        assert_ne!(identity, resting.cost_v2_identity_metered(&free).unwrap());
-
-        resting.continuation_index = 0;
-        resting.ordered_produces[0] = resting.ordered_produces[0]
-            .clone()
-            .mark_as_non_deterministic(vec![b"telemetry".to_vec()]);
-        assert_eq!(identity, resting.cost_v2_identity_metered(&free).unwrap());
-    }
-
-    #[test]
-    fn metered_cost_identity_preserves_canonical_bytes() {
+    fn cost_identity_canonicalizes_persistent_producers_and_peeks() {
         let mut original = comm();
         let second = Produce::new(
             Blake2b256Hash::new(b"channel-2"),
@@ -733,67 +527,33 @@ mod tests {
         original.peeks.insert(0);
         let mut reversed = original.clone();
         reversed.produces.reverse();
-        let unlimited = |_: usize, _: usize, _: usize| Ok(());
-        assert_eq!(original.cost_identity_metered(&unlimited).unwrap(), original.cost_identity());
-        assert_eq!(reversed.cost_identity_metered(&unlimited).unwrap(), original.cost_identity());
-    }
-
-    /// D-O1 (DR-94): the metered COMM identity reserves its exact credit
-    /// before its work: it accepts the credit that it uses and rejects one
-    /// unit less in any dimension.
-    #[test]
-    fn metered_cost_identity_accepts_exact_credit() {
-        let mut value = comm();
-        let second = Produce::new(
-            Blake2b256Hash::new(b"channel-2"),
-            Blake2b256Hash::new(b"produce-2"),
-            true,
-        );
-        value.produces.push(second.clone());
-        value.times_repeated.insert(second, 3);
-        value.peeks.insert(0);
-        let run = |limit: [usize; 3]| {
-            let used = std::cell::Cell::new([0_usize; 3]);
-            let meter = |operations: usize, scanned: usize, backing: usize| {
-                let [total_operations, total_scanned, total_backing] = used.get();
-                let next = [
-                    total_operations + operations,
-                    total_scanned + scanned,
-                    total_backing + backing,
-                ];
-                if next.iter().zip(limit).any(|(total, bound)| *total > bound) {
-                    return Err(RSpaceError::HostWorkRejected);
-                }
-                used.set(next);
-                Ok(())
-            };
-            value.cost_identity_metered(&meter).map(|_| used.get())
-        };
-        let exact = run([usize::MAX; 3]).expect("unlimited");
-        assert_eq!(run(exact).expect("exact"), exact);
-        for dimension in 0..3 {
-            if exact[dimension] > 0 {
-                let mut smaller = exact;
-                smaller[dimension] -= 1;
-                assert!(matches!(run(smaller), Err(RSpaceError::HostWorkRejected)));
-            }
-        }
+        assert_eq!(reversed.cost_identity(), original.cost_identity());
     }
 
     #[test]
-    fn metered_cost_identity_rejects_before_tuple_allocation() {
-        let value = comm();
-        let rejected = AtomicBool::new(false);
-        let reject = |_: usize, _: usize, backing: usize| {
-            if backing == size_of::<(&Blake2b256Hash, &Blake2b256Hash, bool, i32)>() {
-                rejected.store(true, Ordering::Relaxed);
-                Err(RSpaceError::HostWorkRejected)
-            } else {
-                Ok(())
-            }
+    fn resting_comm_identity_is_domain_separated_and_binds_repeated_channel_order() {
+        let ordinary = comm();
+        let mut resting = RestingCOMM {
+            consume: ordinary.consume.clone(),
+            continuation_index: 0,
+            ordered_produces: vec![ordinary.produces[0].clone(), ordinary.produces[0].clone()],
+            ordered_data_indices: vec![0, 1],
+            peeks: BTreeSet::new(),
         };
-        assert!(matches!(value.cost_identity_metered(&reject), Err(RSpaceError::HostWorkRejected)));
-        assert!(rejected.load(Ordering::Relaxed));
+        let identity = resting.cost_v2_identity().unwrap();
+        assert_ne!(identity, ordinary.cost_identity());
+
+        resting.ordered_data_indices.reverse();
+        assert_ne!(identity, resting.cost_v2_identity().unwrap());
+        resting.ordered_data_indices.reverse();
+        resting.continuation_index = 1;
+        assert_ne!(identity, resting.cost_v2_identity().unwrap());
+
+        resting.continuation_index = 0;
+        resting.ordered_produces[0] = resting.ordered_produces[0]
+            .clone()
+            .mark_as_non_deterministic(vec![b"telemetry".to_vec()]);
+        assert_eq!(identity, resting.cost_v2_identity().unwrap());
     }
 
     #[test]

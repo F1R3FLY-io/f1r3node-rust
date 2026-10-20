@@ -513,7 +513,16 @@ fn replay_data_projection(space: &RholangReplay) -> BTreeMap<String, Vec<(String
 }
 
 fn rig_projection(log: &[Event]) -> BTreeMap<String, Vec<(String, usize)>> {
-    let rspace_log: Vec<RspaceEvent> = log.iter().map(to_rspace_event).collect();
+    // Changed by the merge of feature/cost-accounted-rho (finding R3-34): the
+    // converter is fallible in F1R3Lang, because an epoch can refuse an event.
+    // `to_rspace_event` converts under Legacy, the epoch of this fixture's
+    // replay space. The old line was:
+    // let rspace_log: Vec<RspaceEvent> = log.iter().map(to_rspace_event).collect();
+    let rspace_log: Vec<RspaceEvent> = log
+        .iter()
+        .map(to_rspace_event)
+        .collect::<Result<_, _>>()
+        .expect("the fixture log converts under the Legacy epoch");
     let space = fresh_replay_space();
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -721,7 +730,10 @@ fn for_each_permutation<T: Clone>(items: &[T], visit: &mut impl FnMut(&[T])) {
     let mut i = 1usize;
     while i < n {
         if counters[i] < i {
-            let swap_with = if i % 2 == 0 { 0 } else { counters[i] };
+            // Changed by the merge of feature/cost-accounted-rho (clippy gate):
+            // `is_multiple_of` states the parity test directly.
+            // let swap_with = if i % 2 == 0 { 0 } else { counters[i] };
+            let swap_with = if i.is_multiple_of(2) { 0 } else { counters[i] };
             working.swap(swap_with, i);
             visit(&working);
             counters[i] += 1;

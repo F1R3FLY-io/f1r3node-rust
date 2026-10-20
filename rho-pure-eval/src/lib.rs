@@ -46,7 +46,7 @@ mod oracle;
 pub use decidable::{undecidable_nodes, SpatialSupport, UndecidableNode};
 pub use env::Env;
 pub use error::EvalError;
-pub use eval::{eval, eval_metered, eval_with, eval_with_metered};
+pub use eval::{eval, eval_with};
 pub use oracle::{NoSpatialMatch, SpatialMatch};
 
 #[cfg(test)]

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use proptest::prelude::*;
+// Changed by the merge of feature/cost-accounted-rho (clippy gate): the
+// parent module imports the same prelude, and `use super::*` brings it in.
+// use proptest::prelude::*;
 use proptest::test_runner::{Config, FileFailurePersistence};
 
 use super::*;

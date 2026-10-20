@@ -1,5 +1,6 @@
 pub mod drive;
 pub mod grpc_client;
+pub mod dismantle;
 pub mod implicits;
 pub mod par_children;
 pub mod pooled_stack;
@@ -7,6 +8,7 @@ pub mod bincode_decoder;
 pub mod protobuf_encoder;
 pub mod protobuf_schema;
 pub mod schema_meta;
+pub mod record_decoder;
 pub mod sorter;
 pub mod bincode_schema;
 pub mod bincode_encoder;

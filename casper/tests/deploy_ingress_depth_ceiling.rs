@@ -344,6 +344,13 @@ fn cosigned_deploy_of_depth(depth: usize) -> Cosigned<DeployData> {
     let data = DeployData {
         term: nested_list_source(depth),
         time_stamp: 100,
+        // Added by the merge of feature/cost-accounted-rho (finding R3-31): the
+        // dev merge 1d325b996 restored these two fields, and the checkpoint
+        // merges 29b729551 and e5102e945 took them. The values are the
+        // `construct_deploy` defaults. Ingress reads only the term and the
+        // signer, so the values do not change what this probe measures.
+        phlo_price: 1,
+        phlo_limit: 90000,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,

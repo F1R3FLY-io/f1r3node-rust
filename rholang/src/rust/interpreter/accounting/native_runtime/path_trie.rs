@@ -9,25 +9,12 @@
 //! and longest common prefixes in O(`levels`) steps.
 
 use std::collections::BTreeMap;
-use std::mem::size_of;
 
-use models::rust::host_work::HostWorkDimension;
 use rspace_plus_plus::rspace::operation_context::{
     child_path_digest, root_path_digest, CausalPath, PathDigest, PathSegment,
 };
-use shared::rust::collection_backing::{tree_growth, tree_search_bound};
 
-use super::index::reserve_vector;
-use super::recording::work;
-use super::{HostWorkBudget, InterpreterError};
-
-/// The bytes hashed for the root digest: the domain tag and the node-kind
-/// byte.
-const ROOT_DIGEST_INPUT_BYTES: usize = 22 + 1;
-
-/// The bytes hashed for one child digest: the domain tag, the node-kind byte,
-/// the parent digest and the two segment words.
-const CHILD_DIGEST_INPUT_BYTES: usize = 22 + 1 + 32 + 16;
+use super::InterpreterError;
 
 type ChildKey = (u32, PathSegment);
 
@@ -56,8 +43,6 @@ pub(super) struct PathKey {
 }
 
 impl PathKey {
-    pub(super) const BYTES: usize = 32 + size_of::<usize>() + 17;
-
     pub(super) fn of(path: &CausalPath) -> Self {
         Self {
             digest: path.digest(),
@@ -78,9 +63,7 @@ struct TrieNode {
 #[derive(Clone, Debug)]
 pub struct NativePathTrie {
     nodes: Vec<TrieNode>,
-    node_capacity: usize,
     jumps: Vec<u32>,
-    jump_capacity: usize,
     levels: usize,
     max_depth: usize,
     children: BTreeMap<ChildKey, u32>,
@@ -88,7 +71,7 @@ pub struct NativePathTrie {
 }
 
 /// Two tries are equal when they hold the same nodes in the same order. The
-/// capacities and the admitted suffix count are bookkeeping.
+/// admitted suffix count is bookkeeping.
 impl PartialEq for NativePathTrie {
     fn eq(&self, other: &Self) -> bool { self.nodes == other.nodes }
 }
@@ -101,33 +84,19 @@ fn trie_error(message: &str) -> InterpreterError {
 
 fn bit_length(value: usize) -> usize { (usize::BITS - value.leading_zeros()) as usize }
 
-fn checked(value: Option<usize>) -> Result<usize, InterpreterError> {
-    value.ok_or(InterpreterError::HostWorkRejected)
-}
-
 impl NativePathTrie {
     /// A trie that holds only the root, for paths of at most `max_depth`
     /// segments.
-    pub fn new(max_depth: usize, host: &HostWorkBudget) -> Result<Self, InterpreterError> {
+    pub fn new(max_depth: usize) -> Self {
         let levels = bit_length(max_depth).max(1);
         let mut trie = Self {
-            nodes: Vec::new(),
-            node_capacity: 0,
-            jumps: Vec::new(),
-            jump_capacity: 0,
+            nodes: Vec::with_capacity(1),
+            jumps: Vec::with_capacity(levels),
             levels,
             max_depth,
             children: BTreeMap::new(),
             suffix_segments: 0,
         };
-        reserve_vector(&mut trie.nodes, &mut trie.node_capacity, 1, host)?;
-        reserve_vector(&mut trie.jumps, &mut trie.jump_capacity, levels, host)?;
-        work(host, HostWorkDimension::VerificationOperations, 1)?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            ROOT_DIGEST_INPUT_BYTES,
-        )?;
         trie.nodes.push(TrieNode {
             parent: 0,
             depth: 0,
@@ -135,7 +104,7 @@ impl NativePathTrie {
             digest: root_path_digest(),
         });
         trie.jumps.resize(levels, 0);
-        Ok(trie)
+        trie
     }
 
     /// The number of nodes, without the root.
@@ -195,22 +164,11 @@ impl NativePathTrie {
     }
 
     /// The ancestor of `id` at `depth`.
-    pub fn ancestor(
-        &self,
-        id: PathId,
-        depth: usize,
-        host: &HostWorkBudget,
-    ) -> Result<PathId, InterpreterError> {
+    pub fn ancestor(&self, id: PathId, depth: usize) -> Result<PathId, InterpreterError> {
         let distance = id
             .depth()
             .checked_sub(depth)
             .ok_or_else(|| trie_error("ancestor below its node"))?;
-        work(host, HostWorkDimension::VerificationOperations, self.levels)?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            checked(self.levels.checked_mul(size_of::<u32>()))?,
-        )?;
         let mut index = id.index;
         for level in 0..self.levels {
             if ((distance >> level) & 1) == 1 {
@@ -224,24 +182,13 @@ impl NativePathTrie {
     }
 
     /// The depth of the longest common prefix of `left` and `right`.
-    pub fn lcp_depth(
-        &self,
-        left: PathId,
-        right: PathId,
-        host: &HostWorkBudget,
-    ) -> Result<usize, InterpreterError> {
+    pub fn lcp_depth(&self, left: PathId, right: PathId) -> Result<usize, InterpreterError> {
         let depth = left.depth().min(right.depth());
-        let left = self.ancestor(left, depth, host)?;
-        let right = self.ancestor(right, depth, host)?;
+        let left = self.ancestor(left, depth)?;
+        let right = self.ancestor(right, depth)?;
         if left.index == right.index {
             return Ok(depth);
         }
-        work(host, HostWorkDimension::VerificationOperations, self.levels)?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            checked(self.levels.checked_mul(2 * size_of::<u32>()))?,
-        )?;
         let (mut left_index, mut right_index) = (left.index, right.index);
         for level in (0..self.levels).rev() {
             let (left_jump, right_jump) =
@@ -260,7 +207,6 @@ impl NativePathTrie {
         &mut self,
         parent: PathId,
         segment: PathSegment,
-        host: &HostWorkBudget,
     ) -> Result<PathId, InterpreterError> {
         if !self.contains(parent) {
             return Err(trie_error("unknown parent"));
@@ -270,34 +216,12 @@ impl NativePathTrie {
             .checked_add(1)
             .filter(|depth| *depth as usize <= self.max_depth)
             .ok_or_else(|| trie_error("path exceeds its depth limit"))?;
-        let comparisons = tree_search_bound(self.children.len());
-        work(host, HostWorkDimension::VerificationOperations, comparisons)?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            checked(comparisons.checked_mul(2 * size_of::<ChildKey>()))?,
-        )?;
         if let Some(&index) = self.children.get(&(parent.index, segment)) {
             return Ok(PathId { index, depth });
         }
         let index =
             u32::try_from(self.nodes.len()).map_err(|_| trie_error("node index exceeds u32"))?;
-        reserve_vector(&mut self.nodes, &mut self.node_capacity, 1, host)?;
-        reserve_vector(&mut self.jumps, &mut self.jump_capacity, self.levels, host)?;
-        let (operations, bytes) =
-            checked_pair(tree_growth::<ChildKey, u32>(self.children.len(), 1))?;
-        work(host, HostWorkDimension::VerificationOperations, operations)?;
-        work(host, HostWorkDimension::SearchStateBytes, bytes)?;
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            checked(self.levels.checked_add(1))?,
-        )?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            CHILD_DIGEST_INPUT_BYTES,
-        )?;
+        self.jumps.reserve(self.levels);
         let digest = child_path_digest(&self.nodes[parent.index()].digest, segment);
         self.nodes.push(TrieNode {
             parent: parent.index,
@@ -324,23 +248,11 @@ impl NativePathTrie {
         path: &[PathSegment],
         previous_path: &[PathSegment],
         previous: PathId,
-        host: &HostWorkBudget,
     ) -> Result<PathId, InterpreterError> {
         let shared = path.len().min(previous_path.len());
         let mut prefix = 0;
         while prefix < shared {
             let end = prefix.saturating_add(16).min(shared);
-            let count = end - prefix;
-            work(
-                host,
-                HostWorkDimension::VerificationOperations,
-                checked(count.checked_mul(2))?,
-            )?;
-            work(
-                host,
-                HostWorkDimension::VerificationBytes,
-                checked(count.checked_mul(16))?,
-            )?;
             while prefix < end && path[prefix] == previous_path[prefix] {
                 prefix += 1;
             }
@@ -348,8 +260,8 @@ impl NativePathTrie {
                 break;
             }
         }
-        let base = self.ancestor(previous, prefix, host)?;
-        self.intern(base, &path[prefix..], host)
+        let base = self.ancestor(previous, prefix)?;
+        self.intern(base, &path[prefix..])
     }
 
     /// Interns `segments` below `base` and returns the node of the whole path.
@@ -357,11 +269,10 @@ impl NativePathTrie {
         &mut self,
         base: PathId,
         segments: &[PathSegment],
-        host: &HostWorkBudget,
     ) -> Result<PathId, InterpreterError> {
         let mut node = base;
         for segment in segments {
-            node = self.child(node, *segment, host)?;
+            node = self.child(node, *segment)?;
         }
         Ok(node)
     }
@@ -371,22 +282,12 @@ impl NativePathTrie {
         &self,
         id: PathId,
         from_depth: usize,
-        host: &HostWorkBudget,
     ) -> Result<Vec<PathSegment>, InterpreterError> {
         let count = id
             .depth()
             .checked_sub(from_depth)
             .ok_or_else(|| trie_error("suffix below its node"))?;
-        work(host, HostWorkDimension::VerificationOperations, count)?;
-        work(
-            host,
-            HostWorkDimension::SearchStateBytes,
-            checked(count.checked_mul(size_of::<PathSegment>()))?,
-        )?;
-        let mut segments = Vec::new();
-        segments
-            .try_reserve_exact(count)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        let mut segments = Vec::with_capacity(count);
         let mut index = id.index;
         for _ in 0..count {
             let node = &self.nodes[index as usize];
@@ -402,43 +303,11 @@ impl NativePathTrie {
     /// segment (`NativePathTrie.trie_dfs_is_lex_sort`). `children` iterates by
     /// (parent, segment), so the children of each node are contiguous and
     /// sorted.
-    pub fn preorder(&self, host: &HostWorkBudget) -> Result<Vec<PathId>, InterpreterError> {
+    pub fn preorder(&self) -> Vec<PathId> {
         let count = self.nodes.len();
         let edges = self.children.len();
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            checked(
-                edges
-                    .checked_mul(2)
-                    .and_then(|operations| operations.checked_add(count.checked_mul(3)?)),
-            )?,
-        )?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            checked(edges.checked_mul(size_of::<(ChildKey, u32)>()))?,
-        )?;
-        work(
-            host,
-            HostWorkDimension::SearchStateBytes,
-            checked(
-                count
-                    .checked_add(1)
-                    .and_then(|offsets| offsets.checked_mul(size_of::<usize>()))
-                    .and_then(|bytes| bytes.checked_add(edges.checked_mul(size_of::<u32>())?))
-                    .and_then(|bytes| bytes.checked_add(count.checked_mul(size_of::<u32>())?))
-                    .and_then(|bytes| bytes.checked_add(count.checked_mul(size_of::<PathId>())?)),
-            )?,
-        )?;
-        let mut offsets = Vec::new();
-        offsets
-            .try_reserve_exact(count + 1)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
-        offsets.resize(count + 1, 0_usize);
-        let mut list = Vec::new();
-        list.try_reserve_exact(edges)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        let mut offsets = vec![0_usize; count + 1];
+        let mut list = Vec::with_capacity(edges);
         for (&(parent, _), &child) in &self.children {
             offsets[parent as usize + 1] += 1;
             list.push(child);
@@ -446,14 +315,8 @@ impl NativePathTrie {
         for index in 0..count {
             offsets[index + 1] += offsets[index];
         }
-        let mut stack = Vec::new();
-        stack
-            .try_reserve_exact(count)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
-        let mut order = Vec::new();
-        order
-            .try_reserve_exact(count - 1)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        let mut stack = Vec::with_capacity(count);
+        let mut order = Vec::with_capacity(count - 1);
         stack.push(0_u32);
         while let Some(index) = stack.pop() {
             let node = index as usize;
@@ -467,10 +330,10 @@ impl NativePathTrie {
                 stack.push(*child);
             }
         }
-        Ok(order)
+        order
     }
 
-    /// The segments of `id`, without host-work charges.
+    /// The segments of `id`.
     #[cfg(test)]
     pub fn segments(&self, id: PathId) -> Vec<PathSegment> {
         let mut segments = Vec::with_capacity(id.depth());
@@ -496,10 +359,6 @@ impl NativePathTrie {
                 })
         })
     }
-}
-
-fn checked_pair(value: Option<(usize, usize)>) -> Result<(usize, usize), InterpreterError> {
-    value.ok_or(InterpreterError::HostWorkRejected)
 }
 
 #[cfg(test)]
