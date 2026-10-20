@@ -221,17 +221,21 @@ The workflow uses the promotion app token from `release-credentials`, as the Pro
 
 | Queue | Pull requests | Merge conditions |
 |---|---|---|
-| `ca-item` | Head `ca/*` into `ca-canary`, with the `queue` label | The `ci.yml` checks of `devProtect`, the Integration Gates, `Soak Gate (22h)`, and an approving review. The `ci-heavy` label is necessary for the Integration Gates. |
+| `ca-item` | Head `ca/*` into `ca-canary`, with the `queue` label | To enter the queue: the `ca-soaked` label and an approving review. To merge: the `ci.yml` checks of `devProtect` and the Integration Gates. The `ci-heavy` label is necessary for the Integration Gates. |
 | `ca-daily` | Head `feed/dev-<SHA>` into `ca-release`, and head `backmerge/ca-release-<SHA>` into `ca-canary` | The light `ci.yml` checks. No review. |
 
 To merge a `ca/<item>` pull request:
 
 1. Add the `ci-heavy` label after the last planned push.
-2. Add the `ca-soak` label to start its 22-hour soak.
+2. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
 3. Get an approving review.
 4. Add the `queue` label.
 
 The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`. The `ca-soak` dispatcher and the `Soak Gate (22h)` and `Soak Gate (60h)` statuses come from a separate CbC change of the soak workflow.
+
+The `ca-soaked` label stays on the pull request when Mergify merges a new `ca-canary` base into it. A daily back-merge therefore does not need a new soak. A push by the author removes the label, so a code change needs a new soak. A commit status cannot do this, because a new head commit has no status and Mergify then removes the pull request from the queue.
+
+A person with triage access can add the label by hand. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
 
 ### Release tag
 
@@ -244,7 +248,7 @@ These rulesets are a plan. They are not applied.
 | Rule | `ca-canary` | `ca-release` |
 |---|---|---|
 | Deletion and non-fast-forward | Blocked | Blocked |
-| Required checks | The `devProtect` checks and `Soak Gate (22h)` | The `masterProtect` checks and `Soak Gate (60h)` |
+| Required checks | The `devProtect` checks. The `ca-soaked` label in Mergify gates the soak. | The `masterProtect` checks. `just ca-tag` requires `Soak Gate (60h)` on the `ca-release` head. |
 | Pull request review | One code-owner approval for `ca/*` heads | One code-owner approval for `promote/ca-release-*` heads |
 | Merge method | Merge commit only | Merge commit only |
 | GitHub merge queue | None (Mergify) | None (Mergify) |

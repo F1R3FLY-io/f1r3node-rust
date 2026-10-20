@@ -4,9 +4,14 @@
 # stays on dev and master, and no rule here matches those bases.
 #
 #   ca-item   a ca/<item> pull request into ca-canary. It needs the ci.yml
-#             gates with the ci-heavy label, its 22-hour soak (Soak Gate (22h),
-#             started by the ca-soak label), and an approving review. A
-#             maintainer adds the queue label to enter the queue.
+#             gates with the ci-heavy label, its 22-hour soak, and an
+#             approving review. A maintainer adds the queue label to enter the
+#             queue. The ca-soak label starts the soak. A passed soak adds the
+#             ca-soaked label and posts Soak Gate (22h) on the soaked commit.
+#             The label stays when Mergify merges the base into the pull
+#             request, and a push by the author removes it. A commit status
+#             cannot do this: Mergify dequeues a pull request whose queue
+#             conditions stop matching, and a new head has no status.
 #   ca-daily  the daily feed (feed/dev-<sha> into ca-release) and back-merge
 #             (backmerge/ca-release-<sha> into ca-canary) from
 #             ca-daily-sync.yml. They need the light ci.yml checks only and no
@@ -29,6 +34,7 @@ queue_rules:
       - label=ci-heavy
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
+      - label=ca-soaked
     merge_conditions:
       - check-success=Static Checks
       - check-success=Script Tests
@@ -49,7 +55,6 @@ queue_rules:
       - check-success=Test (rspace_plus_plus)
       - check-success=Integration Gate (amd64)
       - check-success=Integration Gate (arm64)
-      - status-success=Soak Gate (22h)
 
   - name: ca-daily
     batch_size: 1
