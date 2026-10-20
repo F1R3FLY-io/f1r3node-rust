@@ -343,7 +343,11 @@ fi
 # A failed log probe during work is a breach only when the next probe also
 # fails. Admission checks before work still refuse on one failure.
 LOG_PROBE_FAILURES_FOR_BREACH=2
-NODE_LOG_DIR=/var/lib/rnode/logs
+NODE_LOG_DIR="${SOAK_NODE_LOG_DIR:-/var/lib/rnode/logs}"
+if ! [[ "$NODE_LOG_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+	printf 'SOAK_NODE_LOG_DIR must be an absolute path of letters, digits, ".", "_", "-", and "/"\n' >&2
+	exit 2
+fi
 # Where harness sessions leave their compose and genesis files (the
 # `test-*` sweep below), and where the runner keeps _diag and _work. Both are
 # overridable so the driver test can sweep and measure a private tree instead
@@ -549,6 +553,11 @@ log_budget_sample() {
 		container_mb=-
 		node_mb=-
 		if [ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ]; then
+			if [ -z "$path" ]; then
+				log_container_running "$cid" || continue
+				printf 'log probe unavailable: container log of %s (the logging driver writes no log file)\n' "${cid:0:12}" >&2
+				return 1
+			fi
 			if [[ "$path" != /* ]] || ! total="$(log_file_bytes "$path")"; then
 				log_container_running "$cid" || continue
 				printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
@@ -575,7 +584,7 @@ log_budget_sample() {
 				return 1
 			}
 			exec_status=0
-			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>"$exec_err_file")" ||
+			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" </dev/null 2>"$exec_err_file")" ||
 				exec_status=$?
 			exec_err="$(awk 'NF { print; exit }' "$exec_err_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
 			rm -f "$exec_err_file"
@@ -1758,6 +1767,11 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		container_log_over=0
 		node_log_over=0
 		log_probe_failures=0
+		log_probe_error_file=""
+		if log_budgets_enabled; then
+			log_probe_error_file="$(mktemp "${TMPDIR:-/tmp}/soak-log-probe-error.XXXXXXXX" 2>/dev/null)" || log_probe_error_file=""
+			[ -z "$log_probe_error_file" ] || trap 'rm -f "$log_probe_error_file"' EXIT
+		fi
 		# The disk floor rule for one log probe: a sample over the budget is a
 		# strike, and three consecutive strikes or one sample at two times the
 		# budget is a breach. The comparison avoids doubling a 64-bit budget.
@@ -1818,8 +1832,9 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 				# through docker exec at test teardown, and a probe exec can fail
 				# in that window (soak 38076682321). Two consecutive failed
 				# probes are a breach.
-				if ! log_sample="$(log_budget_probe 2>"$OUTPUT_DIR/.log-probe-error")"; then
-					log_reason="$(head -1 "$OUTPUT_DIR/.log-probe-error" 2>/dev/null)"
+				if ! log_sample="$(log_budget_probe 2>"${log_probe_error_file:-/dev/null}")"; then
+					log_reason=""
+					[ -z "$log_probe_error_file" ] || log_reason="$(head -1 "$log_probe_error_file" 2>/dev/null)"
 					log_probe_failures=$((log_probe_failures + 1))
 					if [ "$log_probe_failures" -lt "$LOG_PROBE_FAILURES_FOR_BREACH" ]; then
 						printf 'log guardian: probe unavailable (%s); consecutive failed probes %s of %s\n' \
