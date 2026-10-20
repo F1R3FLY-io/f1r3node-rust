@@ -236,11 +236,37 @@ To merge a `ca/<item>` pull request:
 
 Mergify then queues the pull request by itself.
 
-The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`. The `ca-soak` dispatcher and the `Soak Gate (22h)` and `Soak Gate (60h)` statuses come from a separate CbC change of the soak workflow.
+The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`.
 
 The `ca-soaked` label stays on the pull request when Mergify merges a new `ca-canary` base into it. A back-merge or a merged sync therefore does not need a new soak. A push by the author removes the label, so a code change needs a new soak. A commit status cannot do this, because a new head commit has no status and Mergify then removes the pull request from the queue.
 
 A person with triage access can add the label by hand. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
+
+### Soak gates
+
+`ca-soak-dispatch.yml` (Release Train Soak Dispatch) starts the gate soaks. `.github/scripts/ca-soak-dispatch.sh` does the work, and `test-ca-soak-dispatch.sh` checks it.
+
+| Event | Action |
+|---|---|
+| The `ca-soak` label on a `ca/*` pull request into `ca-canary` | Removes `ca-soaked` and starts the 22-hour soak of the head, gate `ca-item` |
+| A push to that pull request by Mergify | Nothing. Mergify only merges the base. |
+| A push to that pull request by anyone else | Removes `ca-soak` and `ca-soaked` and cancels the running soak. A new soak needs the `ca-soak` label again. |
+| A push to `ca-release` | Starts the 60-hour soak of the pushed commit, gate `ca-release` |
+
+The dispatcher runs `merge-recovery-soak.yml` from `master` with the inputs `gate`, `gate_pr`, and `target_ref` as a commit SHA. A gate run differs from a `daily` or `weekend` run in these ways:
+
+- It has its own concurrency group: one for each `ca/*` pull request, and one for `ca-release`. Item soaks run in parallel, and a gate run never cancels a `daily` or `weekend` run.
+- Its soak runner registers under a label of its own run, `f1r3fly-rust-soak-run-<run ID>`, so a parallel soak cannot take its VM.
+- It publishes no checkpoint and no dashboard series.
+- Its one restart after an infrastructure failure soaks a full new window, not the rest of the old one.
+
+At the start, the run posts `Soak Gate (22h)` or `Soak Gate (60h)` as pending on the soaked commit. At the end, `.github/scripts/report-soak-gate.sh` posts the result:
+
+- Success: the soak completed, its integration preflight passed, and its verdict is `pass`.
+- Error: the soak was cancelled.
+- Failure: any other result.
+
+A run never replaces the status of a newer run. After a successful item soak, the script adds `ca-soaked` to the pull request. It does this only when the pull request is open into `ca-canary` and its head is still the soaked commit. `test-soak-gate.sh` checks these rules, and `docs/claims/soak-release-gates.md` states them as a CbC claim.
 
 ### Release tag
 

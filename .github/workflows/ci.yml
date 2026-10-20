@@ -556,6 +556,14 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-tag-ca-release.sh
 
+      - name: Verify release train soak gate
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-soak-gate.sh
+
+      - name: Verify release train soak dispatch
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ca-soak-dispatch.sh
+
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-soak-schedule-routing.sh
