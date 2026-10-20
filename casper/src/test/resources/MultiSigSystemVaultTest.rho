@@ -308,7 +308,7 @@ match (
               contract assertBalance(@(vault, expectedBalance), retCh) = {
                 new balanceCh in {
                   @vault!("balance", *balanceCh) |
-                  rhoSpec!("assert", (expectedBalance, "== <-", *balanceCh), "balance is as expected", *retCh)
+                  rhoSpec!("assert", (expectedBalance.toBigInt(), "== <-", *balanceCh), "balance is as expected", *retCh)
                 }
               }
             }

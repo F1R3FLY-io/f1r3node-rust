@@ -185,7 +185,7 @@ in {
                 //                              pos would transfer back all the original bond and rewards back to validator vault.
                 //                              Value(Int, Int) represents (original bond + reward, quantinue length)
                 "withdrawers"     : {},
-                // Map[PublicKey, Int]
+                // Map[PublicKey, BigInt]
                 "committedRewards" : {},
                 // Map[PublicKey, Int] - the validators wishing to withdraw and the block number when their quarantine ends
                 "pendingWithdrawers": {},
@@ -221,15 +221,16 @@ in {
                   }
                 }
               } |
+              // Money totals are BigInt: bonds are Int, rewards and the PoS vault balance are BigInt.
               contract accumulateSndNum(@(_, amount), @acc, resultCh) = {
-                resultCh!(acc + amount)
+                resultCh!(acc + amount.toBigInt())
               } |
               contract accumulateFstOfSndArg(@(_, (amount, _)), @acc, resultCh) = {
-                resultCh!(acc + amount)
+                resultCh!(acc + amount.toBigInt())
               } |
               contract accumulateItemInState(returnCh, @stateKey, accumulateAlgo) = {
                 for (@state <<- stateCh){
-                  @ListOps!("fold", state.get(stateKey).toList(), 0, *accumulateAlgo, *returnCh)
+                  @ListOps!("fold", state.get(stateKey).toList(), 0n, *accumulateAlgo, *returnCh)
                 }
               }|
               contract PoS(@"getCurrentEpochRewards", returnCh) = {
@@ -238,11 +239,11 @@ in {
                   for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, bondsMap, activeValidatorsSet) <- rewardCh){
                     @ListOps!("fold", bondsMap.toList(), {}, *computeReward, *returnCh) |
                     contract computeReward(@(pk, bonds), @acc,  outCh) = {
-                      //  someAmount / minimumBond to reduce the possibility on overflow long
+                      // Rewards are BigInt, so this product cannot overflow. Each bond is divided by minimumBond first, which truncates the validator's share.
                       if (activeValidatorsSet.contains(pk)){
-                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$) / (activeBonds / $$minimumBond$$)))
+                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$).toBigInt() / (activeBonds / $$minimumBond$$).toBigInt()))
                       } else {
-                        outCh!(acc.set(pk, 0))
+                        outCh!(acc.set(pk, 0n))
                       }
                     }
                   }
@@ -255,7 +256,7 @@ in {
                     for (@currentEpochReward <- currentEpochRewardCh) {
                       @ListOps!("fold", currentEpochReward.toList(), state.get("committedRewards"), *accumulateReward, *returnCh) |
                       contract accumulateReward(@(pk, reward), @acc, outCh) = {
-                        outCh!(acc.set(pk, acc.getOrElse(pk, 0) + reward))
+                        outCh!(acc.set(pk, acc.getOrElse(pk, 0n) + reward))
                       }
                     }
                   }
@@ -332,6 +333,8 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
+                    } else if (not (amount matches Int)) {
+                      resultCh!(state, (false, "Bond amount must be an Int."))
                     } else if (amount <= 0) {
                       // Bug #5 fix: explicit positive-stake assertion. The
                       // Rocq invariant `active_implies_bonded` (T-9.5,
@@ -610,7 +613,7 @@ in {
                                     @ListOps!("fold", currentRewards.toList(), state, *accumulate, *returnCh) |
                                     contract accumulate(@(pk, reward), @updatedState, resultCh) = {
                                       resultCh!(updatedState.set("committedRewards",
-                                                                  updatedState.get("committedRewards").set(pk, updatedState.get("committedRewards").getOrElse(pk, 0) + reward)))
+                                                                  updatedState.get("committedRewards").set(pk, updatedState.get("committedRewards").getOrElse(pk, 0n) + reward)))
                                     }
                                   }
                                 } |
@@ -653,7 +656,7 @@ in {
                                       // formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v).
                                       contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
                                         new transferResultCh in {
-                                          payWithdrawer!((pk, bonds + state.get("committedRewards").getOrElse(pk, 0)), *transferResultCh) |
+                                          payWithdrawer!((pk, bonds.toBigInt() + state.get("committedRewards").getOrElse(pk, 0n)), *transferResultCh) |
                                           for (@transferResult <- transferResultCh) {
                                             match transferResult {
                                               (true, _) => { resultCh!((pk, true)) }

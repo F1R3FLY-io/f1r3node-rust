@@ -7,6 +7,7 @@ use shared::rust::store::key_value_store::KeyValueStore;
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::history::checkpoint_writer::KvCheckpointWriter;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
@@ -55,7 +56,7 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn root(&self) -> Blake2b256Hash;
 
     /// Record a root hash in the roots store so that subsequent `reset` calls
-    /// can find it via `validate_and_set_current_root`. This is needed during
+    /// can find it via `validate_root`. This is needed during
     /// LFS bootstrap to register `emptyStateHashFixed` before genesis replay.
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError>;
 
@@ -114,14 +115,18 @@ where
             roots_key_value_store.clone(),
         );
         let importer = RSpaceImporterStore::create(
-            history_key_value_store,
+            history_key_value_store.clone(),
             cold_key_value_store.clone(),
-            roots_key_value_store,
+            roots_key_value_store.clone(),
         );
 
         Ok(Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
+            checkpoint_writer: Arc::new(KvCheckpointWriter {
+                history: history_key_value_store,
+                roots: roots_key_value_store,
+            }),
             leaf_store: cold_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source_entries_checked": 9,
+  "prior_ledger_hashes_checked": 2,
+  "current_ledgers_pending": 2,
+  "cbc_gate_exit": 4,
+  "red_exit": 101,
+  "native_exit": 0,
+  "isolated_exit": 0,
+  "source_binding_regression": true,
+  "end_to_end_node_shutdown_test": false,
+  "historical_batch_a_package_unchanged": true,
+  "claim_acceptance": false,
+  "task_complete": false
+}

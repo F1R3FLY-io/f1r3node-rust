@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "claim": "CLAIM-CASPER-SOAK-006",
+  "model": "formal/tlaplus/casper_soak/profiles/slashing/Slashing.tla",
+  "scope": "bounded-slashing-classification-only",
+  "construction": "not-applicable",
+  "bounds": {"scenarios": 2, "observations_per_scenario": 3},
+  "assumptions": [
+    "Each scenario has two valid delivery receipts and one authorization snapshot.",
+    "Delivery receipts have one producer and one clock. Their recorded order can differ from the requested order.",
+    "Epoch matching abstracts the snapshot correlation check. Unrelated snapshots do not establish authorization outcomes.",
+    "Auxiliary evidence, input pins, and fault receipts are valid. Executable fixtures test these assumptions separately.",
+    "The model compares a pinned authorization expectation. It does not implement node authorization or reconstruction.",
+    "The finite model does not prove liveness, cryptography, bisimilarity, or an unbounded node property."
+  ],
+  "positive_control": {
+    "configuration": "MC_Slashing.cfg",
+    "expected_exit": 0,
+    "properties": ["EvidenceOrderRecorded", "EpochCorrelationRequired", "AuthorizationMismatchReported"]
+  },
+  "negative_controls": [
+    {"configuration": "MC_Slashing_order_unsafe.cfg", "expected_exit": 12, "property": "EvidenceOrderRecorded", "knob": "ReuseRequestedOrder", "fixture": "slashing_delivery_order"},
+    {"configuration": "MC_Slashing_epoch_unsafe.cfg", "expected_exit": 12, "property": "EpochCorrelationRequired", "knob": "DropEpochIdentity", "fixture": "slashing_epoch_mismatch"},
+    {"configuration": "MC_Slashing_authorization_unsafe.cfg", "expected_exit": 12, "property": "AuthorizationMismatchReported", "knob": "SuppressSlashMismatch", "fixture": "slashing_authorization_mismatch"}
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "status": "documentation-and-plan-consistency-passed",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-FORMAL-AREA-DOCS"
+  ],
+  "claim_discharge": "discharged",
+  "scope": "formal-area-documentation-and-plan-consistency-only",
+  "base_commit": "191e184be556c1f190748143377ab369586c53b6",
+  "working_tree": true,
+  "recorded_at": "2026-09-19T22:49:08Z",
+  "source_digests": {
+    "formal/tlaplus/casper_soak/README.md": "ba430ad08847614f95d3ff965d671ec75cbe77ac88ae5330548923fe5198f9ab",
+    "formal/tlaplus/casper_soak/verification-plan.jsonc": "ae5b5e2b434e132d18a7a19107d18f3732e65ba33bc20c4fd3351b409dceaa8b"
+  },
+  "claim_digests": {
+    "formal/tlaplus/casper_soak/README.md": "ba430ad08847614f95d3ff965d671ec75cbe77ac88ae5330548923fe5198f9ab"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "phase_status": {
+    "pre_pr216_merge": "discharged",
+    "post_pr216_merge": "blocked"
+  },
+  "verification": {
+    "positive_consistency": "passed",
+    "negative_controls": 8,
+    "negative_exits": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "profile_plans": 7,
+    "executable_plan_inputs": "unchanged",
+    "models": {
+      "report_sha256": "7b6f669c778d320eeabb949c3bd54ea5eed9ae442caf028ec73d4034754b6476",
+      "configurations": 11,
+      "clean_generated": 66208,
+      "clean_distinct": 43424,
+      "negative_exits": [
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12
+      ]
+    }
+  },
+  "accepted_lifecycle": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+    "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+  },
+  "previous_metadata": {
+    "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
+    "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
+    "members": [
+      "prior/README.md",
+      "prior/verification-plan.jsonc",
+      "prior/readme-ledger.md",
+      "prior/plan-ledger.md"
+    ]
+  },
+  "historical_hosted_plan": "The hosted run retains the previous plan digest. Fresh local model checks bind the new metadata without changing executable inputs.",
+  "governance_claim": "CLAIM-SOAK-GATE-001 remains pending.",
+  "soak": "pending",
+  "live_adapter_qualification": "pending",
+  "node_execution": false,
+  "waiver": null
+}

@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "prepared-not-applied",
+  "review_date": "2026-09-22",
+  "location": {
+    "region": "us-sanjose-1",
+    "tenancy_id": "ocid1.tenancy.oc1..aaaaaaaaii7udpmtqhokgof6mqewbfipvbgu4ux4vvpm2gaghfnnuvgjb6fq",
+    "namespace": "axd0qezqa9z3",
+    "compartment_id": "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia",
+    "bucket": "f1r3node-casper-campaign",
+    "object": "task-017-12-baseline.json"
+  },
+  "bucket_create_request": {
+    "namespaceName": "axd0qezqa9z3",
+    "compartmentId": "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia",
+    "name": "f1r3node-casper-campaign",
+    "publicAccessType": "NoPublicAccess",
+    "storageTier": "Standard",
+    "versioning": "Enabled",
+    "objectEventsEnabled": false,
+    "autoTiering": "Disabled",
+    "freeformTags": {
+      "task": "TASK-017-12",
+      "purpose": "campaign-reservation"
+    }
+  },
+  "controller_principal": {
+    "type": "user",
+    "user_id": "ocid1.user.oc1..aaaaaaaaszbg5udehtriel4cqhrx5xhhqqyt6lxhzspdntoksdtzqzkdq36a",
+    "group_id": "ocid1.group.oc1..aaaaaaaaelq2kduax34emgh56c53shhfpgkvjcmxw7goiybizhnemnskgfba",
+    "group_name": "ci-runner-launchers",
+    "observed_groups": [
+      {
+        "id": "ocid1.group.oc1..aaaaaaaaelq2kduax34emgh56c53shhfpgkvjcmxw7goiybizhnemnskgfba",
+        "name": "ci-runner-launchers",
+        "state": "ACTIVE"
+      }
+    ],
+    "workflow_secret_name": "OCI_USER_OCID",
+    "workflow_secret_identity_verified": false,
+    "selection": "proposed-existing-service-user"
+  },
+  "supervisor_principal": {
+    "type": "resource_principal",
+    "application_id": "ocid1.fnapp.oc1.us-sanjose-1.amaaaaaafozi5pyaykhq3ohaku7xmyozddhm6jas7nfcmuoq5p5xz5l43hka",
+    "function_id": null,
+    "dynamic_group_create_request": {
+      "compartmentId": "ocid1.tenancy.oc1..aaaaaaaaii7udpmtqhokgof6mqewbfipvbgu4ux4vvpm2gaghfnnuvgjb6fq",
+      "name": "casper-campaign-supervisor",
+      "description": "Only the verified Casper campaign supervisor function.",
+      "matchingRule": null
+    },
+    "matching_rule_binding": "resource.id = '<verified-supervisor-function-id>'",
+    "dynamic_group_id": null,
+    "membership_verified": false
+  },
+  "policy_create_request": {
+    "compartmentId": "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia",
+    "name": "casper-campaign-reservation",
+    "description": "Read and overwrite the fixed Casper campaign reservation object.",
+    "statements": [
+      "Allow group id ocid1.group.oc1..aaaaaaaaelq2kduax34emgh56c53shhfpgkvjcmxw7goiybizhnemnskgfba to {OBJECT_READ, OBJECT_OVERWRITE} in compartment id ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia where all {request.user.id = 'ocid1.user.oc1..aaaaaaaaszbg5udehtriel4cqhrx5xhhqqyt6lxhzspdntoksdtzqzkdq36a', target.bucket.name = 'f1r3node-casper-campaign', target.object.name = 'task-017-12-baseline.json'}",
+      "Allow dynamic-group casper-campaign-supervisor to {OBJECT_READ, OBJECT_OVERWRITE} in compartment id ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia where all {target.bucket.name = 'f1r3node-casper-campaign', target.object.name = 'task-017-12-baseline.json'}",
+      "Allow group id ocid1.group.oc1..aaaaaaaaelq2kduax34emgh56c53shhfpgkvjcmxw7goiybizhnemnskgfba to read policies in compartment id ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia where all {request.user.id = 'ocid1.user.oc1..aaaaaaaaszbg5udehtriel4cqhrx5xhhqqyt6lxhzspdntoksdtzqzkdq36a', target.policy.name = 'casper-campaign-reservation'}"
+    ]
+  },
+  "policy_statements_sha256": "142cad2cd935aa941248cae307048366c7e19ce627ab86744a24e6d8bc1b7e9a",
+  "policy_hash_encoding": "SHA-256 of the compact UTF-8 JSON statements array followed by one newline, with its order preserved.",
+  "policy_id": null,
+  "initial_state_template": {
+    "schema_version": 2,
+    "config_digest": null,
+    "campaign_id": null,
+    "sequence": 0,
+    "slots": {
+      "preflight": null,
+      "baseline-dev-amd64": null,
+      "baseline-dev-arm64": null,
+      "stability-dev-amd64": null,
+      "stability-dev-arm64": null
+    }
+  },
+  "initialization": {
+    "status": "blocked-unbound-configuration",
+    "configuration_path": null,
+    "configuration_digest": null,
+    "digest_command": "target/debug/casper-campaign-control config-digest --config <accepted-configuration>",
+    "campaign_id_source": "The campaign_id field from the same accepted configuration.",
+    "binding_fields": [
+      "config_digest",
+      "campaign_id"
+    ],
+    "method": "PUT",
+    "headers": {
+      "if-none-match": "*",
+      "content-type": "application/json"
+    },
+    "maximum_submissions": 1,
+    "readback_required": true,
+    "ambiguous_response_action": "Read the fixed object and compare exact bytes. Do not submit another initialization request."
+  },
+  "updates": {
+    "method": "PUT",
+    "required_header": "if-match",
+    "etag_source": "GET of the fixed object",
+    "automatic_create_on_missing": false,
+    "reset": false,
+    "restore": false,
+    "slot_refund": false
+  },
+  "runtime_storage_permissions": [
+    "OBJECT_READ",
+    "OBJECT_OVERWRITE"
+  ],
+  "permissions_not_granted": [
+    "OBJECT_CREATE",
+    "OBJECT_DELETE",
+    "OBJECT_VERSION_DELETE",
+    "OBJECT_RESTORE",
+    "OBJECT_INSPECT",
+    "BUCKET_CREATE",
+    "BUCKET_DELETE",
+    "BUCKET_UPDATE",
+    "PAR_MANAGE",
+    "RETENTION_RULE_MANAGE",
+    "POLICY_UPDATE"
+  ],
+  "controller_policy_read_scope": "casper-campaign-reservation",
+  "qualification": {
+    "status": "not-run",
+    "probe_object": "task-017-12-storage-qualification.json",
+    "production_slot_consumption_allowed": false,
+    "runtime_identity_positive_control_required": true,
+    "checks": [
+      "private-versioned-bucket-readback",
+      "exact-policy-statement-hash",
+      "controller-user-and-group-binding",
+      "exact-supervisor-function-membership",
+      "read-and-conditional-overwrite",
+      "two-writers-one-etag-one-winner",
+      "stale-etag-does-not-change-record",
+      "lost-write-response-reconciled-without-reinitialization",
+      "runtime-create-delete-version-delete-and-restore-denied-on-probe",
+      "alternate-object-access-denied",
+      "authoritative-object-and-five-slots-unchanged"
+    ],
+    "probe_permission_scope": "Use a separate temporary policy with identical runtime permissions and the exact probe object name.",
+    "administrator_success_is_runtime_qualification": false
+  },
+  "limits": {
+    "iam_enforces_if_match": false,
+    "iam_validates_json_transitions": false,
+    "trusted_writer_code_required": true,
+    "privileged_administrator_changes_invalidate_acceptance": true,
+    "bucket_versioning_prevents_rollback": false,
+    "tenancy_deny_feature_changed": false,
+    "policy_server_validation": "not-run"
+  },
+  "remaining_bindings": [
+    "Confirm the workflow OCI_USER_OCID matches the proposed service user.",
+    "Pin the supervisor function ID and verify its exact dynamic-group membership.",
+    "Create the policy and record its returned ID and statement digest.",
+    "Complete the accepted controller configuration before generating the initial record.",
+    "Qualify the deployed policy and conditional-update behavior with the runtime principals."
+  ],
+  "source_digests": {
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/campaign_control/mod.rs": "1131012be392236d3ccaaf0e3df4bc36cc8686d3fdd019342b5fc5d465a5662b",
+    "scripts/casper-soak/src/campaign_control/operations.rs": "a4e9d61ab8acedb102f34c4df58fdb25ef0ea593d11592885160bafad20b3358",
+    "scripts/casper-soak/src/campaign_control/transport.rs": "e0b8843bb7d9fe2f0e1580441ba6e89c09a21bdabaa52c21c9b97e7fc0530f64",
+    "scripts/casper-soak/src/bin/casper-campaign-control.rs": "dbf6d2e263744217e66ada6cca0f8308b534e9e22e5a7f3065bc29999f48c515",
+    "scripts/casper-soak/tests/campaign_control.rs": "747558394babc26d3996392ebf8d8196197f61a77e3caa0957803c13f23333a4"
+  },
+  "references": {
+    "object_permissions": "https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/objectstoragepolicyreference.htm",
+    "iam_permissions": "https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/iampolicyreference.htm",
+    "function_principals": "https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsaccessingociresources.htm",
+    "conditional_put": "https://docs.oracle.com/en-us/iaas/tools/dotnet/2.0.0/api/Oci.ObjectstorageService.Requests.PutObjectRequest.html",
+    "versioning": "https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/usingversioning.htm"
+  },
+  "remote_writes": 0,
+  "node_launches": 0,
+  "cloud_launches": 0
+}

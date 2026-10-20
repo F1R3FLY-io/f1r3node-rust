@@ -22,6 +22,7 @@ pub const BLOCK_INFLIGHT_CAP_DROP_METRIC: &str = "block.inflight-cap.drops";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
+pub const BLOCK_REQUESTS_RECOVERY_METRIC: &str = "block.requests.recovery";
 pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
 pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
 pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
@@ -41,6 +42,14 @@ pub const PARENTS_POST_STATE_CACHE_SIZE_METRIC: &str = "parents-post-state-cache
 pub const REPLAY_CACHE_ENTRIES_METRIC: &str = "replay-cache.entries";
 pub const REPLAY_CACHE_RETAINED_BYTES_METRIC: &str = "replay-cache.retained-bytes";
 pub const PROPOSER_QUEUE_PENDING_METRIC: &str = "proposer.queue.pending";
+// Issue #24 Track A metric (CLAIM-CASPER-STAGE-METRICS-001, TASK-021-17).
+// Histogram: pending propose requests before each take from the queue.
+pub const PROPOSER_QUEUE_DEPTH_METRIC: &str = "proposer.queue.depth";
+// Issue #24 heartbeat stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Counter: heartbeat checks, one per wake or interval tick.
+pub const HEARTBEAT_CHECKS_METRIC: &str = "heartbeat.checks";
+// Counter: proposals that a heartbeat check triggered.
+pub const HEARTBEAT_PROPOSALS_METRIC: &str = "heartbeat.proposals";
 pub const PROPOSER_QUEUE_REJECTED_TOTAL_METRIC: &str = "proposer.queue.rejected.total";
 pub const INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC: &str = "init.block-message.queue.pending";
 pub const INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC: &str = "init.tuple-space.queue.pending";
@@ -59,6 +68,12 @@ pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
 pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
+pub const CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC: &str = "casper.buffer.release-scan.time";
+pub const CASPER_BUFFER_RELEASE_SCAN_CANDIDATES_METRIC: &str =
+    "casper.buffer.release-scan.candidates";
+pub const BLOCK_PROCESSING_IN_FLIGHT_METRIC: &str = "block-processing.in-flight";
+pub const BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC: &str =
+    "block-processing.in-flight.oldest-age-seconds";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";
@@ -71,12 +86,9 @@ pub const BLOCK_PROCESSING_STORAGE_TIME_METRIC: &str = "block.processing.stage.s
 pub const BLOCK_PROCESSING_REPLAY_TIME_METRIC: &str = "block.processing.stage.replay.time";
 pub const BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC: &str =
     "block.processing.stage.parents-post-state.time";
-pub const DAG_MERGE_TOTAL_TIME_METRIC: &str = "dag.merge.total.time";
-pub const DAG_MERGE_INDEX_TIME_METRIC: &str = "dag.merge.index.time";
-pub const DAG_MERGE_CONFLICT_TIME_METRIC: &str = "dag.merge.conflict.time";
+pub const BLOCK_FACTS_CACHE_CLEARED_METRIC: &str = "block-facts.cache.cleared";
 pub const DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.compute-trie-actions.time";
 pub const DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.apply-trie-actions.time";
-pub const DAG_MERGE_SCOPE_METRIC: &str = "dag.merge.scope";
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
 pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
 pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
@@ -88,6 +100,12 @@ pub const DAG_MERGE_REJECTION_OPTIONS_METRIC: &str = "dag.merge.rejection.option
 pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-application.actions";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
+pub const BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC: &str = "block.replay.runtime.lock-wait.time";
+pub const BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC: &str =
+    "block.replay.runtime.reporting-deferred";
+pub const BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC: &str = "block.replay.runtime.execute.time";
+pub const BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC: &str =
+    "block.replay.runtime.save-mergeable.time";
 pub const CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC: &str = "casper.init.time-to-approved-block";
 pub const CASPER_INIT_TIME_TO_RUNNING_METRIC: &str = "casper.init.time-to-running";
 
@@ -239,6 +257,17 @@ pub const BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC: &str =
 pub const BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC: &str =
     "block.validation.deploys-shard-identifier.time";
 pub const BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC: &str = "block.validation.repeat-deploy.time";
+pub const REPEAT_DEPLOY_PARENTS_TIME_METRIC: &str = "block.validation.repeat-deploy.parents.time";
+pub const REPEAT_DEPLOY_REJECTED_SIGS_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.rejected-sigs.time";
+pub const REPEAT_DEPLOY_RETRY_GATE_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.retry-gate.time";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark.time";
+pub const REPEAT_DEPLOY_CARRIER_PROBES_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.probes.time";
+pub const REPEAT_DEPLOY_ANCESTOR_SCAN_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor-scan.time";
 pub const REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC: &str =
     "block.validation.repeat-deploy.carrier.watermark-engaged";
 pub const REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC: &str =
@@ -282,6 +311,26 @@ pub const BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC: &str =
 pub const BLOCK_CREATOR_PACKAGE_BLOCK_TIME_METRIC: &str = "block-creator.package-block.time";
 pub const BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC: &str = "block-creator.packed-block.bytes";
 pub const BLOCK_CREATOR_TOTAL_TIME_METRIC: &str = "block-creator.total.time";
+// Issue #24 high-phase stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Counter: ordinary deploy candidates that a block left out (cap or bytes).
+pub const BLOCK_CREATOR_ORDINARY_DEPLOYS_DEFERRED_METRIC: &str =
+    "block-creator.ordinary-deploys.deferred";
+// Counter: deploy preparations with the ordinary lane disabled.
+pub const BLOCK_CREATOR_ORDINARY_LANE_DISABLED_METRIC: &str =
+    "block-creator.ordinary-lane.disabled";
+// Counter: proposals skipped because the block would be empty.
+pub const BLOCK_CREATOR_EMPTY_BLOCK_SKIPPED_METRIC: &str = "block-creator.empty-block.skipped";
+// Counter: block builds that go ahead with no user deploys (heartbeat lane or
+// system deploys only).
+pub const BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC: &str = "block-creator.empty-block.built";
+// Histogram: age of each user deploy when a block selects it, from the deploy
+// timestamp to the block creation time, in seconds.
+pub const DEPLOY_SELECTION_AGE_TIME_METRIC: &str = "deploy.selection.age.time";
+// Issue #24 Track A metrics (CLAIM-CASPER-STAGE-METRICS-001, TASK-021-17).
+// Histograms, seconds: the wait for the deploy-pool lock and its hold time in
+// one proposal preparation.
+pub const DEPLOY_POOL_LOCK_WAIT_TIME_METRIC: &str = "deploy-pool.lock-wait.time";
+pub const DEPLOY_POOL_LOCK_HOLD_TIME_METRIC: &str = "deploy-pool.lock-hold.time";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
     "block-creator.deploy-admission.fresh-local";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
@@ -314,6 +363,25 @@ pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC: &str =
     "block-creator.deploy-admission.fallback-cap";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC: &str =
     "block-creator.deploy-admission.backpressure";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_CAP_SOURCE_METRIC: &str =
+    "block-creator.deploy-admission.cap-source";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_RECOVERY_CAP_SOURCE_METRIC: &str =
+    "block-creator.deploy-admission.in-scope-recovery-cap-source";
+// Counters: one ordinary-cap decision per admission, by cap source (CLAIM-CASPER-STAGE-METRICS-001).
+pub const BLOCK_CREATOR_CAP_SOURCE_NORMAL_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.normal";
+pub const BLOCK_CREATOR_CAP_SOURCE_BASE_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.base";
+pub const BLOCK_CREATOR_CAP_SOURCE_BACKLOG_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.backlog";
+pub const BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.soft-backlog";
+pub const BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.soft-stalled";
+pub const BLOCK_CREATOR_CAP_SOURCE_STALE_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.stale";
+pub const BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.hard";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC: &str =
     "block-creator.deploy-admission.dag-tip";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC: &str =
@@ -386,6 +454,24 @@ pub const FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC: &str =
 // settled differently: a finality DIVERGENCE. The most severe event the
 // finalizer can observe; alert on any nonzero value.
 pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detected";
+// Issue #24 finalizer stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Histogram: one sample per finalizer cycle, timeouts included.
+pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
+// Counter: cycles that returned an error.
+pub const FINALIZER_RUN_FAILURES_METRIC: &str = "finalizer.run.failures";
+// Counter: cycles abandoned by the backstop timeout of run_queued_finalizer.
+pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
+// Counter: extra cycles a run made because a trigger arrived during it.
+pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
+// Counter: triggers that arrived while a finalizer run was in progress.
+pub const FINALIZER_RUN_QUEUED_METRIC: &str = "finalizer.run.queued";
+// Counter: LFB computations requested through the API (bond_status,
+// exploratory_deploy), which bypass the single-flight finalizer guard.
+pub const FINALIZER_API_LFB_CALLS_METRIC: &str = "finalizer.api-lfb.calls";
+// Histogram: duration of each API-requested LFB computation.
+pub const FINALIZER_API_LFB_TIME_METRIC: &str = "finalizer.api-lfb.time";
+// Counter: API-requested LFB computations that started during a finalizer run.
+pub const FINALIZER_API_LFB_OVERLAPS_METRIC: &str = "finalizer.api-lfb.overlaps";
 /// A shipped genesis refused during LFS restore (claimed hash or content
 /// re-hash failed against the learned register) — peer equivocation on the
 /// restore channel, visible on dashboards.
@@ -427,3 +513,14 @@ pub const CREATE_CHECKPOINT_SPAN: &str = "create-checkpoint";
 pub const REPLAY_SYSTEM_DEPLOY_SPAN: &str = "replay-system-deploy";
 pub const COMPUTE_MAX_CLIQUE_WEIGHT_SPAN: &str = "compute-max-clique-weight";
 pub const NORMALIZED_FAULT_TOLERANCE_SPAN: &str = "normalized-fault-tolerance";
+
+// Issue #24 proposal and lifecycle stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Histograms in seconds: the four steps of one proposal.
+pub const PROPOSER_CONSTRAINTS_TIME_METRIC: &str = "proposer.constraints.time";
+pub const PROPOSER_CREATE_TIME_METRIC: &str = "proposer.create.time";
+pub const PROPOSER_VALIDATE_TIME_METRIC: &str = "proposer.validate.time";
+pub const PROPOSER_EFFECT_TIME_METRIC: &str = "proposer.effect.time";
+// Histograms in seconds: one deploy-lifecycle observe, and the carrier prune
+// inside it when the adopted floor advances.
+pub const DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC: &str = "deploy-lifecycle.observe.time";
+pub const DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC: &str = "deploy-lifecycle.carrier-prune.time";

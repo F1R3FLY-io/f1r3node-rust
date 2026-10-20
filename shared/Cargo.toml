@@ -34,6 +34,9 @@ thiserror = { workspace = true }
 indexmap = { workspace = true }
 metrics = { workspace = true }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }

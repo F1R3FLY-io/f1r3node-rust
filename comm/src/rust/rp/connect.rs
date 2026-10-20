@@ -13,7 +13,7 @@ use crate::rust::errors::CommError;
 use crate::rust::metrics_constants::{
     CONNECT_METRIC, CONNECT_TIME_METRIC, RP_CONNECT_METRICS_SOURCE,
 };
-use crate::rust::peer_node::PeerNode;
+use crate::rust::peer_node::{Endpoint, PeerNode};
 use crate::rust::rp::protocol_helper;
 use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::transport_layer::TransportLayer;
@@ -86,6 +86,45 @@ impl PeerLivenessTracker {
     pub fn retain_connected(&mut self, connected: &HashSet<Bytes>) {
         self.streaks
             .retain(|peer_id, _| connected.contains(peer_id));
+    }
+}
+
+#[derive(Debug)]
+pub struct ConnectFailureTracker {
+    streaks: HashMap<Bytes, (Endpoint, u32)>,
+    threshold: u32,
+}
+
+impl ConnectFailureTracker {
+    pub fn new(threshold: u32) -> Result<Self, CommError> {
+        if threshold == 0 {
+            return Err(CommError::ConfigError(
+                "connection failure threshold must be at least 1".to_string(),
+            ));
+        }
+        Ok(Self {
+            streaks: HashMap::new(),
+            threshold,
+        })
+    }
+
+    fn retain_candidates(&mut self, peers: &[PeerNode]) {
+        let ids: HashSet<&Bytes> = peers.iter().map(|peer| &peer.id.key).collect();
+        self.streaks.retain(|id, _| ids.contains(id));
+    }
+
+    fn record_success(&mut self, peer: &PeerNode) { self.streaks.remove(&peer.id.key); }
+
+    fn record_failure(&mut self, peer: &PeerNode) -> bool {
+        let entry = self
+            .streaks
+            .entry(peer.id.key.clone())
+            .or_insert_with(|| (peer.endpoint.clone(), 0));
+        if entry.0 != peer.endpoint {
+            *entry = (peer.endpoint.clone(), 0);
+        }
+        entry.1 = entry.1.saturating_add(1);
+        entry.1 >= self.threshold
     }
 }
 
@@ -363,6 +402,8 @@ pub async fn find_and_connect<N: NodeDiscovery + ?Sized, F, Fut>(
     connections_cell: &ConnectionsCell,
     node_discovery: &N,
     connect_fn: F,
+    bootstrap: Option<&PeerNode>,
+    failures: &mut ConnectFailureTracker,
 ) -> Result<Vec<PeerNode>, CommError>
 where
     F: Fn(&PeerNode) -> Fut,
@@ -377,23 +418,46 @@ where
         .filter(|peer| !current_connections.contains(peer))
         .collect();
 
+    failures.retain_candidates(&new_peers);
     let mut successful_connections = Vec::new();
 
     // Attempt to connect to each new peer
     for peer in new_peers {
         match connect_fn(&peer).await {
             Ok(()) => {
+                failures.record_success(&peer);
                 successful_connections.push(peer);
             }
-            Err(CommError::WrongNetwork(peer_addr, msg)) => {
-                warn!("Can't connect to peer {}. {}", peer_addr, msg);
-            }
-            Err(CommError::DnsResolutionFailed(_, _)) => {}
-            Err(_) => {
-                warn!(
-                    "An error occurred while trying to connect to peer: {:?}",
-                    peer
-                );
+            Err(error) => {
+                if !matches!(error, CommError::ConfigError(_))
+                    && bootstrap.is_none_or(|pinned| pinned.id != peer.id)
+                    && failures.record_failure(&peer)
+                {
+                    match node_discovery.evict_unreachable_peer(&peer) {
+                        Ok(()) => {
+                            failures.record_success(&peer);
+                            info!("Removed unreachable peer {} from Kademlia", peer);
+                        }
+                        Err(remove_error) => {
+                            warn!(
+                                "Failed to remove peer {} from Kademlia: {}",
+                                peer, remove_error
+                            );
+                        }
+                    }
+                }
+                match error {
+                    CommError::WrongNetwork(peer_addr, msg) => {
+                        warn!("Can't connect to peer {}. {}", peer_addr, msg);
+                    }
+                    CommError::DnsResolutionFailed(_, _) => {}
+                    _ => {
+                        warn!(
+                            "An error occurred while trying to connect to peer: {:?}",
+                            peer
+                        );
+                    }
+                }
             }
         }
     }
@@ -534,7 +598,8 @@ mod tests {
             }
         };
 
-        let connected = find_and_connect(&cell, &discovery, connect_fn)
+        let mut failures = ConnectFailureTracker::new(3).unwrap();
+        let connected = find_and_connect(&cell, &discovery, connect_fn, None, &mut failures)
             .await
             .unwrap();
         assert_eq!(connected, vec![peer("good")]);

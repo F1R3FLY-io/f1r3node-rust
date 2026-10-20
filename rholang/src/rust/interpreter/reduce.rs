@@ -1,6 +1,6 @@
 // See See rholang/src/main/scala/coop/rchain/rholang/interpreter/Reduce.scala
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,13 +29,14 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
-    new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
+    new_elist_par, new_emap_par, new_gbigint_expr, new_gint_expr, new_gint_par, new_gstring_par,
+    union,
 };
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 
 use super::accounting::_cost;
 use super::accounting::costs::{
@@ -59,14 +60,15 @@ use super::metrics_constants::{
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
 use super::rho_runtime::RhoISpace;
-use super::rho_type::{RhoExpression, RhoUnforgeable};
+use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
 use crate::rust::interpreter::accounting::costs::{
-    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
-    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
-    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
+    add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
+    interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
+    nth_method_call_cost, remove_cost, size_method_cost, slice_cost, take_cost, to_byte_array_cost,
+    to_list_cost, union_cost, valid_utf8_prefix_len_cost,
 };
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
@@ -112,6 +114,110 @@ impl<F: Future> Future for StackGrowingFuture<F> {
     }
 }
 
+/// A spawned task handle that aborts the task when the handle is dropped before
+/// the task completes, so cancelling an owner cancels the tasks it spawned.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Future for AbortOnDrop<T> {
+    type Output = Result<T, JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().0).poll(cx)
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) { self.0.abort(); }
+}
+
+type DispatchHandle = AbortOnDrop<Result<DispatchType, InterpreterError>>;
+
+/// Returns the current deferred-dispatch scope when the dispatch of
+/// `continuation` can be deferred. It cannot for a system-process continuation
+/// (its `DispatchType` updates the produce event) or without a scope (a direct
+/// `eval` call without `inj`); such a dispatch runs inline.
+fn deferral_scope(continuation: &TaggedContinuation) -> Option<Arc<DeferredDispatches>> {
+    match continuation.tagged_cont {
+        Some(TaggedCont::ParBody(_)) => DEFERRED_DISPATCHES.try_with(Arc::clone).ok(),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct DeferredState {
+    handles: VecDeque<DispatchHandle>,
+    closed: bool,
+}
+
+/// The deferred COMM-body dispatches of one `inj` call.
+///
+/// A task registers the handle of every body it defers before the task itself
+/// completes, so when the queue is empty and the drain in `inj` awaits nothing,
+/// no deferred body is still running. After `close`, the queued handles are
+/// dropped (which aborts their tasks) and a late registration aborts at once.
+#[derive(Default)]
+struct DeferredDispatches {
+    state: std::sync::Mutex<DeferredState>,
+}
+
+impl DeferredDispatches {
+    fn lock(&self) -> std::sync::MutexGuard<'_, DeferredState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn push(&self, handle: DispatchHandle) {
+        let mut state = self.lock();
+        if !state.closed {
+            state.handles.push_back(handle);
+        }
+    }
+
+    fn pop(&self) -> Option<DispatchHandle> { self.lock().handles.pop_front() }
+
+    fn close(&self) {
+        let handles = {
+            let mut state = self.lock();
+            state.closed = true;
+            std::mem::take(&mut state.handles)
+        };
+        drop(handles);
+    }
+}
+
+struct CloseOnDrop(Arc<DeferredDispatches>);
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) { self.0.close(); }
+}
+
+tokio::task_local! {
+    static DEFERRED_DISPATCHES: Arc<DeferredDispatches>;
+}
+
+/// Spawns a task that inherits the deferred-dispatch scope of the caller, if any.
+/// Every spawn in the evaluator must go through this function: a task without
+/// the scope runs COMM bodies inline and rebuilds the nested-future chain.
+fn spawn_in_dispatch_scope<F>(future: F) -> AbortOnDrop<F::Output>
+where
+    F: Future + std::marker::Send + 'static,
+    F::Output: std::marker::Send + 'static,
+{
+    AbortOnDrop(match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+        Ok(scope) => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
+        Err(_) => tokio::spawn(future),
+    })
+}
+
+fn join_error(err: JoinError) -> InterpreterError {
+    if err.is_cancelled() {
+        InterpreterError::ReduceError(format!("task cancelled: {}", err))
+    } else {
+        InterpreterError::ReduceError(format!("task panicked: {}", err))
+    }
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -127,13 +233,27 @@ pub struct DebruijnInterpreter {
     pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub urn_map: Arc<HashMap<String, Par>>,
-    pub merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
-    pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
+    pub(crate) merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+    pub(crate) mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub cost: _cost,
     pub substitute: Substitute,
     pub(crate) single_term_evaluations: Arc<AtomicU64>,
     pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
     pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
+    /// Slice 31: phase-scoped URN visibility.  When `true` (the
+    /// default), `eval_new` refuses to resolve any URN whose
+    /// string starts with `FS_NATIVE_URN_PREFIX`
+    /// (`rho:io:fs:native:1.0.0/`).  Genesis composition needs
+    /// those URNs to bind the raw fs primitives into FsGenesis's
+    /// new-scope; user deploys must not, because that would bypass
+    /// Fs.rho's sandbox / mode-cap / bundle checks.  A yet-to-land
+    /// runtime slice will toggle the flag off before running
+    /// genesis-time deploys and back on afterwards; state-execution
+    /// deploys leave it at the default.
+    ///
+    /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
+    /// system-process closures that clone the reducer.
+    pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Application = Option<(
@@ -303,8 +423,8 @@ impl DebruijnInterpreter {
             self.spawned_eval_tasks
                 .fetch_add(futures.len() as u64, Ordering::Relaxed);
             let spawn_start = std::time::Instant::now();
-            let handles: Vec<JoinHandle<Result<(), InterpreterError>>> =
-                futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+            let handles: Vec<AbortOnDrop<Result<(), InterpreterError>>> =
+                futures.into_iter().map(spawn_in_dispatch_scope).collect();
             metrics::counter!("reducer.eval_par.spawn_ns", "source" => "rholang")
                 .increment(spawn_start.elapsed().as_nanos() as u64);
 
@@ -329,8 +449,82 @@ impl DebruijnInterpreter {
         }
     }
 
+    /// Evaluates a deploy term inside a deferred-dispatch scope.
+    ///
+    /// A COMM whose continuation is a Rholang body does not evaluate the body
+    /// inside the produce or consume that fired it: `spawn_deferred_dispatch` runs the
+    /// body as a task of this scope. After the root `eval` returns, `inj` awaits
+    /// the deferred tasks until none is left and aggregates all their errors.
+    /// The old code did not cancel other work on an error either, so the set of
+    /// evaluated operations and the charged cost do not change. If this future
+    /// is dropped, the scope closes and every deferred task is aborted.
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
-        self.eval(par, &Env::new(), rand).await
+        let scope = Arc::new(DeferredDispatches::default());
+        let _close_on_drop = CloseOnDrop(scope.clone());
+        let env = Env::new();
+
+        let mut errors: Vec<InterpreterError> = Vec::new();
+        if let Err(err) = DEFERRED_DISPATCHES
+            .scope(scope.clone(), self.eval(par, &env, rand))
+            .await
+        {
+            errors.push(err);
+        }
+
+        while let Some(handle) = scope.pop() {
+            match handle.await {
+                Ok(Err(err)) => errors.push(err),
+                Err(join_err) => errors.push(join_error(join_err)),
+                Ok(Ok(_)) => {}
+            }
+        }
+
+        self.aggregate_evaluator_errors(errors).map(|_| ())
+    }
+
+    /// Spawns the dispatch of a Rholang-body continuation as a task of `scope`
+    /// (from `deferral_scope`). A `ParBody` dispatch always returns
+    /// `DispatchType::DeterministicCall` or an error, so the caller does not need
+    /// its result.
+    fn spawn_deferred_dispatch(
+        &self,
+        scope: Arc<DeferredDispatches>,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) {
+        let reducer = self.clone();
+        let handle = AbortOnDrop(tokio::spawn(DEFERRED_DISPATCHES.scope(
+            scope.clone(),
+            async move {
+                reducer
+                    .dispatch(continuation, data_list, is_replay, previous_output)
+                    .await
+            },
+        )));
+        scope.push(handle);
+    }
+
+    async fn dispatch_or_defer(
+        &self,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) -> Result<DispatchType, InterpreterError> {
+        if let Some(scope) = deferral_scope(&continuation) {
+            self.spawn_deferred_dispatch(
+                scope,
+                continuation,
+                data_list,
+                is_replay,
+                previous_output,
+            );
+            return Ok(DispatchType::DeterministicCall);
+        }
+        self.dispatch(continuation, data_list, is_replay, previous_output)
+            .await
     }
 
     /**
@@ -505,6 +699,7 @@ impl DebruijnInterpreter {
 
         match res {
             Some((continuation, data_list, peek)) => {
+                self.register_bitmask_channels(&data_list).await;
                 if persistent {
                     // dispatchAndRun
                     let self_clone1 = self.clone();
@@ -526,22 +721,26 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![];
 
-                    futures.push(Box::pin(async move {
-                        self_clone1
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay_flag,
-                                previous_output_clone,
-                            )
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay_flag,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone1
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay_flag,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
 
                     futures.push(Box::pin(async move {
                         self_clone2
@@ -563,8 +762,8 @@ impl DebruijnInterpreter {
                     }
 
                     // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -592,21 +791,32 @@ impl DebruijnInterpreter {
                                     + std::marker::Send,
                             >,
                         >,
-                    > = vec![Box::pin(async move {
-                        self_clone
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay,
-                                previous_output_clone,
-                            )
-                            .await
-                    })];
+                    > = vec![];
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
                     futures.extend(self.produce_peeks(data_list).await);
 
                     // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -621,8 +831,13 @@ impl DebruijnInterpreter {
 
                     self.aggregate_evaluator_errors(flattened_results)
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
@@ -672,22 +887,26 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![];
 
-                    futures.push(Box::pin(async move {
-                        self_clone1
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay_flag,
-                                previous_output_clone,
-                            )
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay_flag,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone1
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay_flag,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
 
                     futures.push(Box::pin(async move {
                         self_clone2
@@ -708,8 +927,8 @@ impl DebruijnInterpreter {
                         >);
 
                     // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -737,21 +956,32 @@ impl DebruijnInterpreter {
                                     + std::marker::Send,
                             >,
                         >,
-                    > = vec![Box::pin(async move {
-                        self_clone
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay,
-                                previous_output_clone,
-                            )
-                            .await
-                    })];
+                    > = vec![];
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
                     futures.extend(self.produce_peeks(data_list).await);
 
                     // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
+                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
 
                     let mut flattened_results: Vec<InterpreterError> = Vec::new();
                     for handle in handles {
@@ -766,8 +996,13 @@ impl DebruijnInterpreter {
 
                     self.aggregate_evaluator_errors(flattened_results)
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
@@ -845,6 +1080,20 @@ impl DebruijnInterpreter {
         }
     }
 
+    async fn register_bitmask_channels(
+        &self,
+        data_list: &[(Par, ListParWithRandom, ListParWithRandom, bool)],
+    ) {
+        for (chan, _, _, _) in data_list {
+            if self.is_mergeable_channel(chan) == Some(MergeType::BitmaskOr) {
+                self.merge_chs
+                    .write()
+                    .await
+                    .insert(chan.clone(), MergeType::BitmaskOr);
+            }
+        }
+    }
+
     fn is_mergeable_channel(&self, chan: &Par) -> Option<MergeType> {
         // Hot path — runs on every channel produce/consume. Borrow the head
         // Par of the first ETupleBody expression without allocating.
@@ -857,6 +1106,10 @@ impl DebruijnInterpreter {
         });
 
         let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
+
+        if !tracing::enabled!(target: "f1r3fly.merge.tag_check.validation", tracing::Level::TRACE) {
+            return result;
+        }
 
         // Diagnostic trace: every channel write/consume invokes this. Logs
         // distinguish (a) tuple channels that match a registered tag (mergeable),
@@ -1318,6 +1571,29 @@ impl DebruijnInterpreter {
         env: Env<Par>,
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        // Slice 31: phase-scoped URN visibility.  Reject fs-native
+        // URNs during state-execution deploys so user code cannot
+        // bypass Fs.rho's sandbox by binding the raw primitives.
+        // Genesis composition toggles the flag off (yet-to-land
+        // runtime slice) so FsGenesis can bind `fsRead`/`fsWrite`/...
+        // directly in its outer new-scope.
+        if self
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            for urn in &new.uri {
+                if urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
+                    return Err(InterpreterError::ReduceError(format!(
+                        "urn `{urn}` is not resolvable in this phase; \
+                         rho:io:fs:native:* URNs are reserved for the \
+                         genesis-blessed FsGenesis deploy — user code \
+                         must instead go through the Fs cap published \
+                         at genesis"
+                    )));
+                }
+            }
+        }
+
         let mut alloc = |count: usize, urns: Vec<String>| {
             let simple_news =
                 (0..(count - urns.len()))
@@ -1333,11 +1609,11 @@ impl DebruijnInterpreter {
 
             let add_urn = |new_env: &mut Env<Par>, urn: String| {
                 if !self.urn_map.contains_key(&urn) {
-                    // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
-                    // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
                     match new.injections.get(&urn) {
                         Some(p) => {
-                            if let Some(gunf) = RhoUnforgeable::unapply(p) {
+                            if p == &Par::default() {
+                                Ok(new_env.put(Par::default()))
+                            } else if let Some(gunf) = RhoUnforgeable::unapply(p) {
                                 if let Some(instance) = gunf.unf_instance {
                                     Ok(new_env.put(Par::default().with_unforgeables(vec![
                                         GUnforgeable {
@@ -1373,12 +1649,17 @@ impl DebruijnInterpreter {
                 } else {
                     match self.urn_map.get(&urn) {
                         Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag" {
+                            if urn == "rho:system:bitmaskMergeableTag"
+                                && tracing::enabled!(
+                                    target: "f1r3fly.merge.tag_check.validation",
+                                    tracing::Level::DEBUG
+                                )
+                            {
                                 use prost::Message;
                                 let bytes = p.encode_to_vec();
                                 let hex: String =
                                     bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::info!(
+                                tracing::debug!(
                                     target: "f1r3fly.merge.tag_check.validation",
                                     "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
                                     hex,
@@ -1499,6 +1780,41 @@ impl DebruijnInterpreter {
                     })
                 }
 
+                (ExprInstance::GUint64(u1), ExprInstance::GUint64(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GInt32(u1), ExprInstance::GInt32(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint32(u1), ExprInstance::GUint32(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint16(u1), ExprInstance::GUint16(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint8(u1), ExprInstance::GUint8(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
                 (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
                     self.cost.charge(comparison_cost())?;
                     Ok(Expr {
@@ -1510,6 +1826,24 @@ impl DebruijnInterpreter {
                     self.cost.charge(comparison_cost())?;
                     let f1 = f64::from_bits(d1);
                     let f2 = f64::from_bits(d2);
+                    if f1.is_nan() || f2.is_nan() {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(false)),
+                        })
+                    } else {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(relopi(
+                                f1.partial_cmp(&f2).map_or(0, |o| o as i64),
+                                0,
+                            ))),
+                        })
+                    }
+                }
+
+                (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    let f1 = f32::from_bits(d1);
+                    let f2 = f32::from_bits(d2);
                     if f1.is_nan() || f2.is_nan() {
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::GBool(false)),
@@ -1574,6 +1908,26 @@ impl DebruijnInterpreter {
                     expr_instance: Some(ExprInstance::GInt(*x)),
                 }),
 
+                ExprInstance::GUint64(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint64(*x)),
+                }),
+
+                ExprInstance::GInt32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt32(*x)),
+                }),
+
+                ExprInstance::GUint32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint32(*x)),
+                }),
+
+                ExprInstance::GUint16(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint16(*x)),
+                }),
+
+                ExprInstance::GUint8(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint8(*x)),
+                }),
+
                 ExprInstance::GString(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GString(x.clone())),
                 }),
@@ -1588,6 +1942,10 @@ impl DebruijnInterpreter {
 
                 ExprInstance::GDouble(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GDouble(*x)),
+                }),
+
+                ExprInstance::GFloat32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(*x)),
                 }),
 
                 ExprInstance::GBigInt(x) => Ok(Expr {
@@ -1622,10 +1980,26 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(result)),
                             })
                         }
+                        ExprInstance::GInt32(i) => {
+                            let result = i.checked_neg().ok_or_else(|| {
+                                InterpreterError::ReduceError(
+                                    "Arithmetic overflow in negation".to_string(),
+                                )
+                            })?;
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GInt32(result)),
+                            })
+                        }
                         ExprInstance::GDouble(bits) => {
                             let f = f64::from_bits(bits);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble((-f).to_bits())),
+                            })
+                        }
+                        ExprInstance::GFloat32(bits) => {
+                            let f = f32::from_bits(bits);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32((-f).to_bits())),
                             })
                         }
                         ExprInstance::GBigInt(bytes) => {
@@ -1664,6 +2038,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(multiplication_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Mul, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(multiplication_cost())?;
@@ -1682,6 +2065,13 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(multiplication_cost())?;
+                            let result = f32::from_bits(d1) * f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -1738,6 +2128,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(division_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Div, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(division_cost())?;
@@ -1760,6 +2159,13 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) / f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(division_cost())?;
+                            let result = f32::from_bits(d1) / f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -1827,6 +2233,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(modulo_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Mod, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(modulo_cost())?;
@@ -1844,7 +2259,8 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
+                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
+                        | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
                             Err(InterpreterError::ReduceError(
                                 "Modulus not defined on floating point".to_string(),
                             ))
@@ -1924,6 +2340,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(sum_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Add, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(sum_cost())?;
@@ -1937,6 +2362,14 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) + f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(sum_cost())?;
+                            let result = f32::from_bits(d1) + f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
 
@@ -1991,7 +2424,13 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
+                        | (ExprInstance::GInt32(_), other)
+                        | (ExprInstance::GUint32(_), other)
+                        | (ExprInstance::GUint16(_), other)
+                        | (ExprInstance::GUint8(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -2013,6 +2452,15 @@ impl DebruijnInterpreter {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.cost.charge(subtraction_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Sub, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(subtraction_cost())?;
@@ -2026,6 +2474,14 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) - f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(subtraction_cost())?;
+                            let result = f32::from_bits(d1) - f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
 
@@ -2102,7 +2558,13 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
+                        | (ExprInstance::GInt32(_), other)
+                        | (ExprInstance::GUint32(_), other)
+                        | (ExprInstance::GUint16(_), other)
+                        | (ExprInstance::GUint8(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -2845,6 +3307,175 @@ impl DebruijnInterpreter {
         }
 
         Box::new(BytesToHexMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // concatBytes (on List of ByteArrays) — spec §Native buffer helpers.
+    // Concatenates elements in order.  Empty list → zero-length ByteArray.
+    // Non-List receiver or non-ByteArray element raises MethodNotDefined.
+    // Ported from fileio (Wave 5 PR 5.73).
+    // -------------------------------------------------------------------
+    fn concat_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ConcatBytesMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for ConcatBytesMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("concatBytes"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::EListBody(elist) => {
+                            // Two-pass: total length, then a single allocation.
+                            let mut segments: Vec<Vec<u8>> = Vec::with_capacity(elist.ps.len());
+                            for elem in &elist.ps {
+                                match single_expr(elem) {
+                                    Some(Expr {
+                                        expr_instance: Some(ExprInstance::GByteArray(bytes)),
+                                    }) => segments.push(bytes),
+                                    _ => {
+                                        return Err(InterpreterError::MethodNotDefined {
+                                            method: String::from("concatBytes"),
+                                            other_type: String::from("non-ByteArray element"),
+                                        });
+                                    }
+                                }
+                            }
+                            let total: usize = segments.iter().map(|s| s.len()).sum();
+                            self.outer.cost.charge(concat_bytes_cost(total))?;
+                            let mut out = Vec::with_capacity(total);
+                            for s in segments {
+                                out.extend_from_slice(&s);
+                            }
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GByteArray(out)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("concatBytes"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ConcatBytesMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // validUtf8PrefixLen (on ByteArray) — spec §Native buffer helpers.
+    // Total on ByteArray; never raises.  Returns the length of the
+    // longest valid-UTF-8 prefix of the receiver.
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn valid_utf8_prefix_len_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ValidUtf8PrefixLenMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for ValidUtf8PrefixLenMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("validUtf8PrefixLen"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer.cost.charge(valid_utf8_prefix_len_cost(&bytes))?;
+                            let prefix = match std::str::from_utf8(&bytes) {
+                                Ok(_) => bytes.len(),
+                                Err(e) => e.valid_up_to(),
+                            };
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GInt(prefix as i64)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("validUtf8PrefixLen"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ValidUtf8PrefixLenMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // decodeUtf8 (on ByteArray) — spec §Native buffer helpers.  Total on
+    // ByteArray; ill-formed sequences substituted with U+FFFD, per Unicode
+    // §3.9 (matches Rust `String::from_utf8_lossy`).
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn decode_utf8_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct DecodeUtf8Method<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for DecodeUtf8Method<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("decodeUtf8"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer.cost.charge(decode_utf8_cost(&bytes))?;
+                            let decoded = String::from_utf8_lossy(&bytes).into_owned();
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GString(decoded)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("decodeUtf8"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(DecodeUtf8Method { outer: self })
     }
 
     fn to_utf8_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -6300,6 +6931,51 @@ impl DebruijnInterpreter {
         Box::new(LengthMethod { outer: self })
     }
 
+    fn to_bigint_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ToBigIntMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for ToBigIntMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("toBigInt"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let result = match base_expr.expr_instance {
+                    Some(ExprInstance::GInt(v)) => {
+                        new_gbigint_expr(bigint_to_bytes(&num_bigint::BigInt::from(v)))
+                    }
+                    Some(ExprInstance::GBigInt(bytes)) => new_gbigint_expr(bytes),
+                    Some(other) => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: get_type(other),
+                        })
+                    }
+                    None => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: String::from("None"),
+                        })
+                    }
+                };
+                Ok(Par::default().with_exprs(vec![result]))
+            }
+        }
+
+        Box::new(ToBigIntMethod { outer: self })
+    }
+
     fn slice_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SliceMethod<'a> {
             outer: &'a DebruijnInterpreter,
@@ -6812,6 +7488,12 @@ impl DebruijnInterpreter {
         table.insert("toByteArray".to_string(), self.to_byte_array_method());
         table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
         table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
+        table.insert("concatBytes".to_string(), self.concat_bytes_method());
+        table.insert(
+            "validUtf8PrefixLen".to_string(),
+            self.valid_utf8_prefix_len_method(),
+        );
+        table.insert("decodeUtf8".to_string(), self.decode_utf8_method());
         table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
         table.insert("union".to_string(), self.union_method());
         table.insert("diff".to_string(), self.diff_method());
@@ -6864,6 +7546,7 @@ impl DebruijnInterpreter {
         table.insert("toSet".to_string(), self.to_set_method());
         table.insert("toMap".to_string(), self.to_map_method());
         table.insert("toString".to_string(), self.to_string_method());
+        table.insert("toBigInt".to_string(), self.to_bigint_method());
         table
     }
 
@@ -7137,6 +7820,9 @@ impl DebruijnInterpreter {
             single_term_evaluations: Arc::new(AtomicU64::new(0)),
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+            // Default: reject fs native URNs.  Genesis composition
+            // flips the flag off via a yet-to-land runtime slice.
+            filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -7148,7 +7834,13 @@ fn get_type(expr_instance: ExprInstance) -> String {
     match expr_instance {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
+        ExprInstance::GUint64(_) => String::from("uint64"),
+        ExprInstance::GInt32(_) => String::from("int32"),
+        ExprInstance::GUint32(_) => String::from("uint32"),
+        ExprInstance::GUint16(_) => String::from("uint16"),
+        ExprInstance::GUint8(_) => String::from("uint8"),
         ExprInstance::GDouble(_) => String::from("float"),
+        ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
         ExprInstance::GBigRat(_) => String::from("bigrat"),
         ExprInstance::GFixedPoint(_) => String::from("fixedpoint"),
@@ -7185,6 +7877,119 @@ fn get_type(expr_instance: ExprInstance) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SizedIntOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+impl SizedIntOp {
+    fn name(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "addition",
+            SizedIntOp::Sub => "subtraction",
+            SizedIntOp::Mul => "multiplication",
+            SizedIntOp::Div => "division",
+            SizedIntOp::Mod => "modulo",
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "+",
+            SizedIntOp::Sub => "-",
+            SizedIntOp::Mul => "*",
+            SizedIntOp::Div => "/",
+            SizedIntOp::Mod => "%",
+        }
+    }
+}
+
+fn is_sized_int_pair(lhs: &ExprInstance, rhs: &ExprInstance) -> bool {
+    matches!(
+        (lhs, rhs),
+        (ExprInstance::GUint64(_), ExprInstance::GUint64(_))
+            | (ExprInstance::GInt32(_), ExprInstance::GInt32(_))
+            | (ExprInstance::GUint32(_), ExprInstance::GUint32(_))
+            | (ExprInstance::GUint16(_), ExprInstance::GUint16(_))
+            | (ExprInstance::GUint8(_), ExprInstance::GUint8(_))
+    )
+}
+
+macro_rules! sized_int_op {
+    ($t:ty, $suffix:literal, $op:expr, $lhs:expr, $rhs:expr) => {{
+        let out_of_range = |v: String| {
+            InterpreterError::ReduceError(format!("Value {} is out of range for {}", v, $suffix))
+        };
+        let a = <$t>::try_from($lhs).map_err(|_| out_of_range($lhs.to_string()))?;
+        let b = <$t>::try_from($rhs).map_err(|_| out_of_range($rhs.to_string()))?;
+        let overflow = || {
+            InterpreterError::ReduceError(format!(
+                "Arithmetic overflow in {}: {}{} {} {}{}",
+                $op.name(),
+                a,
+                $suffix,
+                $op.symbol(),
+                b,
+                $suffix
+            ))
+        };
+        let result: $t = match $op {
+            SizedIntOp::Add => a.wrapping_add(b),
+            SizedIntOp::Sub => a.wrapping_sub(b),
+            SizedIntOp::Mul => a.checked_mul(b).ok_or_else(overflow)?,
+            SizedIntOp::Div => {
+                if b == 0 {
+                    return Err(InterpreterError::ReduceError(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                a.checked_div(b).ok_or_else(overflow)?
+            }
+            SizedIntOp::Mod => {
+                if b == 0 {
+                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                }
+                a.checked_rem(b).ok_or_else(overflow)?
+            }
+        };
+        result.into()
+    }};
+}
+
+fn eval_sized_int_op(
+    op: SizedIntOp,
+    lhs: &ExprInstance,
+    rhs: &ExprInstance,
+) -> Result<ExprInstance, InterpreterError> {
+    Ok(match (lhs, rhs) {
+        (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => {
+            ExprInstance::GUint64(sized_int_op!(u64, "u64", op, *a, *b))
+        }
+        (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => {
+            ExprInstance::GInt32(sized_int_op!(i32, "i32", op, *a, *b))
+        }
+        (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => {
+            ExprInstance::GUint32(sized_int_op!(u32, "u32", op, *a, *b))
+        }
+        (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => {
+            ExprInstance::GUint16(sized_int_op!(u16, "u16", op, *a, *b))
+        }
+        (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => {
+            ExprInstance::GUint8(sized_int_op!(u8, "u8", op, *a, *b))
+        }
+        _ => {
+            return Err(InterpreterError::BugFoundError(
+                "eval_sized_int_op called on operands that are not a sized integer pair"
+                    .to_string(),
+            ))
+        }
+    })
+}
+
 fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
     match inf_instance {
         UnfInstance::GPrivateBody(_) => String::from("PrivateBody"),
@@ -7197,6 +8002,7 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
 fn par_contains_nan_double(par: &Par) -> bool {
     par.exprs.iter().any(|e| match &e.expr_instance {
         Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(ExprInstance::GFloat32(bits)) => f32::from_bits(*bits).is_nan(),
         Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
@@ -7206,23 +8012,6 @@ fn par_contains_nan_double(par: &Par) -> bool {
         }),
         _ => false,
     })
-}
-
-fn bytes_to_bigint(bytes: &[u8]) -> num_bigint::BigInt {
-    if bytes.is_empty() {
-        num_bigint::BigInt::from(0)
-    } else {
-        num_bigint::BigInt::from_signed_bytes_be(bytes)
-    }
-}
-
-fn bigint_to_bytes(n: &num_bigint::BigInt) -> Vec<u8> {
-    use num_traits::Zero;
-    if n.is_zero() {
-        vec![0]
-    } else {
-        n.to_signed_bytes_be()
-    }
 }
 
 fn make_bigint_expr(bytes: Vec<u8>, _op: &str) -> Result<Expr, InterpreterError> {
@@ -7433,7 +8222,15 @@ fn describe_par_type(par: &Par) -> String {
         match par.exprs[0].expr_instance.as_ref() {
             Some(ExprInstance::GBool(_)) => "Bool".to_string(),
             Some(ExprInstance::GInt(_)) => "Int".to_string(),
+            Some(ExprInstance::GUint64(_)) => "UInt64".to_string(),
+            Some(ExprInstance::GInt32(_)) => "Int32".to_string(),
+            Some(ExprInstance::GUint32(_)) => "UInt32".to_string(),
+            Some(ExprInstance::GUint16(_)) => "UInt16".to_string(),
+            Some(ExprInstance::GUint8(_)) => "UInt8".to_string(),
+            Some(ExprInstance::GDouble(_)) => "Float".to_string(),
             Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
+            Some(ExprInstance::GBigRat(_)) => "BigRat".to_string(),
+            Some(ExprInstance::GFixedPoint(_)) => "FixedPoint".to_string(),
             Some(ExprInstance::GString(_)) => "String".to_string(),
             Some(ExprInstance::GUri(_)) => "Uri".to_string(),
             Some(ExprInstance::GByteArray(_)) => "ByteArray".to_string(),
@@ -7446,5 +8243,73 @@ fn describe_par_type(par: &Par) -> String {
         }
     } else {
         "non-boolean process".to_string()
+    }
+}
+
+#[cfg(test)]
+mod is_mergeable_channel_tests {
+    use models::rhoapi::{ETuple, Expr};
+    use models::rust::utils::new_gstring_par;
+
+    use super::*;
+    use crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name;
+    use crate::rust::interpreter::test_utils::resources::with_runtime;
+
+    fn tuple(ps: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps,
+                locally_free: vec![],
+                connective_used: false,
+            })),
+        }])
+    }
+
+    async fn merge_type(chan: Par) -> Option<MergeType> {
+        with_runtime("is-mergeable-channel-", |runtime| async move {
+            runtime.reducer.is_mergeable_channel(&chan)
+        })
+        .await
+    }
+
+    fn other() -> Par { new_gstring_par("x".to_string(), vec![], false) }
+
+    #[tokio::test]
+    async fn a_channel_that_is_not_a_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(bitmask_or_mergeable_tag_name()).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_empty_tuple_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_with_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_element_tuple_without_a_tag_is_not_mergeable() {
+        assert_eq!(merge_type(tuple(vec![other()])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_tuple_whose_head_is_a_tag_is_mergeable() {
+        assert_eq!(
+            merge_type(tuple(vec![bitmask_or_mergeable_tag_name(), other()])).await,
+            Some(MergeType::BitmaskOr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_after_the_head_is_not_matched() {
+        assert_eq!(
+            merge_type(tuple(vec![other(), bitmask_or_mergeable_tag_name()])).await,
+            None
+        );
     }
 }

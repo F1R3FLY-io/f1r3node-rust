@@ -381,6 +381,11 @@ async fn do_heartbeat_check(
     deploy_grace_active: bool,
     finality_progress: &mut FinalityProgress,
 ) -> Result<HeartbeatCheckResult, casper::rust::errors::CasperError> {
+    metrics::counter!(
+        casper::rust::metrics_constants::HEARTBEAT_CHECKS_METRIC,
+        "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
+    )
+    .increment(1);
     let snapshot: CasperSnapshot = casper.get_snapshot().await?;
     let progress_status = finality_progress.observe(
         &snapshot.last_finalized_block,
@@ -646,6 +651,33 @@ async fn check_lfb_and_propose(
         can_follow_frontier_without_pending_deploys,
         allow_frontier_follow_while_ahead_for_deploy_parent,
     } = decide_lanes(&lane_inputs);
+    tracing::debug!(
+        target: "f1r3fly.casper.heartbeat.lane",
+        lfb_is_stale = lane_inputs.lfb_is_stale,
+        lfb_lag_blocks = lane_inputs.lfb_lag_blocks,
+        has_pending_deploys = lane_inputs.has_pending_deploys,
+        has_new_parents = lane_inputs.has_new_parents,
+        has_new_parent_with_user_deploys = lane_inputs.has_new_parent_with_user_deploys,
+        deploy_grace_active = lane_inputs.deploy_grace_active,
+        self_recently_proposed = lane_inputs.self_recently_proposed,
+        self_proposed_too_recently = lane_inputs.self_proposed_too_recently,
+        self_idle_for_recovery_interval = lane_inputs.self_idle_for_recovery_interval,
+        stale_recovery_interval_elapsed = lane_inputs.stale_recovery_interval_elapsed,
+        cone_has_user_work = lane_inputs.cone_has_user_work,
+        idle_recovery_window_open = lane_inputs.idle_recovery_window_open,
+        lag_recovery_leader = lane_inputs.lag_recovery_leader,
+        empty_frontier_backpressure = lane_inputs.empty_frontier_backpressure,
+        pending_deploy_max_lag = lane_inputs.pending_deploy_max_lag,
+        deploy_recovery_max_lag = lane_inputs.deploy_recovery_max_lag,
+        effective_frontier_chase_cap = lane_inputs.effective_frontier_chase_cap,
+        pending_deploys_due,
+        pending_deploy_backstop_due,
+        frontier_follow_due,
+        stale_lfb_recovery_due,
+        convergence_recovery_selected,
+        should_propose,
+        "heartbeat lane row"
+    );
 
     if should_propose {
         let reason = if pending_deploy_backstop_due {
@@ -701,6 +733,11 @@ async fn check_lfb_and_propose(
 
         // Heartbeat proposals are liveness-driven and may need empty-block capability.
         // We route them through async propose mode to enable empty blocks only for heartbeat.
+        metrics::counter!(
+            casper::rust::metrics_constants::HEARTBEAT_PROPOSALS_METRIC,
+            "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
+        )
+        .increment(1);
         let result = trigger_propose(casper.clone(), true).await?;
         match result {
             ProposerResult::Empty => {
@@ -2036,6 +2073,110 @@ mod tests {
             assert!(!first.finality_recovery_attempted);
             assert!(!second.finality_recovery_attempted);
             assert!(finality_progress.last_recovery_attempt_at.is_none());
+        }
+
+        fn heartbeat_counters(snapshotter: &metrics_util::debugging::Snapshotter) -> (u64, u64) {
+            use casper::rust::metrics_constants::{
+                HEARTBEAT_CHECKS_METRIC, HEARTBEAT_PROPOSALS_METRIC,
+            };
+            let mut checks = 0;
+            let mut proposals = 0;
+            for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+                if let metrics_util::debugging::DebugValue::Counter(c) = value {
+                    match key.key().name() {
+                        name if name == HEARTBEAT_CHECKS_METRIC => checks += c,
+                        name if name == HEARTBEAT_PROPOSALS_METRIC => proposals += c,
+                        _ => {}
+                    }
+                }
+            }
+            (checks, proposals)
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn a_heartbeat_check_that_proposes_counts_the_check_and_the_proposal() {
+            let recorder = metrics_util::debugging::DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let _guard = metrics::set_default_local_recorder(&recorder);
+
+            let validator = create_test_validator_identity();
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator.public_key.bytes.clone().into(),
+            );
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot,
+                    create_lfb_with_age(100),
+                    1,
+                ),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let config = HeartbeatConf {
+                enabled: true,
+                check_interval: Duration::from_secs(1),
+                max_lfb_age: Duration::from_secs(10),
+                self_propose_cooldown: Duration::from_secs(15),
+                ..HeartbeatConf::default()
+            };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("heartbeat check succeeds");
+
+            assert_eq!(propose_count.load(Ordering::SeqCst), 1);
+            assert_eq!(heartbeat_counters(&snapshotter), (1, 1));
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn an_unbonded_heartbeat_check_counts_the_check_but_no_proposal() {
+            let recorder = metrics_util::debugging::DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let _guard = metrics::set_default_local_recorder(&recorder);
+
+            let validator = create_test_validator_identity();
+            let snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(
+                    snapshot,
+                    create_lfb_with_age(60000),
+                ),
+            );
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let config = HeartbeatConf {
+                enabled: true,
+                check_interval: Duration::from_secs(1),
+                max_lfb_age: Duration::from_secs(10),
+                ..HeartbeatConf::default()
+            };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("heartbeat check succeeds");
+
+            assert_eq!(propose_count.load(Ordering::SeqCst), 0);
+            assert_eq!(heartbeat_counters(&snapshotter), (1, 0));
         }
 
         #[tokio::test]

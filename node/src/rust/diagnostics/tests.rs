@@ -90,6 +90,7 @@ mod tests {
 
     fn create_test_node_conf() -> NodeConf {
         NodeConf {
+            soak_observer: None,
             standalone: false,
             autopropose: false,
             protocol_server: ProtocolServer {
@@ -145,6 +146,7 @@ mod tests {
             },
             storage: Storage {
                 data_dir: PathBuf::from("/tmp/test"),
+                file_io_provisioning: Default::default(),
             },
             tls: TlsConf {
                 certificate_path: PathBuf::from("/tmp/cert.pem"),

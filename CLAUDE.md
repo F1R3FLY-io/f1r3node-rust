@@ -97,6 +97,7 @@ docker compose -f docker/shard.yml up
 
 ### Rust Guidelines
 - **No comments** unless explicitly requested by user
+- **Rust and bash only for new work.** Do not add Python, Ruby, or other languages. Legacy Python remains in the z3 witnesses under `formal/` and in a few inline `python3` calls in older scripts. It leaves when that code is next touched. One scoped exception stays: `scripts/bench/extend-issue24-metrics.py` and its test. They edit and verify the external system-integration harness's own Python module, and they run only where that harness runs.
 - Zero-cost abstractions, proper ownership
 - Async/await with Tokio runtime
 - Error handling: `eyre` for application errors, `thiserror` for library errors
@@ -185,19 +186,49 @@ Both settings take effect at the next session start.
 - Do NOT include Claude Code attribution footer or emoji
 - Do NOT include Co-Authored-By lines
 - Keep commit messages clean and professional
+- Every commit author and `Co-authored-by` trailer must be ratified. GitHub lists each co-author email that maps to an account in the contributors graph.
+- An email is ratified when it authored a commit in the base branch history. Only accepted pull requests reach that history. A `Co-authored-by` trailer never ratifies an email.
+- The CI `Commit Policy` job checks every commit author and co-author. A pull request cannot ratify its own identities.
+- The `.githooks/commit-msg` hook checks co-authors only, so a first-time contributor can commit locally. Both reject `Claude-Session` trailers.
+- An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance. Only a human account gets this exemption. A bot or app account does not.
+- `.github/denied-identities.txt` lists identities that are always rejected, even when the history ratifies them. It blocks `@anthropic.com`. CI reads it from the base branch.
+- Turn off the co-author attribution setting in your Claude Code `settings.json`.
 
 ### Branch Strategy
-- `master` is the default branch and release line. Maintainers promote `dev` to `master`.
+- `master` is the default branch and release line. Maintainers promote `dev` to `master` with `just promote`.
+- `just promote` opens the promotion from a temporary `promote/*` branch. Do not open a promotion with head `dev`. GitHub deletes the head branch of a merged pull request and retargets every pull request based on it to `master`. The `Promotion Source` check rejects a pull request from `dev` to `master`.
 - `dev` is the integration branch. Feature and fix pull requests target this branch.
 - Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
 - `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
+- `just backmerge` opens the back-merge from a temporary `backmerge/*` branch. Do not open a pull request with head `master` or `dev`. Its **Update branch** button merges the base into the protected head through the admin bypass. The `Promotion Source` check rejects such a pull request, and the `Protected Head Guard` workflow closes it.
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
+
+### Continuous Integration and Deployment
+- A push to a pull request runs only the GitHub-hosted checks: static checks, script tests, and unit tests.
+- The heavy Integration Pipeline runs on OCI runners for these events:
+  - every merge group
+  - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI integration tests when its merge group already passed them on the same commit. It still builds and publishes the images.
+  - a pull request with the `ci-heavy` label
+- Add the `ci-heavy` label to a pull request to `dev` when the change can break the integration tests. Examples:
+  - Rust code in a workspace crate
+  - `Cargo.toml` or `Cargo.lock`
+  - `node/src/main/resources/defaults.conf`
+  - `node/Dockerfile` or the files in `docker/`
+- Do not add `ci-heavy` for a change to documentation, CI scripts, or workflows only. The merge queue runs the heavy pipeline for that change anyway.
+- The label shows an integration failure before the merge queue. A merge group can contain several pull requests, so a failure in the queue does not always identify its cause.
+- When the merge group tree equals the pull request head, the queue reuses the heavy result of the pull request.
+- Add the label once, after the last planned push. A push, a label change, or a `gh pr edit` cancels a running heavy run.
+- `docs/ci.md` describes the jobs, the required checks, and the merge queue.
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
 - **Removed**: Nix flake, SBT build, Scala source, `.envrc`, JVM tooling
 - **Kept**: All 10 Rust crates, Cargo workspace, protobuf definitions, Docker configs, docs
 - **Added**: Native dependency install instructions (Homebrew, apt)
+
+## Project Workflow
+
+This section gives the coordination and tasking rules of this repository. The Stigmergic Collaboration section below gives the workspace standard.
 
 ### Key Principles
 
@@ -257,6 +288,65 @@ next_steps:
 ---
 ```
 
+### Tasking Conventions
+
+Three workspace standards define the task files. This repository adds the conventions below to them.
+
+- The Epic Task Structure Reference defines the epic and task YAML.
+- The User Stories Standard defines the story format and its acceptance criteria.
+- The ToDos MR/PR Tracking Standard defines the `docs/ToDos.md` frontmatter.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/epic-task-structure.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/epic-task-structure.md
+```
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/user-stories-standard.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md
+```
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/todos-mr_pr-tracking-standard.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/todos-mr_pr-tracking-standard.md
+```
+
+**Epics.** Write each epic as a fenced YAML block with `epic_id: EPIC-NNN`, `title`, `status`, `priority`, `user_story`, and `tasks`. Set `user_story` to the identifier of the story that the epic implements.
+
+**Tasks.** Use the identifier form `TASK-NNN-N`, where `NNN` is the epic number. This repository does not use the `TODO-NNN-NNN` form of the standard.
+
+**Acceptance criteria.** Give each task an `acceptance` list of measurable conditions.
+
+- The user story keeps the business-level criteria.
+- The task criteria state the technical evidence that closes the task, for example a test name, a metric, or a soak result.
+
+**Optional task fields.** Use these fields when they apply:
+
+| Field | Content |
+|---|---|
+| `notes` | Context that another agent needs |
+| `branch`, `pr_base_branch`, `pull_request` | The branch, its target, and the pull request number |
+| `blocked_by` | Task identifiers, pull requests, or external entries that block the task |
+| `finding` | The observed defect or evidence that started the task |
+| `decision` | A maintainer decision, with its date |
+
+**Value streams.** Record the value stream on the user story, in a `**Value Stream:**` line after `**Implemented in:**`. An epic gets its value stream through its `user_story` field. The workspace glossary defines a value stream as the end-to-end sequence that delivers a discrete unit of value.
+
 ### Configuration File Conventions
 
 When creating or modifying configuration files, follow these conventions to respect existing project preferences:
@@ -290,6 +380,8 @@ ls biome.json biome.jsonc biome.json5 2>/dev/null
 ```
 
 This applies to all slash commands and scripts that create configuration files.
+
+### Slash Command Quick Reference
 
 #### Git Operations
 - `/quick-commit` - Stage and commit changes (required in safe mode)
@@ -529,8 +621,17 @@ nobody pushes, cleans up, or audits.
 YOLO mode runs *inside* a worktree that the human created. Running in a worktree
 never authorizes the creation of more worktrees.
 
-Canonical policy: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md)
-(Worktrees section).
+Canonical policy: Git Interaction Policy, Worktrees section.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/git-interaction-policy.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md
+```
 
 ## grepai - Semantic Code Search
 
@@ -542,8 +643,105 @@ substitute your tool's equivalents for the generic actions described below.
 Setup (with the privacy-first local Ollama embedder as default) lives in the
 CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
 
-# important-instruction-reminders
+## Stigmergic Collaboration
 
+This project uses **stigmergic collaboration** - agents coordinate through shared `.md` files rather than direct messaging. When agents work as a Claude Code agent team, real-time IPC replaces file-based coordination. The stigmergic files remain for cross-session continuity, audit trails, and cross-tool interoperability.
+
+Full guide: Stigmergic Collaboration Guide.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/stigmergic-collaboration.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/stigmergic-collaboration.md
+```
+
+### Document-First Workflow
+
+For significant features:
+
+1. **User Story**: Capture the business need in `docs/UserStories.md`
+   - Define persona, capability, and benefit
+   - List acceptance criteria
+
+2. **Design Document**: Describe problem and solution
+   ```bash
+   cp ../../SA/top-level-gitlab-profile/docs/templates/design-doc.md.template docs/designs/[feature-name].md
+   ```
+
+3. **Specification**: Define interfaces and behavior
+   ```bash
+   cp ../../SA/top-level-gitlab-profile/docs/templates/specification.md.template docs/specs/[component-name].md
+   ```
+
+4. **Task Definition**: Add epic to `docs/ToDos.md` with tasks
+
+5. **Implement**: Only after documentation is reviewed
+
+6. **Complete**: Update user story status when epic completes
+
+## Cross-Repository References
+
+Use the reference form that matches the location of the target. The Cross-Reference Standards document contains the full rules.
+
+| Target | Required form |
+| --- | --- |
+| File in the same repository | Document-relative Markdown link |
+| Current guidance in another repository | `yaml cross-reference` block or `cross_references` frontmatter with `purpose: current` |
+| Evidence or an approved decision | Record with `purpose: evidence` and a full commit ID |
+
+Obey these rules when you write a record:
+
+- Set `checkout` relative to the directory of the source document.
+- Set `path` relative to the root of the target repository.
+- Take the hosted project path from the configured remote or from `repo-mapping.yaml`. Local directory names and hosted project names can be different.
+- Set `revision` to the branch that holds the current content. Do not assume `master` or `main`.
+- Do not write a Markdown link to a file in another repository. A single-repository clone cannot resolve that link, and the CI link check fails.
+- Before you commit, run `scripts/check-broken-links.py --references-only` from the top-level profile on each changed Markdown file.
+
+Do not copy the link form of older text. Older text can contain the two-label form that version 2 of the standard replaced.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/cross-reference-standards.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/cross-reference-standards.md
+```
+
+## Development Modes
+<!-- SYNC:standard -->
+
+This project supports three operational modes for AI-assisted development.
+
+| Mode | Command | Git Access |
+|------|---------|------------|
+| **Safe** | `claude` / `claude-safe` | Via `/quick-commit`, `/recursive-push` only |
+| **Agentic** | `claude-agentic` | Direct git permitted |
+| **YOLO** | `claude-agentic` (in user-created worktree) | Full autonomy, isolated |
+
+**Safe mode** is the default. Use slash commands for all git operations.
+**Agentic mode** requires branch consistency (`check-repo-consistency.sh --strict`).
+**YOLO mode** requires a git worktree for isolation. The human creates the worktree. Agents never create worktrees outside agentic mode (see Worktree Policy).
+
+Reference: Development Modes.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/development-modes.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/development-modes.md
+```
+
+# important-instruction-reminders
 - Do only the requested work.
 - Do not create a file unless it is necessary to complete the request.
 - Prefer an edit to an existing file instead of a new file.

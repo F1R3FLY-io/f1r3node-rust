@@ -99,6 +99,64 @@ async fn replay_compute_state(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_parameters_compute_and_replay_the_same_state() {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use models::rust::deploy_parameters::{DeployMapEntry, DeployParameter, RholangValue};
+
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let pre_state = genesis_block.body.state.post_state_hash;
+            let mut data = construct_deploy::source_deploy_now_full(
+                "new input(`rho:deploy:param:input`) in { @\"parameter-result\"!(*input) }".into(),
+                Some(1_000_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .data;
+            data.parameters = vec![DeployParameter {
+                name: "input".into(),
+                value: RholangValue::Tuple(vec![
+                    RholangValue::Nil,
+                    RholangValue::Uri("rho:io:stdout".into()),
+                    RholangValue::List(vec![RholangValue::Int(-1), RholangValue::Bytes(vec![255])]),
+                    RholangValue::Set(vec![RholangValue::Int(2), RholangValue::Int(1)]),
+                    RholangValue::Map(vec![DeployMapEntry {
+                        key: RholangValue::String("key".into()),
+                        value: RholangValue::Bool(false),
+                    }]),
+                ]),
+            }];
+            let deploy = Signed::create(
+                data,
+                Box::new(Secp256k1),
+                construct_deploy::DEFAULT_SEC.clone(),
+            )
+            .unwrap();
+            let (post_state, processed) =
+                compute_state(&mut runtime_manager, &genesis_context, deploy, &pre_state).await;
+            assert!(!processed.is_failed);
+            assert!(processed.system_deploy_error.is_none());
+            let processed = ProcessedDeploy::from_proto(processed.to_proto()).unwrap();
+            let replay_state = replay_compute_state(
+                &mut runtime_manager,
+                &genesis_context,
+                processed,
+                &pre_state,
+            )
+            .await
+            .unwrap();
+            assert_ne!(post_state, pre_state);
+            assert_eq!(replay_state, post_state);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn comput_state_should_charge_for_deploys() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
@@ -142,6 +200,182 @@ async fn comput_state_should_charge_for_deploys() {
             .unwrap();
 
             assert!(new_state_hash != gen_post_state && replay_state_hash == new_state_hash);
+        },
+    )
+    .await
+    .unwrap()
+}
+
+fn bitmask_flags_deploy(body: &str) -> Signed<DeployData> {
+    construct_deploy::source_deploy_now_full(
+        format!(r#"new t(`rho:system:bitmaskMergeableTag`) in {{ {body} }}"#),
+        Some(100000),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+async fn play_and_replay_bitmask_deploy(
+    runtime_manager: &mut RuntimeManager,
+    genesis_context: &GenesisContext,
+    body: &str,
+    state_hash: &StateHash,
+) -> (StateHash, bool) {
+    let (new_state_hash, processed_deploy) = compute_state(
+        runtime_manager,
+        genesis_context,
+        bitmask_flags_deploy(body),
+        state_hash,
+    )
+    .await;
+    let is_failed = processed_deploy.is_failed;
+    let replay_state_hash = replay_compute_state(
+        runtime_manager,
+        genesis_context,
+        processed_deploy,
+        state_hash,
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay_state_hash, new_state_hash);
+    (new_state_hash, is_failed)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deploy_that_clears_bitmask_or_bits_fails_in_play_and_replay() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let rewrite = |value: i64| {
+                format!(r#"for (@_ <- @(*t, "flags-534")) {{ @(*t, "flags-534")!({value}) }}"#)
+            };
+
+            let (with_flags, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "flags-534")!(5)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(4),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "clearing bit 0 of a BitmaskOr channel must fail the deploy"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(7),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                !failed,
+                "setting bits on a BitmaskOr channel must still succeed"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "own-534")!(5) | for (@_ <- @(*t, "own-534")) { @(*t, "own-534")!(4) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed, "a deploy may clear bits it set itself");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "consuming a BitmaskOr value without putting it back must fail"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { @(*t, "flags-534")!({"k": 1}) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "replacing a BitmaskOr value with non-numeric data must fail"
+            );
+
+            let (with_join, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534") & @_ <- @"go-534") { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed);
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@"go-534"!(Nil)"#,
+                &with_join,
+            )
+            .await;
+            assert!(
+                failed,
+                "draining a BitmaskOr value through a waiting join must fail"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bitmask_or_writes_that_keep_every_bit_still_succeed() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+
+            let (with_leaf, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "leaf-534")!(0)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "leaf-534")) { @(*t, "leaf-534")!({"k": 1}) }"#,
+                &with_leaf,
+            )
+            .await;
+            assert!(!failed, "a zero bitmap may become a TreeHashMap leaf");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"new insert(`rho:registry:insertArbitrary`), uri in { insert!("value-534", *uri) }"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed, "a registry insert must still succeed");
         },
     )
     .await
@@ -256,7 +490,7 @@ where
     F: Fn(&S::Result) -> bool,
     <S as SystemDeployTrait>::Result: PartialEq,
 {
-    let runtime = runtime_manager.spawn_runtime().await;
+    let runtime = runtime_manager.spawn_runtime().await.unwrap();
     {
         runtime
             .set_block_data(BlockData {
@@ -282,7 +516,7 @@ where
         } => {
             result_assertion(&play_result);
 
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
             {
                 replay_runtime
                     .set_block_data(BlockData {
@@ -415,7 +649,7 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
-                |result| *result == 0,
+                |result| *result == 0.into(),
             )
             .await
             .unwrap();
@@ -449,7 +683,7 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     pk: user_pk,
                     rand: Blake2b512Random::create_from_bytes(&[3]),
                 },
-                |result| *result == 9000000,
+                |result| *result == 9000000.into(),
             )
             .await
             .unwrap();
@@ -525,7 +759,7 @@ async fn balance_deploy_should_compute_rev_balances() {
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[]),
                 },
-                |result| *result == 9000000,
+                |result| *result == 9000000.into(),
             )
             .await
             .unwrap();
@@ -802,7 +1036,7 @@ async fn compute_state_should_charge_for_parsing_and_execution() {
             )
             .unwrap();
 
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             runtime.cost.set(inital_phlo.clone());
             let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
             let _ = runtime.inj(term, Env::new(), rand).await;
@@ -877,7 +1111,7 @@ async fn capture_result_should_return_the_value_at_the_specified_channel_after_a
                 .unwrap();
 
             assert!(result1.len() == 1);
-            assert!(result1[0] == ParBuilderUtil::mk_term("37").unwrap());
+            assert!(result1[0] == ParBuilderUtil::mk_term("37n").unwrap());
         },
     )
     .await
@@ -1054,6 +1288,80 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                 .unwrap();
 
             assert!(play_post_state == replay_compute_state_result);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn replay_attribution_preserves_success_failure_and_cache_paths() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let deploy = construct_deploy::source_deploy_now_full(
+                "@\"attribution\"!(1)".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let initial = genesis_block.body.state.post_state_hash;
+            let (expected, processed) =
+                compute_state(&mut runtime_manager, &genesis_context, deploy, &initial).await;
+            runtime_manager
+                .delete_mergeable_channels(
+                    &expected,
+                    genesis_context.validator_pks()[0].bytes.clone(),
+                    0,
+                )
+                .unwrap();
+            for attempt in 0..3 {
+                let mut candidate = processed.clone();
+                if attempt == 0 {
+                    candidate.cost.cost -= 1;
+                }
+                let recorder = DebuggingRecorder::new();
+                let snapshotter = recorder.snapshotter();
+                let guard = metrics::set_default_local_recorder(&recorder);
+                let result = replay_compute_state(
+                    &mut runtime_manager,
+                    &genesis_context,
+                    candidate,
+                    &initial,
+                )
+                .await;
+                drop(guard);
+                if attempt == 0 {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result.unwrap(), expected);
+                }
+                let snapshot = snapshotter.snapshot().into_vec();
+                for (stage, count) in [
+                    ("lock-wait", usize::from(attempt != 2)),
+                    ("execute", usize::from(attempt != 2)),
+                    ("save-mergeable", usize::from(attempt == 1)),
+                ] {
+                    let name = format!("block.replay.runtime.{stage}.time");
+                    let actual: usize = snapshot
+                        .iter()
+                        .filter(|(key, _, _, _)| key.key().name() == name)
+                        .map(|(_, _, _, value)| match value {
+                            DebugValue::Histogram(values) => {
+                                assert!(values.iter().all(|value| value.into_inner().is_finite()
+                                    && value.into_inner() >= 0.0));
+                                values.len()
+                            }
+                            _ => 0,
+                        })
+                        .sum();
+                    assert_eq!(actual, count, "{name}, attempt={attempt}");
+                }
+            }
         },
     )
     .await
@@ -1924,7 +2232,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -2308,7 +2616,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -2836,7 +3144,7 @@ in {
                 .to_string();
 
             // Checkpoint via a fresh runtime so exploratory deploy can see the state
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut runtime_ops = RuntimeOps::new(runtime);
             runtime_ops
                 .runtime
@@ -3077,7 +3385,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -3645,7 +3953,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
     use casper::rust::engine::block_retriever::BlockRetriever;
@@ -3760,7 +4068,7 @@ async fn strict_exploratory_query_propagates_execution_failure() {
             let failing_par =
                 Compiler::source_to_adt(failing_source).expect("compile failing term");
 
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut ops = RuntimeOps::new(runtime);
 
             // Lenient path (display/API callers): degrades to an empty result.

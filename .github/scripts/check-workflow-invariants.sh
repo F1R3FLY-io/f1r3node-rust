@@ -5,8 +5,9 @@
 # says "SECURITY: do not remove" above the `needs: await_approval` that gates
 # untrusted fork code, but a comment does not stop a delete — this does.
 #
-# Wired into ci.yml's `lint` job rather than `build_base` on purpose: `Lint` is a
-# required status check on both rulesets, so a violation blocks the merge. A job
+# Wired into ci.yml's `static_checks` job rather than `build_base` on purpose:
+# Static Checks is a required status check on both rulesets, so a violation
+# blocks the merge. A job
 # that only fails upstream can surface as `skipped`, which required-check
 # evaluation may treat as satisfied.
 #
@@ -78,18 +79,21 @@ for job in launch_ephemeral_runners build_docker_image; do
 	fi
 done
 
-# 2. Credential concentration. Exactly one job in the reusable pipeline may hold
-#    credentials, and it must be the launch job — the only one that checks out
-#    solely the pinned system-integration SHA and never the code under test.
-cred_jobs="$(scan_jobs "$PIPELINE" | awk '$3 == 1 || $4 == 1 { print $1 }')"
-cred_count="$(printf '%s' "$cred_jobs" | grep -c . || true)"
-if [ "$cred_count" = "1" ] && [ "$cred_jobs" = "launch_ephemeral_runners" ]; then
-	ok "credentials confined to launch_ephemeral_runners"
+# 2. Credential concentration. Only jobs that check out solely the pinned
+#    system-integration SHA, and never the code under test, may hold
+#    credentials. Two qualify: launch_ephemeral_runners creates the VMs and
+#    reclaim_ephemeral_runners terminates the ones no job consumed. The list is
+#    closed by name — a new credential-bearing job is a deliberate decision, so
+#    adding one means editing this line and saying why it qualifies.
+CRED_JOBS_ALLOWED="launch_ephemeral_runners reclaim_ephemeral_runners"
+cred_jobs="$(scan_jobs "$PIPELINE" | awk '$3 == 1 || $4 == 1 { print $1 }' | sort | tr '\n' ' ')"
+cred_expected="$(printf '%s\n' $CRED_JOBS_ALLOWED | sort | tr '\n' ' ')"
+if [ "$cred_jobs" = "$cred_expected" ]; then
+	ok "credentials confined to $CRED_JOBS_ALLOWED"
 else
 	# Flattened to one line: a GitHub error annotation captures only its first
 	# line, so a multi-line job list would hide every name after the first.
-	cred_list="$(printf '%s' "$cred_jobs" | tr '\n' ' ')"
-	err "expected exactly one credential-bearing job (launch_ephemeral_runners) in $PIPELINE, found: ${cred_list:-none}"
+	err "expected credential-bearing jobs ($CRED_JOBS_ALLOWED) in $PIPELINE, found: ${cred_jobs:-none}"
 fi
 
 # 3. Environment scoping. Any job anywhere that reads OCI or GitHub App
@@ -150,7 +154,9 @@ puts "workflow concurrency must replace superseded PR and exact-merge runs" unle
 pipeline = jobs.fetch("pipeline", {})
 pipeline_concurrency = pipeline.fetch("concurrency", {})
 expected_pipeline_group = "ci-heavy-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref) }}"
-expected_pipeline_cancel = "${{ !startsWith(github.ref, 'refs/tags/') }}"
+# A merge group is excluded: the queue reads a cancelled required check as a
+# failure and ejects the group's pull requests.
+expected_pipeline_cancel = "${{ github.event_name != 'merge_group' && !startsWith(github.ref, 'refs/tags/') }}"
 puts "heavy pipeline must use a PR-or-ref queue" unless normalized(pipeline_concurrency["group"]) == normalized(expected_pipeline_group)
 puts "heavy branch and PR work must replace obsolete heads without cancelling version tags" unless normalized(pipeline_concurrency["cancel-in-progress"]) == normalized(expected_pipeline_cancel)
 
@@ -248,7 +254,7 @@ fi
 #    must agree with the reaper — checked below — but absence is no longer a
 #    violation for the soak.
 ocid_required=".github/workflows/ci-runner-reaper.yml"
-ocid_optional=".github/workflows/merge-recovery-soak.yml"
+ocid_optional=".github/workflows/merge-recovery-soak.yml .github/workflows/ci-runner-reclaim.yml"
 ocid_values=""
 for ocid_file in $ocid_optional; do
 	ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
@@ -555,6 +561,100 @@ for renderer_wf in \
 		err "$renderer_wf renders charts directly into site/data, risking a partially overwritten chart set on failure"
 	fi
 done
+
+# 9. A fork-only job must not share a check name with a ci.yml job when it is
+#    skipped. ci-fork-pr.yml runs for every pull request, and a job skipped by
+#    its `if` still reports a check. A skipped check with a required name passes
+#    the gate before the real ci.yml job finishes. A ci-heavy pull request then
+#    enters the merge queue early, and the merge group runs the heavy pipeline
+#    again.
+#    A fork-only job has `head.repo.fork == true` in its `if`. Its name is a
+#    literal or `${{ github.event.pull_request.head.repo.fork && 'A' || 'B' }}`.
+#    The skipped job reports B, the literal, or the job id when there is no
+#    name. That value must not be a ci.yml check name. A job that calls a
+#    reusable workflow is exempt. Its skipped check carries the caller name
+#    only, and no ruleset requires a caller name. The scan first tests itself
+#    against a swapped expression and a job without a name.
+fork_name_errors=""
+if ! fork_name_errors="$(
+	ruby -ryaml - .github/workflows/ci.yml .github/workflows/ci-fork-pr.yml 2>&1 <<'RUBY'
+FORK_NAME = /\A\$\{\{\s*github\.event\.pull_request\.head\.repo\.fork\s*&&\s*'([^']+)'\s*\|\|\s*'([^']+)'\s*\}\}\z/
+
+def violations(ci_names, jobs)
+  jobs.each_with_object([]) do |(id, job), found|
+    next unless job["if"].to_s.include?("head.repo.fork == true")
+    next if job.key?("uses")
+    name = job.fetch("name", id.to_s).to_s
+    if name.include?("${{")
+      match = FORK_NAME.match(name)
+      if match.nil?
+        found << "ci-fork-pr.yml job '#{id}' has a computed name that is not \"${{ github.event.pull_request.head.repo.fork && 'A' || 'B' }}\""
+        next
+      end
+      name = match[2]
+    end
+    found << "ci-fork-pr.yml job '#{id}' reports '#{name}' when skipped; that is a ci.yml check name" if ci_names.include?(name)
+  end
+end
+
+guard = "always() && github.event.pull_request.head.repo.fork == true"
+probe = {
+  "swapped" => { "if" => guard, "name" => "${{ github.event.pull_request.head.repo.fork && 'Fork only' || 'Gate' }}" },
+  "Gate" => { "if" => guard },
+  "correct" => { "if" => guard, "name" => "${{ github.event.pull_request.head.repo.fork && 'Gate' || 'Gate (fork PRs only)' }}" }
+}
+flagged = violations(["Gate"], probe).map { |line| line[/job '([^']+)'/, 1] }
+puts "invariant 9 self-test failed: flagged #{flagged.inspect}, expected [\"swapped\", \"Gate\"]" unless flagged == %w[swapped Gate]
+
+ci_names = YAML.load_file(ARGV[0]).fetch("jobs").map { |id, job| job.fetch("name", id.to_s).to_s }.reject { |name| name.include?("${{") }
+puts violations(ci_names, YAML.load_file(ARGV[1]).fetch("jobs"))
+RUBY
+)"; then
+	err "fork check name scan failed: $fork_name_errors"
+elif [ -n "$fork_name_errors" ]; then
+	while IFS= read -r line; do err "$line"; done <<<"$fork_name_errors"
+else
+	ok "skipped fork-only jobs do not report ci.yml check names"
+fi
+
+# 10. A composite action must not read the vars or secrets context. The runner
+#     rejects the expression when it loads the action, not when a workflow is
+#     parsed. Soak 38773128084 passed its 2.5 h preflight and then failed on
+#     `vars.SOAK_IO_DIAGNOSTICS` in soak-segment. Pass the value as an input or
+#     as job-level env. The dot and bracket forms both count. Only full-line
+#     comments are skipped, so a trailing comment that names the context still
+#     fails, which is safe. The scan first tests itself.
+action_context_pattern='\$\{\{([^}]*[^A-Za-z0-9_.])?(vars|secrets)[.[]'
+action_context_hits() {
+	grep -HnE "$action_context_pattern" "$@" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true
+}
+action_probe="$(mktemp)"
+printf '%s\n' \
+	"  A: \${{ vars.X == '1' && '1' || '0' }}" \
+	"  B: \${{secrets.TOKEN}}" \
+	"  # C: \${{ vars.X }}" \
+	"  D: \${{ inputs.myvars.x }}" \
+	"  E: \${{ vars['X'] }}" \
+	"  F: \${{ secrets[\"TOKEN\"] }}" >"$action_probe"
+action_probe_hits="$(action_context_hits "$action_probe" | cut -d: -f2 | tr '\n' ' ')"
+rm -f "$action_probe"
+if [ "$action_probe_hits" != "1 2 5 6 " ]; then
+	err "invariant 10 self-test failed: flagged lines '$action_probe_hits', expected '1 2 5 6 '"
+else
+	action_files=()
+	while IFS= read -r file; do action_files+=("$file"); done < <(find .github/actions \( -name 'action.yml' -o -name 'action.yaml' \) | sort)
+	action_context_errors=""
+	if [ "${#action_files[@]}" -gt 0 ]; then
+		action_context_errors="$(action_context_hits "${action_files[@]}")"
+	fi
+	if [ -n "$action_context_errors" ]; then
+		while IFS= read -r line; do
+			err "composite action reads a workflow-only context (vars or secrets): $line"
+		done <<<"$action_context_errors"
+	else
+		ok "composite actions do not read the vars or secrets context"
+	fi
+fi
 
 if [ "$fail" -ne 0 ]; then
 	printf '::error::%s\n' "workflow security invariants violated; see errors above"

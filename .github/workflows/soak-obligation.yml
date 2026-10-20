@@ -1,0 +1,91 @@
+name: Soak Obligation Record
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/soak-obligation.yml
+      - scripts/ci/check-soak-obligation.sh
+      - scripts/ci/test-check-soak-obligation.sh
+  workflow_run:
+    workflows: [Merge Recovery Soak]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Run ID of the completed Merge Recovery Soak run.
+        required: true
+        type: string
+      required_commit:
+        description: >-
+          Full commit ID that the soaked revision must contain. Leave this
+          empty to use the merge commit of pull request 436.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-obligation-${{ github.event_name }}-${{ github.event.workflow_run.id || inputs.run_id || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  controls:
+    name: Check the obligation controls
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Run the controls
+        shell: bash -euo pipefail {0}
+        run: bash scripts/ci/test-check-soak-obligation.sh "$RUNNER_TEMP/soak-obligation-controls"
+      - name: Retain the control evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: soak-obligation-controls
+          path: |
+            ${{ runner.temp }}/soak-obligation-controls/summary.json
+            ${{ runner.temp }}/soak-obligation-controls/cases/*.stderr
+          if-no-files-found: error
+          retention-days: 30
+
+  record:
+    name: Record the soak result
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Check the run and record the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOAK_RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          REQUIRED_COMMIT: ${{ inputs.required_commit }}
+        shell: bash -euo pipefail {0}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
+          bash scripts/ci/check-soak-obligation.sh execute "$SOAK_RUN_ID" \
+            "$RUNNER_TEMP/soak-obligation" "$REQUIRED_COMMIT"
+      - name: Retain the obligation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: soak-obligation-${{ github.event.workflow_run.id || inputs.run_id }}
+          path: |
+            ${{ runner.temp }}/soak-obligation
+            !${{ runner.temp }}/soak-obligation/**/result.zip
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,105 @@
+{
+ "acceptance": null,
+ "change": {
+  "origin": "Soak 37153082817 on master f93b72699 stopped at the disk hygiene band with 8,047 MB free. The failure-evidence copy duplicated every earlier harness session into each failed iteration. The copies were 13.6 GB of the 15 GB output.",
+  "driver": [
+   "The failure-evidence copy takes only files newer than the iteration's .started marker, like every other reader of the harness roots.",
+   "reset_harness_archives clears the harness data and log-archive roots after each completed iteration, the same reset the workflow applies after the preflight."
+  ],
+  "test": "Scenario 4 runs two failed iterations. The second iteration's evidence and the harness root must not keep the first session.",
+  "commit": "602d63c7b99c0a5bca22c0fc16dc703c7217c534",
+  "unchanged": "Disk admission, the guardian, the hygiene band, the breach channels, the state file, and the summary contract are unchanged."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "4591986996cb979eb8bb6f17ab71000fbd6d87c82cf4b64ad77f525ba199ed1d"
+ },
+ "claim_discharge": "pending",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "related_claims": {
+  "CLAIM-SOAK-001": "proposed-unratified. The driver and its test are artifacts of docs/claims/soak-disk-protection.md. Its disk admission and guardian behavior are unchanged."
+ },
+ "evidence_before_change": {
+  "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+  "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+ },
+ "source_digests_before_change": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "c5089c13fa8cf127cae071a515409e8d23c45c3441f2d973563e379d6406a030",
+  "scripts/run-merge-recovery-soak.sh": "dbc71f8ee9e8cd3ec0f68af3588094f5c9577193cc0f004654ebab49d5b44049"
+ },
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "b2b986feb1a932eb86aa8d49242953bfc14c9943cc3fdda15e58805d669ce226",
+  "scripts/run-merge-recovery-soak.sh": "5df5d1be14baa228f1ed36ec853e265273aa2ba3b5cb46586744cd8a133f0bee"
+ },
+ "verification": {
+  "driver_suite_local": {
+   "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+   "environment": "Linux container with the casper-soak harness binary built from the same tree",
+   "exit": 0,
+   "scenarios": [
+    "fail-closed",
+    "deadline",
+    "disk-band",
+    "evidence scope",
+    "restart state"
+   ]
+  },
+  "regression_control": {
+   "description": "The new test with the driver from 1a1baa924",
+   "exit": 1,
+   "result": "Iteration 2 evidence kept session 1, as the bug predicts."
+  },
+  "evidence_before_cleanup": "Every reader of the harness roots runs before the reset: iteration metrics, the failure-evidence copy, and the breach marker search. A breach ends the loop before the reset, so its evidence stays in place.",
+  "harness_models": {
+   "command": "scripts/ci/check-casper-soak-models.sh",
+   "exit": 0,
+   "clean_no_error": 1,
+   "negative_controls_violated_as_expected": 10,
+   "tla_tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "claims_audit_local": {
+   "command": "check-casper-claims",
+   "exit": 0
+  }
+ },
+ "hosted": {
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tested_sha": "e8e084fef26f0d2af6874c364502ee93bada2140",
+  "note": "e8e084fef adds only a docs/ToDos.md entry to the change commit 602d63c7b, so the tested driver and test bytes equal the source digests.",
+  "driver_suite": {
+   "run_id": 37176078030,
+   "job_id": 111358937917,
+   "job": "Lint",
+   "steps": {
+    "Verify soak fail-closed driver": "success",
+    "Verify isolated disk admission and emergency scenarios": "success"
+   }
+  },
+  "claims_and_bindings": {
+   "run_id": 37176077859,
+   "job_id": 111359530654,
+   "job": "Casper driver binding fixtures",
+   "steps": {
+    "Check model, claim-audit, and interruption regressions": "success",
+    "Audit Casper claim identities and discharge evidence": "success",
+    "Check isolated driver bindings and actual case counts": "success"
+   }
+  }
+ },
+ "expected_gate_state": "check-casper-claims passes because docs/claims/casper-soak-harness.md has status pending. The two ledger records stay at the 2026-09-19 digests until the maintainer accepts this package.",
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-driver-evidence-scope",
+ "soak": "pending",
+ "status": "change-verified-pending-acceptance",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-04",
+ "waiver": null
+}

@@ -1,0 +1,702 @@
+{
+  "schema_version": 1,
+  "claim_ids": [
+    "CLAIM-CASPER-NODE-OBSERVATION-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-002"
+  ],
+  "scope": "task-019-4-handoff-cycle-02",
+  "status": "blocked",
+  "blocked_on": [
+    "named maintainer review of every applicability decision",
+    "named maintainer acceptance of both claims",
+    "construction evidence for A3, A4, A9, B9, B11, B12 and the pending parts of A7 and B2"
+  ],
+  "execution_base": "78d696ea6780ca72105d9b35d2266b0329d777ed",
+  "working_tree": true,
+  "previous_cycle": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
+  "source_inventory": [
+    {
+      "path": "node/src/rust/soak_observer.rs",
+      "sha256": "542a454a57db3774663e7a2010ffdf5b0b7d746078fabbab7849404b5322f68d",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "node/src/rust/mod.rs",
+      "sha256": "d646e91b1b330e262234bc2bf7e2352432826ebe43f424f71c0bccf021c7c0b6",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/configuration/model.rs",
+      "sha256": "d8a535de8232f11b927168c32c7480202776f884ae37d0ae23b38d4e2a70ea34",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/configuration/commandline/options.rs",
+      "sha256": "82ade24cf0692646abb7027a2119138d72f359f909900d86ebcb2ada5659cc6b",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/configuration/commandline/config_mapper.rs",
+      "sha256": "a98c91ec5d9571e363fb1a619bd71fb2e4341f252ad58b5707f4c3eff5eb246d",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/configuration/mod.rs",
+      "sha256": "5693c79ab4c22e9e2db0789bd431469402eead825b760e75cc4d6c82b0f08559",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/runtime/node_runtime.rs",
+      "sha256": "6dcdc9bad2e6d1487cf8a705f2e8b31360bf103ba8cad08d0209468290ae5441",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/diagnostics/tests.rs",
+      "sha256": "3d4f27d59b161457a588305fda368b9b82173c2dcddda375b841aae6888abdfc",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "node/tests/soak_observer.rs",
+      "sha256": "b49d6fd51be0d865d89bff5e851a219dad6b2d6d170d7ce1042a28780fe30741",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/ObserverSession.tla",
+      "sha256": "af6ddf2f6e48eb5084f0f63a0db076ff77310dd8341ba24cc7732de936e0e6d5",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession.tla",
+      "sha256": "1dbb4ff655594466bab3382402a3bb22631aaa6abb74c79d52ddf211e9006176",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession.cfg",
+      "sha256": "4e71ad2f75be0b45cedd6391bcef3b3807f4bb7aab50b5e5fef0f25d67d2c7a7",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla",
+      "sha256": "8e4f178283c13927692b012c8285f1c7da931927503d459882f02ef1b481f0f8",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg",
+      "sha256": "f5a58a030f8f75cea9fb99949c367781611570e9c658140ae2ae72e6dc4992e0",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla",
+      "sha256": "a3d7fe9a6e4aad45ac2acaf595e876c99c1fd09b6a5b23c34c327f0352b9398a",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg",
+      "sha256": "0c5bc05e0f39dec8dc3ddb2bdd59fa50c7574d2c66021c033db92ad2ccda6085",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla",
+      "sha256": "29b73831fabf68d38db3b330a5d5d56448ec84f9af42fcf00ae952c7db62ed9b",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg",
+      "sha256": "88a91a691356a5e37315e925bd3dd1b5877d1fee9327df61980d7060050a8c27",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla",
+      "sha256": "68ddde1e42dd197959c36b57ff4a9db37555c230e4333cb7599814cb42071b8e",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg",
+      "sha256": "3383df6c84ce482158bb402a76e10bd29ad7dbdcc488238c8e26b115e3cd737d",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla",
+      "sha256": "223e56f2fc65419efb7a611cd95ec084ab866db80c9ed7e20284877af033ecaf",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg",
+      "sha256": "dfdfe1958d35e0ea854637f423fdb8324d722bba1411d2af1c4d06d036be0f08",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla",
+      "sha256": "ab2efae7826cbcbb9c41f748d452e88d747983049e695390f6f9febf29dd19c4",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg",
+      "sha256": "7f4760e0bbd56c5d528b71639ed86f4ac63c10987298dc7ee5231b03edd2c127",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla",
+      "sha256": "871106f33930940102bec72fbac69ea28182ff8d12cd7771ffecd63d48135292",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg",
+      "sha256": "987c3e4dcc45fdf059d56c78b8e507f1ab3364158303640de08ead4da21743cc",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/README.md",
+      "sha256": "28cc17943cca3bb5460248c99e2cc0a3f740cb7b780d833716d4078f24a65a1b",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/verification-plan.json",
+      "sha256": "0da58d7c5c4f17a9cb26995508db51d5fb152c89a54c8ce252c24972149a883a",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/bindings.json",
+      "sha256": "d66e03bcb06200a4ca73c6eea97eb55707c6e81471c270b831c35dd4d8b93471",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_observation/_CoqProject",
+      "sha256": "791d84d2380cefbe0f1b9bc8954adcc977440ce3b8939e084da41ab80210a9d4",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_observation/README.md",
+      "sha256": "8fa69411f063e7eac99939aa09d2ce179e93e1f11c0874798113d618c7d265ad",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/ObserverSession.v",
+      "sha256": "83040ea7cbc77e72655704ef87f04f600b1da107c64c69be822786e7770b9550",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/MainTheorem.v",
+      "sha256": "f5dc4c1423be9953c9a948df5eee294fcf2049d0942f178578ba334d3bf5e13f",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "scripts/ci/check-tla-invariants.sh",
+      "sha256": "8792c24441dd961a3b58dbd20a36281cadf52eae396e4de450597b99c5d65551",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "scripts/ci/test-check-tla-invariants.sh",
+      "sha256": "014e198bb983a934ec32335b2181bb00105382dd96ca28250885aabaed59cb7d",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "scripts/ci/check-formal-invariants.sh",
+      "sha256": "5118a35df0edf44f881d17d567357f139635409e0598302a68f9e6af53ed48cc",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "scripts/ci/check-node-observation-bindings.sh",
+      "sha256": "947937192ae8761330cd8b36b437edcd9e3256a53803477e7c076f9cd1c1e5ca",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": ".github/workflows/slashing-tests.yml",
+      "sha256": "991507a49e77745dd8a6a9ecfbd4be8d2cc9cb3645d9e1b1862b8430cd01267b",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "shared/src/rust/store/soak_snapshot.rs",
+      "sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "shared/src/rust/store/mod.rs",
+      "sha256": "9ef7432549747779c39b2d352f85e613b3c187b898aec40f3a79e34c483c9ca7",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "shared/tests/soak_snapshot.rs",
+      "sha256": "4ae3aa408e7de7adf032da424cac7d33d356eb285933a1ed6e840d102cc12880",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/soak_snapshot.rs",
+      "sha256": "f2ec64e110d2b1218a5d1043438985976a6b72daf63dada86a805cdee664fcfc",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/mod.rs",
+      "sha256": "e63a84c51e1c42c0c4d7e80bd4bcd59b125aee513456fccf9661762b48f945e9",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
+      "sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/block_metadata_store.rs",
+      "sha256": "7123b1940cc8a7bbb07cd728a4e765112cde7a090c5515fff7748cbb8a1515fa",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "block-storage/src/rust/key_value_block_store.rs",
+      "sha256": "1b47d5c5a0b0dfb60f66c551f3cc0029c8e2c588a2b60ddced5dcb0a71f7f2a3",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": false
+    },
+    {
+      "path": "block-storage/tests/soak_snapshot.rs",
+      "sha256": "24bdee3183324720539475a0c1dcfc32e3919dcc5d1271dca6df5d6a00ddebdc",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/BoundedCapture.tla",
+      "sha256": "6a4108143aefdcc9f59670160bffe527f37348a2c417053ae12a4fc7fcce0948",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture.tla",
+      "sha256": "f3ec133279c1cb0c628277c33d187ee0d8f1dad9984a218b4006f83acf16e8d7",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg",
+      "sha256": "396718266cab3e27f01affa6e82836aaad98dc6adff6f0df3209206d8894e6ff",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla",
+      "sha256": "68b3d3a02b40633d54577a280a1dfaa9600811a99502520dd7f27529df4cd57f",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg",
+      "sha256": "8b142e9af11a06c13d3b71f90426d13716dd0b36c208fe60f97c6efb49a3e66f",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla",
+      "sha256": "103f4523b3719ff9bd4d6c9974d4632ae75f21aef62a5fb483e2b58384b15828",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg",
+      "sha256": "01fb2af77d7cd7872fff3bb598fb2c11abc632a64c3d52a8da7f97a837545e58",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla",
+      "sha256": "927ca1030b336b9b20110ac3517e4004ab892143c0b306c93124baa98d47e114",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg",
+      "sha256": "e1d7d12a93e502a1f42988e6b4c87526721782b68f1ea93115bfdee270378f2e",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla",
+      "sha256": "8a13a17ead44d6f24501080456680d49a2ee09b6fc5f8ab110a5fffd9d73785a",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg",
+      "sha256": "e0b96edbfba4685dd975c7825fba77db3186488c8a2b0ad8b182d984116111bd",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla",
+      "sha256": "b1e1570e9496a330ea881560d032cab82c71aa6b80e4e7517b2513dcc20d94ca",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg",
+      "sha256": "8c14e18002986cc43b543894efebd34f763238d72de1dee405fd96d09b82475b",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla",
+      "sha256": "517277c25f209e5468b27b3ee5bc77b0860cd0b54b3a3532be07580d95df54ed",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg",
+      "sha256": "00a59b451cbb6e699b6d94b461b2396491ccab8d88c2160d0734de18efe715b9",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla",
+      "sha256": "6c441cffbbcf5bada625c71c5aaf8d399fb50095054c1001b5b2321ec0a47ea2",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg",
+      "sha256": "d126cf86466d7f82cd9364b29ba81648bebc230c223c6f39a9d4489eea126a96",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla",
+      "sha256": "fbedc4b24bd2aacebe23a70f4880c2d11405bac3eb30b9844061ed32b9f32904",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg",
+      "sha256": "3ee939c1f8cef5ea420fbfbc8626f0a029d8534f3a83980952aec297eac9206e",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla",
+      "sha256": "5562f8111e0b9d164b20367e73b15aef0bcd25838bb6f5ebc2c9a19f4baa1db4",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg",
+      "sha256": "a66ecbdb4c1b7b3f198fc5f187b7b3935b4754fc2ec5effea9f3f2cc5dbd531f",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla",
+      "sha256": "d19d344d015fa93470d6d27e6e663cc6869126587ce162469e8c41194e141a00",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg",
+      "sha256": "0818d4e1db55235576535127d955398799174e4f3df6deeae84765cd63bf1867",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/BoundedCapture.v",
+      "sha256": "a2cb0858ece3634ce364cd0b92af6e5e6b908e8df968855e3d84e4d7f66c54a2",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "mandatory": true
+    }
+  ],
+  "specifications": {
+    "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274",
+    "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
+  },
+  "refutation": {
+    "tool": "TLC 1.7.4 via scripts/ci/check-tla-invariants.sh --soak-pr",
+    "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "host_java": "openjdk 1.8.0_502",
+    "rerun_in_this_cycle": true,
+    "positive_configurations_clean": 15,
+    "expected_violations": 78,
+    "node_observation_positive": {
+      "MC_ObserverSession": {
+        "distinct_states": 689
+      },
+      "MC_BoundedCapture": {
+        "distinct_states": 10066
+      }
+    },
+    "node_observation_controls": 17,
+    "every_control_exit_12_with_named_invariant": true,
+    "gate_exit": 0
+  },
+  "construction": {
+    "tool": "Rocq 8.16.1 in a resource-limited arm64 container (Debian bookworm), coqchk",
+    "project": "formal/rocq/node_observation",
+    "exported_theorems": 14,
+    "closed_assumption_sets": 14,
+    "rerun_in_this_cycle": true,
+    "forbidden_vocabulary_grep": "clean",
+    "coqchk": "Modules were successfully checked",
+    "container_limits": {
+      "memory": "2g",
+      "cpus": 2,
+      "pids": 256,
+      "network": "none"
+    },
+    "formal_gate_registration": "scripts/ci/check-formal-invariants.sh expects 14 closed sets"
+  },
+  "binding": {
+    "bisimilarity_oracles": [
+      {
+        "source": "block-storage/tests/soak_snapshot.rs",
+        "name": "capture_outcomes_match_the_bounded_capture_oracle",
+        "scenarios": 14
+      },
+      {
+        "source": "node/tests/soak_observer.rs",
+        "name": "session_sequences_match_an_independent_event_oracle"
+      }
+    ],
+    "kani": {
+      "tool": "Kani Rust Verifier 0.68.0 with CBMC 6.11.0, Ubuntu 24.04 arm64 container, stable toolchain",
+      "container_limits": {
+        "memory": "6g",
+        "cpus": 3
+      },
+      "verified": [
+        "shared::check_limit_is_the_comparison",
+        "shared::charge_operation_never_exceeds_limit_and_fails_atomically",
+        "shared::charge_record_never_exceeds_limits_and_fails_atomically",
+        "shared::short_raw_is_rejected",
+        "shared::length_prefix_roundtrip",
+        "shared::length_prefix_accepts_only_exact_declaration"
+      ],
+      "not_executed": [
+        {
+          "harness": "block-storage::decode_limits_validate_iff_all_positive",
+          "reason": "a hashing dependency in the block-storage tree requires aes and neon target features that Kani's compiler invocation does not pass; the harness is authored and its property is covered by unit tests"
+        }
+      ],
+      "removed": [
+        {
+          "harness": "shared::checked_total_refuses_overflow",
+          "reason": "timed out at 15 and 25 minutes; both charging harnesses drive checked_total with fully symbolic inputs and verified, and the Rocq overflow theorem covers the property"
+        }
+      ],
+      "first_full_crate_run": "stalled over an hour on formatted error paths and was stopped; harnesses then ran one at a time against a pure prefix predicate",
+      "shared_exit": 0,
+      "block_storage_exit": 1
+    },
+    "kani_carried_from_previous_cycle": "shared/src/rust/store/soak_snapshot.rs has the same sha256 as in cycle 01; the block-store harness remains authored and not executed",
+    "generation_rejection_test": {
+      "source": "block-storage/src/rust/dag/soak_snapshot.rs",
+      "name": "rust::dag::soak_snapshot::tests::generation_change_after_validation_rejects_capture",
+      "origin": "pulled across from formal/soak-casper-consensus",
+      "closes": "B8 binding gap"
+    },
+    "native_tests": {
+      "shared": "102 library and 19 reader tests",
+      "block-storage": "70 library, 8 buffer, 38 DAG in two targets, 1 carrier, 3 loom, 27 capture tests",
+      "node_observer_release": "19 interface tests in a release build",
+      "debug_binary_note": "the debug interface test binary exceeds the 512 MiB self-measurement limit; run stripped or release"
+    },
+    "clippy_exit": 0,
+    "fmt_exit": 0
+  },
+  "strict_audit": {
+    "tool": "cbc.sh discharge --strict --files <union inventory>",
+    "exit_after_refresh": 4,
+    "pending_after_refresh": 60,
+    "records_with_no_evidence": 0
+  },
+  "applicability_review": "formal/tlaplus/node_observation/README.md#applicability-per-property",
+  "proposed_reviewer": "jltatbeach",
+  "claim_acceptance": false,
+  "created_at": "2026-09-23T16:47:34+00:00"
+}

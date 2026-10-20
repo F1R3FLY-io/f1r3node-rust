@@ -165,17 +165,7 @@ impl SslSessionServerInterceptor {
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("Header missing sender"))?;
 
-        // Get the head certificate (first in chain)
-        let peer_cert = &peer_certificates[0];
-        let cert_bytes = peer_cert.as_slice(); // Get the DER bytes
-
-        // Extract public key and calculate F1r3fly address
-        let public_key = Self::extract_public_key_from_der(cert_bytes)?;
-        let calculated_address =
-            CertificateHelper::public_address(&public_key).ok_or_else(|| {
-                tracing::warn!("Failed to calculate public address from certificate");
-                Status::unauthenticated("Certificate verification failed")
-            })?;
+        let calculated_address = Self::certificate_address(peer_certificates)?;
 
         // Compare with sender ID - ensure both are in bytes format
         let sender_id_bytes = sender.id.as_ref();
@@ -191,6 +181,19 @@ impl SslSessionServerInterceptor {
             );
             Err(Status::unauthenticated("Certificate verification failed"))
         }
+    }
+
+    fn certificate_address(peer_certificates: &[Vec<u8>]) -> Result<Vec<u8>, Status> {
+        let peer_cert = peer_certificates.first().ok_or_else(|| {
+            tracing::warn!("No TLS Session. Closing connection");
+            Status::unauthenticated("No TLS Session")
+        })?;
+
+        let public_key = Self::extract_public_key_from_der(peer_cert)?;
+        CertificateHelper::public_address(&public_key).ok_or_else(|| {
+            tracing::warn!("Failed to calculate public address from certificate");
+            Status::unauthenticated("Certificate verification failed")
+        })
     }
 
     /// Extract secp256r1 public key from DER-encoded X.509 certificate
@@ -229,17 +232,18 @@ impl SslSessionServerInterceptor {
 
     /// Validate a streaming request against TLS session context
     ///
-    /// For streaming requests, we can only validate the TLS session itself since
-    /// the request doesn't contain a TlRequest with protocol headers. The actual
-    /// message validation happens when processing the stream chunks.
+    /// A streaming request carries no TlRequest with protocol headers, so this
+    /// validates the TLS session and returns the sender ID that the head
+    /// certificate proves. The receiver must refuse a stream whose header
+    /// names another sender.
     ///
     /// # Arguments
     /// * `request` - The gRPC streaming request
     ///
     /// # Returns
-    /// * `Ok(())` if TLS validation passes
+    /// * `Ok(sender_id)` if TLS validation passes
     /// * `Err(Status)` with appropriate error code if validation fails
-    pub fn validate_stream_request<T>(request: &Request<T>) -> Result<(), Status> {
+    pub fn validate_stream_request<T>(request: &Request<T>) -> Result<Vec<u8>, Status> {
         // Extract validation context from request extensions
         let validation_context = request
             .extensions()
@@ -255,11 +259,15 @@ impl SslSessionServerInterceptor {
             return Err(Status::unauthenticated("TLS validation failed"));
         }
 
-        // For streaming requests, we only validate the TLS session
-        // Message-level validation (network ID, sender verification) happens
-        // when processing individual chunks in the stream
+        let sender_id = Self::certificate_address(
+            validation_context
+                .peer_certificates
+                .as_deref()
+                .unwrap_or_default(),
+        )?;
+
         tracing::debug!("TLS validation passed for streaming request");
-        Ok(())
+        Ok(sender_id)
     }
 }
 
@@ -629,16 +637,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_stream_request_accepts_valid_tls_session() {
+    fn test_validate_stream_request_returns_certificate_sender_id() {
+        let (cert_der, address) = generated_cert_and_address();
         let mut request = Request::new(());
         request
             .extensions_mut()
             .insert(CertificateValidationContext {
-                peer_certificates: Some(vec![vec![1, 2, 3]]),
+                peer_certificates: Some(vec![cert_der]),
                 tls_validation_passed: true,
                 network_id: "test_network".to_string(),
             });
         let result = SslSessionServerInterceptor::validate_stream_request(&request);
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), address);
     }
 }

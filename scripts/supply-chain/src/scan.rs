@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path};
 
+use chrono::NaiveDate;
 use eyre::{ensure, eyre, Result};
 use serde_json::{json, Value};
 
@@ -94,6 +95,33 @@ pub fn validate_metadata(metadata: &Value) -> Result<()> {
     Ok(())
 }
 
+pub fn yanked_present(metadata: &Value, policy: &Policy) -> BTreeSet<String> {
+    let resolved: BTreeSet<String> = metadata
+        .get("packages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            p.get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.starts_with("registry+"))
+        })
+        .filter_map(|p| {
+            Some(format!(
+                "{}@{}",
+                p.get("name")?.as_str()?,
+                p.get("version")?.as_str()?
+            ))
+        })
+        .collect();
+    policy
+        .yanked
+        .keys()
+        .filter(|spec| resolved.contains(*spec))
+        .cloned()
+        .collect()
+}
+
 fn prefix(manifest: &str) -> String {
     if manifest == "Cargo.toml" {
         "workspace".into()
@@ -155,6 +183,7 @@ fn scan_manifest(
     bytes.extend(output.stderr);
     fs::write(reports.join(format!("{prefix}-deny.jsonl")), &bytes)?;
     let mut report = report::validate(std::str::from_utf8(&bytes)?, &policy.exceptions);
+    report.yanked_present = yanked_present(&parsed, policy);
     if !output.status.success() {
         report
             .errors
@@ -183,9 +212,13 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
     let reports = root.join("target/supply-chain");
     fs::create_dir_all(&reports)?;
     let mut all = Report::default();
+    let mut yanked_used = BTreeSet::new();
     for manifest in &policy.manifests {
         let report = match scan_manifest(root, manifest, tool, &reports, policy, runner) {
-            Ok(report) => report,
+            Ok(report) => {
+                yanked_used.extend(report.yanked_present.iter().cloned());
+                report
+            }
             Err(error) => {
                 let message = format!("{manifest}: {error}");
                 let evidence = json!({"manifest": manifest, "errors": [&message]});
@@ -224,7 +257,37 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
         eprintln!("{message}");
         all.errors.push(message);
     }
+    let unused: Vec<_> = policy
+        .yanked
+        .keys()
+        .filter(|spec| !yanked_used.contains(*spec))
+        .cloned()
+        .collect();
+    if !unused.is_empty() {
+        let message = format!("Unused yanked-crate exceptions: {}", unused.join(", "));
+        eprintln!("{message}");
+        all.errors.push(message);
+    }
     Ok(all.errors.is_empty())
+}
+
+pub const REVIEW_WARNING_DAYS: i64 = 7;
+
+pub fn review_warnings(policy: &Policy, today: NaiveDate, annotate: bool) -> Result<Vec<String>> {
+    Ok(policy::reviews_due(policy, today, REVIEW_WARNING_DAYS)?
+        .into_iter()
+        .map(|(id, deadline)| {
+            let message = format!(
+                "{id}: the exception review is due before {deadline} ({} days). Renew it in supply-chain/policy.toml; see supply-chain/README.md.",
+                (deadline - today).num_days()
+            );
+            if annotate {
+                format!("::warning title=Supply-chain review due::{message}")
+            } else {
+                format!("Supply-chain warning: {message}")
+            }
+        })
+        .collect())
 }
 
 pub fn check(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) -> Result<bool> {
@@ -234,7 +297,11 @@ pub fn check(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) -> 
         "Install the cargo-deny version specified in supply-chain/policy.toml."
     );
     let deny = toml::from_str(&fs::read_to_string(root.join("deny.toml"))?)?;
-    policy::validate(policy, &deny, chrono::Utc::now().date_naive())?;
+    let today = chrono::Utc::now().date_naive();
+    policy::validate(policy, &deny, today)?;
+    for line in review_warnings(policy, today, std::env::var_os("GITHUB_ACTIONS").is_some())? {
+        eprintln!("{line}");
+    }
     validate_manifests(root, &policy.manifests, runner)?;
     scan_all(root, policy, tool, runner)
 }
