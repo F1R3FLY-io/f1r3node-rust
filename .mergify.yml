@@ -1,13 +1,22 @@
-# Mergify for the cost-accounting release train (issue #764, issue #791).
+# Mergify merges every pull request into dev, master, ca-canary, and
+# ca-release (issue #764, issue #791, and the bypass merge of PR #794).
 #
-# Mergify merges only into ca-canary. A maintainer merges the promotion from
-# ca-canary into ca-release (`just ca-promote`). The GitHub merge queue stays on
-# dev and master, and no rule here matches those bases.
+# The mergify-only ruleset restricts updates of dev and master to the Mergify
+# app and the CI automation app, so no person merges into them, admins
+# included. An org admin who must merge by hand changes that ruleset, and the
+# audit log records the change. docs/ci.md describes the rulesets.
 #
-#   ca-item   a ca/<item> pull request into ca-canary. Mergify queues it by
-#             itself when it has the ci-heavy label, an approving review, and
-#             the ca-soaked label. The ca-soak label starts its 22-hour soak.
-#             A passed soak adds ca-soaked and posts Soak Gate (22h) on the
+# Mergify adds ci-heavy to an approved pull request of this repository, so the
+# heavy pipeline runs on its head. A queue merges only after the Integration
+# gates succeed. check-success does not accept a skipped check, so a pull
+# request without a heavy run cannot merge. Each queue checks one pull request
+# at a time on its own head, after Mergify merges the current base into it.
+#
+#   dev       a pull request into dev, including the master back-merge.
+#   master    a promotion (promote/<stamp>) or a hotfix/ branch into master.
+#   ca-item   a ca/<item> pull request into ca-canary. It also needs the
+#             ca-soaked label. The ca-soak label starts its 22-hour soak. A
+#             passed soak adds ca-soaked and posts Soak Gate (22h) on the
 #             soaked commit. The label stays when Mergify merges the base into
 #             the pull request, and a push by the author removes it. A commit
 #             status cannot do this: Mergify dequeues a pull request whose
@@ -19,16 +28,88 @@
 #             checks only and no review, so it accepts only pull requests
 #             that the promotion app opened. CA Daily Provenance verifies the
 #             release source and each clean base merge with trusted code. A
-#             back-merge opened by hand with just ca-backmerge is merged by a
-#             maintainer. A push to ca-canary runs the heavy pipeline after
-#             the merge.
+#             push to ca-canary runs the heavy pipeline after the merge.
+#   ca-release  a promotion (promote/ca-release-<stamp>) into ca-release.
 #
-# Every merge is a merge commit, so ca-canary keeps the dev and ca-release
-# history, and ca-release keeps the ca-canary history. Each queue merges one
-# pull request at a time and checks the pull request itself, so the ci.yml
-# checks of the pull request are the merge evidence.
+# A pull request from a fork gets no heavy run. A maintainer pushes its head
+# unchanged to a branch of this repository and opens a pull request from that
+# branch with the body line "Imports fork pull request #<N>." Commit Policy
+# then exempts the contributor commits that the fork pull request lists
+# (commit-policy-exemptions.sh).
+#
+# Every merge is a merge commit, so each branch keeps the history of the
+# branches that it merges. The merge_conditions of the dev and master queues
+# list the required checks of the devProtect and masterProtect rulesets.
+# test-mergify-config.sh keeps the lists and these rules in step.
 
 queue_rules:
+  - name: dev
+    batch_size: 1
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=dev
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - -head~=^(dev|master|ca-canary|ca-release)$
+      - -draft
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+    merge_conditions:
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
+
+  - name: master
+    batch_size: 1
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=master
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - head~=^(promote/[0-9]{8}-[0-9]{6}|hotfix/.+)$
+      - -draft
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+    merge_conditions:
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test Gate (casper)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
+
   - name: ca-item
     batch_size: 1
     merge_method: merge
@@ -36,6 +117,7 @@ queue_rules:
     queue_conditions:
       - base=ca-canary
       - head~=^ca/
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - label=ci-heavy
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
@@ -78,7 +160,68 @@ queue_rules:
       - check-success=Commit Policy
       - check-success=Promotion Source
 
+  - name: ca-release
+    batch_size: 1
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=ca-release
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - head~=^promote/ca-release-[0-9]{8}-[0-9]{6}$
+      - -draft
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+    merge_conditions:
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
+
 pull_request_rules:
+  - name: Run the heavy pipeline for an approved pull request
+    conditions:
+      - base~=^(dev|master|ca-canary|ca-release)$
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - -head~=^backmerge/ca-release-
+      - -draft
+      - -label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+    actions:
+      label:
+        add:
+          - ci-heavy
+
+  - name: Queue a pull request into dev
+    conditions:
+      - base=dev
+    actions:
+      queue:
+        name: dev
+
+  - name: Queue a pull request into master
+    conditions:
+      - base=master
+    actions:
+      queue:
+        name: master
+
   - name: Queue a release train item
     conditions:
       - base=ca-canary
@@ -95,3 +238,10 @@ pull_request_rules:
     actions:
       queue:
         name: ca-daily
+
+  - name: Queue a release train promotion
+    conditions:
+      - base=ca-release
+    actions:
+      queue:
+        name: ca-release

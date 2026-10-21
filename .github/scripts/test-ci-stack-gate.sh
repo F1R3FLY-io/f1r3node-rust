@@ -25,6 +25,7 @@ emit() {
 }
 case "$*" in
   *"${FAKE_FAIL_ON:-no-failure}"*) printf 'simulated API failure: %s\n' "$*" >&2; exit 1 ;;
+  *"actions/workflows/ci.yml/runs"*"event=merge_group"*) emit "${FAKE_MERGE_GROUP_RUNS:-$FAKE_WORKFLOW_RUNS}" ;;
   *"actions/workflows/ci.yml/runs"*) emit "$FAKE_WORKFLOW_RUNS" ;;
   *"actions/runs/${FAKE_NEWEST_RUN:-none}/jobs"*) emit "$FAKE_NEWEST_JOBS" ;;
   *"actions/runs/"*"/jobs"*) emit "$FAKE_OTHER_JOBS" ;;
@@ -32,7 +33,7 @@ case "$*" in
   *"git/commits/"*) emit "{\"tree\": {\"sha\": \"$FAKE_HEAD_TREE\"}}" ;;
   *"pulls/648"*) emit "{\"head\": {\"sha\": \"$FAKE_PULL_HEAD\"}}" ;;
   *"pulls/311"*) cat "$FAKE_PULL" ;;
-  *"commits/"*) cat "$FAKE_COMMIT" ;;
+  *"commits/"*) emit "$(cat "$FAKE_COMMIT")" ;;
   *"compare/"*) printf '%s\n' "${FAKE_RELATIONSHIP:-ahead}" ;;
   *"pulls"*) printf '%s\n' "$FAKE_CHILDREN" ;;
   *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
@@ -75,6 +76,7 @@ run_case() {
     MERGE_GROUP_BASE_SHA="${MERGE_GROUP_BASE_SHA:-}" \
     FAKE_FAIL_ON="${FAKE_FAIL_ON:-no-failure}" \
     FAKE_WORKFLOW_RUNS="${FAKE_WORKFLOW_RUNS:-}" \
+    FAKE_MERGE_GROUP_RUNS="${FAKE_MERGE_GROUP_RUNS:-}" \
     FAKE_NEWEST_RUN="${FAKE_NEWEST_RUN:-none}" \
     FAKE_NEWEST_JOBS="${FAKE_NEWEST_JOBS:-}" \
     FAKE_OTHER_JOBS="${FAKE_OTHER_JOBS:-}" \
@@ -84,7 +86,7 @@ run_case() {
     FAKE_PULL_HEAD="${FAKE_PULL_HEAD:-}" \
     FAKE_CHILDREN="$children" \
     FAKE_PULL="$fake_pull" \
-    FAKE_COMMIT="$TMP/commit.json" \
+    FAKE_COMMIT="${FAKE_COMMIT_FILE:-$TMP/commit.json}" \
     FAKE_RELATIONSHIP="$relationship" \
     bash "$TMP/gate.sh"
   actual="$(grep '^run_heavy=' "$output" | cut -d= -f2)"
@@ -241,15 +243,15 @@ push_case() {
     FAKE_NEWEST_JOBS="${NEWEST:-$(jobs_json success success)}" \
     FAKE_OTHER_JOBS="${OTHER:-$(jobs_json failure failure)}" \
     FAKE_FAIL_ON="${FAIL_ON:-no-failure}" \
-    run_case "$label" push "$ref" '' '' '' '[]' '' '' true
+    run_case "$label" push "$ref" '' '' '' '[]' '' '' true "$TMP/pull.json" "${RELATIONSHIP:-ahead}"
   actual="$(grep '^oci_tests=' "$TMP/output-$label" | cut -d= -f2)"
   [ "$actual" = "$expected" ] || {
     printf '%s: expected oci_tests=%s, got %s\n' "$label" "$expected" "$actual" >&2
     return 1
   }
   if [ "$expected" = false ]; then
-    [ "$(grep '^reused_merge_group_run=' "$TMP/output-$label" | cut -d= -f2)" = 20 ] || {
-      printf '%s: the reused merge group run is not recorded\n' "$label" >&2
+    [ "$(grep '^reused_heavy_run=' "$TMP/output-$label" | cut -d= -f2)" = 20 ] || {
+      printf '%s: the reused heavy run is not recorded\n' "$label" >&2
       return 1
     }
   fi
@@ -268,6 +270,34 @@ RUNS='{"workflow_runs": [{"id": 20, "path": ".github/workflows/other.yml"}]}' pu
 FAIL_ON=workflows/ci.yml/runs push_case dev-push-runs-api-error refs/heads/dev true
 FAIL_ON=/jobs push_case dev-push-jobs-api-error refs/heads/dev true
 
+# Mergify merges the pull request head into dev with a merge commit. Without a
+# merge group run, the dev push reuses the heavy run of that head when the
+# trees are equal.
+jq -n --arg base "$MERGE_BASE" --arg head "$HEAD" '{parents: [{sha: $base}, {sha: $head}]}' >"$TMP/two-parents.json"
+jq -n --arg base "$MERGE_BASE" '{parents: [{sha: $base}]}' >"$TMP/one-parent.json"
+jq -n --arg base "$MERGE_BASE" --arg head "$HEAD" '{parents: [{sha: $base}, {sha: $head}, {sha: $head}]}' >"$TMP/three-parents.json"
+queued_case() {
+  FAKE_MERGE_GROUP_RUNS='{"workflow_runs": []}' \
+    MERGE_GROUP_HEAD_SHA="$SHA" \
+    FAKE_GROUP_TREE="$TREE" \
+    FAKE_HEAD_TREE="${HEAD_TREE:-$TREE}" \
+    FAKE_COMMIT_FILE="${COMMIT_FILE:-$TMP/two-parents.json}" \
+    push_case "$@"
+}
+queued_case dev-push-reuses-queued-pull-request refs/heads/dev false
+queued_case master-push-ignores-queued-pull-request refs/heads/master true
+HEAD_TREE="$OTHER_TREE" queued_case dev-push-queued-tree-differs refs/heads/dev true
+RELATIONSHIP=behind queued_case dev-push-queued-base-not-contained refs/heads/dev true
+RELATIONSHIP=diverged queued_case dev-push-queued-base-diverged refs/heads/dev true
+COMMIT_FILE="$TMP/one-parent.json" queued_case dev-push-queued-one-parent refs/heads/dev true
+COMMIT_FILE="$TMP/three-parents.json" queued_case dev-push-queued-octopus refs/heads/dev true
+NEWEST="$(jobs_json skipped skipped)" queued_case dev-push-queued-heavy-skipped refs/heads/dev true
+NEWEST="$(jobs_json success failure)" queued_case dev-push-queued-arm64-failed refs/heads/dev true
+RUNS='{"workflow_runs": []}' queued_case dev-push-queued-no-run refs/heads/dev true
+FAIL_ON=repository/commits/ queued_case dev-push-queued-commit-api-error refs/heads/dev true
+FAIL_ON=compare/ queued_case dev-push-queued-compare-api-error refs/heads/dev true
+FAIL_ON=git/commits queued_case dev-push-queued-tree-api-error refs/heads/dev true
+
 for job in integration_tests_amd64 integration_tests_arm64; do
   ruby -ryaml -e '
     step = YAML.load_file(ARGV[0]).dig("jobs", ARGV[1], "steps").first
@@ -275,7 +305,7 @@ for job in integration_tests_amd64 integration_tests_arm64; do
   ' "$ROOT/.github/workflows/ci.yml" "$job" "$TMP/$job.sh"
   gate_case() {
     local label="$1" run="$2" result="$3" expected="$4" status=0
-    OCI_TESTS=false REUSED_MERGE_GROUP_RUN="$run" PIPELINE_RESULT="$result" \
+    OCI_TESTS=false REUSED_HEAVY_RUN="$run" PIPELINE_RESULT="$result" \
       bash -e "$TMP/$job.sh" >"$TMP/$job-$label.out" 2>&1 || status=$?
     [ "$status" = "$expected" ] || {
       printf '%s %s: expected exit %s, got %s\n' "$job" "$label" "$expected" "$status" >&2
