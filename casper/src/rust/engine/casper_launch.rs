@@ -93,6 +93,24 @@ use crate::rust::blocks::block_processor::{
     mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
 };
 
+pub(crate) fn ensure_compatible_approved_block(
+    approved_block: &ApprovedBlock,
+) -> Result<(), CasperError> {
+    let block = &approved_block.candidate.block;
+    if matches!(
+        crate::rust::validate::Validate::block_hash(block),
+        rspace_plus_plus::rspace::history::Either::Left(_)
+    ) {
+        return Err(CasperError::RuntimeError(format!(
+            "The stored approved block {} does not match its block hash under this build. \
+             An incompatible build created the data directory. Stop all nodes, remove their \
+             data directories, and start a new network from a new genesis.",
+            PrettyPrinter::build_string_bytes(&block.block_hash)
+        )));
+    }
+    Ok(())
+}
+
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
     /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
@@ -887,6 +905,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
 
         let (msg, action_result) = match approved_block_opt {
             Some(approved_block) => {
+                ensure_compatible_approved_block(&approved_block)?;
                 let msg = "Approved block found, reconnecting to existing network";
                 let action_result = self
                     .connect_to_existing_network(approved_block, self.disable_state_exporter)

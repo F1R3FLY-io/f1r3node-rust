@@ -169,6 +169,21 @@ Finally: `create_checkpoint()` produces the post-state hash.
 
 The proposer validates its own block before broadcasting. If pre/post-state hashes don't match expectations, the block is rejected as `BlockException` (not panicked).
 
+### Block Hash Compatibility
+
+The fix for issue #679 changed the block hash rule. The old rule and the new rule give different hashes for the same block, so builds before and after the fix are not compatible:
+
+- A node of the new build refuses blocks, approved blocks, and genesis blocks that an older build hashed.
+- A node of an older build refuses blocks of the new build as `InvalidBlockHash`.
+- A node of the new build does not start on a data directory that an older build created. It stops with an error that names the stored approved block.
+
+There is no compatibility setting. To upgrade a network to the new build:
+
+1. Stop all nodes.
+2. Remove the data directory of each node.
+3. Install the new build on all nodes.
+4. Start a new network from a new genesis ceremony.
+
 ---
 
 ## 3. Block Propagation

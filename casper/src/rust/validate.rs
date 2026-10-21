@@ -163,6 +163,16 @@ impl Validate {
     }
 
     pub fn approved_block(approved_block: &ApprovedBlock) -> bool {
+        if matches!(
+            Self::block_hash(&approved_block.candidate.block),
+            Either::Left(_)
+        ) {
+            tracing::warn!(
+                "Received invalid ApprovedBlock message: the candidate block does not match its block hash."
+            );
+            return false;
+        }
+
         let candidate_bytes_digest =
             Blake2b256::hash(approved_block.clone().candidate.to_proto().encode_to_vec());
         let required_signatures = approved_block.candidate.required_sigs;
@@ -2142,5 +2152,59 @@ mod justification_order_tests {
 
         block.justifications = vec![justification(1), justification(1)];
         assert!(!Validate::format_of_fields(&block));
+    }
+}
+
+#[cfg(test)]
+mod previous_hash_rule_tests {
+    use models::rust::block_implicits::get_random_block_default;
+    use models::rust::casper::protocol::casper_message::{ApprovedBlock, ApprovedBlockCandidate};
+    use prost::Message;
+
+    use super::*;
+    use crate::rust::engine::casper_launch::ensure_compatible_approved_block;
+
+    fn previous_rule_hash(block: &BlockMessage) -> BlockHash {
+        let bytes: Vec<u8> = block
+            .header
+            .to_proto()
+            .encode_to_vec()
+            .into_iter()
+            .chain(block.body.to_proto().encode_to_vec())
+            .chain(block.sender.clone())
+            .chain(block.sig_algorithm.as_bytes().to_vec())
+            .chain(block.seq_num.to_le_bytes())
+            .chain(block.shard_id.as_bytes().to_vec())
+            .chain(block.extra_bytes.clone())
+            .collect();
+        Blake2b256::hash(bytes).into()
+    }
+
+    fn approved(block: BlockMessage) -> ApprovedBlock {
+        ApprovedBlock {
+            candidate: ApprovedBlockCandidate {
+                block,
+                required_sigs: 0,
+            },
+            sigs: vec![],
+            floor_seed: None,
+        }
+    }
+
+    #[test]
+    fn blocks_hashed_by_the_previous_rule_are_refused() {
+        let mut block = get_random_block_default();
+        block.block_hash = previous_rule_hash(&block);
+
+        assert!(matches!(
+            Validate::block_hash(&block),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockHash))
+        ));
+        assert!(!Validate::approved_block(&approved(block.clone())));
+        assert!(ensure_compatible_approved_block(&approved(block.clone())).is_err());
+
+        block.block_hash = proto_util::hash_block(&block);
+        assert!(Validate::approved_block(&approved(block.clone())));
+        assert!(ensure_compatible_approved_block(&approved(block)).is_ok());
     }
 }
