@@ -200,21 +200,27 @@ impl Substitute {
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
         exprs.into_iter().try_fold(Par::default(), |par, expr| {
-            match unwrap_option_safe(expr.clone().expr_instance)? {
+            match unwrap_option_safe(expr.expr_instance)? {
                 ExprInstance::EVarBody(e) => match self.maybe_substitute_evar(e, depth, env)? {
-                    Either::Left(_e) => Ok(prepend_expr(
+                    Either::Left(e) => Ok(prepend_expr(
                         par,
                         Expr {
-                            expr_instance: Some(ExprInstance::EVarBody(_e)),
+                            expr_instance: Some(ExprInstance::EVarBody(e)),
                         },
                         depth,
                     )),
-                    Either::Right(_par) => Ok(concatenate_pars(_par, par)),
+                    Either::Right(substituted) => Ok(concatenate_pars(substituted, par)),
                 },
-                _ => match self.substitute_no_sort(expr, depth, env) {
-                    Ok(e) => Ok(prepend_expr(par, e, depth)),
-                    Err(e) => Err(e),
-                },
+                instance => {
+                    let substituted = self.substitute_no_sort(
+                        Expr {
+                            expr_instance: Some(instance),
+                        },
+                        depth,
+                        env,
+                    )?;
+                    Ok(prepend_expr(par, substituted, depth))
+                }
             }
         })
     }
