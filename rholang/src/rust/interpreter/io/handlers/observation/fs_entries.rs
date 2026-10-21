@@ -57,12 +57,12 @@
 // dup to `fdopendir`.  Belt-and-suspenders against fdopendir
 // implementations that don't preserve CLOEXEC atomically.
 //
-// # Shape-A root gating (deferred)
+// # Shape-A root gating
 //
-// Uses the ungated `resolve_or_identity` — same deferral as
-// `fs_exists` / `fs_stat`.  BACKLOG: migrate to
-// `resolve_or_identity_gated_for_consensus` with the coordinated
-// observation + path-mutation migration.
+// Routes through `resolve_or_identity_gated_for_consensus` so
+// Consensus-mode calls on unregistered `/@bundle/<X>` logical
+// roots refuse upfront with `FSERR_UNSUPPORTED`.  Oracular calls
+// pass through to identity.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -148,12 +148,19 @@ impl FsHandler for FsEntriesHandler {
         args: FsEntriesArgs,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
-            // BACKLOG: migrate to resolve_or_identity_gated_for_consensus
-            // (coordinated with fs_exists / fs_stat / path-mutation
-            // handlers).
+            // Shape-A gating: Consensus-mode call on an unregistered
+            // `/@bundle/<X>` short-circuits with FSERR_UNSUPPORTED.
+            // Wrapped in HandlerReply::ok to match this handler's
+            // "always ok, Par carries error semantics" discipline.
             let logical = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::ok(err(c, m)),
+            };
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {
