@@ -32,7 +32,10 @@
 #   ca-release  a promotion (promote/ca-release-<stamp>) into ca-release.
 #
 # A pull request from a fork gets no heavy run. A maintainer pushes its head
-# to a branch of this repository and opens the pull request from that branch.
+# unchanged to a branch of this repository and opens a pull request from that
+# branch with the body line "Imports fork pull request #<N>." Commit Policy
+# then exempts the contributor commits that the fork pull request lists
+# (commit-policy-exemptions.sh).
 #
 # Every merge is a merge commit, so each branch keeps the history of the
 # branches that it merges. The merge_conditions of the dev and master queues

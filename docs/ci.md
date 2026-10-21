@@ -53,6 +53,8 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 
 The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only. It runs the commit identity checker and reads the denied identities list from the base commit, so a pull request cannot weaken its own check. Before these files reach the base branch, the step uses the copies in the pull request.
 
+`.github/scripts/commit-policy-exemptions.sh` lists the exempt commits: the commits of a human pull request author, and the contributor commits of an imported fork pull request. The step runs the base copy of that script.
+
 ### Script Tests
 
 The job runs 21 script tests:
@@ -245,7 +247,13 @@ To merge a `ca/<item>` pull request:
 
 Mergify then adds `ci-heavy` and queues the pull request.
 
-A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head to a branch of this repository and opens the pull request from that branch. The commit identities of the contributor stay on the commits.
+A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with this body line:
+
+```
+Imports fork pull request #<N>.
+```
+
+Commit Policy then exempts each commit that the fork pull request lists and attributes to its author. The commit must also be in the new pull request. A rebase or an amended commit gets a new SHA, so it loses the exemption.
 
 `test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and the `merge_conditions` of `.mergify.yml` in the same pull request.
 

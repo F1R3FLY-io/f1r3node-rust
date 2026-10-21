@@ -11,7 +11,8 @@
 #   check-dockerfile-workspace.sh [CARGO_TOML [DOCKERFILE]]
 #
 # A COPY of a parent directory covers a nested member, for example rholang/
-# covers rholang/fileio-test-fixtures.
+# covers rholang/fileio-test-fixtures. Only a COPY into the stage that runs
+# cargo fetch, before that command, counts.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -34,13 +35,18 @@ members="$(awk '
 ' "$cargo_toml")"
 [ -n "$members" ] || { echo "ERROR: $cargo_toml lists no workspace members." >&2; exit 2; }
 
-# The source directories of the COPY lines without --from, as dir/ without the
-# trailing slash.
+# The source directories of the COPY lines without --from in the stage that
+# runs cargo fetch, before that command, as dir without the trailing slash. A
+# COPY in another stage or after cargo fetch cannot supply the manifests that
+# cargo fetch reads.
 copied="$(awk '
-	$1 == "COPY" && $2 !~ /^--from=/ {
-		for (i = 2; i < NF; i++) if ($i !~ /^--/) { src = $i; sub(/\/$/, "", src); print src }
+	toupper($1) == "FROM" { n = 0; next }
+	$1 !~ /^#/ && /cargo fetch/ { found = 1; for (i = 1; i <= n; i++) print dirs[i]; exit }
+	toupper($1) == "COPY" && $2 !~ /^--from=/ {
+		for (i = 2; i < NF; i++) if ($i !~ /^--/) { src = $i; sub(/\/$/, "", src); dirs[++n] = src }
 	}
-' "$dockerfile")"
+	END { if (!found) exit 3 }
+' "$dockerfile")" || { echo "ERROR: $dockerfile runs no cargo fetch, so the builder stage is unknown." >&2; exit 2; }
 
 missing=()
 while IFS= read -r member; do
@@ -56,7 +62,7 @@ done <<<"$members"
 
 if [ "${#missing[@]}" -gt 0 ]; then
 	for member in "${missing[@]}"; do
-		echo "::error file=node/Dockerfile::the workspace member $member has no COPY in node/Dockerfile. Add: COPY $member/ ./$member/"
+		echo "::error file=node/Dockerfile::the workspace member $member has no COPY in the cargo fetch stage of node/Dockerfile before cargo fetch. Add: COPY $member/ ./$member/"
 	done
 	exit 1
 fi

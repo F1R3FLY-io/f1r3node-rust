@@ -30,7 +30,12 @@ COPY casper/ ./casper/
 COPY rspace++/ ./rspace++/
 COPY rholang/ ./rholang/
 COPY scripts/tool/ ./scripts/tool/
+# cargo fetch reads every member manifest.
+RUN xx-cargo --setup-target-triple && \
+    cargo fetch --locked
+COPY late/ ./late/
 FROM debian
+COPY runtime/ ./runtime/
 COPY --from=builder --chmod=755 /build/node_binary /opt/docker/bin/node
 DOCKER
 
@@ -66,6 +71,22 @@ check "$TMP/Cargo.toml" "$TMP/from.Dockerfile"
 [ "$status" -eq 1 ] && [[ "$out" == *"casper has no COPY"* ]] ||
 	fail "a COPY from another stage covered a member: $out"
 
+printf '[workspace]\nmembers = ["casper", "runtime"]\n' >"$TMP/runtime.toml"
+check "$TMP/runtime.toml" "$TMP/Dockerfile"
+[ "$status" -eq 1 ] && [[ "$out" == *"runtime has no COPY"* ]] ||
+	fail "a COPY in the runtime stage covered a member: $out"
+printf '[workspace]\nmembers = ["casper", "late"]\n' >"$TMP/late.toml"
+check "$TMP/late.toml" "$TMP/Dockerfile"
+[ "$status" -eq 1 ] && [[ "$out" == *"late has no COPY"* ]] ||
+	fail "a COPY after cargo fetch covered a member: $out"
+grep -v 'cargo fetch --locked' "$TMP/Dockerfile" | sed 's/ && \\$//' >"$TMP/no-fetch.Dockerfile"
+check "$TMP/Cargo.toml" "$TMP/no-fetch.Dockerfile"
+[ "$status" -eq 2 ] || fail "a Dockerfile without cargo fetch passed: $out"
+{ printf 'FROM rust AS early\nCOPY scripts/tool/ ./scripts/tool/\n'; grep -v '^COPY scripts/tool/' "$TMP/Dockerfile"; } >"$TMP/early.Dockerfile"
+check "$TMP/Cargo.toml" "$TMP/early.Dockerfile"
+[ "$status" -eq 1 ] && [[ "$out" == *"scripts/tool has no COPY"* ]] ||
+	fail "a COPY in an earlier stage covered a member: $out"
+
 printf '[workspace]\nresolver = "2"\n' >"$TMP/empty.toml"
 check "$TMP/empty.toml" "$TMP/Dockerfile"
 [ "$status" -eq 2 ] || fail "a manifest without members passed: $out"
@@ -87,4 +108,4 @@ ruby -ryaml -e '
     steps.any? { |s| s["run"].to_s.strip == "bash .github/scripts/check-dockerfile-workspace.sh" }
 ' "$ROOT/.github/workflows/ci.yml" || fail "ci.yml wiring"
 
-printf 'PASS: every workspace member needs a COPY of its directory or a parent directory into node/Dockerfile. A COPY from another stage, or of a directory whose name is only a prefix of the member name, does not count. The repository workspace passes, and Static Checks runs the check.\n'
+printf 'PASS: every workspace member needs a COPY of its directory or a parent directory into node/Dockerfile. A COPY from another stage, into another stage, after cargo fetch, or of a directory whose name is only a prefix of the member name does not count. A Dockerfile without cargo fetch fails. The repository workspace passes, and Static Checks runs the check.\n'

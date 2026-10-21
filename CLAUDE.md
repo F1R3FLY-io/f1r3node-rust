@@ -191,6 +191,7 @@ Both settings take effect at the next session start.
 - The CI `Commit Policy` job checks every commit author and co-author. A pull request cannot ratify its own identities.
 - The `.githooks/commit-msg` hook checks co-authors only, so a first-time contributor can commit locally. Both reject `Claude-Session` trailers.
 - An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance. Only a human account gets this exemption. A bot or app account does not.
+- A maintainer import of a fork pull request keeps that exemption. Commit Policy exempts each commit that the fork pull request lists and attributes to its author. `.github/scripts/commit-policy-exemptions.sh` holds the rule.
 - `.github/denied-identities.txt` lists identities that are always rejected, even when the history ratifies them. It blocks `@anthropic.com`. CI reads it from the base branch.
 - Turn off the co-author attribution setting in your Claude Code `settings.json`.
 
@@ -216,7 +217,7 @@ Both settings take effect at the next session start.
   - `node/src/main/resources/defaults.conf`
   - `node/Dockerfile` or the files in `docker/`
 - Add the label once, after the last planned push. A push, a label change, or a `gh pr edit` cancels a running heavy run.
-- A pull request from a fork gets no heavy run. A maintainer pushes the fork head to a branch of this repository and opens the pull request from that branch.
+- A pull request from a fork gets no heavy run. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with the body line `Imports fork pull request #<N>.`
 - `docs/ci.md` describes the jobs, the required checks, the Mergify queues, and the merge rulesets.
 
 ## Relationship to f1r3node
