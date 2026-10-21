@@ -343,7 +343,11 @@ fi
 # A failed log probe during work is a breach only when the next probe also
 # fails. Admission checks before work still refuse on one failure.
 LOG_PROBE_FAILURES_FOR_BREACH=2
-NODE_LOG_DIR=/var/lib/rnode/logs
+NODE_LOG_DIR="${SOAK_NODE_LOG_DIR:-/var/lib/rnode/logs}"
+if ! [[ "$NODE_LOG_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+	printf 'SOAK_NODE_LOG_DIR must be an absolute path of letters, digits, ".", "_", "-", and "/"\n' >&2
+	exit 2
+fi
 # Where harness sessions leave their compose and genesis files (the
 # `test-*` sweep below), and where the runner keeps _diag and _work. Both are
 # overridable so the driver test can sweep and measure a private tree instead
@@ -366,6 +370,11 @@ if ! [[ "$DISK_HYGIENE_SECONDS" =~ ^([1-9]|[12][0-9]|30)$ ]]; then
 	exit 2
 fi
 DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
+DISK_USAGE_RECORD_SECONDS="${SOAK_DISK_USAGE_RECORD_SECONDS:-60}"
+if ! [[ "$DISK_USAGE_RECORD_SECONDS" =~ ^[1-9][0-9]{0,2}$ ]]; then
+	printf 'SOAK_DISK_USAGE_RECORD_SECONDS must be an integer from 1 through 999\n' >&2
+	exit 2
+fi
 if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
 	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
 	exit 2
@@ -544,6 +553,11 @@ log_budget_sample() {
 		container_mb=-
 		node_mb=-
 		if [ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ]; then
+			if [ -z "$path" ]; then
+				log_container_running "$cid" || continue
+				printf 'log probe unavailable: container log of %s (the logging driver writes no log file)\n' "${cid:0:12}" >&2
+				return 1
+			fi
 			if [[ "$path" != /* ]] || ! total="$(log_file_bytes "$path")"; then
 				log_container_running "$cid" || continue
 				printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
@@ -570,7 +584,7 @@ log_budget_sample() {
 				return 1
 			}
 			exec_status=0
-			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>"$exec_err_file")" ||
+			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" </dev/null 2>"$exec_err_file")" ||
 				exec_status=$?
 			exec_err="$(awk 'NF { print; exit }' "$exec_err_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
 			rm -f "$exec_err_file"
@@ -840,6 +854,49 @@ disk_diagnostics_bounded() {
 
 disk_usage_snapshot() {
 	disk_diagnostics_bounded disk_usage_snapshot_data
+}
+
+# One row per component: time, label, component, and MiB. The df rows give
+# the total, and the roots and docker types say which part grew between two
+# labels. Docker reports decimal units, which become MiB here.
+disk_usage_record_rows() {
+	local label="$1" now root mb out
+	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	df -Pm "$OUTPUT_DIR" 2>/dev/null | awk -v t="$now" -v l="$label" \
+		'NR == 2 { printf "%s\t%s\tdf_used\t%s\n%s\t%s\tdf_avail\t%s\n", t, l, $3, t, l, $4 }'
+	# A command that exits nonzero gives no size, even when it printed a
+	# partial one: du prints a partial total when it cannot read a subtree.
+	while IFS= read -r root; do
+		[ -d "$root" ] || continue
+		mb='?'
+		if out="$(bounded 20 du -sm "$root" 2>/dev/null)"; then
+			out="${out%%$'\t'*}"
+			[[ "$out" =~ ^[0-9]+$ ]] && mb="$out"
+		fi
+		printf '%s\t%s\t%s\t%s\n' "$now" "$label" "$root" "$mb"
+	done < <(disk_usage_roots)
+	if command -v docker >/dev/null 2>&1 &&
+		out="$(bounded 20 docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null)"; then
+		printf '%s\n' "$out" |
+			awk -F '\t' -v t="$now" -v l="$label" '
+				NF == 2 && match($2, /^[0-9.]+/) {
+					value = substr($2, 1, RLENGTH); unit = substr($2, RLENGTH + 1)
+					factor = unit == "kB" ? 1e3 : unit == "MB" ? 1e6 : unit == "GB" ? 1e9 : unit == "TB" ? 1e12 : 1
+					type = $1; gsub(/ /, "_", type)
+					printf "%s\t%s\tdocker:%s\t%d\n", t, l, type, value * factor / 1048576
+				}'
+	fi
+}
+
+record_disk_usage() {
+	local definitions file="$OUTPUT_DIR/disk-usage.tsv"
+	[ -s "$file" ] || printf 'time\tlabel\tcomponent\tmb\n' >"$file" 2>/dev/null || return 0
+	definitions="$(
+		declare -p OUTPUT_DIR HARNESS_TELEMETRY_DIRS SOAK_TMP_ROOT SOAK_RUNNER_ROOT
+		declare -f bounded disk_usage_roots disk_usage_record_rows
+	)"
+	SOAK_DISK_USAGE_RECORD=1 timeout --signal=TERM --kill-after=1 "$DISK_USAGE_RECORD_SECONDS" bash -c "$definitions"$'\n''disk_usage_record_rows "$1"' bash "$1" \
+		>>"$file" 2>/dev/null || true
 }
 
 disk_guardian_diagnostics() {
@@ -1357,6 +1414,7 @@ run_bench_segment() {
 			publish_record -t "$OUTPUT_DIR/protection-breach.txt" printf 'The disk sample does not permit benchmark admission. The driver refused work.\n'
 			publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: benchmark disk sample %s MiB, required %s MiB\n' \
 				"${disk_mb:-unavailable}" "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))"
+			disk_usage_snapshot >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
 			return 1
 		fi
 	fi
@@ -1454,6 +1512,7 @@ run_bench_segment() {
 	fi
 	INFLIGHT_BENCHMARK=0
 	persist_soak_state || exit 2
+	record_disk_usage "bench-$BENCH_SEGMENTS"
 }
 
 mkdir -p "$OUTPUT_DIR"
@@ -1708,6 +1767,11 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		container_log_over=0
 		node_log_over=0
 		log_probe_failures=0
+		log_probe_error_file=""
+		if log_budgets_enabled; then
+			log_probe_error_file="$(mktemp "${TMPDIR:-/tmp}/soak-log-probe-error.XXXXXXXX" 2>/dev/null)" || log_probe_error_file=""
+			[ -z "$log_probe_error_file" ] || trap 'rm -f "$log_probe_error_file"' EXIT
+		fi
 		# The disk floor rule for one log probe: a sample over the budget is a
 		# strike, and three consecutive strikes or one sample at two times the
 		# budget is a breach. The comparison avoids doubling a 64-bit budget.
@@ -1768,8 +1832,9 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 				# through docker exec at test teardown, and a probe exec can fail
 				# in that window (soak 38076682321). Two consecutive failed
 				# probes are a breach.
-				if ! log_sample="$(log_budget_probe 2>"$OUTPUT_DIR/.log-probe-error")"; then
-					log_reason="$(head -1 "$OUTPUT_DIR/.log-probe-error" 2>/dev/null)"
+				if ! log_sample="$(log_budget_probe 2>"${log_probe_error_file:-/dev/null}")"; then
+					log_reason=""
+					[ -z "$log_probe_error_file" ] || log_reason="$(head -1 "$log_probe_error_file" 2>/dev/null)"
 					log_probe_failures=$((log_probe_failures + 1))
 					if [ "$log_probe_failures" -lt "$LOG_PROBE_FAILURES_FOR_BREACH" ]; then
 						printf 'log guardian: probe unavailable (%s); consecutive failed probes %s of %s\n' \
@@ -1837,6 +1902,8 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" \
 		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
 fi
+
+record_disk_usage "segment-$SEGMENT-start"
 
 # Only on the first segment: this is the run's opening baseline measurement,
 # and repeating it at every resume would add segments the cadence never asked
@@ -2243,6 +2310,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	# Keep this after the metrics, the failure-evidence copy, and the breach
 	# checks above. Moving it earlier deletes the evidence they read.
 	reset_harness_archives
+	record_disk_usage "iteration-$ITERATIONS-$PROVIDER"
 
 	if target_ref_moved; then
 		EARLY_EXIT_REASON="target_advanced"
@@ -2257,6 +2325,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 
 done
+record_disk_usage "soak-end"
 
 # A breach during the final iteration (or one that still exited 0) ends the
 # loop by deadline without passing the top-of-loop check, which would let the
