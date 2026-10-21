@@ -353,31 +353,27 @@ impl DebruijnInterpreter {
         .filter(|vec| !vec.is_empty())
         .flatten()
         .collect();
-        fn split(
-            id: i32,
-            terms: &Vec<GeneratedMessage>,
-            rand: Blake2b512Random,
-        ) -> Blake2b512Random {
-            if terms.len() == 1 {
+        fn split(id: i32, term_count: usize, rand: Blake2b512Random) -> Blake2b512Random {
+            if term_count == 1 {
                 rand
-            } else if terms.len() > 256 {
+            } else if term_count > 256 {
                 rand.split_short(id.try_into().unwrap())
             } else {
                 rand.split_byte(id.try_into().unwrap())
             }
         }
 
+        let term_count = terms.len();
         let term_split_limit = i16::MAX;
-        if terms.len() > term_split_limit.try_into().unwrap() {
+        if term_count > term_split_limit.try_into().unwrap() {
             Err(InterpreterError::ReduceError(format!(
                 "The number of terms in the Par is {}, which exceeds the limit of {}",
-                terms.len(),
-                term_split_limit
+                term_count, term_split_limit
             )))
         } else {
             metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
-                .increment(terms.len() as u64);
+                .increment(term_count as u64);
 
             if let [term] = terms.as_slice() {
                 let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
@@ -399,16 +395,15 @@ impl DebruijnInterpreter {
                     >,
                 >,
             > = terms
-                .iter()
+                .into_iter()
                 .enumerate()
                 .map(|(index, term)| {
                     let self_clone = self.clone();
-                    let term_clone = term.clone();
                     let env_clone = env.clone();
-                    let rand_split = split(index.try_into().unwrap(), &terms, rand.clone());
+                    let rand_split = split(index.try_into().unwrap(), term_count, rand.clone());
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(&term_clone, &env_clone, rand_split)
+                            .generated_message_eval(&term, &env_clone, rand_split)
                             .await
                     })
                         as Pin<
@@ -1202,16 +1197,12 @@ impl DebruijnInterpreter {
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
-                        let res = self.eval_var(&e.clone().v.unwrap(), env)?;
+                        let var = e.v.as_ref().expect("an EVar always holds a variable");
+                        let res = self.eval_var(var, env)?;
                         self.eval(res, env, rand).await
                     }
-                    ExprInstance::EMethodBody(e) => {
-                        let res = self.eval_expr_to_par(
-                            &Expr {
-                                expr_instance: Some(ExprInstance::EMethodBody(e.clone())),
-                            },
-                            env,
-                        )?;
+                    ExprInstance::EMethodBody(_) => {
+                        let res = self.eval_expr_to_par(term, env)?;
                         self.eval(res, env, rand).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
@@ -1363,7 +1354,7 @@ impl DebruijnInterpreter {
                 Some(p) => Ok(p),
                 None => Err(InterpreterError::ReduceError(format!(
                     "Unbound variable: {} in {:?}",
-                    level, env.env_map
+                    level, env
                 ))),
             },
             Some(VarInstance::Wildcard(_)) => Err(InterpreterError::ReduceError(
