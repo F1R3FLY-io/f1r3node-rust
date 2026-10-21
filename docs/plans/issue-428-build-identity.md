@@ -88,7 +88,7 @@ Later canary or stable tags retain the original build identity when they reuse a
 | Publication | The embedded identity uses the same source value as the immutable image tag. |
 | Fork or explicit target | The identity describes the selected source checkout. |
 
-## Local Validation
+## Validation
 
 The following checks passed:
 
@@ -106,10 +106,7 @@ An isolated Cargo package compiled copies of the actual build script, identity m
 Repeated builds with the same target directory changed the output from identity A to identity B.
 Without an explicit identity or Git repository, the package returned `F1r3node Rust 0.4.46 (unknown)`.
 
-The full `cargo check --locked -p node --tests` stopped during dependency retrieval.
-The local Windows Subsystem for Linux environment could not resolve `index.crates.io`.
-Its offline cache lacked the required `webpki-roots` version.
-The full node build, Docker smoke test, and both architecture builds still require hosted CI evidence.
+Full node compilation, the Docker smoke test, and both architecture builds remain pending.
 
 ## Scope
 
