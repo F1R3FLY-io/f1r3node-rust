@@ -303,6 +303,32 @@ A missing or pending status also blocks the daily queue.
 The workflow and validator must reach `ca-canary` before the queue can pass this gate.
 The [design](plans/ca-daily-provenance.md) gives the verification scope.
 
+### Soak gates
+
+`ca-soak-dispatch.yml` (Release Train Soak Dispatch) starts the gate soaks. `.github/scripts/ca-soak-dispatch.sh` does the work, and `test-ca-soak-dispatch.sh` checks it.
+
+| Event | Action |
+|---|---|
+| The `ca-soak` label on a `ca/*` pull request into `ca-canary` | Removes `ca-soaked` and starts the 22-hour soak of the head, gate `ca-item` |
+| A push to that pull request by Mergify | Nothing. Mergify only merges the base. |
+| A push to that pull request by anyone else | Removes `ca-soak` and `ca-soaked` and cancels the queued and running soaks of the pull request. A new soak needs the `ca-soak` label again. |
+| A push to `ca-release` | Starts the 60-hour soak of the pushed commit, gate `ca-release` |
+
+The dispatcher runs `merge-recovery-soak.yml` from `master` with the inputs `gate`, `gate_pr`, and `target_ref` as a commit SHA. A gate run differs from a `daily` or `weekend` run in these ways:
+
+- It has its own concurrency group: one for each `ca/*` pull request, and one for `ca-release`. Item soaks run in parallel, and a gate run never cancels a `daily` or `weekend` run.
+- Its soak runner registers under a label of its own run, `f1r3fly-rust-soak-run-<run ID>`, so a parallel soak cannot take its VM.
+- It publishes no checkpoint and no dashboard series.
+- Its one restart after an infrastructure failure soaks a full new window, not the rest of the old one.
+
+At the start, the run posts `Soak Gate (22h)` or `Soak Gate (60h)` as pending on the soaked commit. At the end, `.github/scripts/report-soak-gate.sh` posts the result:
+
+- Success: the soak completed, its integration preflight passed, and its verdict is `pass`.
+- Error: the soak was cancelled.
+- Failure: any other result.
+
+A run never replaces the status of a newer run. After a successful item soak, the script adds `ca-soaked` to the pull request. It does this only when the pull request is open into `ca-canary` and its head is still the soaked commit. The script then reads the head again and removes the label if the head moved. A final item result that is not a success removes `ca-soaked` from the soaked head, also after a manual dispatch. `test-soak-gate.sh` checks these rules, and `docs/claims/soak-release-gates.md` states them as a CbC claim.
+
 ### Release tag
 
 Run `just ca-tag <version>`, for example `just ca-tag 0.5.0-rc.1`. The command runs `.github/scripts/tag-ca-release.sh`. It creates the annotated tag `ca-v<version>` at the `ca-release` head. It refuses the tag when the head has no successful `Soak Gate (60h)` status, and it never moves an existing tag. The `rust-client` `master` branch pins this tag and the `:ca-v<version>` image.
