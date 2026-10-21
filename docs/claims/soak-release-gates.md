@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-SOAK-GATE-001
-status: proposed-unratified
+status: accepted
 artifacts:
   - .github/scripts/report-soak-gate.sh
   - .github/scripts/ca-soak-dispatch.sh
@@ -66,14 +66,14 @@ A cancelled soak posts error, and every other result posts failure. A run never 
 | Daily and weekend routing unchanged | `bash .github/scripts/test-soak-schedule-routing.sh` | Green locally |
 | Workflow security invariants | `bash .github/scripts/check-workflow-invariants.sh` | Green locally |
 
-## Pending obligations
+## Obligations
 
-The claim is not discharged.
+The maintainer accepted the claim. The two live-soak obligations stay open, so the soak tier stays pending.
 
 | Obligation | Status |
 | --- | --- |
-| Review package with the hosted run of the script tests | Pending |
-| Maintainer acceptance | Pending |
+| Review package with the hosted run of the script tests | Done. `docs/casper/cbc-evidence/runs/soak-release-gates-20261020-02/report.json` at `7d627df83` records the tested commit `d1d691d58` and CI run 39518782040. |
+| Maintainer acceptance | Done. jltatbeach accepted the package on 2026-10-21 (PR #793, comment 6305076788). `docs/casper/cbc-evidence/runs/soak-release-gates-acceptance-20261021-01/report.json` records the acceptance. |
 | First live `ca-item` gate soak after this change reaches `master` | Pending. The dispatcher runs the soak from `master`, so no gate run can start before then. |
 | First live `ca-release` gate soak | Pending. It needs the `ca-canary` and `ca-release` branches. |
 
