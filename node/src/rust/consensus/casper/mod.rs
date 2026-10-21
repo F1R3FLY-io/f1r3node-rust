@@ -317,7 +317,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                 Some(request) = context.packets.recv(), if packet_requests.len() < 32 => {
                     let handler = packet_handler.clone();
                     if let Err(error) = packet_requests.spawn("packet", async move {
-                        if request.reply.is_closed() { return Ok(()); }
+                        let Some(request) = request.try_start() else { return Ok(()); };
                         let packet = request.packet;
                         let peer = PeerNode { id: NodeIdentifier { key: packet.peer.id.into() }, endpoint: Endpoint::new(packet.peer.host, packet.peer.tcp_port, packet.peer.udp_port) };
                         let packet = models::routing::Packet { type_id: packet.kind, content: packet.payload.into() };

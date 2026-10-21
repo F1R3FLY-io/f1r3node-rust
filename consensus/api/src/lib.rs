@@ -158,7 +158,22 @@ impl ConsensusCommand {
 
 pub struct PacketRequest {
     pub packet: NetworkPacket,
+    pub deadline: Instant,
     pub reply: oneshot::Sender<Result<(), ConsensusError>>,
+}
+
+impl PacketRequest {
+    #[must_use]
+    pub fn try_start(self) -> Option<Self> {
+        if self.reply.is_closed() {
+            return None;
+        }
+        if Instant::now() >= self.deadline {
+            let _ = self.reply.send(Err(ConsensusError::DeadlineExceeded));
+            return None;
+        }
+        Some(self)
+    }
 }
 
 #[derive(Clone)]

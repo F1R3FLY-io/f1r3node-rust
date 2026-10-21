@@ -145,12 +145,16 @@ impl ConsensusHandle {
                 "packet metadata limit exceeded".into(),
             ));
         }
+        let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
         self.packets
-            .try_send(PacketRequest { packet, reply })
+            .try_send(PacketRequest {
+                packet,
+                deadline,
+                reply,
+            })
             .map_err(queue_error)?;
-        self.response(Instant::now() + self.config.request_timeout, rx)
-            .await
+        self.response(deadline, rx).await
     }
 
     pub async fn wait_ready(&self) -> Result<(), ConsensusError> {
