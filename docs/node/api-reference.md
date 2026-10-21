@@ -278,6 +278,8 @@ curl -X POST http://localhost:40413/api/deploy \
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
 
+Deploy admission checks the node's validator against the last finalized block's committee. Proposal checks the selected parent's committee. These sets can differ during the finality gap after a bond change.
+
 ##### Deploy parameters
 
 A deploy parameter supplies a typed value through `rho:deploy:param:<name>`.
@@ -941,7 +943,7 @@ curl -X POST http://localhost:40405/api/propose
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy to a bonded validator. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled |
+| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy to a validator in the last finalized block's committee. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled |
 | `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo` (header + deploys). Transfers enriched on readonly |
 | `getBlocks` | `BlocksQuery` | `stream BlockInfoResponse` | Get recent blocks by depth. Streaming. Returns `LightBlockInfo` (headers only) |
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |
