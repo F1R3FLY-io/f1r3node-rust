@@ -219,14 +219,7 @@ fn byte_budgets_are_validated() {
     let defaults = RuntimeConfig::default();
     assert_eq!(defaults.command_byte_capacity, 64 * 1024 * 1024);
     assert_eq!(defaults.packet_byte_capacity, 256 * 1024 * 1024);
-    for (commands, packets) in [
-        (0, 8),
-        (8, 0),
-        (7, 8),
-        (8, 7),
-        (usize::MAX, 8),
-        (8, usize::MAX),
-    ] {
+    for (commands, packets) in [(0, 8), (8, 0), (usize::MAX, 8), (8, usize::MAX)] {
         let result = RuntimeBuilder::new(descriptor(), RuntimeConfig {
             command_byte_capacity: commands,
             packet_byte_capacity: packets,
@@ -234,4 +227,24 @@ fn byte_budgets_are_validated() {
         });
         assert!(matches!(result, Err(ConsensusError::InvalidInput(_))));
     }
+}
+
+#[tokio::test]
+async fn receive_ceiling_above_byte_budgets_does_not_prevent_startup() {
+    let (runtime, mut commands, _) = setup(RuntimeConfig {
+        max_payload_bytes: 256 * 1024 * 1024,
+        ..RuntimeConfig::default()
+    })
+    .await;
+    let handle = runtime.handle();
+    let mut call = Box::pin(handle.submit(vec![1]));
+    assert!(futures::poll!(&mut call).is_pending());
+    let (command, _permit) = commands.recv().await.unwrap().into_parts();
+    if let ConsensusCommand::Submit { reply, .. } = command {
+        reply.send(Ok("accepted".into())).unwrap();
+    } else {
+        panic!("expected submit");
+    }
+    assert_eq!(call.await, Ok("accepted".into()));
+    runtime.shutdown().await.unwrap();
 }

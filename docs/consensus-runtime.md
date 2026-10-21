@@ -62,8 +62,9 @@ The runtime bounds both request count and retained request bytes. Default limits
 | Packets | 256 | 256 MiB |
 
 `RuntimeConfig.command_byte_capacity` and `packet_byte_capacity` set independent budgets. Command traffic cannot consume the packet budget.
-The default per-payload limit remains 16 MiB. Node assembly derives that limit from its configured receive limits.
-Each byte budget must support the maximum payload and fit the semaphore permit range. Invalid limits fail runtime preparation.
+The shared runtime defaults to a 16 MiB per-payload limit. Node assembly derives its limit from configured receive limits, currently 256 MiB by default.
+Byte budgets are independent of those receive ceilings. Each budget must be positive and fit the semaphore permit range.
+A higher receive ceiling does not prevent startup. Requests whose retained buffers exceed their byte budget receive `QueueFull`, even when their payload length passes validation.
 
 Admission charges buffer capacity, not only payload length. Packet charges also include peer identifier, host, and packet-kind buffer capacities.
 Admission does not wait for permits. Exhausting a count or byte limit returns `QueueFull` through the existing overload mapping.

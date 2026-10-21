@@ -246,13 +246,12 @@ impl RuntimeBuilder {
             ));
         }
         for capacity in [config.command_byte_capacity, config.packet_byte_capacity] {
-            if capacity < config.max_payload_bytes
+            if capacity == 0
                 || capacity > Semaphore::MAX_PERMITS
                 || u32::try_from(capacity).is_err()
             {
                 return Err(ConsensusError::InvalidInput(
-                    "request byte budgets must fit the semaphore and hold the maximum payload"
-                        .into(),
+                    "request byte budgets must be positive and fit the semaphore".into(),
                 ));
             }
         }
