@@ -44,9 +44,10 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 ### Static Checks
 
 1. Verify workflow security invariants (first, before the toolchain install)
-2. Verify supply-chain controls
-3. Check formatting
-4. Run clippy
+2. Verify Dockerfile workspace copies: every Cargo workspace member has a `COPY` into the builder stage of `node/Dockerfile`
+3. Verify supply-chain controls
+4. Check formatting
+5. Run clippy
 
 ### Commit Policy
 
@@ -127,9 +128,11 @@ The `masterProtect` ruleset requires Promotion Source, Commit Policy, Static Che
 
 The heavy reuse gate in the `build_base` target step and `release-train.sh validate-ci-evidence` read Integration Gate (amd64) and (arm64). A pull request run from before TASK-023-4 has only the old names. A merge group therefore cannot reuse the heavy result of such a run, and it runs the Integration Pipeline again.
 
-A push to `dev` carries the commit that its merge group tested. The target step finds the newest `ci.yml` merge group run of the pushed commit. If both Integration Gate jobs of that run concluded success, the push run sets `oci_tests` to `false`. A commit that no merge group tested, for example a manual push to `dev`, always runs the OCI tests. The Integration Pipeline then builds the images and runs the smoke tests, but it launches no OCI runners.
+A push to `dev` carries the commit that its merge group tested. The target step finds the newest `ci.yml` merge group run of the pushed commit. If both Integration Gate jobs of that run concluded success, the push run sets `oci_tests` to `false`.
 
-When the push run reuses a merge group result, both Integration Gate jobs name the reused run. They pass only if the image build and the smoke tests of the push run succeeded. Release Docker Image still publishes the images. If the target step finds no such run, or an API call fails, the push run runs the OCI tests. A push to `master`, a tag, a pull request, and a merge group always run them.
+Mergify merges a pull request with a merge commit whose second parent is the pull request head. Without a merge group run, the target step compares the tree of the pushed commit with the tree of that head. If they are equal, it reads the newest `ci.yml` pull request run of that head. If both Integration Gate jobs of that run concluded success, the push run sets `oci_tests` to `false`. Any other commit always runs the OCI tests. The Integration Pipeline then builds the images and runs the smoke tests, but it launches no OCI runners.
+
+When the push run reuses a merge group or pull request result, both Integration Gate jobs name the reused run. They pass only if the image build and the smoke tests of the push run succeeded. Release Docker Image still publishes the images. If the target step finds no such run, or an API call fails, the push run runs the OCI tests. A push to `master`, a tag, a pull request, and a merge group always run them.
 
 `ci-fork-pr.yml` also has Integration Gate jobs, and it runs for every pull request. For a pull request from this repository, these jobs are skipped and report as Integration Gate (amd64, fork PRs only) and (arm64, fork PRs only). A skipped check counts as a pass. With the required names, the skipped checks would pass the gate before the `ci.yml` gate finishes. A `ci-heavy` pull request could then enter the merge queue during its own heavy run, and the merge group would run the Integration Pipeline again. `check-workflow-invariants.sh` rejects a fork-only job that reports a `ci.yml` check name when it is skipped.
 
@@ -161,7 +164,7 @@ You can also run the **Promote and Back-merge** workflow from `master` with **op
 
 If a `backmerge/*` pull request to `dev` is open, the command names it and does nothing. Merge or close that pull request first. The branch name contains the `master` commit. A second run for the same commit therefore fails at branch creation, also when both runs are concurrent.
 
-Merge the back-merge pull request with a merge commit. Do not squash or rebase it, because `dev` must keep the `master` history. The `dev` merge queue uses merge commits.
+The back-merge must be a merge commit, because `dev` must keep the `master` history. The Mergify `dev` queue merges it with a merge commit.
 
 Do not open a back-merge with head `master`. A pull request with a protected head shows the **Update branch** button. That button merges the base into the head through the admin bypass of the ruleset. On #747 (head `master`, base `dev`), it pushed `dev` onto `master` outside promotion (`bf4915d57`, 2026-10-16).
 
@@ -193,7 +196,7 @@ The commands run the same scripts as `just promote` and `just backmerge`. The sc
 CI treats the two branches like `dev` and `master`:
 
 - A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
-- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Its head must not be a protected branch.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to an approved pull request. Its head must not be a protected branch.
 - An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
 
 Image publication:
@@ -221,26 +224,58 @@ The workflow uses the promotion app token from `release-credentials`, as the Pro
 
 ### Mergify
 
-`.mergify.yml` merges pull requests into `ca-canary` only. A maintainer merges the promotion into `ca-release`. The GitHub merge queue stays on `dev` and `master`. Every merge is a merge commit.
+Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Every merge is a merge commit. Each queue checks one pull request at a time. Mergify first merges the current base into the pull request, and then it waits for the checks on the pull request head.
+
+Mergify adds the `ci-heavy` label to an approved pull request of this repository. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
 
 | Queue | Pull requests | Merge conditions |
 |---|---|---|
-| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync. Mergify queues it by itself. | To enter the queue: the `ci-heavy` label, the `ca-soaked` label, and an approving review. To merge: the `ci.yml` checks of `devProtect` and the Integration Gates. The `ci-heavy` label is necessary for the Integration Gates. |
-| `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review. The trusted validator accepts the release source and clean base merges only. A maintainer merges a back-merge that a person opened. |
+| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | To enter the queue: an approving review, no requested changes, and the `ci-heavy` label. To merge: the `devProtect` checks, Promotion Source, and the Integration Gates. |
+| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | To enter the queue: as for `dev`. To merge: the `masterProtect` checks, the casper shards, and the Integration Gates. |
+| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | To enter the queue: as for `dev`, and also the `ca-soaked` label. To merge: as for `dev`. |
+| `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | To enter the queue: as for `dev`. To merge: as for `dev`. |
+
+To merge a pull request into `dev`, `master`, or `ca-release`, get an approving review. Mergify adds `ci-heavy`, queues the pull request, and merges it after the checks pass. A push to the pull request starts the checks again.
 
 To merge a `ca/<item>` pull request:
 
-1. Add the `ci-heavy` label after the last planned push.
-2. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
-3. Get an approving review.
+1. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
+2. Get an approving review.
 
-Mergify then queues the pull request by itself.
+Mergify then adds `ci-heavy` and queues the pull request.
 
-The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`. The `ca-soak` dispatcher and the `Soak Gate (22h)` and `Soak Gate (60h)` statuses come from a separate CbC change of the soak workflow.
+A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head to a branch of this repository and opens the pull request from that branch. The commit identities of the contributor stay on the commits.
+
+`test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and the `merge_conditions` of `.mergify.yml` in the same pull request.
+
+The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`.
 
 The `ca-soaked` label stays on the pull request when Mergify merges a new `ca-canary` base into it. A back-merge or a merged sync therefore does not need a new soak. A push by the author removes the label, so a code change needs a new soak. A commit status cannot do this, because a new head commit has no status and Mergify then removes the pull request from the queue.
 
 A person with triage access can add the label by hand. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
+
+### Merge rulesets
+
+On 2026-10-21, PR #794 merged into `dev` outside the merge queue. An organization admin used the bypass of `devProtect`, so the required checks and the merge queue did not run. The push to `dev` then failed the image build. These ruleset changes make Mergify the only path into `dev` and `master`.
+
+| Ruleset | Change |
+|---|---|
+| `mergify-only` (new) | Targets `dev` and `master`. The **Restrict updates** rule blocks every update of the branch. The bypass actors are the Mergify app (10562) and the CI automation app (4428544) only. |
+| `devProtect` | Remove the `merge_queue` rule, so Mergify can merge. Keep the pull request and required check rules. |
+| `masterProtect` | No change. |
+
+GitHub applies the rules of every ruleset that targets a branch. A bypass of `devProtect` or `masterProtect` therefore does not pass the **Restrict updates** rule of `mergify-only`. No person can merge into `dev` or `master`, organization admins included. The bypass actors of `devProtect` and `masterProtect` stay, but they allow no merge.
+
+An organization admin who must merge by hand changes `mergify-only` first. The organization audit log records that change.
+
+Apply the changes in this order:
+
+1. Merge the pull request that adds the `dev` and `master` queues into `dev`.
+2. Promote `dev` to `master`. This promotion is the last merge by a person.
+3. Create `mergify-only`, and remove the `merge_queue` rule of `devProtect`.
+
+Until step 3, the GitHub merge queue stays on `dev`, and the target step still reuses its merge group results.
 
 ### Daily provenance
 
@@ -274,7 +309,7 @@ These rulesets are a plan. They are not applied.
 | Required checks | The `devProtect` checks. The `ca-soaked` label in Mergify gates the soak. | The `masterProtect` checks. `just ca-tag` requires `Soak Gate (60h)` on the `ca-release` head. |
 | Pull request review | One code-owner approval for `ca/*` heads | One code-owner approval for `promote/ca-release-*` heads |
 | Merge method | Merge commit only | Merge commit only |
-| GitHub merge queue | None (Mergify) | None. A maintainer merges the promotion. |
-| Bypass actors | The Mergify app, for the `ca-daily` pull requests | None |
+| GitHub merge queue | None (Mergify) | None (Mergify) |
+| Restrict updates | Bypass by the Mergify app only, as in `mergify-only` | Bypass by the Mergify app only, as in `mergify-only` |
 
 A ruleset cannot require a review for some heads only. The review rule therefore needs a decision: a separate ruleset for each head pattern, or a review in Mergify only.

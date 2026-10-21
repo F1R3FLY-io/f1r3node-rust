@@ -204,21 +204,20 @@ Both settings take effect at the next session start.
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
 ### Continuous Integration and Deployment
+- Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Do not merge a pull request by hand. The `mergify-only` ruleset blocks a manual merge, also for organization admins.
 - A push to a pull request runs only the GitHub-hosted checks: static checks, script tests, and unit tests.
 - The heavy Integration Pipeline runs on OCI runners for these events:
-  - every merge group
-  - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI integration tests when its merge group already passed them on the same commit. It still builds and publishes the images.
   - a pull request with the `ci-heavy` label
-- Add the `ci-heavy` label to a pull request to `dev` when the change can break the integration tests. Examples:
+  - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI tests when the merged head or its merge group passed them on the same tree. It still builds and publishes the images.
+  - every merge group, until the GitHub merge queue leaves `dev`
+- Mergify adds `ci-heavy` to an approved pull request and merges it only after both Integration gates succeed. Do not wait for the label to see an integration result early. Add the label yourself for these changes:
   - Rust code in a workspace crate
   - `Cargo.toml` or `Cargo.lock`
   - `node/src/main/resources/defaults.conf`
   - `node/Dockerfile` or the files in `docker/`
-- Do not add `ci-heavy` for a change to documentation, CI scripts, or workflows only. The merge queue runs the heavy pipeline for that change anyway.
-- The label shows an integration failure before the merge queue. A merge group can contain several pull requests, so a failure in the queue does not always identify its cause.
-- When the merge group tree equals the pull request head, the queue reuses the heavy result of the pull request.
 - Add the label once, after the last planned push. A push, a label change, or a `gh pr edit` cancels a running heavy run.
-- `docs/ci.md` describes the jobs, the required checks, and the merge queue.
+- A pull request from a fork gets no heavy run. A maintainer pushes the fork head to a branch of this repository and opens the pull request from that branch.
+- `docs/ci.md` describes the jobs, the required checks, the Mergify queues, and the merge rulesets.
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
