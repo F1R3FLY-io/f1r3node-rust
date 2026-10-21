@@ -2201,6 +2201,7 @@ fn deploy_inclusion_progress_staleness(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn fresh_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
@@ -4073,6 +4074,121 @@ mod tests {
             &rejected_deploy_buffer
         )
         .expect("stored rejected deploy in scope remains unresolved"));
+    }
+
+    #[tokio::test]
+    async fn pool_snapshot_buffered_sigs_match_the_buffered_set() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let buffered: Vec<_> = (0..3)
+            .map(|seed| {
+                crate::rust::util::construct_deploy::basic_deploy_data(
+                    seed,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("buffered deploy")
+            })
+            .collect();
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(buffered.clone())
+            .expect("seed rejected buffer");
+
+        let pool = PoolSnapshot::read(&deploy_storage, &rejected_deploy_buffer)
+            .expect("snapshot read succeeds");
+
+        let expected_sigs: HashSet<Bytes> =
+            buffered.iter().map(|deploy| deploy.sig.clone()).collect();
+        assert_eq!(
+            pool.buffered_sigs, expected_sigs,
+            "buffered_sigs must be the sig projection of buffered",
+        );
+        assert_eq!(
+            pool.buffered
+                .iter()
+                .map(|d| d.sig.clone())
+                .collect::<HashSet<_>>(),
+            pool.buffered_sigs,
+            "buffered.map(sig) must equal buffered_sigs",
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_snapshot_captures_stored_and_buffered_independently() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+
+        // Disjoint seeds ensure the stored and buffered sets never share a sig,
+        // so the snapshot's captured sides can be checked independently.
+        let stored: Vec<_> = [10, 11]
+            .iter()
+            .map(|seed| {
+                crate::rust::util::construct_deploy::basic_deploy_data(
+                    *seed,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("stored deploy")
+            })
+            .collect();
+        let buffered: Vec<_> = [20, 21]
+            .iter()
+            .map(|seed| {
+                crate::rust::util::construct_deploy::basic_deploy_data(
+                    *seed,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("buffered deploy")
+            })
+            .collect();
+        deploy_storage
+            .lock()
+            .add(stored.clone())
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(buffered.clone())
+            .expect("seed rejected buffer");
+
+        let pool = PoolSnapshot::read(&deploy_storage, &rejected_deploy_buffer)
+            .expect("snapshot read succeeds");
+
+        let stored_set: HashSet<Signed<DeployData>> = stored.into_iter().collect();
+        let buffered_set: HashSet<Signed<DeployData>> = buffered.into_iter().collect();
+        assert_eq!(
+            pool.stored, stored_set,
+            "stored captures the deploy storage"
+        );
+        assert_eq!(
+            pool.buffered, buffered_set,
+            "buffered captures the rejected-deploy buffer",
+        );
+        assert!(
+            pool.stored.is_disjoint(&pool.buffered),
+            "distinct inputs must stay separated across the two captured sets",
+        );
     }
 
     #[tokio::test]
