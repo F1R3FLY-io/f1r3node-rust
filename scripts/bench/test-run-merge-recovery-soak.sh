@@ -231,7 +231,10 @@ jq -e -s 'length == 1 and .[0].session == 1 and .[0].provider == "docker" and .[
 	"$TMP/output/iteration-00001-docker/issue24-phases.jsonl" >/dev/null
 test ! -e "$TMP/output/iteration-00001-docker/.pytest-output.fifo"
 test -s "$TMP/fake-poetry.pid"
-! kill -0 "$(cat "$TMP/fake-poetry.pid")" 2>/dev/null
+if live_pid "$(cat "$TMP/fake-poetry.pid")"; then
+	echo 'the fake pytest process survived the guardian stop' >&2
+	exit 1
+fi
 
 # Scenario 2: the soak window ends mid-iteration. timeout(1) kills pytest and
 # reports 124; the driver must write the deadline marker, NOT count the
@@ -339,7 +342,10 @@ jq -e '
   and .tracked_metrics.lfb_spread == {p50: 4, p95: 4, max: 4, samples: 1}
 ' "$TMP/output2/summary.json" >/dev/null
 test -s "$TMP/fake-poetry-2.pid"
-! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null
+if live_pid "$(cat "$TMP/fake-poetry-2.pid")"; then
+	echo 'the fake pytest process survived the deadline stop' >&2
+	exit 1
+fi
 # The segment owns the node, and the next segment gets a new owner marker,
 # so no later segment stops a node that survives this one (most likely the
 # disk growth of runs 39194089405 and 39369559337).
@@ -410,7 +416,10 @@ test -d "$TMP/tmp3/test-stale"
 test -d "$TMP/tmp3/test-live"
 grep -q 'free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming' "$TMP/driver3.log"
 grep -q '^disk hygiene: 7000MB free -> 7000MB free$' "$TMP/driver3.log"
-! grep -q '^disk usage: ' "$TMP/driver3.log"
+if grep -q '^disk usage: ' "$TMP/driver3.log"; then
+	echo 'a no-op hygiene pass printed a disk usage snapshot' >&2
+	exit 1
+fi
 grep -q '^host_protection_breach: disk floor: free 7000MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene$' \
 	"$TMP/output3/early-exit.txt"
 grep -q 'still inside hygiene band' "$TMP/output3/protection-breach.txt"
