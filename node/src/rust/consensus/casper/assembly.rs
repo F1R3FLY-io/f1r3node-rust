@@ -899,10 +899,9 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     // Used by both HTTP and gRPC status endpoints.
     let is_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Event-driven background tasks: transfer extraction + readiness tracking.
+    // Event-driven background tasks: transfer extraction.
     // Listens on the broadcast event stream and handles:
     // - BlockFinalised: pre-warm ReportStore cache, extract transfers, emit TransfersAvailable
-    // - EnteredRunningState: flip is_ready flag for status endpoints
     {
         use futures::StreamExt;
         use shared::rust::shared::f1r3fly_event::F1r3flyEvent;

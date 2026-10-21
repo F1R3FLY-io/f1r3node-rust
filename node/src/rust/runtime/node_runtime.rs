@@ -457,9 +457,6 @@ impl NodeRuntime {
 
         info!("All server tasks started successfully");
 
-        // === Monitor both JoinSets for failures ===
-        // Critical tasks: Any failure triggers immediate shutdown
-        // Supportive tasks: Failures are logged as warnings, node continues
         info!("All tasks started. Node is now running.");
 
         let result = tokio::select! {

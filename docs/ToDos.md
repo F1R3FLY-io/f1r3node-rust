@@ -169,6 +169,9 @@ tasks:
     review_history:
       - "2026-10-06: multi-agent review on c60ef99fc confirmed three major findings and one minor finding."
       - "2026-10-12: commits 65df8298e, 1a32c8f38, 7334a090a, and 0cde12068 fix the four findings, each with tests."
+      - "2026-10-18: Jeff requested changes on be3f23cc7. The review covers packet deadlines, request bytes, cleanup ownership, streaming, error responses, and operator notes."
+      - "2026-10-21: local follow-up preserves the lifecycle boundary during dev synchronization. Publication, a fresh heavy CI run, and review acceptance remain pending."
+      - "Heavy CI run 39143607575 passed for be3f23cc7, including all six integration configurations. That result does not validate later synchronized revisions."
     implementation_notes_2026_10_13:
       decision: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/651#issuecomment-6136089479"
       design_reference: "https://github.com/F1R3FLY-io/f1r3node-rust/blob/6609305bbde5a13ab6df4d1f0877bfbe53e74f2a/docs/designs/replication-boundary.md"
