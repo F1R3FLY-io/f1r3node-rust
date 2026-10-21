@@ -251,7 +251,13 @@ pub(crate) fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, St
             }
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "consensus_error"),
         };
-        return (status, kind, error.to_string());
+        let message = if status == StatusCode::INTERNAL_SERVER_ERROR {
+            tracing::error!(error = %error, "Consensus API request failed");
+            "Internal server error".to_owned()
+        } else {
+            error.to_string()
+        };
+        return (status, kind, message);
     }
     if let Some(error) =
         err.downcast_ref::<crate::rust::consensus::casper::api_compat::ApiFailure>()
@@ -1107,6 +1113,67 @@ mod tests {
             let err: Result<i32, eyre::Error> =
                 offload(|| async { Err(eyre::eyre!("expected failure")) }).await;
             assert!(err.unwrap_err().to_string().contains("expected failure"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod consensus_error_tests {
+    use consensus_api::ConsensusError;
+
+    use super::*;
+
+    #[test]
+    fn internal_consensus_details_do_not_reach_clients() {
+        for error in [
+            ConsensusError::Protocol("private storage path".into()),
+            ConsensusError::TaskFailed {
+                task: "private worker".into(),
+                reason: "internal diagnostic".into(),
+            },
+            ConsensusError::CleanupTimeout,
+        ] {
+            let (status, kind, message) = classify_error(&eyre::eyre!(error));
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(kind, "consensus_error");
+            assert_eq!(message, "Internal server error");
+        }
+    }
+
+    #[test]
+    fn actionable_consensus_errors_keep_their_public_contract() {
+        for (error, expected_status, expected_kind) in [
+            (
+                ConsensusError::QueueFull,
+                StatusCode::TOO_MANY_REQUESTS,
+                "consensus_busy",
+            ),
+            (
+                ConsensusError::DeadlineExceeded,
+                StatusCode::GATEWAY_TIMEOUT,
+                "consensus_timeout",
+            ),
+            (
+                ConsensusError::InvalidInput("invalid input".into()),
+                StatusCode::BAD_REQUEST,
+                "illegal_argument",
+            ),
+            (
+                ConsensusError::NotReady,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "consensus_unavailable",
+            ),
+            (
+                ConsensusError::Stopped,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "consensus_unavailable",
+            ),
+        ] {
+            let expected_message = error.to_string();
+            assert_eq!(
+                classify_error(&eyre::eyre!(error)),
+                (expected_status, expected_kind, expected_message)
+            );
         }
     }
 }
