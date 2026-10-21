@@ -2,15 +2,22 @@
 
 use std::collections::HashMap;
 
+// Added by DR-134 (DR-65, gap G2): the offered play takes pending candidates.
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use casper::rust::merging::block_index;
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-65, gap G2): offered deploys.
+// use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::system_deploy_util;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic;
 
-use crate::util::rholang::resources::with_runtime_manager;
+// Added by DR-134 (DR-65, gap G2): offered deploys.
+use crate::helper::offered_deploy as construct_deploy;
+// Changed by DR-134 (DR-65, gap G2): the adopted policy of the test genesis.
+// use crate::util::rholang::resources::with_runtime_manager;
+use crate::util::rholang::resources::{adopted_policy, with_runtime_manager};
 
 /**
  * Two deploys inside single state transition are using the same PVV for precharge and refund.
@@ -20,6 +27,10 @@ use crate::util::rholang::resources::with_runtime_manager;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_deploys_executed_inside_single_state_transition_should_be_dependent() {
     with_runtime_manager(|runtime_manager, genesis_context, _| async move {
+        // Added by DR-134 (DR-65, gap G2): the offered play takes the adopted
+        // policy of the test genesis. It reads the genesis block before the
+        // line below moves the post-state out of it.
+        let adopted = adopted_policy(&runtime_manager, &genesis_context.genesis_block).await;
         let base_state = genesis_context.genesis_block.body.state.post_state_hash;
         let payer1_key = &genesis_context.genesis_vaults[0].0;
         let payer2_key = &genesis_context.genesis_vaults[1].0;
@@ -47,15 +58,25 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
         )
         .unwrap();
 
+        // Changed by DR-134 (DR-65, gap G2): the block time of the offers. The
+        // two offers have different signers, so they are distinct envelopes.
+        // let block_data = BlockData {
+        //     time_stamp: d1.data.time_stamp,
         let block_data = BlockData {
-            time_stamp: d1.data.time_stamp,
+            time_stamp: d1.envelope.body().time_stamp,
             seq_num,
             block_number: block_num,
             sender: state_transition_creator.clone(),
         };
 
         let invalid_blocks = HashMap::new();
-        let user_deploys = vec![d1, d2];
+        // Changed by DR-134 (DR-65, gap G2): one block carries the batch of both
+        // offers.
+        // let user_deploys = vec![d1, d2];
+        let user_deploys = vec![
+            PendingDeployCandidate::Envelope(d1.envelope),
+            PendingDeployCandidate::Envelope(d2.envelope),
+        ];
         let system_deploys = vec![
             casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
                 CloseBlockDeploy {
@@ -67,16 +88,29 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
             ),
         ];
 
-        let (post_state_hash, processed_deploys, _) = runtime_manager
-            .compute_state(
+        // Changed by DR-134 (DR-65, gap G2): the offered play of the batch.
+        // let (post_state_hash, processed_deploys, _) = runtime_manager
+        //     .compute_state(
+        //         &base_state,
+        //         user_deploys,
+        //         system_deploys,
+        //         block_data,
+        //         Some(invalid_blocks),
+        //     )
+        //     .await
+        //     .unwrap();
+        let (post_state_hash, processed_deploys, _, _) = runtime_manager
+            .compute_state_with_bonds_envelopes(
                 &base_state,
                 user_deploys,
                 system_deploys,
                 block_data,
                 Some(invalid_blocks),
+                None,
+                Some(&adopted),
             )
             .await
-            .unwrap();
+            .expect("the batch of two offers plays");
 
         assert_eq!(processed_deploys.len(), 2);
 
@@ -99,7 +133,10 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
             .into_iter()
             .map(|(d, merge_chs)| {
                 block_index::create_event_log_index(
-                    &d.deploy_log,
+                    // Changed by DR-134 (DR-65, gap G2): the log of a processed
+                    // offer.
+                    // &d.deploy_log,
+                    d.deploy_log(),
                     runtime_manager.get_history_repo(),
                     &Blake2b256Hash::from_bytes_prost(&base_state),
                     merge_chs,

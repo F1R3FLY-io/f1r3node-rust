@@ -1,12 +1,17 @@
 // See casper/src/test/scala/coop/rchain/casper/api/ListeningNameAPITest.scala
 
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::util::construct_deploy;
-use casper::rust::util::construct_deploy::source_deploy_now;
 use models::casper::WaitingContinuationInfo;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, Expr, Par};
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
+// Changed by DR-134 (DR-66 item 1): the two unsorted-channel tests create
+// their blocks from offered deploys, because Casper refuses body-only deploys.
+// use casper::rust::util::construct_deploy::source_deploy_now;
+use crate::helper::offered_deploy::source_deploy_now;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 

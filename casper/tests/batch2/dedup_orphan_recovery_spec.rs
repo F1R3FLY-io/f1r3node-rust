@@ -29,26 +29,49 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+// Added by DR-134 (DR-65, gap G2): the offered checkpoint takes pending
+// candidates.
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+// Changed by DR-134 (DR-65, gap G2): the snapshot takes the offered shard
+// configuration (`offered_shard_conf`), so `CasperShardConf` is not named.
+// use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::casper::{CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::genesis::Genesis;
+// Changed by DR-134 (DR-65, gap G2): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
+// Changed by DR-134 (DR-65, gap G2): the offered checkpoint runs each block's
+// batch of offers.
+// use casper::rust::util::rholang::interpreter_util::{
+//     compute_deploys_checkpoint, compute_parents_post_state,
+// };
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint, compute_parents_post_state,
+    compute_deploys_checkpoint_envelopes, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
-use casper::rust::util::{construct_deploy, proto_util};
 use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
-use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+// Changed by DR-134 (DR-65, gap G2): no block of this test carries a body-only
+// processed deploy.
+// use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
 
+// Added by DR-134 (DR-65, gap G2): offered deploys.
+use crate::helper::offered_deploy as construct_deploy;
+// Changed by DR-134 (DR-65, gap G2): the adopted policy of the test genesis and
+// the shard configuration under which an offered checkpoint adopts it again.
+// use crate::util::rholang::resources::{
+//     block_dag_storage_from_dyn, mergeable_store_from_dyn, mk_test_rnode_store_manager_from_genesis,
+// };
 use crate::util::rholang::resources::{
-    block_dag_storage_from_dyn, mergeable_store_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    adopted_policy, block_dag_storage_from_dyn, mergeable_store_from_dyn,
+    mk_test_rnode_store_manager_from_genesis, offered_shard_conf,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -75,6 +98,9 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
+    // Added by DR-134 (DR-65, gap G2): the offered checkpoints take the adopted
+    // policy of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_block).await;
 
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
@@ -118,7 +144,11 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
-        let mut shard_conf = CasperShardConf::new();
+        // Changed by DR-134 (DR-65, gap G2): an offered checkpoint adopts the
+        // genesis policy again under this configuration, which needs the
+        // protocol version and the minimum price of the offered genesis.
+        // let mut shard_conf = CasperShardConf::new();
+        let mut shard_conf = offered_shard_conf(&genesis_block);
         shard_conf.shard_name = shard_name.clone();
         shard_conf.max_parent_depth = 0;
         // A non-trivial deploy lifespan keeps the orphan sig in the
@@ -165,6 +195,20 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
 for(@_v <- @"dedup-orphan-shared") { Nil }
 "#
     .to_string();
+    // Changed by DR-134 (DR-65, gap G2): one key signs the shared producer and
+    // both of its consumers (DEFAULT_SEC). A deploy that consumes the datum of
+    // another signer needs the funding of that signer, which is gap G3.
+    // Changed by G3 (DR-135): dev's signer returns, and the producer's purse
+    // funds the read.
+    // let deploy_v = construct_deploy::source_deploy_now_full(
+    //     rho_shared_consumer.clone(),
+    //     None,
+    //     None,
+    //     Some(construct_deploy::DEFAULT_SEC.clone()),
+    //     None,
+    //     None,
+    // )
+    // .expect("build deploy_v");
     let deploy_v = construct_deploy::source_deploy_now_full(
         rho_shared_consumer.clone(),
         None,
@@ -179,6 +223,19 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     // Sleep keeps the timestamp distinct so deploy_w's sig differs from
     // deploy_v's even though they share a Rholang body.
     tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    // Changed by DR-134 (DR-65, gap G2): one key, as for deploy_v. The two
+    // offers have one signer and one term, so the distinct timestamps make
+    // them two envelopes.
+    // Changed by G3 (DR-135): dev's signer returns, as for deploy_v.
+    // let deploy_w = construct_deploy::source_deploy_now_full(
+    //     rho_shared_consumer,
+    //     None,
+    //     None,
+    //     Some(construct_deploy::DEFAULT_SEC.clone()),
+    //     None,
+    //     None,
+    // )
+    // .expect("build deploy_w");
     let deploy_w = construct_deploy::source_deploy_now_full(
         rho_shared_consumer,
         None,
@@ -195,6 +252,17 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     );
 
     // ── block_a: body.deploys = [X, V] ──
+    // Changed by DR-134 (DR-65, gap G2): the raw block names no body-only
+    // deploy. The offered checkpoint below runs the batch [X, V] and gives the
+    // block its processed offers.
+    // let block_a_raw = block_implicits::get_random_block(
+    //     ...
+    //     Some(vec![
+    //         ProcessedDeploy::empty(deploy_x.clone()),
+    //         ProcessedDeploy::empty(deploy_v.clone()),
+    //     ]),
+    //     ...
+    // );
     let block_a_raw = block_implicits::get_random_block(
         Some(1),
         Some(1),
@@ -205,25 +273,35 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(deploy_v.clone()),
-        ]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_a = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-65, gap G2): the offered checkpoint of the batch.
+    // let checkpoint_a = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![genesis_block.clone()],
+    //     proto_util::deploys(&block_a_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&block_a_raw),
+    let checkpoint_a = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_a_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![
+            PendingDeployCandidate::Envelope(deploy_x.envelope.clone()),
+            PendingDeployCandidate::Envelope(deploy_v.envelope.clone()),
+        ],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -232,17 +310,31 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     )
     .await
     .expect("compute block_a checkpoint");
+    // Added by DR-134 (DR-65, gap G2): block_a carries both offers.
+    assert_eq!(checkpoint_a.deploys.len(), 2, "block_a carries [X, V]");
+    // Changed by DR-134 (DR-65, gap G2): a processed offer cannot commit a
+    // platform failure, so the message names its identity only.
+    // for pd in &checkpoint_a.deploys {
+    //     assert!(
+    //         !pd.is_failed,
+    //         "deploy in block_a must execute cleanly (sig {}): {:?}",
+    //         hex::encode(&pd.deploy.sig[..8]),
+    //         pd.system_deploy_error
+    //     );
+    // }
     for pd in &checkpoint_a.deploys {
         assert!(
-            !pd.is_failed,
-            "deploy in block_a must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.deploy.sig[..8]),
-            pd.system_deploy_error
+            !pd.is_failed(),
+            "deploy in block_a must execute cleanly (sig {})",
+            hex::encode(&pd.identity_bytes()[..8]),
         );
     }
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a.deploys.into_iter().map(Into::into).collect();
+    // Changed by DR-134 (DR-65, gap G2): the checkpoint returns processed
+    // user deploys.
+    // block_a.body.deploys = checkpoint_a.deploys.into_iter().map(Into::into).collect();
+    block_a.body.deploys = checkpoint_a.deploys;
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -251,6 +343,16 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         .expect("dag A");
 
     // ── block_b: body.deploys = [X, W] ──
+    // Changed by DR-134 (DR-65, gap G2): the raw block names no body-only
+    // deploy, as for block_a.
+    // let block_b_raw = block_implicits::get_random_block(
+    //     ...
+    //     Some(vec![
+    //         ProcessedDeploy::empty(deploy_x.clone()),
+    //         ProcessedDeploy::empty(deploy_w.clone()),
+    //     ]),
+    //     ...
+    // );
     let block_b_raw = block_implicits::get_random_block(
         Some(1),
         Some(2),
@@ -261,25 +363,35 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(deploy_w.clone()),
-        ]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_b = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-65, gap G2): the offered checkpoint of the batch.
+    // let checkpoint_b = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![genesis_block.clone()],
+    //     proto_util::deploys(&block_b_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&block_b_raw),
+    let checkpoint_b = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_b_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![
+            PendingDeployCandidate::Envelope(deploy_x.envelope.clone()),
+            PendingDeployCandidate::Envelope(deploy_w.envelope.clone()),
+        ],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
@@ -288,17 +400,29 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     )
     .await
     .expect("compute block_b checkpoint");
+    // Added by DR-134 (DR-65, gap G2): block_b carries both offers.
+    assert_eq!(checkpoint_b.deploys.len(), 2, "block_b carries [X, W]");
+    // Changed by DR-134 (DR-65, gap G2): as for block_a.
+    // for pd in &checkpoint_b.deploys {
+    //     assert!(
+    //         !pd.is_failed,
+    //         "deploy in block_b must execute cleanly (sig {}): {:?}",
+    //         hex::encode(&pd.deploy.sig[..8]),
+    //         pd.system_deploy_error
+    //     );
+    // }
     for pd in &checkpoint_b.deploys {
         assert!(
-            !pd.is_failed,
-            "deploy in block_b must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.deploy.sig[..8]),
-            pd.system_deploy_error
+            !pd.is_failed(),
+            "deploy in block_b must execute cleanly (sig {})",
+            hex::encode(&pd.identity_bytes()[..8]),
         );
     }
     let mut block_b = block_b_raw;
     block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b.deploys.into_iter().map(Into::into).collect();
+    // Changed by DR-134 (DR-65, gap G2): as for block_a.
+    // block_b.body.deploys = checkpoint_b.deploys.into_iter().map(Into::into).collect();
+    block_b.body.deploys = checkpoint_b.deploys;
     block_b.body.system_deploys = checkpoint_b.system_deploys;
     block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
@@ -336,6 +460,8 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         // The buffer populate is owner-scoped: this test models the node of
         // the carriers' sender, the deploy's recovery owner.
         Some(&validator),
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("compute_parents_post_state over [block_a, block_b]");

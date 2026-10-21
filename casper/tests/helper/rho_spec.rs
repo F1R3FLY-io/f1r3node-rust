@@ -329,7 +329,13 @@ pub async fn get_results(
 
     let body =
         async {
-            let mut genesis_builder = GenesisBuilder::new();
+            // Changed by DR-134 (DR-66 item 1): the harness evaluates its terms through
+            // the named inj path, not as offered deploys. Its genesis uses protocol 6 with
+            // the offered-funded policy, but the vaults keep the balances of the parameters,
+            // as on dev. The offered funding raise does not apply.
+            // let mut genesis_builder = GenesisBuilder::new();
+            let parameter_vaults = genesis_parameters.2.vaults.clone();
+            let mut genesis_builder = GenesisBuilder::new().with_vaults(parameter_vaults);
             let genesis = genesis_builder
                 .build_genesis_with_parameters(Some(genesis_parameters))
                 .await

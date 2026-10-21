@@ -15,7 +15,10 @@ use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, CompatibleAcquisitionTerms, OFFERED_PRODUCTION_READY,
 };
 
-const FIXED_FEE_REV: u128 = 1;
+// Changed by DR-134 (DR-66 item 2): visible in the crate, so that an
+// owner-direct offer signs the same REV ceiling.
+// const FIXED_FEE_REV: u128 = 1;
+pub(crate) const FIXED_FEE_REV: u128 = 1;
 
 pub type MonetaryCursorRead<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Option<MonetaryCursor>, CasperError>> + Send + 'a>,
@@ -228,6 +231,10 @@ pub struct StateBoundObservation {
     pub retained_phlo: u64,
     pub resource_rev: u128,
     pub fee_rev: u128,
+    /// Added by G3 (DR-135, S7): the fresh phlo that owners paid, and the
+    /// REV that they paid for it at their own prices (G-4).
+    pub owner_phlo: u64,
+    pub owner_rev: u128,
     pub operation_evidence_hash: [u8; 32],
     pub funding_evidence_hash: [u8; 32],
     pub failure_class: u8,
@@ -391,20 +398,48 @@ pub fn compare_state_bound_observations(
             "candidate differs from its signed envelope or captured funding/execution roots",
         ));
     }
+    // Changed by G3 (DR-135, S11): the signed limit bounds only the caller's
+    // part of the usage (item 13). The replaced check follows.
+    // if observed.fresh_phlo > observed.phlo_used
+    //     || observed
+    //         .phlo_used
+    //         .checked_add(observed.retained_phlo)
+    //         .filter(|used| *used <= phlo_limit)
+    //         .is_none()
+    // {
     if observed.fresh_phlo > observed.phlo_used
         || observed
             .phlo_used
-            .checked_add(observed.retained_phlo)
+            .checked_sub(observed.owner_phlo)
+            .and_then(|client| client.checked_add(observed.retained_phlo))
             .filter(|used| *used <= phlo_limit)
             .is_none()
     {
         return Err(invalid("candidate exceeds signed phloLimit"));
     }
-    let resource_rev = u128::from(observed.fresh_phlo)
+    // Changed by G3 (DR-135, S7): the client pays the fresh phlo that no
+    // owner paid at the signed price, and the owners pay `owner_rev`. The
+    // signed ceiling bounds the client's charge (G-3).
+    // let resource_rev = u128::from(observed.fresh_phlo)
+    //     .checked_add(u128::from(observed.retained_phlo))
+    //     .and_then(|used| used.checked_mul(u128::from(phlo_price)))
+    //     .ok_or_else(|| invalid("candidate resource REV charge overflows"))?;
+    // let total_rev = resource_rev
+    //     .checked_add(FIXED_FEE_REV)
+    //     .ok_or_else(|| invalid("candidate total REV charge overflows"))?;
+    // if observed.resource_rev != resource_rev || observed.fee_rev != FIXED_FEE_REV {
+    let client_fresh = observed
+        .fresh_phlo
+        .checked_sub(observed.owner_phlo)
+        .ok_or_else(|| invalid("candidate owner phlo exceeds its fresh phlo"))?;
+    let client_rev = u128::from(client_fresh)
         .checked_add(u128::from(observed.retained_phlo))
         .and_then(|used| used.checked_mul(u128::from(phlo_price)))
         .ok_or_else(|| invalid("candidate resource REV charge overflows"))?;
-    let total_rev = resource_rev
+    let resource_rev = client_rev
+        .checked_add(observed.owner_rev)
+        .ok_or_else(|| invalid("candidate resource REV charge overflows"))?;
+    let total_rev = client_rev
         .checked_add(FIXED_FEE_REV)
         .ok_or_else(|| invalid("candidate total REV charge overflows"))?;
     if observed.resource_rev != resource_rev || observed.fee_rev != FIXED_FEE_REV {

@@ -137,12 +137,26 @@ new
 
         // 7. Run exploratory deploy to obtain the trie map handle
         let check2_root_bytes = check2.root.to_bytes_prost();
-        let (trie_map_handle_r, _cost) = runtime_ops
-            .play_exploratory_deploy_with_phlo_limit(
-                get_trie_map_handle_rho.to_string(),
+        // Changed by DR-134 (DR-66 item 3, scope map): this read runs on a raw
+        // runtime with no genesis policy, so it is an internal read and uses
+        // the unmetered strict read. The legacy-metered exploratory deploy is
+        // deleted with the legacy meter.
+        // let (trie_map_handle_r, _cost) = runtime_ops
+        //     .play_exploratory_deploy_with_phlo_limit(
+        //         get_trie_map_handle_rho.to_string(),
+        //         &check2_root_bytes,
+        //         None,
+        //         5_000_000,
+        //     )
+        //     .await
+        //     .expect("Failed to play exploratory deploy");
+        let trie_map_handle_r = runtime_ops
+            .play_exploratory_par_strict(
+                rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
+                    get_trie_map_handle_rho,
+                )
+                .expect("the read term compiles"),
                 &check2_root_bytes,
-                None,
-                5_000_000,
             )
             .await
             .expect("Failed to play exploratory deploy");

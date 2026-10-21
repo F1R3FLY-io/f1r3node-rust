@@ -55,6 +55,9 @@ pub fn recognize_signed_term<'ast>(
     par.cost_signed_terms.push(CostSignedTerm {
         body: Some(body),
         signature: Some(signature),
+        // Added by G3 (DR-135, S3b): a signed term of the surface syntax has
+        // no held price. Only the reducer makes held terms.
+        held_price: None,
     });
     Ok(ProcVisitOutputs {
         par,
@@ -62,18 +65,44 @@ pub fn recognize_signed_term<'ast>(
     })
 }
 
+/// Added by G3 (DR-135): the signed term that is all of `par`. It is `Some`
+/// only when `par` holds exactly one signed term and no other process. The
+/// normalizer flattens such a nested signature, and the owner checks of a
+/// fired body read the signature of such a body (A5).
+pub(crate) fn solely_signed(par: &Par) -> Option<&CostSignedTerm> {
+    match par.cost_signed_terms.as_slice() {
+        [term]
+            if par.sends.is_empty()
+                && par.receives.is_empty()
+                && par.news.is_empty()
+                && par.exprs.is_empty()
+                && par.matches.is_empty()
+                && par.unforgeables.is_empty()
+                && par.bundles.is_empty()
+                && par.connectives.is_empty()
+                && par.conditionals.is_empty()
+                && par.cost_stacks.is_empty() =>
+        {
+            Some(term)
+        }
+        _ => None,
+    }
+}
+
 fn flatten_nested_signature(par: Par, signature: CostSignature) -> (Par, CostSignature) {
-    let solely_nested = par.sends.is_empty()
-        && par.receives.is_empty()
-        && par.news.is_empty()
-        && par.exprs.is_empty()
-        && par.matches.is_empty()
-        && par.unforgeables.is_empty()
-        && par.bundles.is_empty()
-        && par.connectives.is_empty()
-        && par.conditionals.is_empty()
-        && par.cost_stacks.is_empty()
-        && par.cost_signed_terms.len() == 1;
+    // Changed by G3 (DR-135): the test moved to `solely_signed`.
+    // let solely_nested = par.sends.is_empty()
+    //     && par.receives.is_empty()
+    //     && par.news.is_empty()
+    //     && par.exprs.is_empty()
+    //     && par.matches.is_empty()
+    //     && par.unforgeables.is_empty()
+    //     && par.bundles.is_empty()
+    //     && par.connectives.is_empty()
+    //     && par.conditionals.is_empty()
+    //     && par.cost_stacks.is_empty()
+    //     && par.cost_signed_terms.len() == 1;
+    let solely_nested = solely_signed(&par).is_some();
     if !solely_nested {
         return (par, signature);
     }

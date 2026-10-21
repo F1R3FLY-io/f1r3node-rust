@@ -1844,22 +1844,48 @@ async fn prepare_user_deploys_with_policy_and_limits(
     let mut deferred_user_deploy_bytes = deferred_user_deploy_bytes;
     let mut cap_hit = cap_hit;
     let mut byte_cap_hit = byte_cap_hit;
-    let mut offered_alternates = Vec::new();
+    // Changed by DR-134 (DR-65, O-4): a batch has no alternates. A failing
+    // member is quarantined and the rest of the batch runs again (DR-63).
+    // let mut offered_alternates = Vec::new();
+    let offered_alternates = Vec::new();
     // Added by DR-116 (gap G6): the recovered offered pass, retry before ordinary
     // as in the legacy stage. At most one recovered envelope per block, as the
     // selected candidate: the pre-state guard in create_inner covers only the
     // selected candidates, so a recovered envelope never becomes an alternate.
     // Further recovered envelopes wait for later proposals.
-    if let Some(envelope) = recovered_offered.into_iter().next() {
+    // Changed by DR-134 (DR-65, O-4): up to dev's retry cap of recovered
+    // envelopes join the batch, under dev's skip-and-continue byte rule: an
+    // envelope is admitted when it fits or when nothing is selected yet.
+    // if let Some(envelope) = recovered_offered.into_iter().next() {
+    //     let encoded_bytes = envelope
+    //         .to_proto()
+    //         .map_err(CasperError::RuntimeError)?
+    //         .encoded_len();
+    //     if selected_user_deploy_bytes.saturating_add(encoded_bytes) > total_byte_budget {
+    //         byte_cap_hit = true;
+    //         cap_hit = true;
+    //     }
+    //     selected_user_deploy_bytes = selected_user_deploy_bytes.saturating_add(encoded_bytes);
+    for envelope in recovered_offered
+        .into_iter()
+        .take(RETRY_DEPLOY_REPROPOSAL_CAP)
+    {
         let encoded_bytes = envelope
             .to_proto()
             .map_err(CasperError::RuntimeError)?
             .encoded_len();
-        if selected_user_deploy_bytes.saturating_add(encoded_bytes) > total_byte_budget {
+        let next_bytes = selected_user_deploy_bytes.saturating_add(encoded_bytes);
+        if next_bytes > total_byte_budget && !selected_candidates.is_empty() {
+            byte_cap_hit = true;
+            cap_hit = true;
+            deferred_user_deploy_bytes = deferred_user_deploy_bytes.saturating_add(encoded_bytes);
+            continue;
+        }
+        if next_bytes > total_byte_budget {
             byte_cap_hit = true;
             cap_hit = true;
         }
-        selected_user_deploy_bytes = selected_user_deploy_bytes.saturating_add(encoded_bytes);
+        selected_user_deploy_bytes = next_bytes;
         tracing::info!(
             target: "f1r3fly.casper.deploy_lifecycle",
             event = "selected",
@@ -1907,13 +1933,15 @@ async fn prepare_user_deploys_with_policy_and_limits(
             .to_proto()
             .map_err(CasperError::RuntimeError)?
             .encoded_len();
-        if !selected_candidates.is_empty() {
-            deferred_user_deploy_bytes = deferred_user_deploy_bytes.saturating_add(encoded_bytes);
-            if offered_alternates.len() < ordinary_cap.saturating_sub(1) {
-                offered_alternates.push(envelope);
-            }
-            continue;
-        }
+        // Changed by DR-134 (DR-65, O-4): the stored offers join the batch up
+        // to the block caps below, so no offer becomes an alternate.
+        // if !selected_candidates.is_empty() {
+        //     deferred_user_deploy_bytes = deferred_user_deploy_bytes.saturating_add(encoded_bytes);
+        //     if offered_alternates.len() < ordinary_cap.saturating_sub(1) {
+        //         offered_alternates.push(envelope);
+        //     }
+        //     continue;
+        // }
         if selected_ordinary_count >= ordinary_cap || selected_candidates.len() >= max_user_deploys
         {
             cap_hit = true;
@@ -1936,7 +1964,6 @@ async fn prepare_user_deploys_with_policy_and_limits(
         selected_ordinary_count += 1;
         selected_candidates.push(PendingDeployCandidate::Envelope(envelope));
     }
-
     Ok(PreparedUserDeploys {
         deploys: selected,
         selected_candidates,
@@ -3746,6 +3773,8 @@ async fn create_inner(
         Some(&rejected_deploy_buffer),
         floor_ctx.as_ref(),
         Some(&local_validator),
+        // Added by DR-134 (DR-66): the adopted policy for the recompute.
+        adopted_policy,
     )
     .await?;
     metrics::histogram!(
@@ -3984,7 +4013,13 @@ async fn create_inner(
             .take(user_deploy_limit)
             .cloned()
             .collect();
-        if !matches!(deploys.as_slice(), [PendingDeployCandidate::Envelope(_)]) {
+        // Changed by DR-134 (DR-65): no dummy deploy joins an offered batch of
+        // any size.
+        // if !matches!(deploys.as_slice(), [PendingDeployCandidate::Envelope(_)]) {
+        if !deploys
+            .iter()
+            .any(|candidate| matches!(candidate, PendingDeployCandidate::Envelope(_)))
+        {
             deploys.extend(
                 dummy_deploys
                     .iter()
@@ -3996,13 +4031,25 @@ async fn create_inner(
         let attempted_total_deploys = deploys.len();
         // Disabled: legacy accounting forbidden under v6 (epic 8946, D3).
         // let attempted_offered = matches!(deploys.as_slice(), [PendingDeployCandidate::Envelope(_)]);
-        let attempted_offered_id = match deploys.as_slice() {
-            [PendingDeployCandidate::Envelope(envelope)] => match envelope.identity() {
-                models::rust::deploy_id::DeployLookupId::V6(deploy_id) => Some(*deploy_id),
-                _ => None,
-            },
-            _ => None,
-        };
+        // Changed by DR-134 (DR-65): the identities of every member of the
+        // attempted batch.
+        // let attempted_offered_id = match deploys.as_slice() {
+        //     [PendingDeployCandidate::Envelope(envelope)] => match envelope.identity() {
+        //         models::rust::deploy_id::DeployLookupId::V6(deploy_id) => Some(*deploy_id),
+        //         _ => None,
+        //     },
+        //     _ => None,
+        // };
+        let attempted_offered_ids: Vec<models::rust::deploy_id::DeployIdV6> = deploys
+            .iter()
+            .filter_map(|candidate| match candidate {
+                PendingDeployCandidate::Envelope(envelope) => match envelope.identity() {
+                    models::rust::deploy_id::DeployLookupId::V6(deploy_id) => Some(*deploy_id),
+                    _ => None,
+                },
+                PendingDeployCandidate::Legacy(_) => None,
+            })
+            .collect();
 
         match interpreter_util::compute_deploys_checkpoint_envelopes(
             block_store,
@@ -4062,8 +4109,20 @@ async fn create_inner(
             //     user_deploy_limit = original_user_deploys;
             //     continue;
             // }
+            // Changed by DR-134 (DR-65 items 4 and 6, O-5, O-6): a rejection
+            // names a member of the attempted batch, and a group rejection
+            // names the other members of the rejected groups. Each named member
+            // is quarantined, and the rest of the batch runs again from R0 as a
+            // fresh attempt (DR-63).
+            // Err(CasperError::OfferedCandidateRejected(rejection))
+            //     if attempted_offered_id == Some(rejection.deploy_id) =>
+            // {
             Err(CasperError::OfferedCandidateRejected(rejection))
-                if attempted_offered_id == Some(rejection.deploy_id) =>
+                if attempted_offered_ids.contains(&rejection.deploy_id)
+                    && rejection
+                        .group
+                        .iter()
+                        .all(|member| attempted_offered_ids.contains(member)) =>
             {
                 // Changed by DR-116 (gap G6): the quarantine also ends the
                 // envelope's recovery custody, as the legacy toxic quarantine does.
@@ -4075,38 +4134,100 @@ async fn create_inner(
                 //         block_number: next_block_num,
                 //         reason: rejection.reason.clone(),
                 //     })?;
-                let (removed, removed_from_rejected_buffer) = quarantine_offered_candidate(
-                    &deploy_storage,
-                    &rejected_deploy_buffer,
-                    EnvelopeRejection {
-                        deploy_id: rejection.deploy_id,
-                        pre_state_root: Some(rejection.pre_state_root.to_vec()),
-                        block_number: next_block_num,
-                        reason: rejection.reason.clone(),
-                    },
-                )?;
-                tracing::warn!(
-                    target: "f1r3fly.casper.deploy_lifecycle",
-                    event = "rejected",
-                    reason = "offered_candidate_rejected",
-                    deploy_id = %hex::encode(rejection.deploy_id.as_array()),
-                    pre_state_root = %hex::encode(&rejection.pre_state_root),
-                    removed_from_deploy_storage = removed,
-                    removed_from_rejected_buffer,
-                    next_block = next_block_num,
-                    error = %rejection.reason,
-                    "deploy lifecycle"
-                );
+                // Changed by DR-134 (DR-65 items 4 and 6, O-5): every named
+                // member is quarantined.
+                // let (removed, removed_from_rejected_buffer) = quarantine_offered_candidate(
+                //     &deploy_storage,
+                //     &rejected_deploy_buffer,
+                //     EnvelopeRejection {
+                //         deploy_id: rejection.deploy_id,
+                //         pre_state_root: Some(rejection.pre_state_root.to_vec()),
+                //         block_number: next_block_num,
+                //         reason: rejection.reason.clone(),
+                //     },
+                // )?;
+                // tracing::warn!(
+                //     target: "f1r3fly.casper.deploy_lifecycle",
+                //     event = "rejected",
+                //     reason = "offered_candidate_rejected",
+                //     deploy_id = %hex::encode(rejection.deploy_id.as_array()),
+                //     pre_state_root = %hex::encode(&rejection.pre_state_root),
+                //     removed_from_deploy_storage = removed,
+                //     removed_from_rejected_buffer,
+                //     next_block = next_block_num,
+                //     error = %rejection.reason,
+                //     "deploy lifecycle"
+                // );
+                let mut rejected_members = Vec::with_capacity(rejection.group.len() + 1);
+                rejected_members.push(rejection.deploy_id);
+                rejected_members.extend(rejection.group.iter().copied());
+                for member in &rejected_members {
+                    let (removed, removed_from_rejected_buffer) = quarantine_offered_candidate(
+                        &deploy_storage,
+                        &rejected_deploy_buffer,
+                        EnvelopeRejection {
+                            deploy_id: *member,
+                            pre_state_root: Some(rejection.pre_state_root.to_vec()),
+                            block_number: next_block_num,
+                            reason: rejection.reason.clone(),
+                        },
+                    )?;
+                    tracing::warn!(
+                        target: "f1r3fly.casper.deploy_lifecycle",
+                        event = "rejected",
+                        reason = "offered_candidate_rejected",
+                        deploy_id = %hex::encode(member.as_array()),
+                        pre_state_root = %hex::encode(&rejection.pre_state_root),
+                        removed_from_deploy_storage = removed,
+                        removed_from_rejected_buffer,
+                        next_block = next_block_num,
+                        error = %rejection.reason,
+                        "deploy lifecycle"
+                    );
+                }
                 retry_count += 1;
-                ordered_user_deploys = match next_offered_attempt(
-                    &mut offered_alternates,
-                    has_slashing_deploys || has_recovered_rejected_slashes || allow_empty_blocks,
-                ) {
-                    OfferedAttempt::Candidate(envelope) => {
-                        vec![PendingDeployCandidate::Envelope(envelope)]
-                    }
-                    OfferedAttempt::NoUserDeploys => Vec::new(),
-                    OfferedAttempt::NoNewDeploys => return Ok(BlockCreatorResult::NoNewDeploys),
+                // Changed by DR-134 (DR-65, DR-63): the rest of the batch is the
+                // next attempt. An empty batch falls back as before.
+                // ordered_user_deploys = match next_offered_attempt(
+                //     &mut offered_alternates,
+                //     has_slashing_deploys || has_recovered_rejected_slashes || allow_empty_blocks,
+                // ) {
+                //     OfferedAttempt::Candidate(envelope) => {
+                //         vec![PendingDeployCandidate::Envelope(envelope)]
+                //     }
+                //     OfferedAttempt::NoUserDeploys => Vec::new(),
+                //     OfferedAttempt::NoNewDeploys => return Ok(BlockCreatorResult::NoNewDeploys),
+                // };
+                let remaining: Vec<PendingDeployCandidate> = ordered_user_deploys
+                    .iter()
+                    .take(user_deploy_limit)
+                    .filter(|candidate| match candidate {
+                        PendingDeployCandidate::Envelope(envelope) => match envelope.identity() {
+                            models::rust::deploy_id::DeployLookupId::V6(deploy_id) => {
+                                !rejected_members.contains(deploy_id)
+                            }
+                            _ => true,
+                        },
+                        PendingDeployCandidate::Legacy(_) => true,
+                    })
+                    .cloned()
+                    .collect();
+                ordered_user_deploys = match remaining.is_empty() {
+                    false => remaining,
+                    true => match next_offered_attempt(
+                        &mut offered_alternates,
+                        has_slashing_deploys
+                            || has_recovered_rejected_slashes
+                            || allow_empty_blocks,
+                    ) {
+                        OfferedAttempt::Candidate(envelope) => {
+                            vec![PendingDeployCandidate::Envelope(envelope)]
+                        }
+                        OfferedAttempt::NoUserDeploys => Vec::new(),
+                        OfferedAttempt::NoNewDeploys => {
+                            return Ok(BlockCreatorResult::NoNewDeploys)
+                        }
+                    },
                 };
                 original_user_deploys = ordered_user_deploys.len();
                 user_deploy_limit = original_user_deploys;
@@ -4728,29 +4849,66 @@ mod tests {
         (deploy_storage, prepared)
     }
 
+    // Disabled by DR-134 (DR-65, O-4): with G2 the stored offers join the
+    // batch up to the ordinary cap, and no offer becomes an alternate. The
+    // batch example below replaces this one.
+    // #[tokio::test]
+    // async fn deferred_offered_envelopes_become_bounded_canonical_alternates() {
+    //     let envelopes = [
+    //         offered_pending_envelope_at(3),
+    //         offered_pending_envelope_at(1),
+    //         offered_pending_envelope_at(2),
+    //     ];
+    //     let (_, wide) = prepare_offered_selection(&envelopes, 8).await;
+    //     assert!(matches!(
+    //         wide.selected_candidates.as_slice(),
+    //         [PendingDeployCandidate::Envelope(candidate)] if candidate == &envelopes[1]
+    //     ));
+    //     assert_eq!(wide.offered_alternates, vec![
+    //         envelopes[2].clone(),
+    //         envelopes[0].clone()
+    //     ]);
+    //
+    //     let (_, narrow) = prepare_offered_selection(&envelopes, 2).await;
+    //     assert!(matches!(
+    //         narrow.selected_candidates.as_slice(),
+    //         [PendingDeployCandidate::Envelope(candidate)] if candidate == &envelopes[1]
+    //     ));
+    //     assert_eq!(narrow.offered_alternates, vec![envelopes[2].clone()]);
+    // }
+
+    /// Added by DR-134 (DR-65, O-4): the stored offers join one batch, in
+    /// canonical order, up to the ordinary cap, and none becomes an alternate.
     #[tokio::test]
-    async fn deferred_offered_envelopes_become_bounded_canonical_alternates() {
+    async fn stored_offers_join_one_canonical_batch_up_to_the_ordinary_cap() {
         let envelopes = [
             offered_pending_envelope_at(3),
             offered_pending_envelope_at(1),
             offered_pending_envelope_at(2),
         ];
+        let selected = |prepared: &PreparedUserDeploys| -> Vec<DeployEnvelope> {
+            ordered_user_candidates(prepared.selected_candidates.clone())
+                .into_iter()
+                .map(|candidate| match candidate {
+                    PendingDeployCandidate::Envelope(envelope) => envelope,
+                    PendingDeployCandidate::Legacy(_) => panic!("an offered shard selects offers"),
+                })
+                .collect()
+        };
         let (_, wide) = prepare_offered_selection(&envelopes, 8).await;
-        assert!(matches!(
-            wide.selected_candidates.as_slice(),
-            [PendingDeployCandidate::Envelope(candidate)] if candidate == &envelopes[1]
-        ));
-        assert_eq!(wide.offered_alternates, vec![
+        assert_eq!(selected(&wide), vec![
+            envelopes[1].clone(),
             envelopes[2].clone(),
             envelopes[0].clone()
         ]);
+        assert!(wide.offered_alternates.is_empty());
 
         let (_, narrow) = prepare_offered_selection(&envelopes, 2).await;
-        assert!(matches!(
-            narrow.selected_candidates.as_slice(),
-            [PendingDeployCandidate::Envelope(candidate)] if candidate == &envelopes[1]
-        ));
-        assert_eq!(narrow.offered_alternates, vec![envelopes[2].clone()]);
+        assert_eq!(selected(&narrow), vec![
+            envelopes[1].clone(),
+            envelopes[2].clone()
+        ]);
+        assert!(narrow.offered_alternates.is_empty());
     }
 
     fn inactive_pending_envelope(seed: u8) -> DeployEnvelope {
@@ -4825,9 +4983,16 @@ mod tests {
 
         /// Extracted from `OfferedCandidateQuarantine.tla`: one proposal driven through
         /// `next_offered_attempt` exactly as `create_inner` drives it satisfies
-        /// `NoCandidateErrorEscapes`, `FirstFundableIncluded`,
+        /// `NoCandidateErrorEscapes`, `FundableWindowIncluded` (which replaces
+        /// `FirstFundableIncluded` since DR-134),
         /// `RemovedOnlyByInclusionOrQuarantine`, `QuarantinedNeverIncluded`, and
         /// `AttemptsBounded`.
+        // Changed by DR-134 (DR-65, O-6): `create_inner` drives a batch. A
+        // rejected member is quarantined and the rest of the batch runs again;
+        // `next_offered_attempt` runs only when the batch is empty. The model
+        // follows that loop: the included members are the fundable members of
+        // the window (FundableWindowIncluded), each unfundable member is
+        // quarantined, and the attempts stay at most cap + 1.
         #[test]
         fn offered_attempt_loop_matches_quarantine_model(
             fundable in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..8),
@@ -4835,40 +5000,53 @@ mod tests {
             other_work in proptest::prelude::any::<bool>(),
         ) {
             let window: Vec<usize> = (0..fundable.len().min(cap)).collect();
-            let mut candidates = window.clone().into_iter();
-            let mut attempt = next_offered_attempt(&mut candidates, other_work);
+            // Changed by DR-134 (DR-65, O-6): the batch loop of `create_inner`.
+            // The decision pass stops at the first member that fails alone, so
+            // each attempt quarantines that member and retries the rest.
+            let mut batch = window.clone();
+            let mut no_alternates = Vec::<usize>::new().into_iter();
             let mut attempts = 0usize;
             let mut quarantined = Vec::with_capacity(window.len());
-            let mut included = None;
+            let mut included = Vec::new();
             let outcome = loop {
-                match attempt {
-                    OfferedAttempt::NoNewDeploys => break ModelOutcome::NoNewDeploys,
-                    OfferedAttempt::NoUserDeploys => {
-                        attempts += 1;
-                        break ModelOutcome::Created;
-                    }
-                    OfferedAttempt::Candidate(candidate) => {
-                        attempts += 1;
-                        if fundable[candidate] {
-                            included = Some(candidate);
+                if batch.is_empty() {
+                    match next_offered_attempt(&mut no_alternates, other_work) {
+                        OfferedAttempt::NoNewDeploys => break ModelOutcome::NoNewDeploys,
+                        OfferedAttempt::NoUserDeploys => {
+                            attempts += 1;
                             break ModelOutcome::Created;
                         }
-                        quarantined.push(candidate);
-                        attempt = next_offered_attempt(&mut candidates, other_work);
+                        OfferedAttempt::Candidate(_) => {
+                            panic!("a batch proposal has no alternates")
+                        }
+                    }
+                }
+                attempts += 1;
+                match batch.iter().position(|member| !fundable[*member]) {
+                    None => {
+                        included = batch.clone();
+                        break ModelOutcome::Created;
+                    }
+                    Some(position) => {
+                        quarantined.push(batch.remove(position));
                     }
                 }
             };
-            let first_fundable = window.iter().copied().find(|candidate| fundable[*candidate]);
-            proptest::prop_assert_eq!(included, first_fundable);
-            match first_fundable {
-                Some(chosen) => {
-                    proptest::prop_assert_eq!(outcome, ModelOutcome::Created);
-                    proptest::prop_assert_eq!(&quarantined, &window[..chosen].to_vec());
-                }
-                None => {
-                    proptest::prop_assert_eq!(&quarantined, &window);
-                    proptest::prop_assert_eq!(outcome == ModelOutcome::Created, other_work);
-                }
+            let fundable_window: Vec<usize> = window
+                .iter()
+                .copied()
+                .filter(|member| fundable[*member])
+                .collect();
+            proptest::prop_assert_eq!(&included, &fundable_window);
+            let unfundable_window: Vec<usize> = window
+                .iter()
+                .copied()
+                .filter(|member| !fundable[*member])
+                .collect();
+            proptest::prop_assert_eq!(&quarantined, &unfundable_window);
+            match fundable_window.is_empty() {
+                false => proptest::prop_assert_eq!(outcome, ModelOutcome::Created),
+                true => proptest::prop_assert_eq!(outcome == ModelOutcome::Created, other_work),
             }
             proptest::prop_assert!(quarantined.iter().all(|candidate| !fundable[*candidate]));
             proptest::prop_assert!(attempts <= cap + 1);
@@ -4880,8 +5058,8 @@ mod tests {
 
         /// Extracted from `OfferedCandidateQuarantine.tla` (`AttemptsBounded`: at most
         /// `ordinary_cap - 1` alternates in canonical order) and from
-        /// `OfferedOnlyActivation.v` (`active_selection_is_height_independent`,
-        /// `active_selection_contains_only_offered`, and quarantine of inactive formats).
+        /// `OfferedOnlyActivation.v` (`selection_is_height_independent`,
+        /// `selection_contains_only_offered`, and quarantine of inactive formats).
         #[test]
         fn offered_selection_window_is_canonical_bounded_and_height_independent(
             stamps in proptest::collection::btree_set(1i64..1_000, 1..6)
@@ -4916,7 +5094,9 @@ mod tests {
                 let (storage, prepared) =
                     runtime.block_on(prepare_offered_selection_at(&pending, cap, height));
                 proptest::prop_assert!(prepared.deploys.is_empty());
-                proptest::prop_assert!(prepared.offered_alternates.len() < cap);
+                // Changed by DR-134 (DR-65, O-4): a batch has no alternates.
+                // proptest::prop_assert!(prepared.offered_alternates.len() < cap);
+                proptest::prop_assert!(prepared.offered_alternates.is_empty());
                 let selected: Vec<DeployEnvelope> = prepared
                     .selected_candidates
                     .iter()
@@ -4927,12 +5107,27 @@ mod tests {
                         }
                     })
                     .collect();
-                proptest::prop_assert_eq!(&selected, &canonical[..1].to_vec());
-                let expected_alternates = canonical.len().min(cap) - 1;
-                proptest::prop_assert_eq!(
-                    &prepared.offered_alternates,
-                    &canonical[1..=expected_alternates].to_vec()
-                );
+                // Changed by DR-134 (DR-65, O-4): the batch is the canonical
+                // prefix of the offers, up to the ordinary cap.
+                // proptest::prop_assert_eq!(&selected, &canonical[..1].to_vec());
+                // let expected_alternates = canonical.len().min(cap) - 1;
+                // proptest::prop_assert_eq!(
+                //     &prepared.offered_alternates,
+                //     &canonical[1..=expected_alternates].to_vec()
+                // );
+                let selected: Vec<DeployEnvelope> = ordered_user_candidates(
+                    selected
+                        .into_iter()
+                        .map(PendingDeployCandidate::Envelope)
+                        .collect(),
+                )
+                .into_iter()
+                .map(|candidate| match candidate {
+                    PendingDeployCandidate::Envelope(envelope) => envelope,
+                    PendingDeployCandidate::Legacy(_) => panic!("an offered shard selects offers"),
+                })
+                .collect();
+                proptest::prop_assert_eq!(&selected, &canonical[..canonical.len().min(cap)].to_vec());
                 let storage = storage.lock();
                 for envelope in &inactive {
                     let deploy_id = v6_identity(envelope);

@@ -21,8 +21,11 @@
 // checkpoint computation but before signing) is the canonical way
 // to drive replay-mismatch.
 
-use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): the offered verdict is a BlockException,
+// and the DAG query needs the Casper trait.
+// use casper::rust::block_status::{BlockError, InvalidBlock};
+use casper::rust::block_status::BlockError;
+use casper::rust::casper::MultiParentCasper;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -30,6 +33,9 @@ use super::integration_helpers::{
     canonical_validator_order, production_snapshot_at, propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -62,13 +68,37 @@ async fn integration_t_invalid_transaction() {
         .process_block(mutated.clone())
         .await
         .expect("process_block");
+    // Changed by DR-134 (DR-66 item 1): the offered replay checks the
+    // committed post-state itself (`offered_block.rs:563-567`), so validation
+    // returns a BlockException, and the block processor records the block as
+    // InvalidTransaction (`block_processor.rs:629-648`), whose demoted drop arm
+    // keeps the block out of the DAG. The drop and the absence of slash
+    // evidence are the same as for a body-only block.
+    // assert!(
+    //     matches!(
+    //         status,
+    //         Either::Left(BlockError::Invalid(InvalidBlock::InvalidTransaction))
+    //     ),
+    //     "expected InvalidTransaction, got: {:?}",
+    //     status
+    // );
     assert!(
         matches!(
-            status,
-            Either::Left(BlockError::Invalid(InvalidBlock::InvalidTransaction))
+            &status,
+            Either::Left(BlockError::BlockException(error))
+                if error.to_string().contains("offered block replay post-state differs from commitment")
         ),
-        "expected InvalidTransaction, got: {:?}",
+        "expected the offered replay mismatch, got: {:?}",
         status
+    );
+    let dag = nodes[1]
+        .casper
+        .block_dag()
+        .await
+        .expect("dag representation");
+    assert!(
+        !dag.contains(&mutated.block_hash),
+        "a demoted verdict's block must not enter the DAG"
     );
 
     let snapshot = production_snapshot_at(

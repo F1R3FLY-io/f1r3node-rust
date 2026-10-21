@@ -83,6 +83,8 @@ fn snapshot(quantities: [u64; 3], owners: usize, copies: usize) -> ByteObservati
                 .map(|region| CostRegion {
                     instance_id: vec![region; 32],
                     signature: Some(signature.clone()),
+                    // Added by G3 (DR-135): no price and no caller.
+                    ..Default::default()
                 })
                 .collect(),
         },

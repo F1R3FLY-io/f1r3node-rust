@@ -892,7 +892,14 @@ impl<'u> FundingResolver<'u> {
                 Some(_) => Some(children.next().ok_or_else(missing)?),
                 None => None,
             };
-            cost_signed_terms.push(CostSignedTerm { body, signature });
+            // Changed by G3 (DR-135, S3b): the rebuilt term keeps its held
+            // price.
+            // cost_signed_terms.push(CostSignedTerm { body, signature });
+            cost_signed_terms.push(CostSignedTerm {
+                body,
+                signature,
+                held_price: signed.held_price,
+            });
         }
         let mut cost_stacks = Vec::with_capacity(par.cost_stacks.len());
         for stack in &par.cost_stacks {
@@ -1468,5 +1475,28 @@ mod tests {
             resolve_lexical_names_for_funding(&program, rand.clone(), &HashMap::new()).unwrap();
         let twice = resolve_lexical_names_for_funding(&once, rand, &HashMap::new()).unwrap();
         assert_eq!(once, twice);
+    }
+
+    /// Added by G3 (DR-135, S3b): the rebuild keeps the held price of a held
+    /// term.
+    #[test]
+    fn resolution_keeps_the_held_price() {
+        let program = Par {
+            cost_signed_terms: vec![CostSignedTerm {
+                body: Some(Par::default()),
+                signature: Some(CostSignature {
+                    value: Some(Value::Ground(vec![7])),
+                }),
+                held_price: Some(9),
+            }],
+            ..Default::default()
+        };
+        let resolved = resolve_lexical_names_for_funding(
+            &program,
+            Blake2b512Random::create_from_bytes(b"held price"),
+            &HashMap::new(),
+        )
+        .expect("the program resolves");
+        assert_eq!(resolved.cost_signed_terms[0].held_price, Some(9));
     }
 }

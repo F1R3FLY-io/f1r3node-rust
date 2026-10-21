@@ -809,26 +809,75 @@ impl WebApi for WebApiImpl {
         let snapshot =
             BlockAPI::list_pending_deploys(&self.engine_cell, deployer_bytes.as_deref()).await?;
 
+        // Changed by DR-134 (DR-66): an entry is a legacy deploy or an offered
+        // envelope. An envelope reports its signed price and limit, its primary
+        // signer as the deployer, and its 32-byte deploy id as `sig`, the id
+        // that the offered lookups take.
+        // let deploys = snapshot
+        //     .deploys
+        //     .into_iter()
+        //     .map(|(signed, is_rejected)| {
+        //         let dd = &signed.data;
+        //         PendingDeployJson {
+        //             term: dd.term.clone(),
+        //             timestamp: dd.time_stamp,
+        //             phlo_price: dd.phlo_price,
+        //             phlo_limit: dd.phlo_limit,
+        //             valid_after_block_number: dd.valid_after_block_number,
+        //             shard_id: dd.shard_id.clone(),
+        //             deployer: hex::encode(&signed.pk.bytes),
+        //             sig: hex::encode(&signed.sig),
+        //             sig_algorithm: signed.sig_algorithm.name(),
+        //             expiration_timestamp: dd.expiration_timestamp,
+        //             is_rejected,
+        //         }
+        //     })
+        //     .collect();
         let deploys = snapshot
             .deploys
             .into_iter()
-            .map(|(signed, is_rejected)| {
-                let dd = &signed.data;
-                PendingDeployJson {
-                    term: dd.term.clone(),
-                    timestamp: dd.time_stamp,
-                    phlo_price: dd.phlo_price,
-                    phlo_limit: dd.phlo_limit,
-                    valid_after_block_number: dd.valid_after_block_number,
-                    shard_id: dd.shard_id.clone(),
-                    deployer: hex::encode(&signed.pk.bytes),
-                    sig: hex::encode(&signed.sig),
-                    sig_algorithm: signed.sig_algorithm.name(),
-                    expiration_timestamp: dd.expiration_timestamp,
-                    is_rejected,
+            .map(|(candidate, is_rejected)| match candidate {
+                block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Legacy(signed) => {
+                    let dd = &signed.data;
+                    Ok(PendingDeployJson {
+                        term: dd.term.clone(),
+                        timestamp: dd.time_stamp,
+                        phlo_price: dd.phlo_price,
+                        phlo_limit: dd.phlo_limit,
+                        valid_after_block_number: dd.valid_after_block_number,
+                        shard_id: dd.shard_id.clone(),
+                        deployer: hex::encode(&signed.pk.bytes),
+                        sig: hex::encode(&signed.sig),
+                        sig_algorithm: signed.sig_algorithm.name(),
+                        expiration_timestamp: dd.expiration_timestamp,
+                        is_rejected,
+                    })
+                }
+                block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Envelope(envelope) => {
+                    let models::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+                        envelope.view()
+                    else {
+                        return Err(eyre::eyre!(
+                            "the pending pool holds an envelope that is not offered-funded"
+                        ));
+                    };
+                    let body = envelope.body();
+                    Ok(PendingDeployJson {
+                        term: body.term.clone(),
+                        timestamp: body.time_stamp,
+                        phlo_price: signed.data.phlo_price(),
+                        phlo_limit: signed.data.phlo_limit(),
+                        valid_after_block_number: body.valid_after_block_number,
+                        shard_id: body.shard_id.clone(),
+                        deployer: hex::encode(&envelope.primary().pk.bytes),
+                        sig: hex::encode(envelope.identity().as_bytes()),
+                        sig_algorithm: envelope.primary().sig_algorithm.name(),
+                        expiration_timestamp: body.expiration_timestamp,
+                        is_rejected,
+                    })
                 }
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(PendingDeploysJson {
             deploys,

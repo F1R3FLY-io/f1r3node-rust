@@ -616,6 +616,7 @@ async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
             balance_query_source(&payer_address),
             &block.body.state.post_state_hash,
             None,
+            nodes[1].adopted_policy(),
         )
         .await
         .unwrap();
@@ -937,9 +938,27 @@ fn registry_insert(
 
 /// Proposes one owner-direct offer on node 0. Every other node replays the
 /// block, and all settlement receipts agree.
+// Changed by G3 (DR-135, S7): the body moved to `propose_offer_rows`, which
+// takes the number of receipt rows. The receipt has a row for each client
+// payer and each owner purse that paid. This offer expects one row.
 async fn propose_offer(
     nodes: &mut [TestNode],
     offer: models::casper::DeployDataProto,
+) -> Result<
+    (
+        models::rust::casper::protocol::casper_message::BlockMessage,
+        casper::rust::api::block_api::OfferedSettlementReceipt,
+    ),
+    String,
+> {
+    propose_offer_rows(nodes, offer, 1).await
+}
+
+/// Added by G3 (DR-135, S7): `propose_offer` for a receipt with `rows` rows.
+async fn propose_offer_rows(
+    nodes: &mut [TestNode],
+    offer: models::casper::DeployDataProto,
+    rows: usize,
 ) -> Result<
     (
         models::rust::casper::protocol::casper_message::BlockMessage,
@@ -979,7 +998,9 @@ async fn propose_offer(
         .map(|receipt| receipt.unwrap().expect("every node holds the receipt"))
         .collect::<Vec<_>>();
     assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
-    assert_eq!(receipts[0].purses.len(), 1);
+    // Changed by G3 (DR-135, S7): the receipt has `rows` rows.
+    // assert_eq!(receipts[0].purses.len(), 1);
+    assert_eq!(receipts[0].purses.len(), rows, "{:?}", receipts[0].purses);
     Ok((block, receipts[0].clone()))
 }
 
@@ -1071,47 +1092,158 @@ async fn a_registry_lookup_costs_the_same_whoever_wrote_the_registry_last() {
     assert_eq!(spent[0], spent[1]);
 }
 
+// Changed by G3 (DR-135, S7): the reader consumes the writer's datum, and the
+// writer pays its share of the COMM from its own wallet (DR-135 items 1 to 4,
+// T1). The test before G3 follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn user_written_data_still_needs_its_writers_token() {
+//     let genesis = offered_v6_genesis(3).await;
+//     let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+//         .await
+//         .unwrap();
+//     let writer = genesis.genesis_vaults[2].clone();
+//     let reader = genesis.genesis_vaults[0].clone();
+//     propose_offer(
+//         &mut nodes,
+//         owner_direct_offer(&writer, 1, "@\"user-written-channel\"!(1)".to_string()),
+//     )
+//     .await
+//     .expect("the writer's datum is funded");
+//     let rejection = propose_offer(
+//         &mut nodes,
+//         owner_direct_offer(
+//             &reader,
+//             2,
+//             "for(_ <- @\"user-written-channel\") { Nil }".to_string(),
+//         ),
+//     )
+//     .await
+//     .expect_err("consuming a user-signed datum needs the writer's token (DR-68/D5)");
+//     assert!(
+//         rejection.contains("no feasible signed assignment"),
+//         "{rejection}"
+//     );
+// }
+
+/// Added by G3 (DR-135, S7): checks the owner row of the purse at `address`
+/// in `receipt`. The row pays resource REV and no fee, and its post balance
+/// is the purse balance at `after`. The purse fell by the row from its
+/// balance at `before`.
+async fn assert_owner_row(
+    nodes: &[TestNode],
+    receipt: &casper::rust::api::block_api::OfferedSettlementReceipt,
+    address: &VaultAddress,
+    before: &models::rust::block::state_hash::StateHash,
+    after: &models::rust::block::state_hash::StateHash,
+) {
+    let encoded = address.to_base58();
+    let row = receipt
+        .purses
+        .iter()
+        .find(|purse| purse.address == encoded.as_bytes())
+        .expect("the owner purse has a row");
+    assert!(row.resource_rev > 0, "the owner pays its share");
+    assert_eq!(row.fee_rev, 0, "an owner row pays no fee");
+    let balance_after = vault_balance(nodes, after, address).await;
+    assert_eq!(row.post_balance, balance_after);
+    assert_eq!(
+        u128::from(balance_after) + row.resource_rev,
+        u128::from(vault_balance(nodes, before, address).await),
+        "the owner purse falls by its row"
+    );
+}
+
+/// T1 (DR-135, S7): a reader consumes a datum that a writer stored. The
+/// writer pays its share of the COMM, so the receipt has the reader's row and
+/// the writer's row, and the writer's wallet falls by its row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn user_written_data_still_needs_its_writers_token() {
+async fn a_reader_consumes_user_written_data_and_the_writer_pays() {
     let genesis = offered_v6_genesis(3).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
         .await
-        .unwrap();
+        .expect("a two-node network starts");
     let writer = genesis.genesis_vaults[2].clone();
     let reader = genesis.genesis_vaults[0].clone();
-    propose_offer(
+    let writer_vault = VaultAddress::from_public_key(&writer.1).expect("a key has a vault");
+    let (written, _) = propose_offer(
         &mut nodes,
         owner_direct_offer(&writer, 1, "@\"user-written-channel\"!(1)".to_string()),
     )
     .await
     .expect("the writer's datum is funded");
-    let rejection = propose_offer(
+    let (read, receipt) = propose_offer_rows(
         &mut nodes,
         owner_direct_offer(
             &reader,
             2,
             "for(_ <- @\"user-written-channel\") { Nil }".to_string(),
         ),
+        2,
     )
     .await
-    .expect_err("consuming a user-signed datum needs the writer's token (DR-68/D5)");
-    assert!(
-        rejection.contains("no feasible signed assignment"),
-        "{rejection}"
-    );
+    .expect("the reader consumes the writer's datum");
+    assert_owner_row(
+        &nodes,
+        &receipt,
+        &writer_vault,
+        &written.body.state.post_state_hash,
+        &read.body.state.post_state_hash,
+    )
+    .await;
 }
 
+// Changed by G3 (DR-135, S7): the leftover receive of the caller fires for
+// its caller, and the caller pays its share (DR-135 item 1). The test before
+// G3 follows.
+// /// DR-101 (P1 rem:signed-subst): `Either.map2` runs the caller's function
+// /// inside a genesis body. The function keeps its caller's seal, so what it
+// /// leaves behind is user-written data that still needs the caller's token.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn a_process_that_a_system_contract_runs_keeps_its_callers_seal() {
+//     let genesis = offered_v6_genesis(3).await;
+//     let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+//         .await
+//         .unwrap();
+//     let caller = genesis.genesis_vaults[2].clone();
+//     let other = genesis.genesis_vaults[0].clone();
+//     let map2 = r#"new rl(`rho:registry:lookup`), eitherCh, ret, f in {
+//         rl!(`rho:lang:either`, *eitherCh) |
+//         for(@(_, either) <- eitherCh) {
+//             @either!("map2", (true, 1), (true, 2),
+//                 for (@x, @y, r <- f) { r!(x + y) | for(_ <- @"either-leftover") { Nil } },
+//                 *ret)
+//         }
+//     }"#;
+//     propose_offer(&mut nodes, owner_direct_offer(&caller, 1, map2.to_string()))
+//         .await
+//         .expect("the caller's map2 is funded");
+//     let rejection = propose_offer(
+//         &mut nodes,
+//         owner_direct_offer(&other, 2, "@\"either-leftover\"!(1)".to_string()),
+//     )
+//     .await
+//     .expect_err("the leftover receive keeps the caller's seal");
+//     assert!(
+//         rejection.contains("no feasible signed assignment"),
+//         "{rejection}"
+//     );
+// }
+
 /// DR-101 (P1 rem:signed-subst): `Either.map2` runs the caller's function
-/// inside a genesis body. The function keeps its caller's seal, so what it
-/// leaves behind is user-written data that still needs the caller's token.
+/// inside a genesis body. The function keeps its caller's seal, so the
+/// receive that it leaves behind belongs to the caller. Added by G3 (DR-135,
+/// S7): when another signer sends to that receive, the receive fires for the
+/// caller, and the caller pays its share. The receipt has the sender's row
+/// and the caller's row, and the caller's wallet falls by its row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_process_that_a_system_contract_runs_keeps_its_callers_seal() {
+async fn the_leftover_receive_charges_its_caller() {
     let genesis = offered_v6_genesis(3).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
         .await
-        .unwrap();
+        .expect("a two-node network starts");
     let caller = genesis.genesis_vaults[2].clone();
     let other = genesis.genesis_vaults[0].clone();
+    let caller_vault = VaultAddress::from_public_key(&caller.1).expect("a key has a vault");
     let map2 = r#"new rl(`rho:registry:lookup`), eitherCh, ret, f in {
         rl!(`rho:lang:either`, *eitherCh) |
         for(@(_, either) <- eitherCh) {
@@ -1120,19 +1252,24 @@ async fn a_process_that_a_system_contract_runs_keeps_its_callers_seal() {
                 *ret)
         }
     }"#;
-    propose_offer(&mut nodes, owner_direct_offer(&caller, 1, map2.to_string()))
+    let (mapped, _) = propose_offer(&mut nodes, owner_direct_offer(&caller, 1, map2.to_string()))
         .await
         .expect("the caller's map2 is funded");
-    let rejection = propose_offer(
+    let (sent, receipt) = propose_offer_rows(
         &mut nodes,
         owner_direct_offer(&other, 2, "@\"either-leftover\"!(1)".to_string()),
+        2,
     )
     .await
-    .expect_err("the leftover receive keeps the caller's seal");
-    assert!(
-        rejection.contains("no feasible signed assignment"),
-        "{rejection}"
-    );
+    .expect("the leftover receive fires for its caller");
+    assert_owner_row(
+        &nodes,
+        &receipt,
+        &caller_vault,
+        &mapped.body.state.post_state_hash,
+        &sent.body.state.post_state_hash,
+    )
+    .await;
 }
 
 /// A term that moves `amount` from the signer's vault at `from` to the vault at
@@ -1163,7 +1300,12 @@ async fn vault_balance(
 ) -> u64 {
     let (observed, _) = nodes[0]
         .runtime_manager
-        .play_exploratory_deploy(balance_query_source(address), root, None)
+        .play_exploratory_deploy(
+            balance_query_source(address),
+            root,
+            None,
+            nodes[0].adopted_policy(),
+        )
         .await
         .unwrap();
     assert_eq!(observed.len(), 1);
@@ -1777,6 +1919,8 @@ async fn a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("the merge over both siblings computes");
@@ -1867,6 +2011,8 @@ async fn a_failed_offered_deploy_in_two_sibling_blocks_is_charged_once() {
         &latest_messages,
         None,
         None,
+        None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
         None,
     )
     .await
@@ -2256,6 +2402,7 @@ async fn an_unknown_method_is_published_as_a_charged_user_failure() {
                 format!("new return in {{ for (@value <<- @\"{WRITTEN}\") {{ return!(value) }} }}"),
                 &root,
                 None,
+                nodes[0].adopted_policy(),
             )
             .await
             .expect("the exploratory read runs");
@@ -2360,6 +2507,7 @@ async fn assert_charged_user_failures(written: &str, cases: &[String]) {
                 format!("new return in {{ for (@value <<- @\"{written}\") {{ return!(value) }} }}"),
                 &root,
                 None,
+                nodes[0].adopted_policy(),
             )
             .await
             .expect("the exploratory read runs");
@@ -3035,6 +3183,8 @@ async fn permuted_secondary_parents_give_the_same_v6_root() {
             None,
             None,
             None,
+            // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+            None,
         )
         .await
         .expect("the merge computes");
@@ -3083,6 +3233,8 @@ async fn merge_on(
         &latest_messages,
         None,
         None,
+        None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
         None,
     )
     .await
@@ -3613,6 +3765,84 @@ async fn a_failed_offer_charge_survives_beside_another_signer() {
     );
 }
 
+// Added by DR-134 (DR-66 item 2): `node deploy` signs an owner-direct offer of
+// the default resource schedule, which is the schedule of the offered test
+// genesis. The node admits the offer through gRPC doDeploy, a block includes
+// it, a validator replays it, and the receipt has the signed limit, price and
+// REV ceiling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cli_owner_direct_offer_is_admitted_proposed_and_replayed() {
+    use casper::rust::util::rholang::costacc::owner_offer::{
+        default_resource_policy, default_resource_schedule,
+        owner_direct_offer as cli_owner_direct_offer,
+    };
+
+    assert_eq!(
+        default_resource_policy("root").expect("the default resource policy forms"),
+        crate::helper::offered_deploy::offered_v6_policy(),
+        "the shipped schedule is the schedule of the offered test genesis"
+    );
+    let genesis = offered_v6_genesis(2).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .expect("a two-node network starts");
+    let owner_secret = genesis.genesis_vaults[0].0.clone();
+    let phlo_limit = 100_000_000;
+    let phlo_price = 1;
+    let offer = cli_owner_direct_offer(
+        &owner_secret,
+        DeployData {
+            term: "new x in { x!(1) }".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        },
+        phlo_limit,
+        phlo_price,
+        &default_resource_schedule("root"),
+    )
+    .expect("the CLI signs an owner-direct offer");
+    let response = offered_grpc_service(&nodes[0])
+        .do_deploy(tonic::Request::new(offer.clone()))
+        .await
+        .expect("doDeploy answers")
+        .into_inner();
+    assert!(
+        matches!(response.message, Some(DeployResponseMessage::Result(_))),
+        "doDeploy admits the CLI offer: {response:?}"
+    );
+    let block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("the CLI offer is proposed");
+    assert_eq!(block.body.deploys.len(), 1);
+    assert!(!block.body.deploys[0].is_failed());
+    assert!(matches!(
+        nodes[1]
+            .process_block(block.clone())
+            .await
+            .expect("the validator processes the block"),
+        Either::Right(_)
+    ));
+    let deploy_id = offer.deploy_id.to_vec();
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[1].engine_cell, &deploy_id)
+        .await
+        .expect("the receipt query succeeds")
+        .expect("the validator holds the receipt");
+    assert_eq!(receipt.phlo_limit, phlo_limit);
+    assert_eq!(receipt.phlo_price, phlo_price);
+    assert_eq!(
+        receipt.rev_ceiling,
+        u128::from(phlo_limit) * u128::from(phlo_price) + 1
+    );
+    assert_eq!(receipt.fee_rev, 1);
+    assert!(receipt.rev_spent <= receipt.rev_ceiling);
+    assert_eq!(receipt.purses.len(), 1);
+}
+
 // Added by G1-6 (DR-124): the admission tests of the live check before
 // execution. The module is declared here and not in `api/mod.rs`, so the step
 // changes no Casper file that the branch shares with dev.
@@ -3630,3 +3860,16 @@ mod offered_guard_api_test;
 // changes no Casper file that the branch shares with dev.
 #[path = "offered_capture_api_test.rs"]
 mod offered_capture_api_test;
+
+// Added by DR-134 (DR-65, gap G2): the batch tests of several offered deploys
+// in one block. The module is declared here and not in `api/mod.rs`, so the
+// step changes no Casper file that the branch shares with dev.
+#[path = "offered_batch_api_test.rs"]
+mod offered_batch_api_test;
+
+// Added by G3 (DR-135): the tests of owner funding. A stored process runs for
+// its owner, and the owner pays its share. The module is declared here and not
+// in `api/mod.rs`, so the step changes no Casper file that the branch shares
+// with dev.
+#[path = "offered_owner_api_test.rs"]
+mod offered_owner_api_test;

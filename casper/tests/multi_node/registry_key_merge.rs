@@ -1,8 +1,10 @@
 use casper::rust::block_status::ValidBlock;
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::history::Either;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -96,8 +98,15 @@ async fn merge_two_writes(key1: &str, key2: &str) -> (bool, bool) {
     TestNode::sync_all(&mut nodes).await.unwrap();
 
     let write1 = deploy(set_key(key1, 1), construct_deploy::DEFAULT_SEC.clone(), 1);
+    // Changed by DR-134 (gap G3): one key signs the seed and every reader.
+    // Changed by G3 (DR-135): dev's signer returns, and the writer's purse
+    // funds the read.
+    // let write2 = deploy(set_key(key2, 2), construct_deploy::DEFAULT_SEC.clone(), 2);
     let write2 = deploy(set_key(key2, 2), construct_deploy::DEFAULT_SEC2.clone(), 2);
-    let nil_sibling = deploy("Nil".to_string(), construct_deploy::DEFAULT_SEC2.clone(), 3);
+    // Changed by G3 (DR-135, S9): bug 11004, empty filler siblings (G3 S9).
+    // `write2` and a nil deploy of the same signer in sibling blocks both
+    // create that signer's cost cursors, and the merge keeps only one.
+    // let nil_sibling = deploy("Nil".to_string(), construct_deploy::DEFAULT_SEC2.clone(), 3);
     let trigger = deploy("Nil".to_string(), construct_deploy::DEFAULT_SEC.clone(), 4);
 
     let block1 = nodes[0]
@@ -108,10 +117,15 @@ async fn merge_two_writes(key1: &str, key2: &str) -> (bool, bool) {
         .add_block_from_deploys(std::slice::from_ref(&write2))
         .await
         .expect("validator 1 writes");
+    // Changed by G3 (DR-135, S9): bug 11004, empty filler siblings (G3 S9).
+    // nodes[2]
+    //     .add_block_from_deploys(std::slice::from_ref(&nil_sibling))
+    //     .await
+    //     .expect("validator 2 proposes a sibling");
     nodes[2]
-        .add_block_from_deploys(std::slice::from_ref(&nil_sibling))
+        .add_block_from_deploys(&[])
         .await
-        .expect("validator 2 proposes a sibling");
+        .expect("validator 2 proposes an empty sibling");
     assert_no_failed_deploys(&block1);
     assert_no_failed_deploys(&block2);
     TestNode::sync_all(&mut nodes).await.unwrap();

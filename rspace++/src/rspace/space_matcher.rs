@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 
 use super::r#match::Match;
+// Added by G3 (DR-135, S5): the owner checks of a match.
+use super::operation_context::{ItemAdmission, MatchAdmission};
 use super::rspace_interface::ISpace;
 use crate::rspace::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
 use crate::rspace::metrics_constants::{
@@ -65,12 +67,22 @@ where
     A: Clone + Send + Sync,
     K: Clone + Send + Sync,
 {
+    // Changed by G3 (DR-135, S5): the search also runs the item test of an
+    // owner-funded match (R5).
+    // fn find_matching_data_candidate(
+    //     &self,
+    //     matcher: &Box<dyn Match<P, A, K>>,
+    //     channel: C,
+    //     data: &[(Datum<A>, i32)],
+    //     pattern: &P,
+    // ) -> Option<MatchingDataCandidate<C, A>> {
     fn find_matching_data_candidate(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel: C,
         data: &[(Datum<A>, i32)],
         pattern: &P,
+        item: Option<ItemAdmission<'_, C, P, A, K>>,
     ) -> Option<MatchingDataCandidate<C, A>> {
         for (idx, (datum, data_index)) in data.iter().enumerate() {
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
@@ -79,6 +91,12 @@ where
             let match_result = matcher.get(pattern, &datum.a);
             metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
                 .increment(t_match.elapsed().as_nanos() as u64);
+            // Added by G3 (DR-135, S5): a datum whose owners cannot pay its
+            // share of a COMM with this continuation is a miss (R5).
+            let match_result = match (match_result, item) {
+                (Some(mat), Some(item)) if !item.admits(&mat, datum.persist) => None,
+                (result, _) => result,
+            };
 
             if let Some(mat) = match_result {
                 let indexed_datums = if datum.persist {
@@ -109,12 +127,22 @@ where
 
     /// Attempts to match all channel-pattern pairs against the data map.
     /// Records mutations in `rollback` so the caller can undo them on failure.
+    // Changed by G3 (DR-135, S5): the extraction passes the item test of an
+    // owner-funded match on (R5).
+    // fn extract_data_candidates_rollback(
+    //     &self,
+    //     matcher: &Box<dyn Match<P, A, K>>,
+    //     channel_pattern_pairs: &[(C, P)],
+    //     channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    //     rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+    // ) -> Vec<Option<ConsumeCandidate<C, A>>> {
     fn extract_data_candidates_rollback(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
         rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+        item: Option<ItemAdmission<'_, C, P, A, K>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         // Added by DR-129 (E1): a stable order for a channel that the join
         // names more than once.
@@ -123,12 +151,23 @@ where
 
         for (channel, pattern) in channel_pattern_pairs {
             let maybe_tuple: Option<MatchingDataCandidate<C, A>> =
+                // Changed by G3 (DR-135, S5): with the item test.
+                // match channel_to_indexed_data.get(channel) {
+                //     Some(indexed_data) => self.find_matching_data_candidate(
+                //         matcher,
+                //         channel.clone(),
+                //         indexed_data,
+                //         pattern,
+                //     ),
+                //     None => None,
+                // };
                 match channel_to_indexed_data.get(channel) {
                     Some(indexed_data) => self.find_matching_data_candidate(
                         matcher,
                         channel.clone(),
                         indexed_data,
                         pattern,
+                        item,
                     ),
                     None => None,
                 };
@@ -159,20 +198,39 @@ where
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         let mut rollback = Vec::new();
+        // Changed by G3 (DR-135, S5): no item test.
+        // self.extract_data_candidates_rollback(
+        //     matcher,
+        //     channel_pattern_pairs,
+        //     channel_to_indexed_data,
+        //     &mut rollback,
+        // )
         self.extract_data_candidates_rollback(
             matcher,
             channel_pattern_pairs,
             channel_to_indexed_data,
             &mut rollback,
+            None,
         )
     }
 
+    // Changed by G3 (DR-135, S5): a produce with owner funding runs the
+    // owner checks of each continuation (R5, R6). Without them it matches as
+    // on dev.
+    // fn extract_first_match(
+    //     &self,
+    //     matcher: &Box<dyn Match<P, A, K>>,
+    //     channels: Vec<C>,
+    //     match_candidates: Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
+    //     mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
+    // ) -> Option<ProduceCandidate<C, P, A, K>> {
     fn extract_first_match(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channels: Vec<C>,
         match_candidates: Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
+        admission: Option<&dyn MatchAdmission<C, P, A, K>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
@@ -189,14 +247,55 @@ where
                 .increment(__pair_start.elapsed().as_nanos() as u64);
 
             let mut rollback = Vec::new();
+            // Added by G3 (DR-135, S5): the item test of this continuation
+            // (R5).
+            let item = admission.map(|admission| ItemAdmission {
+                admission,
+                continuation: &cont.continuation,
+                persistent: cont.persist,
+                channel_count: channels.len(),
+            });
+            // Added by G3 (DR-135, S5): a produce keeps its own datum (R6).
+            // On a channel that the join names once, the pattern takes only
+            // the incoming datum (index -1). The full list goes into
+            // `rollback` first, so the reverse restore writes it back last.
+            let own_channel = admission.and_then(|admission| admission.own_datum_channel());
+            if let Some(own) = own_channel {
+                if channels.iter().filter(|channel| *channel == own).count() == 1 {
+                    if let Some(data) = channel_to_index_data.get_mut(own) {
+                        if data.iter().any(|(_, index)| *index != -1) {
+                            rollback.push((own.clone(), data.clone()));
+                            data.retain(|(_, index)| *index == -1);
+                        }
+                    }
+                }
+            }
+            // Changed by G3 (DR-135, S5): the extraction runs the item test.
+            // let data_candidates = self.extract_data_candidates_rollback(
+            //     matcher,
+            //     &channel_pattern_pairs,
+            //     &mut channel_to_index_data,
+            //     &mut rollback,
+            // );
             let data_candidates = self.extract_data_candidates_rollback(
                 matcher,
                 &channel_pattern_pairs,
                 &mut channel_to_index_data,
                 &mut rollback,
+                item,
             );
+            // Added by G3 (DR-135, S5): on a repeated channel the tuple must
+            // hold the incoming datum (R6).
+            let holds_own_datum = own_channel.is_none() ||
+                data_candidates
+                    .iter()
+                    .flatten()
+                    .any(|candidate| candidate.datum_index == -1);
 
-            if data_candidates.iter().all(|x| x.is_some()) {
+            // Changed by G3 (DR-135, S5): the tuple must hold the incoming
+            // datum under owner funding (R6).
+            // if data_candidates.iter().all(|x| x.is_some()) {
+            if data_candidates.iter().all(|x| x.is_some()) && holds_own_datum {
                 // Cross-channel commit hook: gives the matcher a chance
                 // to veto a commit even after every spatial bind has
                 // matched. Used for `where`-clause guards that mention
@@ -218,15 +317,31 @@ where
                     }
                     continue;
                 }
+                // Added by G3 (DR-135, S5): the tuple test (R5). The owners of
+                // the tuple pay its COMM, or the tuple is refused: it rolls
+                // back, and the next continuation is tried, as on a veto.
+                let candidates: Vec<ConsumeCandidate<C, A>> =
+                    data_candidates.into_iter().flatten().collect();
+                if let Some(admission) = admission {
+                    if !admission.admit_tuple(cont, &candidates) {
+                        for (ch, original) in rollback.into_iter().rev() {
+                            channel_to_index_data.insert(ch, original);
+                        }
+                        continue;
+                    }
+                }
                 metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
+                // Changed by G3 (DR-135, S5): the candidates moved out for the
+                // tuple test.
+                // data_candidates: data_candidates.into_iter().flatten().collect(),
                 return Some(ProduceCandidate {
                     channels,
                     // Deref-clone the inner continuation only on a successful
                     // match — failed probes never deep-clone.
                     continuation: (**cont).clone(),
                     continuation_index: *index,
-                    data_candidates: data_candidates.into_iter().flatten().collect(),
+                    data_candidates: candidates,
                 });
             }
 

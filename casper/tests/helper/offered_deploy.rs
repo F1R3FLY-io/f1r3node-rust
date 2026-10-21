@@ -154,13 +154,64 @@ pub fn owner_offer_with_lanes(
     phlo_limit: u64,
     lanes: &[PermittedLane<'_>],
 ) -> models::casper::DeployDataProto {
+    owner_offer_priced_with_lanes(
+        owner,
+        time_stamp,
+        term,
+        valid_after_block_number,
+        shard_id,
+        phlo_limit,
+        2,
+        lanes,
+    )
+}
+
+/// Added by DR-134 (DR-66 item 1): an owner-direct offer at the given price.
+/// It signs the selected schedule at that price, so a test can submit an offer
+/// below the adopted minimum price.
+pub fn owner_offer_priced(
+    owner: &(PrivateKey, PublicKey),
+    time_stamp: i64,
+    term: String,
+    price: u64,
+) -> models::casper::DeployDataProto {
+    owner_offer_priced_with_lanes(
+        owner,
+        time_stamp,
+        term,
+        0,
+        TEST_SHARD.to_string(),
+        OFFER_PHLO_LIMIT,
+        price,
+        &[],
+    )
+}
+
+// Changed by DR-134 (DR-66 item 1): the former body of `owner_offer_with_lanes`,
+// with the signed price as a parameter in place of the fixed price 2.
+#[allow(clippy::too_many_arguments)]
+fn owner_offer_priced_with_lanes(
+    owner: &(PrivateKey, PublicKey),
+    time_stamp: i64,
+    term: String,
+    valid_after_block_number: i64,
+    shard_id: String,
+    phlo_limit: u64,
+    price: u64,
+    lanes: &[PermittedLane<'_>],
+) -> models::casper::DeployDataProto {
     let (owner_secret, owner_public) = owner;
     let limits = offered_funded_v6_limits().envelope.payload;
     let signature = CostSignature {
         value: Some(Value::Ground(principal_ground_v61(&owner_public.bytes))),
     };
     let payer = vault_payer(&signature).expect("a principal signature has a vault payer");
-    let schedule = selected_schedule();
+    // Changed by DR-134 (DR-66 item 1): the schedule is signed at `price`.
+    // let schedule = selected_schedule();
+    let schedule = PhloScheduleV1 {
+        actual_price: price,
+        ..selected_schedule()
+    };
     let acquisition_terms = schedule
         .encode(PhloGenesisPolicy::LIMITS)
         .expect("the selected schedule encodes");
@@ -241,10 +292,17 @@ pub fn owner_offer_with_lanes(
     .expect("the owner's source policy is valid");
     let funding = PhloFundingIntentV2 {
         base: PhloFundingIntentV1 {
+            // Changed by DR-134 (DR-66 item 1): the ceilings follow `price`.
+            // controls: PhloControlsV1 {
+            //     limit: phlo_limit,
+            //     price_ceiling: 2,
+            //     required_owner_ceilings: vec![2],
+            //     permitted_schedules: vec![schedule.clone()],
+            // },
             controls: PhloControlsV1 {
                 limit: phlo_limit,
-                price_ceiling: 2,
-                required_owner_ceilings: vec![2],
+                price_ceiling: price,
+                required_owner_ceilings: vec![price],
                 permitted_schedules: vec![schedule.clone()],
             },
             schedule_commitment: schedule
@@ -277,7 +335,9 @@ pub fn owner_offer_with_lanes(
         body,
         funding,
         i64::try_from(phlo_limit).expect("the offer phlo limit fits an i64"),
-        2,
+        // Changed by DR-134 (DR-66 item 1).
+        // 2,
+        i64::try_from(price).expect("the offer phlo price fits an i64"),
         limits,
     )
     .expect("the offered payload is valid");

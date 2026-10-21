@@ -13,6 +13,7 @@ use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
+use casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use dashmap::DashSet;
 use lazy_static::lazy_static;
@@ -117,6 +118,37 @@ where
     let (runtime_manager, _history_repo) = mk_runtime_manager_with_history_at(&mut *kvm).await;
 
     Ok(f(runtime_manager, genesis_context, genesis_block).await)
+}
+
+/// Added by DR-134 (DR-66 item 1): the shard configuration under which the
+/// offered test genesis adopts its resource policy. `GenesisBuilder::offered_v6`
+/// builds the genesis with this shard, its header version as the protocol
+/// version and minimum phlo price 1. An offered checkpoint adopts the policy
+/// again under the shard configuration of its snapshot, so a hand-built
+/// snapshot of an offered block uses this configuration too.
+pub fn offered_shard_conf(genesis_block: &BlockMessage) -> CasperShardConf {
+    CasperShardConf {
+        shard_name: genesis_block.shard_id.clone(),
+        casper_version: genesis_block.header.version,
+        min_phlo_price: 1,
+        ..CasperShardConf::new()
+    }
+}
+
+/// Added by DR-134 (DR-66 item 1): the adopted resource policy of the offered
+/// test genesis. Offered compute and replay below the Casper layer take it, as
+/// a `TestNode` takes the policy that its Casper instance adopted at start.
+pub async fn adopted_policy(
+    runtime_manager: &RuntimeManager,
+    genesis_block: &BlockMessage,
+) -> AdoptedResourcePolicy {
+    AdoptedResourcePolicy::load(
+        runtime_manager,
+        genesis_block,
+        &offered_shard_conf(genesis_block),
+    )
+    .await
+    .expect("the offered test genesis adopts its resource policy")
 }
 
 /// LMDB named-DB slot budget for the shared, process-cached test

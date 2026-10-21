@@ -19,7 +19,9 @@ use tokio::sync::Semaphore;
 use crate::rust::api::block_api::BlockAPI;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::report_store::ReportStore;
-use crate::rust::reporting_casper::ReportingCasper;
+// Changed by DR-134 (DR-70): the report context.
+// use crate::rust::reporting_casper::ReportingCasper;
+use crate::rust::reporting_casper::{ReportContext, ReportingCasper};
 use crate::rust::reporting_proto_transformer::{to_proto_phase, ReportingProtoTransformer};
 use crate::rust::safety_oracle::CliqueOracleImpl;
 use crate::rust::util::proto_util;
@@ -131,9 +133,20 @@ impl BlockReportAPI {
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     ) -> ApiErr<BlockEventInfo> {
+        // Changed by DR-134 (DR-70): an offered block needs the runtime manager
+        // and the adopted policy of Casper.
+        // let report_result = self
+        //     .reporting_casper
+        //     .trace(block)
+        //     .await
+        //     .map_err(|e| BlockReportError::ReplayFailed(e))?;
+        let runtime_manager = casper.runtime_manager();
         let report_result = self
             .reporting_casper
-            .trace(block)
+            .trace_in(block, ReportContext {
+                runtime_manager: runtime_manager.as_ref(),
+                adopted: casper.adopted_resource_policy(),
+            })
             .await
             .map_err(|e| BlockReportError::ReplayFailed(e))?;
 
@@ -387,6 +400,9 @@ impl BlockReportAPI {
                 DeployInfoWithEventData {
                     deploy_info: Some(deploy_info).into(),
                     report,
+                    // Added by DR-134 (DR-70): the evidence and the receipt of
+                    // an offered deploy.
+                    offered: p.offered.as_ref().map(|offered| offered.to_proto()),
                 }
             })
             .collect()

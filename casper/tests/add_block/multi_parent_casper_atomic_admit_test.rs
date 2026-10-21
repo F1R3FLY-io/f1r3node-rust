@@ -24,9 +24,11 @@
 // Plan reference: Commit 12 / Test-4 of the second-pass review plan.
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
 use models::rust::block_hash::BlockHashSerde;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 

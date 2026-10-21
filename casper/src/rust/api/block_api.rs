@@ -263,13 +263,6 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
     }
 }
 
-const DEPLOY_PROPOSE_MAX_ATTEMPTS: u32 = 4;
-const DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
-
-fn deploy_propose_max_attempts() -> u32 { DEPLOY_PROPOSE_MAX_ATTEMPTS }
-
-fn deploy_propose_retry_delay() -> Duration { Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS) }
-
 fn deploy_is_block_expired(
     valid_after_block_number: i64,
     latest_block_number: i64,
@@ -280,22 +273,6 @@ fn deploy_is_block_expired(
         latest_block_number,
         deploy_lifespan,
     )?)
-}
-
-fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
-    match status {
-        ProposeStatus::Failure(ProposeFailure::InternalDeployError)
-        | ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
-            CheckProposeConstraintsFailure::NotEnoughNewBlocks,
-        ))
-        | ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
-            CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
-        )) => true,
-        _ => {
-            let normalized = format!("{}", status);
-            normalized.contains("Must wait for more blocks from other validators")
-        }
-    }
 }
 
 fn clamp_depth(requested_depth: i32, max_depth_limit: i32, operation: &str) -> i32 {
@@ -654,103 +631,13 @@ impl BlockAPI {
     pub async fn deploy(
         engine_cell: &EngineCell,
         d: Signed<DeployData>,
-        trigger_propose: &Option<Arc<ProposeFunction>>,
+        // Changed by DR-134 (DR-66 items 2 and 5): a body-only deploy never
+        // triggers a proposal.
+        // trigger_propose: &Option<Arc<ProposeFunction>>,
+        _trigger_propose: &Option<Arc<ProposeFunction>>,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
-        async fn casper_deploy(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            deploy_data: Signed<DeployData>,
-            trigger_propose: &Option<Arc<ProposeFunction>>,
-        ) -> ApiErr<String> {
-            let deploy_id = match casper.deploy(deploy_data)? {
-                Either::Left(err) => return Err(err.into()),
-                Either::Right(deploy_id) => deploy_id,
-            };
-
-            // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
-            // Deploy success should not block on proposal completion; finalization is checked via
-            // propose/finalization APIs separately in integration flows.
-            if let Some(tp) = trigger_propose {
-                let tp = Arc::clone(tp);
-                let casper_for_propose = casper.clone();
-                let max_attempts = deploy_propose_max_attempts();
-                let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(casper_for_propose.clone(), true).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
-                                            attempt,
-                                            max_attempts,
-                                            seq_number,
-                                            status,
-                                            retry_delay
-                                        );
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
-
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
-                                        );
-                                    }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
-                                        attempt,
-                                        max_attempts,
-                                        err,
-                                        retry_delay
-                                    );
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
-                                }
-                                tracing::error!(error = %err, "deploy-triggered propose failed");
-                            }
-                        }
-                        break;
-                    }
-                });
-            }
-
-            Ok(format!(
-                "Success!\nDeployId is: {}",
-                PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-            ))
-        }
-
         // Validation chain - mimics Scala's whenA pattern
         let validation_result: Result<(), DeployValidationError> = Ok(())
             .and_then(|_| {
@@ -819,52 +706,15 @@ impl BlockAPI {
             Err(eyre::eyre!("{}", msg))
         };
 
-        if let Some(casper) = eng.with_casper() {
-            if casper.offered_funded_active() {
-                return Err(offered_validation_error(
-                    "new deploys require offered-funded cost accounting",
-                ));
-            }
-            // The floor check reads the SAME value the validity rule reads
-            // (the shard conf), never a second node-conf copy.
-            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
-            if d.data.phlo_price < min_phlo_price {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: format!(
-                        "Phlo price {} is less than minimum price {}.",
-                        d.data.phlo_price, min_phlo_price
-                    ),
-                }));
-            }
-            let dag = casper.block_dag().await?;
-            // A deploy admitted now can only ever land in a block that doesn't
-            // exist yet — the next one, at `latest_block_number + 1` — never
-            // in the current tip, which is already built. block_creator.rs's
-            // own expiry filter checks against exactly that next block's
-            // number (`earliest_block_number = block_number - deploy_lifespan`
-            // for the block being assembled). Checking admission against
-            // `latest_block_number` instead of `latest_block_number + 1` is
-            // off by one: a deploy admitted "just inside" the window at the
-            // current tip is then found expired by the very next block's
-            // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
-            let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
-            if deploy_is_block_expired(
-                d.data.valid_after_block_number,
-                next_block_number,
-                deploy_lifespan,
-            )? {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: format!(
-                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
-                        d.data.valid_after_block_number, next_block_number, deploy_lifespan
-                    ),
-                }));
-            }
-            casper_deploy(casper, d, trigger_propose).await
-        } else {
-            log_warn(&log_error_message)
+        // Changed by DR-134 (DR-66 items 2 and 5): only offered-funded deploys are
+        // accepted, on every shard. With Casper running, a body-only deploy is
+        // refused; the body-only price, lifespan and submission steps are deleted.
+        if eng.with_casper().is_some() {
+            return Err(offered_validation_error(
+                "new deploys require offered-funded cost accounting",
+            ));
         }
+        log_warn(&log_error_message)
     }
 
     pub async fn deploy_offered(
@@ -1759,52 +1609,9 @@ impl BlockAPI {
         let Some(offered) = processed.as_offered() else {
             return Ok(None);
         };
-        let limits = offered_funded_v6_limits();
-        let evidence = offered
-            .evidence(limits.evidence)
-            .map_err(|error| eyre::eyre!(error))?;
-        if evidence.wallet_settlement.is_empty() {
-            return Ok(None);
-        }
-        let receipt =
-            NativeWalletReceiptV1::decode(evidence.wallet_settlement, NativeWalletReceiptLimits {
-                wire: PhloWireLimits {
-                    total_bytes: limits.evidence.field_bytes,
-                    field_bytes: limits.evidence.field_bytes,
-                },
-                payers: limits.envelope.members.get(),
-            })?;
-        let resource_rev = evidence.resource_rev()?;
-        if receipt.resource_rev != resource_rev
-            || receipt.fee_rev != evidence.fee_rev
-            || receipt.rev_spent()? != evidence.rev_spent()?
-        {
-            return Err(eyre::eyre!(
-                "wallet settlement receipt differs from authenticated cost evidence"
-            ));
-        }
-        Ok(Some(OfferedSettlementReceipt {
-            deploy_id: deploy_id.to_vec(),
-            block_hash,
-            phlo_used: evidence.phlo_used,
-            fresh_phlo: evidence.fresh_phlo,
-            retained_phlo: evidence.retained_phlo,
-            phlo_limit: evidence.phlo_limit,
-            phlo_price: evidence.phlo_price,
-            fee_rev: evidence.fee_rev,
-            rev_spent: evidence.rev_spent()?,
-            rev_ceiling: evidence.rev_ceiling()?,
-            purses: receipt
-                .rows
-                .iter()
-                .map(|row| OfferedPurseSettlement {
-                    address: row.address.to_vec(),
-                    resource_rev: row.resource_rev,
-                    fee_rev: row.fee_rev,
-                    post_balance: row.post_balance,
-                })
-                .collect(),
-        }))
+        // Moved by DR-134 (DR-70) to `offered_settlement_receipt` below,
+        // unchanged, because block reports decode the same receipt.
+        offered_settlement_receipt(offered, deploy_id, block_hash)
     }
 
     #[tracing::instrument(name = "get-block", target = "f1r3fly.block-api.get-block", skip_all)]
@@ -2201,18 +2008,29 @@ impl BlockAPI {
 
         let mut deploys = casper.list_pending_deploys().await?;
 
+        // Changed by DR-134 (DR-66): a pending deploy is a legacy deploy or an
+        // offered envelope, so the filter and the order read both formats.
+        // if let Some(pk) = deployer {
+        //     deploys.retain(|(d, _)| d.pk.bytes.as_ref() == pk);
+        // }
         if let Some(pk) = deployer {
-            deploys.retain(|(d, _)| d.pk.bytes.as_ref() == pk);
+            deploys.retain(|(d, _)| crate::rust::api::pending_deploys::deployer_key(d) == pk);
         }
 
         // Deterministic ordering before cap truncation: by timestamp, then
         // by signature bytes. Makes the truncation result reproducible
         // across calls for the same queue state.
+        // deploys.sort_by(|(a, _), (b, _)| {
+        //     a.data
+        //         .time_stamp
+        //         .cmp(&b.data.time_stamp)
+        //         .then_with(|| a.sig.as_ref().cmp(b.sig.as_ref()))
+        // });
         deploys.sort_by(|(a, _), (b, _)| {
-            a.data
-                .time_stamp
-                .cmp(&b.data.time_stamp)
-                .then_with(|| a.sig.as_ref().cmp(b.sig.as_ref()))
+            use crate::rust::api::pending_deploys::{lookup_id, timestamp};
+            timestamp(a)
+                .cmp(&timestamp(b))
+                .then_with(|| lookup_id(a).cmp(lookup_id(b)))
         });
 
         let total_available = deploys.len() as u32;
@@ -2306,6 +2124,11 @@ impl BlockAPI {
                     }
                 };
 
+                // Added by DR-134 (DR-71): the exploratory estimate runs the native
+                // meter of the adopted policy.
+                let adopted = casper.adopted_resource_policy().cloned().ok_or_else(|| {
+                    offered_validation_error("this shard has no genesis resource policy")
+                })?;
                 match target_block {
                     Some(b) => {
                         let timeout = execution_budget;
@@ -2316,8 +2139,12 @@ impl BlockAPI {
                         let task = tokio::spawn(async move {
                             let _permit = permit;
                             let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
+                            // Changed by DR-134 (DR-71): a native unfunded dry run.
+                            // let result = task_runtime_manager
+                            //     .play_exploratory_deploy(term, &state_hash, deployer)
+                            //     .await;
                             let result = task_runtime_manager
-                                .play_exploratory_deploy(term, &state_hash, deployer)
+                                .play_exploratory_dry_run(term, &state_hash, deployer, &adopted)
                                 .await;
                             if result.is_ok() {
                                 task_outcome.store(
@@ -2439,6 +2266,61 @@ impl BlockAPI {
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
+}
+
+// Added by DR-134 (DR-70): the receipt decode of
+// `BlockAPI::find_offered_settlement_receipt`, shared with block reports.
+pub(crate) fn offered_settlement_receipt(
+    offered: &models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy,
+    deploy_id: &[u8],
+    block_hash: BlockHash,
+) -> ApiErr<Option<OfferedSettlementReceipt>> {
+    let limits = offered_funded_v6_limits();
+    let evidence = offered
+        .evidence(limits.evidence)
+        .map_err(|error| eyre::eyre!(error))?;
+    if evidence.wallet_settlement.is_empty() {
+        return Ok(None);
+    }
+    let receipt =
+        NativeWalletReceiptV1::decode(evidence.wallet_settlement, NativeWalletReceiptLimits {
+            wire: PhloWireLimits {
+                total_bytes: limits.evidence.field_bytes,
+                field_bytes: limits.evidence.field_bytes,
+            },
+            payers: limits.envelope.members.get(),
+        })?;
+    let resource_rev = evidence.resource_rev()?;
+    if receipt.resource_rev != resource_rev
+        || receipt.fee_rev != evidence.fee_rev
+        || receipt.rev_spent()? != evidence.rev_spent()?
+    {
+        return Err(eyre::eyre!(
+            "wallet settlement receipt differs from authenticated cost evidence"
+        ));
+    }
+    Ok(Some(OfferedSettlementReceipt {
+        deploy_id: deploy_id.to_vec(),
+        block_hash,
+        phlo_used: evidence.phlo_used,
+        fresh_phlo: evidence.fresh_phlo,
+        retained_phlo: evidence.retained_phlo,
+        phlo_limit: evidence.phlo_limit,
+        phlo_price: evidence.phlo_price,
+        fee_rev: evidence.fee_rev,
+        rev_spent: evidence.rev_spent()?,
+        rev_ceiling: evidence.rev_ceiling()?,
+        purses: receipt
+            .rows
+            .iter()
+            .map(|row| OfferedPurseSettlement {
+                address: row.address.to_vec(),
+                resource_rev: row.resource_rev,
+                fee_rev: row.fee_rev,
+                post_balance: row.post_balance,
+            })
+            .collect(),
+    }))
 }
 
 #[cfg(test)]

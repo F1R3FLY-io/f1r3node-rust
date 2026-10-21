@@ -4,6 +4,8 @@ use std::hash::Hash;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Install, WaitingContinuation};
+// Added by DR-134 (DR-70): the logger of a reporting session.
+use rspace_plus_plus::rspace::logging::RSpaceLogger;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::{
     NativeReplayBoundary as EpochBoundary, NativeReplayEpoch, NativeReplayRestore as EpochRestore,
@@ -237,15 +239,77 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
     {
-        self.build_session(history, matcher, installations, None)
+        // Changed by DR-134 (DR-70): an installed session has no logger.
+        // self.build_session(history, matcher, installations, None)
+        self.build_session(history, matcher, installations, None, None)
     }
 
-    pub(crate) fn into_runtime_session<C, P, A, K>(
+    // Disabled by DR-134 (DR-70): `create_native_replay_env` and
+    // `create_native_replay_env_with_logger` both call
+    // `into_runtime_session_with_logger`, so this wrapper has no caller.
+    //     pub(crate) fn into_runtime_session<C, P, A, K>(
+    //         self,
+    //         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+    //         matcher: Arc<Box<dyn Match<P, A, K>>>,
+    //         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
+    //         budget: RuntimeBudget,
+    //     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
+    //     where
+    //         C: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + Hash
+    //             + Ord
+    //             + Eq
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //         P: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //         A: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //         K: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //     {
+    //         // Changed by DR-134 (DR-70): validation and play replay without a
+    //         // logger.
+    //         // self.build_session(history, matcher, installations, Some(budget))
+    //         self.into_runtime_session_with_logger(history, matcher, installations, budget, None)
+    //     }
+
+    /// Added by DR-134 (DR-70): `into_runtime_session` whose session logs its
+    /// stored and matched operations to `logger`, for block reports.
+    pub(crate) fn into_runtime_session_with_logger<C, P, A, K>(
         self,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: RuntimeBudget,
+        logger: Option<Box<dyn RSpaceLogger<C, P, A, K>>>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
@@ -288,7 +352,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
     {
-        self.build_session(history, matcher, installations, Some(budget))
+        self.build_session(history, matcher, installations, Some(budget), logger)
     }
 
     fn build_session<C, P, A, K>(
@@ -297,6 +361,8 @@ impl CheckedNativeOperationTrace {
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: Option<RuntimeBudget>,
+        // Added by DR-134 (DR-70).
+        logger: Option<Box<dyn RSpaceLogger<C, P, A, K>>>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
@@ -357,12 +423,14 @@ impl CheckedNativeOperationTrace {
         let progress: Arc<dyn EvaluationProgress> = Arc::new(replay.clone());
         #[cfg(test)]
         let observed = replay.clone();
+        // Changed by DR-134 (DR-70): the session takes the optional logger.
         Ok(NativeRuntimeReplaySession {
-            inner: NativeReplaySession::new_with_installs(
+            inner: NativeReplaySession::new_with_installs_and_logger(
                 history,
                 matcher,
                 SessionEpoch { replay },
                 installations,
+                logger,
             )?,
             progress,
             #[cfg(test)]

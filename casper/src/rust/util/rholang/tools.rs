@@ -21,8 +21,14 @@ impl Tools {
         if deploy.format() == DeployEnvelopeFormat::Legacy {
             return Self::unforgeable_name_rng(&deploy.primary().pk, deploy.body().time_stamp);
         }
+        Self::user_identity_rng(deploy.identity().as_bytes())
+    }
+
+    /// Added by DR-134 (DR-71): the names of a protocol-6 deployment come from
+    /// its identity. The exploratory dry run seeds its names the same way.
+    pub fn user_identity_rng(identity: &[u8]) -> Blake2b512Random {
         let mut seed = b"f1r3node:user-deploy-unforgeable:v6".to_vec();
-        seed.extend_from_slice(deploy.identity().as_bytes());
+        seed.extend_from_slice(identity);
         Self::rng(&seed)
     }
 }

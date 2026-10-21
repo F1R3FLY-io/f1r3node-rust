@@ -2,17 +2,25 @@
 
 use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::util::rholang::tools::Tools;
-use casper::rust::util::{construct_deploy, rspace_util};
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, rspace_util};
+use casper::rust::util::rspace_util;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use models::rust::deploy_envelope::DeployEnvelope;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+// Changed by DR-134 (DR-66 item 1): an offered deploy seeds its names from its
+// identity (`Tools::user_envelope_rng`).
+// fn calculate_unforgeable_name(timestamp: i64) -> String {
+//     let secp256k1 = Secp256k1;
+//     let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
+//     let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+fn calculate_unforgeable_name(deploy: &DeployEnvelope) -> String {
+    let unforgeable_id = Tools::user_envelope_rng(deploy).next();
     let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
     hex::encode(unforgeable_id_u8)
 }
@@ -57,7 +65,14 @@ in {
 
     assert_eq!(signed_block.body.deploys.len(), 1);
     assert!(!signed_block.body.deploys[0].is_failed());
-    assert_eq!(signed_block.body.deploys[0].cost().cost, 52_835);
+    // Changed by DR-134 (DR-66 item 1): the native meter's measured phlo of the
+    // offer (COMMs and bytes), in place of the legacy charge.
+    // assert_eq!(signed_block.body.deploys[0].cost().cost, 52_835);
+    // Changed by G3 (DR-135): stored seals carry the region price, so every
+    // seal that the offer measures holds one more field, and the measured
+    // phlo grows from 199_102 to 199_154 (measured on 2026-10-19).
+    // assert_eq!(signed_block.body.deploys[0].cost().cost, 199_102);
+    assert_eq!(signed_block.body.deploys[0].cost().cost, 199_154);
 
     let expected_timestamp = signed_block.header.timestamp;
     let expected = format!(
@@ -67,7 +82,9 @@ in {
 
     let data = rspace_util::get_data_at_private_channel(
         &signed_block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
+        // Changed by DR-134 (DR-66 item 1).
+        // &calculate_unforgeable_name(deploy.data.time_stamp),
+        &calculate_unforgeable_name(&deploy.envelope),
         &node.runtime_manager,
     )
     .await;

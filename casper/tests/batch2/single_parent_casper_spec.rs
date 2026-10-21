@@ -2,10 +2,12 @@
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::Casper;
-use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;
 use rspace_plus_plus::rspace::history::Either;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 

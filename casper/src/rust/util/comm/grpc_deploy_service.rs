@@ -1,4 +1,6 @@
-use crypto::rust::signatures::signed::Signed;
+// Changed by DR-134 (DR-66 item 2): the client sends the wire form of a deploy,
+// which carries an offered-funded envelope.
+// use crypto::rust::signatures::signed::Signed;
 use models::casper::v1::deploy_service_client::DeployServiceClient;
 use models::casper::v1::{
     block_info_response, block_response, bond_status_response, continuation_at_name_response,
@@ -8,18 +10,21 @@ use models::casper::v1::{
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, ContinuationsWithBlockInfo,
-    DataAtNameByBlockQuery, FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery,
-    LightBlockInfo, MachineVerifyQuery, VisualizeDagQuery,
+    DataAtNameByBlockQuery, DeployDataProto, FindDeployQuery, IsFinalizedQuery,
+    LastFinalizedBlockQuery, LightBlockInfo, MachineVerifyQuery, VisualizeDagQuery,
 };
 use models::rhoapi::Par;
-use models::rust::casper::protocol::casper_message::DeployData;
+// Changed by DR-134 (DR-66 item 2).
+// use models::rust::casper::protocol::casper_message::DeployData;
 use tonic::transport::{Channel, Endpoint};
 
 use super::{error_to_vec, ServiceResult};
 
 #[async_trait::async_trait]
 pub trait DeployService {
-    async fn deploy(&mut self, d: Signed<DeployData>) -> ServiceResult<String>;
+    // Changed by DR-134 (DR-66 item 2): the wire form of a deploy.
+    // async fn deploy(&mut self, d: Signed<DeployData>) -> ServiceResult<String>;
+    async fn deploy(&mut self, d: DeployDataProto) -> ServiceResult<String>;
     async fn get_block(&mut self, q: BlockQuery) -> ServiceResult<String>;
     async fn get_blocks(&mut self, q: BlocksQuery) -> ServiceResult<String>;
     async fn visualize_dag(&mut self, q: VisualizeDagQuery) -> ServiceResult<String>;
@@ -47,7 +52,9 @@ pub struct GrpcDeployService {
 // ---- implement the trait for the struct by delegating to existing methods ----
 #[async_trait::async_trait]
 impl DeployService for GrpcDeployService {
-    async fn deploy(&mut self, d: Signed<DeployData>) -> ServiceResult<String> {
+    // Changed by DR-134 (DR-66 item 2).
+    // async fn deploy(&mut self, d: Signed<DeployData>) -> ServiceResult<String> {
+    async fn deploy(&mut self, d: DeployDataProto) -> ServiceResult<String> {
         self.deploy_impl(d).await
     }
 
@@ -110,12 +117,15 @@ impl GrpcDeployService {
         })
     }
 
-    async fn deploy_impl(&mut self, d: Signed<DeployData>) -> ServiceResult<String> {
-        let resp = self
-            .client
-            .do_deploy(DeployData::to_proto(d))
-            .await
-            .map_err(error_to_vec)?;
+    // Changed by DR-134 (DR-66 item 2): the deploy arrives in its wire form.
+    // async fn deploy_impl(&mut self, d: Signed<DeployData>) -> ServiceResult<String> {
+    //     let resp = self
+    //         .client
+    //         .do_deploy(DeployData::to_proto(d))
+    //         .await
+    //         .map_err(error_to_vec)?;
+    async fn deploy_impl(&mut self, d: DeployDataProto) -> ServiceResult<String> {
+        let resp = self.client.do_deploy(d).await.map_err(error_to_vec)?;
 
         match resp.into_inner().message {
             Some(deploy_response::Message::Error(err)) => Err(error_to_vec(err)),

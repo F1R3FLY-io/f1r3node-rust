@@ -4,6 +4,8 @@ use std::convert::Infallible;
 use super::*;
 use crate::rspace::hashing::native_source::{GroupKeys, OperationKeys, StoreKey};
 use crate::rspace::hot_store::NativeDataView;
+// Added by G3 (DR-135, S6): the owner checks of the replay matcher.
+use crate::rspace::replay_rspace::native_epoch::NativeOwnerFilter;
 
 type Result<T> = std::result::Result<T, RSpaceError>;
 // Changed by C2 (DR-82): the reader returns a copy-free view.
@@ -370,6 +372,10 @@ where
     /// Selects one datum for each pattern. `positions[i]` is the position in
     /// `data` of the entry of `channels[i]`, as `channel_data`
     /// recorded it (D-D4, DR-106).
+    ///
+    /// Changed by G3 (DR-135, S6): with `owner`, the owner checks and the
+    /// persistence of `continuation`, a datum whose item test fails is a
+    /// miss, as in play (R5).
     fn match_data(
         &self,
         channels: &[C],
@@ -377,6 +383,7 @@ where
         patterns: &[P],
         continuation: &K,
         data: &[ChannelData<'_, C, A>],
+        owner: Option<(&dyn NativeOwnerFilter<C, P, A, K>, bool)>,
     ) -> Result<Option<Vec<ConsumeCandidate<C, A>>>> {
         if positions.len() != channels.len() {
             return Err(RSpaceError::BugFoundError(
@@ -416,6 +423,19 @@ where
                 let Some(matched) = self.matcher.get(pattern, &datum.a) else {
                     continue;
                 };
+                // Added by G3 (DR-135, S6): a datum whose owners cannot pay
+                // its share of a COMM with this continuation is a miss (R5).
+                if let Some((filter, persistent)) = owner {
+                    if !filter.admit_item(
+                        continuation,
+                        persistent,
+                        channels.len(),
+                        &matched,
+                        datum.persist,
+                    )? {
+                        continue;
+                    }
+                }
                 // Changed by D-O1 (DR-108): block accounting charges inline bytes
                 // once per enclosing block.
                 // native_backing::reserve_copy_and_cleanup(channel, meter)?;
@@ -577,6 +597,9 @@ where
         consume: &Consume,
         peeks: &BTreeSet<i32>,
         expected: Option<&dyn NativeCandidateIdentity>,
+        // Added by G3 (DR-135, S6): the owner checks of the operation and the
+        // persistence of the consume (R5, R7).
+        owner: Option<(&dyn NativeOwnerFilter<C, P, A, K>, bool)>,
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<Option<PreparedConsumeCandidate<C, A>>> {
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
@@ -592,6 +615,13 @@ where
         // continuation whose commit can veto, because play, in dev's random
         // order, may have tried another tuple and stored.
         if expected.is_none() && self.matcher.commit_may_veto(continuation) {
+            return Ok(None);
+        }
+        // Added by G3 (DR-135, S6): the Stored check also skips a consume
+        // whose COMM the row refused. The refusal is verified on its own
+        // (R7, SA4).
+        if expected.is_none() && owner.is_some_and(|(filter, _)| filter.names_refusal_for(consume))
+        {
             return Ok(None);
         }
         // Changed by C2 (DR-82): the channel data borrow copy-free views.
@@ -611,7 +641,14 @@ where
         //     return Ok(None);
         // };
         let (data, positions) = self.channel_data(channels, &views, None, expected);
-        let Some(data) = self.match_data(channels, &positions, patterns, continuation, &data)?
+        // Changed by G3 (DR-135, S6): with the item test of the owner checks.
+        // let Some(data) =
+        //     self.match_data(channels, &positions, patterns, continuation, &data)?
+        // else {
+        //     return Ok(None);
+        // };
+        let Some(data) =
+            self.match_data(channels, &positions, patterns, continuation, &data, owner)?
         else {
             return Ok(None);
         };
@@ -649,8 +686,14 @@ where
         grouped_channels: Vec<Vec<C>>,
         keys: &OperationKeys,
         expected: Option<&dyn NativeCandidateIdentity>,
+        // Added by G3 (DR-135, S6): the owner checks of the operation (R5,
+        // R6, R7).
+        owner: Option<&dyn NativeOwnerFilter<C, P, A, K>>,
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<ProduceSelection<C, P, A, K>> {
+        // Added by G3 (DR-135, S6): a produce keeps its own datum under owner
+        // funding (R6).
+        let own_datum = owner.is_some_and(|filter| filter.requires_own_datum());
         if keys.groups.len() != grouped_channels.len() {
             return Err(RSpaceError::BugFoundError(
                 "native replay join keys do not match the joins".to_owned(),
@@ -686,6 +729,12 @@ where
                 Some((channel, &incoming)),
                 expected,
             );
+            // Added by G3 (DR-135, S6): on a channel that the join names
+            // once, the patterns read only the incoming datum (R6).
+            let mut data = data;
+            if own_datum {
+                keep_only_incoming(&mut data, &channels, &positions, channel);
+            }
             for (continuation, index) in continuations {
                 // Changed by D-O1 (DR-108): block accounting charges inline bytes
                 // once per enclosing block.
@@ -700,16 +749,32 @@ where
                 if expected.is_none() && self.matcher.commit_may_veto(&continuation.continuation) {
                     continue;
                 }
+                // Added by G3 (DR-135, S6): the Stored check also skips a
+                // continuation whose COMM the row refused. The refusal is
+                // verified on its own (R7, SA4).
+                if expected.is_none() &&
+                    owner.is_some_and(|filter| filter.names_refusal_for(&continuation.source))
+                {
+                    continue;
+                }
                 let Some(data_candidates) = self.match_data(
                     &channels,
                     &positions,
                     &continuation.patterns,
                     &continuation.continuation,
                     &data,
+                    // Added by G3 (DR-135, S6): the item test of the owner
+                    // checks (R5).
+                    owner.map(|filter| (filter, continuation.persist)),
                 )?
                 else {
                     continue;
                 };
+                // Added by G3 (DR-135, S6): on a repeated channel the tuple
+                // must hold the incoming datum (R6).
+                if own_datum && !holds_incoming(&data_candidates) {
+                    continue;
+                }
                 let comm = self.build_comm(
                     &data_candidates,
                     &continuation.source,
@@ -764,6 +829,152 @@ where
         // Ok(None)
         Ok(ProduceSelection::Unmatched(incoming))
     }
+
+    /// Added by G3 (DR-135, S6): the tuple of a consume's refused COMM
+    /// (R7): the data that the refusal source `identity` names, as the
+    /// Matched branch finds its data. No item test runs here, because the
+    /// refusal check tests each item strictly (SA4).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::rspace::replay_rspace) fn find_refused_consume_tuple(
+        &self,
+        channels: &[C],
+        keys: &[StoreKey],
+        patterns: &[P],
+        continuation: &K,
+        consume: &Consume,
+        peeks: &BTreeSet<i32>,
+        identity: &dyn NativeCandidateIdentity,
+        reader: &CandidateReader<'_, C, P, A, K>,
+    ) -> Result<Option<PreparedConsumeCandidate<C, A>>> {
+        self.prepare_consume_candidate(
+            channels,
+            keys,
+            patterns,
+            continuation,
+            consume,
+            peeks,
+            Some(identity),
+            None,
+            reader,
+        )
+    }
+
+    /// Added by G3 (DR-135, S6): the tuple of a produce's refused COMM (R7):
+    /// the continuation that the refusal source `identity` names, with the
+    /// data that the source names. With `own_datum` the tuple keeps the
+    /// produce's own datum, as in play (R6). The search borrows the incoming
+    /// datum, so its candidate keeps the default removed value, and the
+    /// selection of the produce can take the datum afterwards. No item test
+    /// runs here, because the refusal check tests each item strictly (SA4).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::rspace::replay_rspace) fn find_refused_produce_tuple(
+        &self,
+        channel: &C,
+        incoming: &Datum<A>,
+        grouped_channels: &[Vec<C>],
+        keys: &OperationKeys,
+        identity: &dyn NativeCandidateIdentity,
+        own_datum: bool,
+        reader: &CandidateReader<'_, C, P, A, K>,
+    ) -> Result<Option<RefusedProduceTuple<C, P, A, K>>> {
+        if keys.groups.len() != grouped_channels.len() {
+            return Err(RSpaceError::BugFoundError(
+                "native replay join keys do not match the joins".to_owned(),
+            ));
+        }
+        let next = if incoming.persist {
+            None
+        } else {
+            let count = self.get_produce_count(&incoming.source);
+            let Some(next) = count.checked_add(1) else {
+                let message = "Native replay produce counter overflow";
+                return Err(RSpaceError::InterpreterError(message.to_owned()));
+            };
+            Some(next)
+        };
+        for (channels, group_keys) in grouped_channels.iter().zip(&keys.groups) {
+            let continuations = canonical_candidates((reader.continuations)(channels, group_keys)?);
+            let views = self.data_views(channels, &group_keys.channels, reader)?;
+            let (mut data, positions) =
+                self.channel_data(channels, &views, Some((channel, incoming)), Some(identity));
+            if own_datum {
+                keep_only_incoming(&mut data, channels, &positions, channel);
+            }
+            for (continuation, _) in continuations {
+                if !identity.matches_consume(&continuation.source) {
+                    continue;
+                }
+                let Some(data_candidates) = self.match_data(
+                    channels,
+                    &positions,
+                    &continuation.patterns,
+                    &continuation.continuation,
+                    &data,
+                    None,
+                )?
+                else {
+                    continue;
+                };
+                if own_datum && !holds_incoming(&data_candidates) {
+                    continue;
+                }
+                let comm = self.build_comm(
+                    &data_candidates,
+                    &continuation.source,
+                    &continuation.peeks,
+                    next.map(|next| (&incoming.source, next)),
+                );
+                if !identity.matches_comm(&comm) {
+                    return Ok(None);
+                }
+                return Ok(Some(RefusedProduceTuple {
+                    continuation: continuation.as_ref().clone(),
+                    data: data_candidates,
+                    comm,
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Added by G3 (DR-135, S6): the tuple of a refused COMM of a produce (R7):
+/// its waiting continuation, its data and the COMM.
+pub(in crate::rspace::replay_rspace) struct RefusedProduceTuple<C, P: Clone, A: Clone, K: Clone> {
+    pub(in crate::rspace::replay_rspace) continuation: WaitingContinuation<P, K>,
+    pub(in crate::rspace::replay_rspace) data: Vec<ConsumeCandidate<C, A>>,
+    pub(in crate::rspace::replay_rspace) comm: COMM,
+}
+
+/// Added by G3 (DR-135, S6): the restriction of R6. On a channel that
+/// `channels` names once, the entry of the produce's channel `trigger` keeps
+/// only the incoming datum. A channel that `channels` names more than once
+/// keeps every datum, and the tuple must hold the incoming datum instead
+/// (`holds_incoming`). Play restricts its lists in the same way
+/// (`space_matcher.rs`, `extract_first_match`).
+fn keep_only_incoming<C: Eq, A: Clone>(
+    data: &mut [ChannelData<'_, C, A>],
+    channels: &[C],
+    positions: &[usize],
+    trigger: &C,
+) {
+    let mut named = channels
+        .iter()
+        .zip(positions)
+        .filter(|(channel, _)| *channel == trigger);
+    if let (Some((_, position)), None) = (named.next(), named.next()) {
+        if let Some(entry) = data.get_mut(*position) {
+            entry.values.retain(|(_, index)| *index == INCOMING_INDEX);
+        }
+    }
+}
+
+/// Added by G3 (DR-135, S6): whether a tuple holds the incoming datum of its
+/// produce (R6).
+fn holds_incoming<C, A: Clone>(candidates: &[ConsumeCandidate<C, A>]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| candidate.datum_index == INCOMING_INDEX)
 }
 
 #[cfg(test)]

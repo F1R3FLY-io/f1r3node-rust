@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+// Added by G3 (DR-135, S7): owner funding of an offered run (R3, R10, R11).
+use models::rhoapi::{CostRegion, CostSignature};
 use models::rust::block_hash::BlockHash;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::phlo_grant_creation::VerifiedGrantCreationV1;
@@ -8,7 +10,13 @@ use models::rust::phlo_intent::PhloConversionCompositionV2;
 use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use models::rust::validator::Validator;
+// Added by G3 (DR-135, S7).
+use rholang::rust::interpreter::accounting::authority::AuthorityError;
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativeBudgetTraceLimits;
+// Added by G3 (DR-135, S7).
+use rholang::rust::interpreter::accounting::owner_funding::{
+    OwnerFundingBinding, OwnerTable, OwnerTableEntry, OwnerTotals,
+};
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_offered_phlo_controls, PhloControlsBinding, PhloOffer, PhloScheduleBinding,
 };
@@ -19,13 +27,20 @@ use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::trace::event::Event;
 
-use super::{CheckedDirectWalletPolicy, DirectWalletPolicySnapshot};
+// Added by G3 (DR-135, S7): the later holds that cap the owner budgets (R3).
+use self::held_capacity::LaterHolds;
+// Changed by DR-134 (DR-65): the offered attempt takes its check from the
+// decision pass of its batch, so this module reads no wallet snapshot.
+// use super::{CheckedDirectWalletPolicy, DirectWalletPolicySnapshot};
+use super::CheckedDirectWalletPolicy;
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::acceptance::{
     prepare_offered_candidate, CandidateDraftSettlementPermit, OfferedCandidateLimits,
     PreparedOfferedCandidate,
 };
+// Added by G3 (DR-135, S7): the owner budgets of the discovery (R3).
+use crate::rust::util::rholang::costacc::direct_wallet_funding::snapshot::owner_budget;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, CompatibleAcquisitionTerms,
 };
@@ -37,8 +52,12 @@ use crate::rust::util::rholang::costacc::offered_grants::{
     offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
 use crate::rust::util::rholang::costacc::prepaid_receipts::PrepaidStackCaptureLimits;
-use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
+// Changed by DR-134 (DR-65): the check of an offered attempt moved to the
+// decision pass of its batch (`offered_batch.rs`).
+// use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
 use crate::rust::util::rholang::costacc::supply::PurseStack;
+// Added by G3 (DR-135, S7): the payers of the owner purses (R2).
+use crate::rust::util::rholang::costacc::vault_payer::{purse_of, vault_payer, VaultPayer};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub struct NativeFundedExecutionContext {
@@ -78,6 +97,14 @@ pub struct NativeOfferedAttempt<'preflight, 'a> {
     /// failure. `settle_replayed_candidate` accepts it only if the recomputed
     /// guard fails.
     guard_claimed: bool,
+    /// Added by G3 (DR-135, S7): the owner funding of the run (R11): the
+    /// binding of the last discovery pass in play, and the binding of the
+    /// recorded owner table in replay.
+    owner: Option<Arc<OwnerFundingBinding>>,
+    /// Added by G3 (DR-135, S7): the billed owner sums of the witness replay
+    /// (G-4), which its journal check folded. Play folds its own recording in
+    /// the producer.
+    owner_totals: Option<OwnerTotals>,
 }
 
 impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
@@ -91,6 +118,32 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
     pub fn grant_issuances(&self) -> &[VerifiedGrantCreationV1] { &self.grant_issuances }
 
     pub fn grant_issue_log(&self) -> &[Event] { &self.grant_issue_log }
+
+    /// Added by G3 (DR-135, S7): whether the demand of the client keeps
+    /// `region`. With owner funding an owner region leaves it, because its
+    /// owner pays it (R10, G-2). Without owner funding every region stays.
+    pub(super) fn keeps_client_region(&self, region: &CostRegion) -> Result<bool, AuthorityError> {
+        match self.owner.as_deref() {
+            Some(binding) => binding.is_owner_region(region).map(|owner| !owner),
+            None => Ok(true),
+        }
+    }
+
+    /// Added by G3 (DR-135, S8): the owner purses that the owner table of the
+    /// run lists, in ascending custody order (R3). A dropped batch member
+    /// with a hold on one of them makes a truncated batch run again
+    /// (truncation condition (c)).
+    pub(crate) fn owner_purses(&self) -> Vec<[u8; 32]> {
+        match self.owner.as_deref() {
+            Some(binding) => {
+                let entries = binding.table().entries();
+                let mut purses = Vec::with_capacity(entries.len());
+                purses.extend(entries.iter().map(|(custody, _)| *custody));
+                purses
+            }
+            None => Vec::new(),
+        }
+    }
 
     pub async fn abort(mut self) -> Result<(), CasperError> {
         let root = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
@@ -141,8 +194,16 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                 family.measured.observations,
             )
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        // Changed by G3 (DR-135, S7): the demand of the client leaves out the
+        // owner regions (R10, G-2).
+        // let regions = measured
+        //     .region_demands(family.measured.regions)
+        //     .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let regions = measured
-            .region_demands(family.measured.regions)
+            .region_demands_filtered(
+                family.measured.regions,
+                Some(&|region: &CostRegion| self.keeps_client_region(region)),
+            )
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let located = regions
             .locate_purses(family.measured.purses)
@@ -150,7 +211,10 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         let demand = located
             .prepare_acquisition_demand(&schedule, selected.bytes(), family.measured.acquisition)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        manager.read_measured_prepaid_stacks(self.preflight.funding_root, &demand, capture)
+        // Changed by DR-134 (DR-65 amendment of 2026-10-12): the prepaid stacks
+        // of a member are read at its execution root R_{i-1}.
+        // manager.read_measured_prepaid_stacks(self.preflight.funding_root, &demand, capture)
+        manager.read_measured_prepaid_stacks(self.preflight.execution_root, &demand, capture)
     }
 
     pub fn bind_policy<'policy>(
@@ -244,6 +308,10 @@ pub use gate::{
 // Added by G1-7 (DR-65 item 5): the inputs of the held-capacity guard.
 mod held_capacity;
 
+// Added by DR-134 (DR-65 items 1 to 5, O-8, O-9, O-10): the funding groups of an
+// offered batch.
+mod funding_groups;
+
 /// Added by DR-114: the bytes of external-service replies that one offered
 /// play may record. The replay telemetry and the clone-byte check of the
 /// deploy log count a record three times, and the replay evidence counts it
@@ -319,10 +387,20 @@ impl RuntimeManager {
     ) -> Result<OfferedGate, CasperError> {
         #[cfg(any(test, feature = "test-utils"))]
         match self.offered_check_hook(input.envelope.identity().as_bytes()) {
+            // Changed by G3 (DR-135, S7, G-1): the hook keeps the client lanes
+            // and the owner room at R0, as the check does.
+            // Some(OfferedUsageKind::SkipCheckHook) => {
+            //     return Ok(OfferedGate::unchecked_signed_limit(
+            //         input.prepared.phlo_limit,
+            //     ));
+            // }
             Some(OfferedUsageKind::SkipCheckHook) => {
-                return Ok(OfferedGate::unchecked_signed_limit(
-                    input.prepared.phlo_limit,
-                ));
+                let (client_lanes, owner_room) = gate::offered_owner_terms(&input)
+                    .map_err(|rejection| CasperError::RuntimeError(rejection.to_string()))?;
+                return Ok(
+                    OfferedGate::unchecked_signed_limit(input.prepared.phlo_limit)
+                        .with_owner_terms(client_lanes, owner_room),
+                );
             }
             Some(OfferedUsageKind::ZeroEstimateHook) => {
                 return gate::gate_offered_candidate_without_counts(input)
@@ -419,14 +497,35 @@ impl RuntimeManager {
         self.record_offered_budget_usage(OfferedUsageKind::ZeroEstimateHook, deploy_id, &[]);
     }
 
-    pub async fn evaluate_native_offered<'preflight, 'a>(
+    // Changed by DR-134 (DR-65 items 2 and 3, GateBeforeExecute): the attempt
+    // takes the check of the member from the decision pass of its batch, which
+    // checks every member at R0 before the first runtime entry. The attempt no
+    // longer reads a wallet snapshot.
+    // pub async fn evaluate_native_offered<'preflight, 'a>(
+    //     &self,
+    //     prepared: &'preflight PreparedOfferedCandidate<'a>,
+    //     envelope: &DeployEnvelope,
+    //     selected: &CompatibleAcquisitionTerms<'_, '_>,
+    //     limits: OfferedCandidateLimits,
+    //     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+    //     context: NativeFundedExecutionContext,
+    // ) -> Result<NativeOfferedAttempt<'preflight, 'a>, CasperError> {
+    // Changed by G3 (DR-135, S7): the function takes the later holds, a
+    // crate-private type, so it is visible in the crate only. Its one caller
+    // is `play_offered_member`.
+    // pub async fn evaluate_native_offered<'preflight, 'a>(
+    pub(crate) async fn evaluate_native_offered<'preflight, 'a>(
         &self,
         prepared: &'preflight PreparedOfferedCandidate<'a>,
         envelope: &DeployEnvelope,
         selected: &CompatibleAcquisitionTerms<'_, '_>,
         limits: OfferedCandidateLimits,
-        snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+        gate: OfferedGate,
         context: NativeFundedExecutionContext,
+        // Added by G3 (DR-135, S7): the later holds of the member, which cap
+        // the owner budgets (R3, §7 "Budget"). The gate gives the client
+        // lanes, the owner room and the member's own holds (G-1).
+        later: &LaterHolds,
     ) -> Result<NativeOfferedAttempt<'preflight, 'a>, CasperError> {
         let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
             return Err(CasperError::RuntimeError(
@@ -477,24 +576,27 @@ impl RuntimeManager {
             self.spawn_offered_play_runtime(offered_grant_issue_call_limits())
                 .await?,
         );
-        let gate = self.check_offered_before_execution(OfferedGateInput {
-            envelope,
-            prepared,
-            selected_terms: selected.bytes(),
-            schedule: &schedule,
-            minimum_price: selected.adopted().genesis().minimum_price(),
-            snapshot,
-            evaluator: &runtime.runtime.reducer,
-            limits: offered_funded_v6_production_limits().family,
-        });
-        #[cfg(any(test, feature = "test-utils"))]
-        self.record_offered_check(
-            OfferedCheckRole::Play,
-            envelope,
-            &prepared.funding_root,
-            gate.as_ref().ok(),
-        );
-        let gate = gate?;
+        // Changed by DR-134 (DR-65 items 2 and 3, GateBeforeExecute): the
+        // decision pass of the batch ran this check at R0, and the attempt
+        // receives its result as `gate`.
+        // let gate = self.check_offered_before_execution(OfferedGateInput {
+        //     envelope,
+        //     prepared,
+        //     selected_terms: selected.bytes(),
+        //     schedule: &schedule,
+        //     minimum_price: selected.adopted().genesis().minimum_price(),
+        //     snapshot,
+        //     evaluator: &runtime.runtime.reducer,
+        //     limits: offered_funded_v6_production_limits().family,
+        // });
+        // #[cfg(any(test, feature = "test-utils"))]
+        // self.record_offered_check(
+        //     OfferedCheckRole::Play,
+        //     envelope,
+        //     &prepared.funding_root,
+        //     gate.as_ref().ok(),
+        // );
+        // let gate = gate?;
         let signed_controls = PhloControlsBinding::new(
             &prepared.intent.base.controls,
             limits.funding.base.controls(),
@@ -526,25 +628,61 @@ impl RuntimeManager {
         //     .adopted()
         //     .bind_execution_contract(checked.controls(), &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
         // let host_work = context.host_work.clone();
-        let contract = selected.adopted().bind_execution_contract(
-            checked.controls(),
-            &schedule,
-            gate.bound_source(),
-        )?;
-        // Changed by DR-114: play records external-service replies within a
-        // room, and the play runtime calls the node's services.
-        // let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
-        // let mut runtime = RuntimeOps::new(
-        //     self.spawn_offered_runtime(offered_grant_issue_call_limits(), host_work.clone())
-        //         .await?,
+        // Changed by G3 (DR-135, S7): the run has owner funding, and it runs
+        // again while it notes owner purses that its table does not list
+        // (R3, discovery). Each pass lists the noted purses with their budgets
+        // and runs again from the same checkpoint. A pass adds at least one
+        // purse, so at most `owner_room + 1` passes run. The replaced single
+        // run follows.
+        // let contract = selected.adopted().bind_execution_contract(
+        //     checked.controls(),
+        //     &schedule,
+        //     gate.bound_source(),
+        // )?;
+        // // Changed by DR-114: play records external-service replies within a
+        // // room, and the play runtime calls the node's services.
+        // // let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
+        // // let mut runtime = RuntimeOps::new(
+        // //     self.spawn_offered_runtime(offered_grant_issue_call_limits(), host_work.clone())
+        // //         .await?,
+        // // );
+        // let config = NativeRuntimeConfig::new(contract, context.trace)
+        //     .with_record_room(native_record_room());
+        // // Changed by G1-6 (DR-124): the spawn moved above the controls.
+        // // let mut runtime = RuntimeOps::new(
+        // //     self.spawn_offered_play_runtime(offered_grant_issue_call_limits(), host_work.clone())
+        // //         .await?,
+        // // );
+        // let block_data = context.block_data.clone();
+        // runtime.runtime.set_block_data(context.block_data).await;
+        // runtime
+        //     .runtime
+        //     .set_invalid_blocks(context.invalid_blocks)
+        //     .await;
+        // runtime
+        //     .runtime
+        //     .reset(&Blake2b256Hash::from_bytes(
+        //         prepared.execution_root.to_vec(),
+        //     ))
+        //     .await?;
+        // check_execution_root(
+        //     &prepared.execution_root,
+        //     &runtime.runtime.get_root().await.bytes(),
+        // )?;
+        // let checkpoint = runtime.runtime.create_soft_checkpoint().await;
+        // #[cfg(any(test, feature = "test-utils"))]
+        // self.record_offered_budget_usage(
+        //     OfferedUsageKind::PlayRuntimeEntry,
+        //     envelope.identity().as_bytes(),
+        //     &prepared.funding_root,
         // );
-        let config = NativeRuntimeConfig::new(contract, context.trace)
-            .with_record_room(native_record_room());
-        // Changed by G1-6 (DR-124): the spawn moved above the controls.
-        // let mut runtime = RuntimeOps::new(
-        //     self.spawn_offered_play_runtime(offered_grant_issue_call_limits(), host_work.clone())
-        //         .await?,
-        // );
+        // let evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
+        //     Ok(evaluation) => evaluation,
+        //     Err(error) => {
+        //         runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
+        //         return Err(error);
+        //     }
+        // };
         let block_data = context.block_data.clone();
         runtime.runtime.set_block_data(context.block_data).await;
         runtime
@@ -561,19 +699,52 @@ impl RuntimeManager {
             &prepared.execution_root,
             &runtime.runtime.get_root().await.bytes(),
         )?;
-        let checkpoint = runtime.runtime.create_soft_checkpoint().await;
-        #[cfg(any(test, feature = "test-utils"))]
-        self.record_offered_budget_usage(
-            OfferedUsageKind::PlayRuntimeEntry,
-            envelope.identity().as_bytes(),
-            &prepared.funding_root,
-        );
-        let evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
-            Ok(evaluation) => evaluation,
-            Err(error) => {
-                runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
-                return Err(error);
+        let mut table = OwnerTable::empty(gate.owner_room());
+        let (owner, checkpoint, evaluation) = loop {
+            let binding = Arc::new(OwnerFundingBinding::new(
+                gate.client_lanes().clone(),
+                purse_of,
+                table.clone(),
+            ));
+            let contract = selected.adopted().bind_execution_contract(
+                checked.controls(),
+                &schedule,
+                gate.bound_source(),
+            )?;
+            let config = NativeRuntimeConfig::new(contract, context.trace)
+                .with_record_room(native_record_room())
+                .with_owner_funding(Arc::clone(&binding));
+            let checkpoint = runtime.runtime.create_soft_checkpoint().await;
+            #[cfg(any(test, feature = "test-utils"))]
+            self.record_offered_budget_usage(
+                OfferedUsageKind::PlayRuntimeEntry,
+                envelope.identity().as_bytes(),
+                &prepared.funding_root,
+            );
+            let evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
+                Ok(evaluation) => evaluation,
+                Err(error) => {
+                    runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
+                    return Err(error);
+                }
+            };
+            let noted = binding.take_notes();
+            if noted.is_empty() || !table.has_room() {
+                break (binding, checkpoint, evaluation);
             }
+            let listed = match self
+                .list_owner_purses(&table, noted, prepared.execution_root, &gate, later)
+                .await
+            {
+                Ok(listed) => listed,
+                Err(error) => {
+                    runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
+                    return Err(error);
+                }
+            };
+            runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
+            runtime.runtime.take_event_log().await;
+            table = listed;
         };
         if !evaluation.byte_observations.has_complete_measurements() {
             runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
@@ -635,7 +806,115 @@ impl RuntimeManager {
             // settlement checkpoint, and it never claims a guard failure.
             post_run_root: None,
             guard_claimed: false,
+            // Added by G3 (DR-135, S7): the binding of the last pass. The
+            // producer folds the recording for the owner totals.
+            owner: Some(owner),
+            owner_totals: None,
         })
+    }
+
+    /// Added by G3 (DR-135, S7): the table of the next discovery pass (R3):
+    /// `table` with the first noted purses that fit its room. The budget of a
+    /// purse is its balance at the execution root R_{i-1}, capped by the later
+    /// holds of the batch and less the member's own hold (`owner_budget`).
+    async fn list_owner_purses(
+        &self,
+        table: &OwnerTable,
+        noted: Vec<rholang::rust::interpreter::accounting::owner_funding::OwnerPurse>,
+        execution_root: [u8; 32],
+        gate: &OfferedGate,
+        later: &LaterHolds,
+    ) -> Result<OwnerTable, CasperError> {
+        let free = table.room().saturating_sub(table.len());
+        let mut fresh = Vec::with_capacity(free.min(noted.len()));
+        fresh.extend(noted.into_iter().take(free));
+        let mut purses = Vec::with_capacity(fresh.len());
+        purses.extend(fresh.iter().map(|purse| (purse.custody, &purse.signature)));
+        let budgets = self
+            .owner_budgets(&purses, execution_root, gate, later)
+            .await?;
+        let mut entries = Vec::with_capacity(table.len().saturating_add(fresh.len()));
+        entries.extend(table.entries().iter().cloned());
+        for (purse, budget) in fresh.into_iter().zip(budgets) {
+            entries.push((purse.custody, OwnerTableEntry {
+                signature: purse.signature,
+                budget,
+            }));
+        }
+        entries.sort_by_key(|(custody, _)| *custody);
+        OwnerTable::new(entries, table.room())
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))
+    }
+
+    /// Added by G3 (DR-135, S7): checks that each entry of a recorded owner
+    /// table lists the budget of its purse at the execution root of the
+    /// member (R3, plan §6.2 "After the run"). Replay calls it, so a block
+    /// whose table raises a budget is invalid.
+    pub(super) async fn check_owner_table(
+        &self,
+        table: &OwnerTable,
+        execution_root: [u8; 32],
+        gate: &OfferedGate,
+        later: &LaterHolds,
+    ) -> Result<(), CasperError> {
+        let mut purses = Vec::with_capacity(table.len());
+        purses.extend(
+            table
+                .entries()
+                .iter()
+                .map(|(custody, entry)| (*custody, &entry.signature)),
+        );
+        let budgets = self
+            .owner_budgets(&purses, execution_root, gate, later)
+            .await?;
+        if table
+            .entries()
+            .iter()
+            .zip(&budgets)
+            .any(|((_, entry), budget)| entry.budget != *budget)
+        {
+            return Err(CasperError::RuntimeError(
+                "a recorded owner budget differs from its budget at the execution root".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Added by G3 (DR-135, S7): the budget of each owner purse in `purses`
+    /// (R3, §7 "Budget"): the balance of its vault at the execution root
+    /// R_{i-1}, capped by the later holds of the batch and less the member's
+    /// own hold at R0 (`owner_budget`). An absent vault has balance 0.
+    async fn owner_budgets(
+        &self,
+        purses: &[([u8; 32], &CostSignature)],
+        execution_root: [u8; 32],
+        gate: &OfferedGate,
+        later: &LaterHolds,
+    ) -> Result<Vec<u64>, CasperError> {
+        let mut payers: Vec<VaultPayer> = Vec::with_capacity(purses.len());
+        for (_, signature) in purses {
+            payers.push(
+                vault_payer(signature)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
+            );
+        }
+        let mut located = Vec::with_capacity(payers.len());
+        located.extend(payers.iter());
+        let balances = self.read_balances_at(execution_root, &located).await?;
+        let mut budgets = Vec::with_capacity(purses.len());
+        for ((custody, _), balance) in purses.iter().zip(balances) {
+            let balance = u64::try_from(balance.unwrap_or(0)).map_err(|_| {
+                CasperError::RuntimeError("an owner purse has a negative balance".to_string())
+            })?;
+            let later_hold = later.holds().get(custody).copied().unwrap_or(0);
+            let own_hold = gate
+                .holds()
+                .iter()
+                .find(|(held, _)| held == custody)
+                .map_or(0, |(_, hold)| *hold);
+            budgets.push(owner_budget(balance, later_hold, own_hold));
+        }
+        Ok(budgets)
     }
 
     pub async fn evaluate_native_funded<'policy, 'a>(
@@ -706,6 +985,13 @@ pub use replay::{
 
 mod offered_block;
 pub(crate) use offered_block::CertifiedOfferedDraft;
+
+// Added by DR-134 (DR-65, gap G2): several offered deploys in one block.
+mod offered_batch;
+pub(crate) use offered_batch::offered_envelopes;
+
+// Added by DR-134 (DR-71): the exploratory estimate as a native unfunded dry run.
+mod dry_run;
 
 #[cfg(test)]
 mod tests {

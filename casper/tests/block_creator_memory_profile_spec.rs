@@ -5,15 +5,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+// Changed by DR-134 (DR-66 item 1): the pool and the offered compute take
+// pending envelopes.
+// use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, PendingDeployCandidate,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
+// Added by DR-134 (DR-66 item 1): the offered genesis funds the vault of the
+// deploy signer.
+use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+// Added by DR-134 (DR-66 item 1): blocks run under the adopted genesis resource
+// policy.
+use casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use casper::rust::util::rholang::interpreter_util::compute_parents_post_state;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -22,18 +33,45 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+// Changed by DR-134 (DR-66 item 1): the profiles sign offered deploys through
+// the seam.
+// use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
-use models::rust::casper::protocol::casper_message::{DeployData, Justification};
+// Changed by DR-134 (DR-66 item 1): the profiles sign offered deploys through
+// the seam.
+// use models::rust::casper::protocol::casper_message::{DeployData, Justification};
+use models::rust::casper::protocol::casper_message::Justification;
+// Added by DR-134 (DR-66 item 1): the envelope limits of the pool listing.
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
+// Added by DR-134 (DR-66 item 1): the vault of the deploy signer.
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use tokio::time::{timeout, Duration};
 
+// Added by DR-134 (DR-66 item 1): this file is its own test target, which has
+// no `crate::helper`, so it includes the offered-deploy seam by its path. The
+// profiles use only part of the seam.
+#[allow(dead_code, unused_imports)]
+#[path = "helper/offered_deploy.rs"]
+mod offered_deploy;
+
 const DEPLOY_LIFESPAN: i64 = 50;
+
+/// Added by DR-134 (DR-66 item 1): the balance of a funded offered test vault,
+/// as `OFFERED_TEST_VAULT_BALANCE` of `util/genesis_builder.rs` sets it (step
+/// F0 of gap G1). It covers the hold of an offer at its signed limit.
+const OFFERED_VAULT_BALANCE: u64 = 1_000_000_000_000;
+
+/// Added by DR-134 (DR-66 item 1): the protocol version and the minimum phlo
+/// price that the offered genesis policy of the seam requires, as
+/// `GenesisBuilder::offered_v6` sets them.
+const OFFERED_PROTOCOL_VERSION: i64 = 6;
+const OFFERED_MIN_PHLO_PRICE: i64 = 1;
 
 fn vm_rss_kb() -> Option<usize> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -62,29 +100,46 @@ async fn store_size_kb(kvm: &mut InMemoryStoreManager, name: &str) -> usize {
     }
 }
 
+// Changed by DR-134 (DR-66 item 1): the deploy is an offered envelope that the
+// validator key signs. The offer signs its own phlo limit and price.
+// fn create_deploy(
+//     iteration: usize,
+//     validator_sk: &PrivateKey,
+//     shard_id: &str,
+// ) -> Signed<DeployData> {
 fn create_deploy(
     iteration: usize,
     validator_sk: &PrivateKey,
     shard_id: &str,
-) -> Signed<DeployData> {
+) -> offered_deploy::OfferedDeploy {
     let timestamp = {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
     };
-    let deploy_data = DeployData {
-        term: format!("new x in {{ x!({}) | for (_ <- x) {{ Nil }} }}", iteration),
-        time_stamp: timestamp,
-        phlo_price: 1,
-        phlo_limit: 100000,
-        valid_after_block_number: 0,
-        shard_id: shard_id.to_string(),
-        expiration_timestamp: None,
-    };
-
-    Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
-        .expect("Failed to create signed deploy")
+    // let deploy_data = DeployData {
+    //     term: format!("new x in {{ x!({}) | for (_ <- x) {{ Nil }} }}", iteration),
+    //     time_stamp: timestamp,
+    //     phlo_price: 1,
+    //     phlo_limit: 100000,
+    //     valid_after_block_number: 0,
+    //     shard_id: shard_id.to_string(),
+    //     expiration_timestamp: None,
+    // };
+    //
+    // Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
+    //     .expect("Failed to create signed deploy")
+    offered_deploy::source_deploy(
+        format!("new x in {{ x!({}) | for (_ <- x) {{ Nil }} }}", iteration),
+        timestamp,
+        Some(100000),
+        Some(1),
+        Some(validator_sk.clone()),
+        Some(0),
+        Some(shard_id.to_string()),
+    )
+    .expect("Failed to create signed deploy")
 }
 
 fn create_snapshot_with_parent(
@@ -109,7 +164,11 @@ fn create_snapshot_with_parent(
     shard_conf.shard_name = shard_name;
     shard_conf.deploy_lifespan = DEPLOY_LIFESPAN;
     shard_conf.max_number_of_parents = 10;
-    shard_conf.casper_version = 1;
+    // Changed by DR-134 (DR-66 item 1): the shard adopts the offered genesis
+    // policy, which requires protocol 6 and its minimum phlo price.
+    // shard_conf.casper_version = 1;
+    shard_conf.casper_version = OFFERED_PROTOCOL_VERSION;
+    shard_conf.min_phlo_price = OFFERED_MIN_PHLO_PRICE;
     shard_conf.bond_minimum = 0;
     shard_conf.bond_maximum = i64::MAX;
     shard_conf.disable_validator_progress_check = false;
@@ -156,7 +215,10 @@ async fn run_block_creator_create_memory_profile() {
     let (validator_sk, validator_pk) = secp.new_key_pair();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator: Bytes = validator_pk.bytes.clone();
-    let shard_name = "test-shard".to_string();
+    // Changed by DR-134 (DR-66 item 1): the offered genesis policy of the seam
+    // names the test shard.
+    // let shard_name = "test-shard".to_string();
+    let shard_name = offered_deploy::TEST_SHARD.to_string();
 
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
@@ -207,7 +269,9 @@ async fn run_block_creator_create_memory_profile() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            // Changed by DR-134 (DR-66 item 1): the offered genesis minimum.
+            // min_phlo_price: 0,
+            min_phlo_price: OFFERED_MIN_PHLO_PRICE,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -215,16 +279,34 @@ async fn run_block_creator_create_memory_profile() {
             ],
             pos_multi_sig_quorum: 2,
         },
-        vaults: Vec::new(),
+        // Changed by DR-134 (DR-66 item 1): the validator key signs the
+        // offers, so its vault funds their holds.
+        // vaults: Vec::new(),
+        vaults: vec![Vault {
+            vault_address: VaultAddress::from_public_key(&validator_pk)
+                .expect("Failed to create the deploy signer's vault address"),
+            initial_balance: OFFERED_VAULT_BALANCE,
+        }],
         supply: i64::MAX,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6.
+        // version: 1,
+        version: OFFERED_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
-    let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
-        .await
-        .expect("Failed to create genesis block for block_creator profiling");
+    // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6 with the
+    // offered-funded resource policy.
+    // let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
+    //     .await
+    //     .expect("Failed to create genesis block for block_creator profiling");
+    let parent = Genesis::create_genesis_block_with_policy(
+        &runtime_manager,
+        &genesis,
+        Some(&offered_deploy::offered_v6_policy()),
+    )
+    .await
+    .expect("Failed to create genesis block for block_creator profiling");
 
     block_store
         .put_block_message(&parent)
@@ -244,6 +326,15 @@ async fn run_block_creator_create_memory_profile() {
         validator.clone(),
         shard_name.clone(),
     );
+    // Added by DR-134 (DR-66 item 1): the policy that a node adopts from the
+    // offered genesis when it starts.
+    let adopted = AdoptedResourcePolicy::load(
+        &runtime_manager,
+        &snapshot.parents[0],
+        &snapshot.on_chain_state.shard_conf,
+    )
+    .await
+    .expect("the offered genesis resource policy is adopted");
 
     let mut created_count = 0usize;
     let mut non_created_count = 0usize;
@@ -265,12 +356,22 @@ async fn run_block_creator_create_memory_profile() {
         let deploy = create_deploy(i, &validator_sk, &shard_name);
         {
             let mut ds = deploy_storage.lock();
-            ds.add(vec![deploy]).expect("Failed to add deploy");
+            // Changed by DR-134 (DR-66 item 1): the pool stores the offered
+            // envelope.
+            // ds.add(vec![deploy]).expect("Failed to add deploy");
+            ds.add_envelope_if_absent(&deploy.envelope)
+                .expect("Failed to add deploy");
         }
 
         let outcome = match timeout(
             Duration::from_millis(timeout_ms),
-            block_creator::create(
+            // Changed by DR-134 (DR-66 item 1): the proposal takes the policy
+            // that the node adopted at start.
+            // block_creator::create(
+            //     &snapshot,
+            block_creator::create_with_adopted_policy(
+                Some(&adopted),
+                true,
                 &snapshot,
                 &validator_identity,
                 None,
@@ -305,12 +406,32 @@ async fn run_block_creator_create_memory_profile() {
             }
         };
 
+        // Changed by DR-134 (DR-66 item 1): the pool listing holds offered
+        // envelopes, which the pool removes by their deploy ids.
+        // {
+        //     let mut ds = deploy_storage.lock();
+        //     let all = ds.read_all().expect("Failed to read deploy pool");
+        //     if !all.is_empty() {
+        //         ds.remove(all.into_iter().collect())
+        //             .expect("Failed to clear deploy pool");
+        //     }
+        // }
         {
             let mut ds = deploy_storage.lock();
-            let all = ds.read_all().expect("Failed to read deploy pool");
-            if !all.is_empty() {
-                ds.remove(all.into_iter().collect())
-                    .expect("Failed to clear deploy pool");
+            let all = ds
+                .read_all_envelopes(offered_funded_v6_limits().envelope)
+                .expect("Failed to read deploy pool");
+            for candidate in all {
+                match candidate {
+                    PendingDeployCandidate::Legacy(legacy) => {
+                        ds.remove(vec![legacy])
+                            .expect("Failed to clear deploy pool");
+                    }
+                    PendingDeployCandidate::Envelope(envelope) => {
+                        ds.remove_by_sig(envelope.identity().as_bytes())
+                            .expect("Failed to clear deploy pool");
+                    }
+                }
             }
         }
 
@@ -407,13 +528,18 @@ async fn run_block_creator_phase_split_memory_profile() {
     let skip_user_deploy = false;
     let skip_system_deploy = false;
     let skip_parents_compute = false;
-    let skip_bonds = false;
+    // Disabled by DR-134 (DR-66 item 1): the offered compute always reads the
+    // bonds, so this knob selects nothing (see the compute below).
+    // let skip_bonds = false;
 
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator: Bytes = validator_pk.bytes.clone();
-    let shard_name = "test-shard".to_string();
+    // Changed by DR-134 (DR-66 item 1): the offered genesis policy of the seam
+    // names the test shard.
+    // let shard_name = "test-shard".to_string();
+    let shard_name = offered_deploy::TEST_SHARD.to_string();
 
     let mut kvm = InMemoryStoreManager::new();
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -454,7 +580,9 @@ async fn run_block_creator_phase_split_memory_profile() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            // Changed by DR-134 (DR-66 item 1): the offered genesis minimum.
+            // min_phlo_price: 0,
+            min_phlo_price: OFFERED_MIN_PHLO_PRICE,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -462,16 +590,34 @@ async fn run_block_creator_phase_split_memory_profile() {
             ],
             pos_multi_sig_quorum: 2,
         },
-        vaults: Vec::new(),
+        // Changed by DR-134 (DR-66 item 1): the validator key signs the
+        // offers, so its vault funds their holds.
+        // vaults: Vec::new(),
+        vaults: vec![Vault {
+            vault_address: VaultAddress::from_public_key(&validator_pk)
+                .expect("Failed to create the deploy signer's vault address"),
+            initial_balance: OFFERED_VAULT_BALANCE,
+        }],
         supply: i64::MAX,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6.
+        // version: 1,
+        version: OFFERED_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
-    let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
-        .await
-        .expect("Failed to create genesis block for phase-split profiling");
+    // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6 with the
+    // offered-funded resource policy.
+    // let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
+    //     .await
+    //     .expect("Failed to create genesis block for phase-split profiling");
+    let parent = Genesis::create_genesis_block_with_policy(
+        &runtime_manager,
+        &genesis,
+        Some(&offered_deploy::offered_v6_policy()),
+    )
+    .await
+    .expect("Failed to create genesis block for phase-split profiling");
 
     block_store
         .put_block_message(&parent)
@@ -491,6 +637,15 @@ async fn run_block_creator_phase_split_memory_profile() {
         validator.clone(),
         shard_name.clone(),
     );
+    // Added by DR-134 (DR-66 item 1): the policy that a node adopts from the
+    // offered genesis when it starts.
+    let adopted = AdoptedResourcePolicy::load(
+        &runtime_manager,
+        &snapshot.parents[0],
+        &snapshot.on_chain_state.shard_conf,
+    )
+    .await
+    .expect("the offered genesis resource policy is adopted");
 
     let baseline_rss = vm_rss_kb();
     println!(
@@ -529,7 +684,10 @@ async fn run_block_creator_phase_split_memory_profile() {
             Vec::new()
         } else {
             let deploy = create_deploy(deploy_iteration, &validator_sk, &shard_name);
-            vec![deploy]
+            // Changed by DR-134 (DR-66 item 1): the offered compute takes the
+            // pending envelope.
+            // vec![deploy]
+            vec![PendingDeployCandidate::Envelope(deploy.envelope)]
         };
 
         let seq_from_snapshot = snapshot
@@ -588,6 +746,8 @@ async fn run_block_creator_phase_split_memory_profile() {
                 None,
                 None,
                 None,
+                // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+                None,
             )
             .await
             {
@@ -609,46 +769,73 @@ async fn run_block_creator_phase_split_memory_profile() {
         };
 
         let rss_after_parents = vm_rss_kb();
-        let outcome = if skip_bonds {
+        // Changed by DR-134 (DR-66 item 1): RuntimeManager has no offered compute
+        // without the bonds read, so both branches of the `skip_bonds` knob ran the
+        // same call. The knob no longer selects a compute.
+        // let outcome = if skip_bonds {
+        //     match timeout(
+        //         Duration::from_millis(timeout_ms),
+        //         // Changed by DR-134 (DR-66 item 1): RuntimeManager has no
+        //         // offered compute without the bonds read, so this knob runs
+        //         // the offered compute with bonds too.
+        //         // runtime_manager.compute_state(
+        //         //     &pre_state_hash,
+        //         //     deploys,
+        //         //     system_deploys,
+        //         //     block_data,
+        //         //     Some(HashMap::new()),
+        //         // ),
+        //         runtime_manager.compute_state_with_bonds_envelopes(
+        //             &pre_state_hash,
+        //             deploys,
+        //             system_deploys,
+        //             block_data,
+        //             Some(HashMap::new()),
+        //             None,
+        //             Some(&adopted),
+        //         ),
+        //     )
+        //     .await
+        //     {
+        //         Ok(Ok(_)) => {
+        //             success_count += 1;
+        //             "ok"
+        //         }
+        //         Ok(Err(err)) => {
+        //             error_count += 1;
+        //             if error_samples.len() < 5 {
+        //                 error_samples.push(format!("state:{:?}", err));
+        //             }
+        //             "error"
+        //         }
+        //         Err(_) => {
+        //             error_count += 1;
+        //             timeout_count += 1;
+        //             "timeout"
+        //         }
+        //     }
+        // } else {
+        let outcome = {
             match timeout(
                 Duration::from_millis(timeout_ms),
-                runtime_manager.compute_state(
-                    &pre_state_hash,
-                    deploys,
-                    system_deploys,
-                    block_data,
-                    Some(HashMap::new()),
-                ),
-            )
-            .await
-            {
-                Ok(Ok(_)) => {
-                    success_count += 1;
-                    "ok"
-                }
-                Ok(Err(err)) => {
-                    error_count += 1;
-                    if error_samples.len() < 5 {
-                        error_samples.push(format!("state:{:?}", err));
-                    }
-                    "error"
-                }
-                Err(_) => {
-                    error_count += 1;
-                    timeout_count += 1;
-                    "timeout"
-                }
-            }
-        } else {
-            match timeout(
-                Duration::from_millis(timeout_ms),
-                runtime_manager.compute_state_with_bonds(
+                // Changed by DR-134 (DR-66 item 1): the offered compute runs
+                // the envelope under the adopted policy.
+                // runtime_manager.compute_state_with_bonds(
+                //     &pre_state_hash,
+                //     deploys,
+                //     system_deploys,
+                //     block_data,
+                //     Some(HashMap::new()),
+                //     None,
+                // ),
+                runtime_manager.compute_state_with_bonds_envelopes(
                     &pre_state_hash,
                     deploys,
                     system_deploys,
                     block_data,
                     Some(HashMap::new()),
                     None,
+                    Some(&adopted),
                 ),
             )
             .await

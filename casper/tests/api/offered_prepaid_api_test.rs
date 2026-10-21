@@ -372,6 +372,7 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
             balance_query_source(&owner_address),
             &second_block.body.state.post_state_hash,
             None,
+            nodes[1].adopted_policy(),
         )
         .await
         .unwrap();

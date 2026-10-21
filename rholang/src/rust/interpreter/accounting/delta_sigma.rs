@@ -1209,6 +1209,8 @@ mod tests {
             cost_signed_terms: vec![CostSignedTerm {
                 body: Some(body),
                 signature: Some(signature),
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
             }],
             ..Par::default()
         }

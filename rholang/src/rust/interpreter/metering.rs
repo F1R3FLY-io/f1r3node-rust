@@ -108,9 +108,10 @@ impl MeteredMachine {
     }
 
     pub fn reserve_incremental_primitive(&self, amount: Cost) -> Result<(), InterpreterError> {
-        if self.budget.is_legacy() {
-            return self.budget.charge_legacy(amount);
-        }
+        // Changed by DR-134 (DR-66 item 3): the legacy meter is deleted.
+        // if self.budget.is_legacy() {
+        //     return self.budget.charge_legacy(amount);
+        // }
         if amount.value < 0 {
             return Err(InterpreterError::BugFoundError(format!(
                 "Incremental billable primitive cost must be non-negative for {}",
@@ -130,9 +131,10 @@ impl MeteredMachine {
     }
 
     fn reserve_cost(&self, kind: BillableKind, amount: Cost) -> Result<(), InterpreterError> {
-        if self.budget.is_legacy() {
-            return self.budget.charge_legacy(amount);
-        }
+        // Changed by DR-134 (DR-66 item 3): the legacy meter is deleted.
+        // if self.budget.is_legacy() {
+        //     return self.budget.charge_legacy(amount);
+        // }
         // Live (production) charging path. Each charge records exactly one
         // attempt, lock-free, into the budget's `SegQueue` via
         // `reserve_canonical_with_cost` (→ `attempt_one`), then consults the

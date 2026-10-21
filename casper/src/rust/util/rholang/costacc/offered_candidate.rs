@@ -257,9 +257,17 @@ pub fn assemble_offered_processed_deploy(
         || envelope.identity().as_bytes() != preflight.envelope_identity
         || prepared.funding_root != preflight.funding_root
         || prepared.execution_root != preflight.execution_root
+        // Changed by G3 (DR-135, S11): the signed limit bounds only the
+        // caller's part of the usage (item 13). The replaced lines follow.
+        // || prepared
+        //     .phlo_used
+        //     .checked_add(prepared.retained_phlo)
+        //     .filter(|used| *used <= preflight.phlo_limit)
+        //     .is_none()
         || prepared
             .phlo_used
-            .checked_add(prepared.retained_phlo)
+            .checked_sub(prepared.owner_phlo)
+            .and_then(|client| client.checked_add(prepared.retained_phlo))
             .filter(|used| *used <= preflight.phlo_limit)
             .is_none()
         || prepared.fresh_phlo > prepared.phlo_used
@@ -269,13 +277,35 @@ pub fn assemble_offered_processed_deploy(
             "offered processed candidate differs from authenticated preflight",
         ));
     }
-    let resource_rev = u128::from(prepared.fresh_phlo)
+    // Changed by G3 (DR-135, S7): the client pays the fresh phlo that no
+    // owner paid, at the signed price, and the owners pay `owner_rev` at
+    // their own prices (G-3). The signed ceiling bounds the client's charge.
+    // let resource_rev = u128::from(prepared.fresh_phlo)
+    //     .checked_add(u128::from(prepared.retained_phlo))
+    //     .and_then(|used| used.checked_mul(u128::from(preflight.phlo_price)))
+    //     .ok_or_else(|| invalid("offered resource REV overflows"))?;
+    // if prepared.resource_rev != resource_rev
+    //     || resource_rev.checked_add(prepared.fee_rev) != Some(prepared.rev_spent)
+    //     || prepared.rev_spent > preflight.rev_ceiling
+    // {
+    //     return Err(invalid("offered settlement differs from signed REV charge"));
+    // }
+    let client_fresh = prepared
+        .fresh_phlo
+        .checked_sub(prepared.owner_phlo)
+        .ok_or_else(|| invalid("offered owner phlo exceeds fresh phlo"))?;
+    let client_rev = u128::from(client_fresh)
         .checked_add(u128::from(prepared.retained_phlo))
         .and_then(|used| used.checked_mul(u128::from(preflight.phlo_price)))
         .ok_or_else(|| invalid("offered resource REV overflows"))?;
+    let resource_rev = client_rev
+        .checked_add(prepared.owner_rev)
+        .ok_or_else(|| invalid("offered resource REV overflows"))?;
     if prepared.resource_rev != resource_rev
         || resource_rev.checked_add(prepared.fee_rev) != Some(prepared.rev_spent)
-        || prepared.rev_spent > preflight.rev_ceiling
+        || client_rev
+            .checked_add(prepared.fee_rev)
+            .is_none_or(|client_spent| client_spent > preflight.rev_ceiling)
     {
         return Err(invalid("offered settlement differs from signed REV charge"));
     }
@@ -306,6 +336,9 @@ pub fn assemble_offered_processed_deploy(
         phlo_limit: preflight.phlo_limit,
         phlo_price: preflight.phlo_price,
         fee_rev: prepared.fee_rev,
+        // Added by G3 (DR-135, S7): the billed owner sums of the run (G-4).
+        owner_phlo: prepared.owner_phlo,
+        owner_rev: prepared.owner_rev,
         failure_class: prepared.failure_class,
         wallet_settlement_log_events,
         budget_recording: &prepared.recording.budget,

@@ -244,7 +244,19 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     ///
     /// Default returns an empty Vec — used by `NoopEngine` and other
     /// engine states where `with_casper()` returns `None`.
-    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    ///
+    /// Changed by DR-134 (DR-66): an entry is a legacy deploy or an offered
+    /// envelope; on protocol 6 the pool holds only offered envelopes.
+    // async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    async fn list_pending_deploys(
+        &self,
+    ) -> Result<
+        Vec<(
+            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate,
+            bool,
+        )>,
+        CasperError,
+    > {
         Ok(Vec::new())
     }
 }
@@ -450,6 +462,13 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     let offered_funded_active = adopted_resource_policy
         .as_ref()
         .is_some_and(|policy| policy.offered_funded_v6_active());
+    // Added by DR-134 (DR-66 item 5): only a protocol-6 genesis with the active
+    // offered-funded policy is supported, so Casper does not start without it.
+    if !offered_funded_active {
+        return Err(
+            crate::rust::util::rholang::costacc::offered_only::protocol_6_genesis_required(),
+        );
+    }
 
     Ok(MultiParentCasperImpl {
         observer: std::sync::OnceLock::new(),

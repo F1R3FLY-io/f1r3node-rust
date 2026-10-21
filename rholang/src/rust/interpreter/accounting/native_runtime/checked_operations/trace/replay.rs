@@ -39,6 +39,8 @@ mod progress_tests;
 mod session;
 mod observations;
 mod evidence;
+// Added by G3 (DR-135, S6): the owner checks of native replay.
+mod owners;
 pub use evidence::NativeReplayAccountingSnapshot;
 use progress::{Registration, ReplayProgress, WaitDecision};
 pub use rspace_plus_plus::rspace::replay_rspace::native_epoch::NativeReplayOutcome;
@@ -85,6 +87,18 @@ pub enum NativeReplayError {
     /// Added by DR-132 (D2-B).
     #[error("native replay operation runs outside the counted tasks of its evaluation")]
     Uncounted,
+    /// Added by G3 (DR-135, S6): the owner binding of the runtime and the
+    /// owner fold of the checked journal do not both exist with one table.
+    #[error("native replay owner funding differs from the checked journal")]
+    OwnerFunding,
+    /// Added by G3 (DR-135, S6): a refused COMM of the row is absent, out of
+    /// order, or not justified (R7, SA4, SA8).
+    #[error("native replay refusal is absent, out of order, or unjustified")]
+    Refusal,
+    /// Added by G3 (DR-135, S6): the transferee of a granted COMM has no
+    /// budget after the COMM (A5).
+    #[error("native replay COMM leaves its transferee without budget")]
+    Transferee,
 }
 
 impl From<LedgerError> for NativeReplayError {
@@ -121,6 +135,9 @@ struct ReplayInner {
     /// Added by DR-132 (D2-B): the live tasks and the parked waiters of the
     /// current evaluation.
     progress: ReplayProgress,
+    /// Added by G3 (DR-135, S6): the owner checks of a member with owner
+    /// funding, which the runtime binding sets (`bind_runtime`).
+    owners: Option<owners::ReplayOwnerChecks>,
 }
 
 #[derive(Clone)]
@@ -143,6 +160,9 @@ pub struct NativeReplayReservation {
     active: bool,
     stage: ObservationStage,
     usage: u64,
+    /// Added by G3 (DR-135, S6): the refusals of the row that the operation
+    /// verified, in their order (R7).
+    verified_refusals: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -331,6 +351,8 @@ impl CheckedNativeOperationTrace {
                 retry_predecessors,
                 changed: tokio::sync::Notify::new(),
                 progress: ReplayProgress::new(),
+                // Added by G3 (DR-135, S6): the runtime binding sets them.
+                owners: None,
             }),
         })
     }
@@ -344,12 +366,23 @@ impl NativeOperationReplay {
         self.inner.trace.journal().bound_source()
     }
 
+    // Changed by G3 (DR-135, S6): the binding also sets the owner checks of
+    // a member with owner funding.
+    // fn bind_runtime(mut self, budget: RuntimeBudget) -> Result<Self, NativeReplayError> {
+    //     let binding =
+    //         ReplayAuthorityBinding::new(budget, self.inner.trace.journal.recording.session)?;
+    //     Arc::get_mut(&mut self.inner)
+    //         .ok_or(NativeReplayError::Busy)?
+    //         .authority = Some(binding);
+    //     Ok(self)
+    // }
     fn bind_runtime(mut self, budget: RuntimeBudget) -> Result<Self, NativeReplayError> {
+        let owners = owners::ReplayOwnerChecks::bind(&budget, &self.inner.trace)?;
         let binding =
             ReplayAuthorityBinding::new(budget, self.inner.trace.journal.recording.session)?;
-        Arc::get_mut(&mut self.inner)
-            .ok_or(NativeReplayError::Busy)?
-            .authority = Some(binding);
+        let inner = Arc::get_mut(&mut self.inner).ok_or(NativeReplayError::Busy)?;
+        inner.authority = Some(binding);
+        inner.owners = owners;
         Ok(self)
     }
     #[cfg(test)]
@@ -380,6 +413,8 @@ impl NativeOperationReplay {
             active: true,
             stage: ObservationStage::Footprint,
             usage: 0,
+            // Added by G3 (DR-135, S6).
+            verified_refusals: 0,
         }
     }
 
@@ -775,13 +810,17 @@ impl NativeReplayReservation {
             }
         };
         let decision = journal.budget.authenticate(index, observation)?;
+        // Changed by G3 (DR-135, S4): a retry links a granted attempt, so it
+        // is never owner-refused either.
+        // (NativeBudgetReplayDecision::Denied, true) => {
         let decision = match (decision, retry) {
             (NativeBudgetReplayDecision::Accepted { .. }, true) => {
                 NativeBudgetReplayDecision::Accepted { usage: 0 }
             }
-            (NativeBudgetReplayDecision::Denied, true) => {
-                return Err(NativeBudgetTraceError::Decision.into())
-            }
+            (
+                NativeBudgetReplayDecision::Denied | NativeBudgetReplayDecision::OwnerRefused,
+                true,
+            ) => return Err(NativeBudgetTraceError::Decision.into()),
             (decision, false) => decision,
         };
         if self.replay.inner.authority.is_some() {
@@ -794,11 +833,15 @@ impl NativeReplayReservation {
                 observation: Arc::clone(&journal.recording.attempts[index].observation),
                 granted: matches!(decision, NativeBudgetReplayDecision::Accepted { .. }),
                 retry,
+                // Added by G3 (DR-135, S6, SA5).
+                owner_refused: matches!(decision, NativeBudgetReplayDecision::OwnerRefused),
             });
         }
+        // Changed by G3 (DR-135, S4): an owner refusal uses no budget (R8).
+        // NativeBudgetReplayDecision::Denied => 0,
         let usage = match decision {
             NativeBudgetReplayDecision::Accepted { usage } => usage,
-            NativeBudgetReplayDecision::Denied => 0,
+            NativeBudgetReplayDecision::Denied | NativeBudgetReplayDecision::OwnerRefused => 0,
         };
         self.usage = self
             .usage
@@ -827,7 +870,29 @@ impl NativeReplayReservation {
             RSpaceOperationCompletion::Rejected if row.comm.is_some() => {
                 NativeReplayOutcome::DeniedComm
             }
+            // Added by G3 (DR-135, S6): a row whose introduction its owner
+            // could not pay stores nothing and is skipped (R8).
+            RSpaceOperationCompletion::Rejected if self.introduction_owner_refused() => {
+                NativeReplayOutcome::SkippedIntroduction
+            }
             RSpaceOperationCompletion::Rejected => NativeReplayOutcome::DeniedIntroduction,
+        }
+    }
+
+    /// Added by G3 (DR-135, S6): whether the owner of the row's introduction
+    /// could not pay (R8). A retry links a granted attempt, so it never is.
+    fn introduction_owner_refused(&self) -> bool {
+        match self.operation().introduction {
+            NativeObservationLink::Attempt(index) => self
+                .replay
+                .inner
+                .trace
+                .journal
+                .recording
+                .attempts
+                .get(index)
+                .is_some_and(|attempt| attempt.owner_refused),
+            NativeObservationLink::Retry(_) => false,
         }
     }
 
@@ -840,6 +905,11 @@ impl NativeReplayReservation {
         }
         if self.stage != ObservationStage::Complete {
             return Err(NativeReplayError::Stage);
+        }
+        // Added by G3 (DR-135, S6): every refused COMM of the row was found
+        // and verified (R7).
+        if self.verified_refusals != self.operation().refusals.len() {
+            return Err(NativeReplayError::Refusal);
         }
         let authority = self
             .replay

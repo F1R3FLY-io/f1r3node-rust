@@ -213,15 +213,29 @@ impl Genesis {
         genesis: &Genesis,
         resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Result<BlockMessage, CasperError> {
-        if let Some(policy) = resource_policy {
-            policy
-                .validate_context(
-                    genesis.version,
-                    &genesis.shard_id,
-                    genesis.native_token_decimals,
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
+        // Changed by DR-134 (DR-66 item 5): a genesis requires the active
+        // offered-funded protocol-6 resource policy, checked before execution.
+        // if let Some(policy) = resource_policy {
+        //     policy
+        //         .validate_context(
+        //             genesis.version,
+        //             &genesis.shard_id,
+        //             genesis.native_token_decimals,
+        //         )
+        //         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        // }
+        let policy = resource_policy
+            .filter(|policy| policy.offered_funded_v6_active())
+            .ok_or_else(
+                crate::rust::util::rholang::costacc::offered_only::protocol_6_genesis_required,
+            )?;
+        policy
+            .validate_context(
+                genesis.version,
+                &genesis.shard_id,
+                genesis.native_token_decimals,
+            )
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let blessed_terms = Self::default_blessed_terms_with_policy(
             &genesis.proof_of_stake,
             &genesis.vaults,

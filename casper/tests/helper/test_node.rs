@@ -235,6 +235,17 @@ impl TestNode {
         }
     }
 
+    /// Added by DR-134 (DR-71): the adopted policy of the node's offered
+    /// genesis. Exploratory reads run the native dry run of this policy.
+    pub fn adopted_policy(
+        &self,
+    ) -> &casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy {
+        self.casper
+            .adopted_resource_policy
+            .as_ref()
+            .expect("an offered genesis has an adopted policy")
+    }
+
     /// Processes a block through the validation pipeline (equivalent to Scala processBlock, line 257-260).
     ///
     /// This is the wrapper method that processes an existing block through the full validation pipeline.

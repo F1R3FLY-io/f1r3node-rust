@@ -4,9 +4,26 @@ use rspace_plus_plus::rspace::operation_context;
 
 use super::byte_accounting::{ByteCharge, BYTE_COST_SCHEDULE_V1};
 use super::byte_receipts::ByteObservation;
+// Changed by G3 (DR-135, S4): the meter keeps the owner ledger.
+// use super::native_phlo_rules::{
+//     NativeBoundSource, NativeBudgetTraceLimits, NativePhloExecutionContract,
+//     NativePhloExecutionError, NativePhloReservation, PreparedNativePhloCharge,
+// };
+// Changed by G3 (DR-135, S6): the owner checks of replay prepare charges.
+// use super::native_phlo_rules::{
+//     NativeBoundSource, NativeBudgetTraceLimits, NativePhloExecutionContract,
+//     NativePhloExecutionError, NativePhloReservation, OwnerReservation, PreparedNativePhloCharge,
+// };
 use super::native_phlo_rules::{
-    NativeBoundSource, NativeBudgetTraceLimits, NativePhloExecutionContract,
-    NativePhloExecutionError, NativePhloReservation, PreparedNativePhloCharge,
+    NativeBoundSource, NativeBudgetTraceLimits, NativePhloChargePreparer,
+    NativePhloExecutionContract, NativePhloExecutionError, NativePhloRegionLimits,
+    NativePhloReservation, OwnerReservation, PreparedNativePhloCharge,
+};
+// Added by G3 (DR-135, S4): the owner charge of an observation.
+// Changed by G3 (DR-135, S6): the charge of a COMM with its extras is shared.
+// use super::owner_funding::{prepared_owner_charge, OwnerCommExtras};
+use super::owner_funding::{
+    prepared_owner_charge, OwnerCharge, OwnerCommExtras, OwnerFundingBinding, OwnerPurseSet,
 };
 use super::{AuthorityRuntimeState, BillableKind, RuntimeBudget, Token};
 use crate::rust::interpreter::errors::InterpreterError;
@@ -30,8 +47,13 @@ pub use checked_operations::{
 pub use operation_sources::{
     NativeCommSource, NativeConsumeSource, NativeOperationSource, NativeProduceSource,
 };
+// Changed by G3 (DR-135, S4): a journal row records its refused COMMs.
+// pub use operations::{
+//     NativeCommRecord, NativeObservationLink, NativeOperationOccurrence, NativeOperationRecord,
+// };
 pub use operations::{
     NativeCommRecord, NativeObservationLink, NativeOperationOccurrence, NativeOperationRecord,
+    NativeRefusal,
 };
 pub use path_trie::{NativePathTrie, PathId};
 use recording::{recording_error, NativeBudgetRecorder, NativeObservationPreparation};
@@ -56,10 +78,21 @@ pub struct NativeRuntimeConfig {
     record_room: u64,
     /// Added by DR-114: the reply bytes recorded so far.
     record_used: u64,
+    /// Added by G3 (DR-135): the checked actual price of the contract. The
+    /// signed consent of the deployment already checked it against every
+    /// required owner ceiling (R4). Each region that the run creates carries
+    /// it.
+    price: u64,
+    /// Added by G3 (DR-135): the owner funding of the run (R11). None keeps
+    /// the behavior of dev.
+    owner: Option<Arc<super::owner_funding::OwnerFundingBinding>>,
 }
 
 impl NativeRuntimeConfig {
     pub fn new(contract: NativePhloExecutionContract<'_>, limits: NativeBudgetTraceLimits) -> Self {
+        // Added by G3 (DR-135): the price is read before `reservation`
+        // consumes the contract.
+        let price = contract.controls().schedule().actual_price;
         Self {
             replay_bound: false,
             reservation: contract.reservation(),
@@ -70,6 +103,10 @@ impl NativeRuntimeConfig {
             operations: operations::NativeOperationRecorder::default(),
             record_room: 0,
             record_used: 0,
+            // Added by G3 (DR-135).
+            price,
+            // Added by G3 (DR-135).
+            owner: None,
         }
     }
 
@@ -77,6 +114,29 @@ impl NativeRuntimeConfig {
     pub fn with_record_room(mut self, room: u64) -> Self {
         self.record_room = room;
         self
+    }
+
+    /// Added by G3 (DR-135): the owner funding of the run (R11). A fired
+    /// owner body then runs for its owner, and a system body for its caller.
+    /// Without it the run keeps the behavior of dev.
+    pub fn with_owner_funding(
+        mut self,
+        binding: Arc<super::owner_funding::OwnerFundingBinding>,
+    ) -> Self {
+        // Added by G3 (DR-135, S4): the meter keeps the owner ledger of the
+        // binding's table (R3).
+        self.reservation
+            .set_owners(OwnerReservation::new(binding.table().clone()));
+        self.owner = Some(binding);
+        self
+    }
+
+    /// Added by G3 (DR-135, S4, SA5): whether the owner of the introduction
+    /// with `identity` could not pay in this run.
+    fn introduction_refused(&self, identity: &[u8; 32]) -> bool {
+        self.reservation
+            .owners()
+            .is_some_and(|owners| owners.is_refused(identity))
     }
 }
 
@@ -116,8 +176,58 @@ impl RuntimeBudget {
         }
         self.reset_from_token(&Token::coalesced(self.signature(), 0));
         config.session = self.deploy_id();
+        // Added by G3 (DR-135): the regions of the run carry the price of its
+        // contract (R4). The reset above cleared the price of an earlier run.
+        self.region_price
+            .store(config.price, std::sync::atomic::Ordering::Release);
+        // Added by G3 (DR-135): the fired bodies of the run load the binding
+        // (R11). The reset above cleared the binding of an earlier run.
+        self.owner_binding.store(config.owner.clone());
         self.authority_state.lock().expect("authority state").native = Some(config);
         Ok(())
+    }
+
+    /// Added by G3 (DR-135, S4, SA5): whether the owner of the introduction
+    /// with `identity` could not pay, so that its operation stored nothing.
+    // Changed by G3 (DR-135, S6): replay records each skipped introduction
+    // in its ledger when it publishes the row.
+    // /// Play reads its owner ledger. Replay reads its journal (S6).
+    /// Play records a refusal in its owner ledger when it decides it. Replay
+    /// records it in the ledger of its configuration when it publishes the
+    /// skipped introduction (`replay_authority.rs`).
+    pub(crate) fn introduction_refused(&self, identity: &[u8; 32]) -> bool {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .as_ref()
+            .is_some_and(|native| native.introduction_refused(identity))
+    }
+
+    /// Added by G3 (DR-135, S6): the preparer and the region limits of the
+    /// native meter. The owner checks of replay measure the items and the
+    /// refused COMMs of a row with them, as the meter of play does.
+    pub(super) fn native_owner_meter(
+        &self,
+    ) -> Option<(NativePhloChargePreparer, NativePhloRegionLimits)> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .as_ref()
+            .map(|native| (native.reservation.preparer(), native.limits.regions))
+    }
+
+    /// Added by G3 (DR-135, S4): the owner ledger of the running native
+    /// execution.
+    #[cfg(test)]
+    pub(crate) fn native_owner_ledger(&self) -> Option<OwnerReservation> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .as_ref()
+            .and_then(|native| native.reservation.owners().cloned())
     }
 
     pub fn native_phlo_usage(&self) -> Option<u64> {
@@ -168,6 +278,19 @@ impl RuntimeBudget {
         &self,
         observation: &Arc<ByteObservation>,
     ) -> Result<Option<NativeObservationPreparation>, InterpreterError> {
+        // Changed by G3 (DR-135, S4): the preparation also computes the
+        // owner charge. An introduction has no COMM extras.
+        self.prepare_native_observation_with(observation, None)
+    }
+
+    /// Added by G3 (DR-135, S4): `prepare_native_observation` with the
+    /// owner terms of a COMM (A5, R9). The binding is captured with the
+    /// preparer, and the owner charge is computed outside the mutex.
+    pub(super) fn prepare_native_observation_with(
+        &self,
+        observation: &Arc<ByteObservation>,
+        extras: Option<OwnerCommExtras>,
+    ) -> Result<Option<NativeObservationPreparation>, InterpreterError> {
         let captured = {
             let state = self.authority_state.lock().expect("authority state");
             state
@@ -180,11 +303,15 @@ impl RuntimeBudget {
                         Arc::clone(&native.generation),
                         native.session,
                         native.recording.prepare(native.limits.attempts)?,
+                        // Added by G3 (DR-135, S4): the binding of the run.
+                        native.owner.clone(),
                     ))
                 })
                 .transpose()?
         };
-        let Some((preparer, limits, generation, session, ticket)) = captured else {
+        // Changed by G3 (DR-135, S4): the capture also takes the binding.
+        // let Some((preparer, limits, generation, session, ticket)) = captured else {
+        let Some((preparer, limits, generation, session, ticket, binding)) = captured else {
             return Ok(None);
         };
         let prepare = || {
@@ -215,12 +342,91 @@ impl RuntimeBudget {
                 Err(NativePhloExecutionError::Overflow) => None,
                 Err(error) => return Err(native_error(error, preparer.bound_source())),
             };
+            // Added by G3 (DR-135, S4): the owner charge (R4). An overflowing
+            // charge has none, because the bound denies it.
+            // Changed by G3 (DR-135, S4 review): the restorations of a peek
+            // COMM are kept for its attempt, also when its charge overflows,
+            // so the fold charges them at the COMM, as play does (R9). Only a
+            // run with owner funding has COMM extras.
+            // let owner = match (binding.as_deref(), charge.as_ref()) {
+            //     (Some(binding), Some(prepared)) => {
+            //         let mut owner = prepared_owner_charge(binding, observation, Some(prepared))
+            //             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            //         if let Some(extras) = extras {
+            //             owner.transferee = extras.transferee;
+            //             owner.restorations.reserve_exact(extras.restorations.len());
+            //             for restoration in extras.restorations {
+            //                 let prepared =
+            //                     match preparer.prepare(Arc::clone(&restoration), limits.regions) {
+            //                         Ok(prepared) => Some(prepared),
+            //                         Err(NativePhloExecutionError::Overflow) => None,
+            //                         Err(error) => {
+            //                             return Err(native_error(error, preparer.bound_source()))
+            //                         }
+            //                     };
+            //                 let charge =
+            //                     prepared_owner_charge(binding, &restoration, prepared.as_ref())
+            //                         .map_err(|error| {
+            //                             InterpreterError::ReduceError(error.to_string())
+            //                         })?;
+            //                 owner.restorations.push((restoration.event_id, charge));
+            //             }
+            //         }
+            //         Some(owner)
+            //     }
+            //     _ => None,
+            // };
+            let (transferee, restorations): (_, Arc<[Arc<ByteObservation>]>) =
+                match (binding.as_deref(), extras) {
+                    (Some(_), Some(extras)) => (extras.transferee, extras.restorations.into()),
+                    _ => (None, Arc::from([])),
+                };
+            // Changed by G3 (DR-135, S6): the refusal check of replay charges a
+            // COMM in the same way (`owner_charge_with_extras`).
+            // let owner = match (binding.as_deref(), charge.as_ref()) {
+            //     (Some(binding), Some(prepared)) => {
+            //         let mut owner = prepared_owner_charge(binding, observation, Some(prepared))
+            //             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            //         owner.transferee = transferee;
+            //         owner.restorations.reserve_exact(restorations.len());
+            //         for restoration in restorations.iter() {
+            //             let prepared = match preparer
+            //                 .prepare(Arc::clone(restoration), limits.regions)
+            //             {
+            //                 Ok(prepared) => Some(prepared),
+            //                 Err(NativePhloExecutionError::Overflow) => None,
+            //                 Err(error) => return Err(native_error(error, preparer.bound_source())),
+            //             };
+            //             let charge = prepared_owner_charge(binding, restoration, prepared.as_ref())
+            //                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            //             owner.restorations.push((restoration.event_id, charge));
+            //         }
+            //         Some(owner)
+            //     }
+            //     _ => None,
+            // };
+            let owner = match (binding.as_deref(), charge.as_ref()) {
+                (Some(binding), Some(prepared)) => Some(owner_charge_with_extras(
+                    binding,
+                    &preparer,
+                    limits.regions,
+                    observation,
+                    prepared,
+                    transferee,
+                    &restorations,
+                )?),
+                _ => None,
+            };
             Ok(Some(NativeObservationPreparation {
                 generation: Arc::clone(&generation),
                 occurrence,
                 occurrence_key,
                 observation: Arc::clone(observation),
                 charge,
+                // Added by G3 (DR-135, S4).
+                owner,
+                // Added by G3 (DR-135, S4 review).
+                restorations,
                 ticket,
             }))
         };
@@ -287,6 +493,37 @@ pub(crate) fn exhaustion_error(source: NativeBoundSource) -> InterpreterError {
         NativeBoundSource::SignedLimit => InterpreterError::SignedLimitExhausted,
         NativeBoundSource::Certificate => InterpreterError::OutOfPhlogistonsError,
     }
+}
+
+/// Added by G3 (DR-135, S6): the owner charge of the prepared observation
+/// `prepared` of a COMM, with its A5 transferee and the charges of its R9
+/// restorations, each prepared by `preparer` (an overflowing restoration has
+/// no share). The recorder of play and the refusal check of replay share it,
+/// so both roles charge a COMM in the same way.
+pub(super) fn owner_charge_with_extras(
+    binding: &OwnerFundingBinding,
+    preparer: &NativePhloChargePreparer,
+    limits: NativePhloRegionLimits,
+    observation: &ByteObservation,
+    prepared: &PreparedNativePhloCharge,
+    transferee: Option<Option<OwnerPurseSet>>,
+    restorations: &[Arc<ByteObservation>],
+) -> Result<OwnerCharge, InterpreterError> {
+    let mut owner = prepared_owner_charge(binding, observation, Some(prepared))
+        .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+    owner.transferee = transferee;
+    owner.restorations.reserve_exact(restorations.len());
+    for restoration in restorations {
+        let prepared = match preparer.prepare(Arc::clone(restoration), limits) {
+            Ok(prepared) => Some(prepared),
+            Err(NativePhloExecutionError::Overflow) => None,
+            Err(error) => return Err(native_error(error, preparer.bound_source())),
+        };
+        let charge = prepared_owner_charge(binding, restoration, prepared.as_ref())
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        owner.restorations.push((restoration.event_id, charge));
+    }
+    Ok(owner)
 }
 
 #[cfg(test)]

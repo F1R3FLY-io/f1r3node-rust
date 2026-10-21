@@ -9,18 +9,22 @@
 
 use std::collections::HashMap;
 
+// Changed by DR-134 (DR-66 item 1): the builders take offered deploys.
+// use crypto::rust::signatures::signed::Signed;
+// use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use casper::rust::casper::Casper;
 use casper::rust::errors::CasperError;
 use casper::rust::util::proto_util;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
-use crypto::rust::signatures::signed::Signed;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 
 use super::production_adapter::SlashingProductionAdapter;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisContext;
 
@@ -133,7 +137,9 @@ pub fn bonds_by_label(bonds: &[(Bytes, i64)], validators: &[Bytes]) -> HashMap<S
 pub async fn equivocate_block(
     producing_node: &mut TestNode,
     b1: &BlockMessage,
-    alt_deploys: Vec<Signed<DeployData>>,
+    // Changed by DR-134 (DR-66 item 1).
+    // alt_deploys: Vec<Signed<DeployData>>,
+    alt_deploys: Vec<OfferedDeploy>,
 ) -> Result<BlockMessage, CasperError> {
     let validator_identity = producing_node
         .validator_id_opt
@@ -183,13 +189,27 @@ pub async fn equivocate_block(
 
     // Compute checkpoint via the real interpreter — this is what
     // gives us a post-state hash that matches replay.
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    //     &mut producing_node.block_store,
+    //     parents.clone(),
+    //     alt_deploys,
+    //     system_deploys,
+    //     &snapshot,
+    //     &producing_node.runtime_manager,
+    //     block_data.clone(),
+    let adopted_casper = producing_node.casper.clone();
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_envelopes(
         &mut producing_node.block_store,
         parents.clone(),
-        alt_deploys,
+        alt_deploys
+            .into_iter()
+            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+            .collect(),
         system_deploys,
         &snapshot,
         &producing_node.runtime_manager,
+        adopted_casper.adopted_resource_policy.as_ref(),
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
@@ -198,7 +218,9 @@ pub async fn equivocate_block(
     )
     .await?;
 
-    let interpreter_util::DeploysCheckpoint {
+    // Changed by DR-134 (DR-66 item 1).
+    // let interpreter_util::DeploysCheckpoint {
+    let interpreter_util::DeploysEnvelopeCheckpoint {
         pre_state_hash,
         post_state_hash,
         deploys: processed_deploys,
@@ -225,7 +247,10 @@ pub async fn equivocate_block(
     };
     let body = Body {
         state,
-        deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+        // processed user deploys.
+        // deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        deploys: processed_deploys,
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
@@ -265,7 +290,9 @@ pub async fn equivocate_block(
 /// snapshot only carries valid latest messages.
 pub async fn propose_with_explicit_justifications(
     producing_node: &mut TestNode,
-    alt_deploys: Vec<Signed<DeployData>>,
+    // Changed by DR-134 (DR-66 item 1).
+    // alt_deploys: Vec<Signed<DeployData>>,
+    alt_deploys: Vec<OfferedDeploy>,
     extra_justifications: Vec<models::rust::casper::protocol::casper_message::Justification>,
 ) -> Result<BlockMessage, CasperError> {
     let validator_identity = producing_node
@@ -322,13 +349,27 @@ pub async fn propose_with_explicit_justifications(
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
 
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    //     &mut producing_node.block_store,
+    //     parents.clone(),
+    //     alt_deploys,
+    //     system_deploys,
+    //     &snapshot,
+    //     &producing_node.runtime_manager,
+    //     block_data.clone(),
+    let adopted_casper = producing_node.casper.clone();
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_envelopes(
         &mut producing_node.block_store,
         parents.clone(),
-        alt_deploys,
+        alt_deploys
+            .into_iter()
+            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+            .collect(),
         system_deploys,
         &snapshot,
         &producing_node.runtime_manager,
+        adopted_casper.adopted_resource_policy.as_ref(),
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
@@ -337,7 +378,9 @@ pub async fn propose_with_explicit_justifications(
     )
     .await?;
 
-    let interpreter_util::DeploysCheckpoint {
+    // Changed by DR-134 (DR-66 item 1).
+    // let interpreter_util::DeploysCheckpoint {
+    let interpreter_util::DeploysEnvelopeCheckpoint {
         pre_state_hash,
         post_state_hash,
         deploys: processed_deploys,
@@ -360,7 +403,10 @@ pub async fn propose_with_explicit_justifications(
     };
     let body = Body {
         state,
-        deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+        // processed user deploys.
+        // deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        deploys: processed_deploys,
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
@@ -450,7 +496,9 @@ pub async fn process_block_bypassing_of_interest_filter(
 /// `engine::multi_parent_casper::validate_block_checkpoint` flow.
 pub async fn propose_with_block_mutation(
     producing_node: &mut TestNode,
-    alt_deploys: Vec<Signed<DeployData>>,
+    // Changed by DR-134 (DR-66 item 1).
+    // alt_deploys: Vec<Signed<DeployData>>,
+    alt_deploys: Vec<OfferedDeploy>,
     mutator: impl FnOnce(&mut models::rust::casper::protocol::casper_message::BlockMessage),
 ) -> Result<BlockMessage, CasperError> {
     let validator_identity = producing_node
@@ -495,13 +543,27 @@ pub async fn propose_with_block_mutation(
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
 
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    //     &mut producing_node.block_store,
+    //     parents.clone(),
+    //     alt_deploys,
+    //     system_deploys,
+    //     &snapshot,
+    //     &producing_node.runtime_manager,
+    //     block_data.clone(),
+    let adopted_casper = producing_node.casper.clone();
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_envelopes(
         &mut producing_node.block_store,
         parents.clone(),
-        alt_deploys,
+        alt_deploys
+            .into_iter()
+            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+            .collect(),
         system_deploys,
         &snapshot,
         &producing_node.runtime_manager,
+        adopted_casper.adopted_resource_policy.as_ref(),
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
@@ -510,7 +572,9 @@ pub async fn propose_with_block_mutation(
     )
     .await?;
 
-    let interpreter_util::DeploysCheckpoint {
+    // Changed by DR-134 (DR-66 item 1).
+    // let interpreter_util::DeploysCheckpoint {
+    let interpreter_util::DeploysEnvelopeCheckpoint {
         pre_state_hash,
         post_state_hash,
         deploys: processed_deploys,
@@ -533,7 +597,10 @@ pub async fn propose_with_block_mutation(
     };
     let body = Body {
         state,
-        deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+        // processed user deploys.
+        // deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        deploys: processed_deploys,
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
@@ -585,7 +652,9 @@ pub async fn propose_with_block_mutation(
 /// `system_deploys = [CloseBlockDeploy]` only.
 pub async fn propose_neglecting_block(
     producing_node: &mut TestNode,
-    alt_deploys: Vec<Signed<DeployData>>,
+    // Changed by DR-134 (DR-66 item 1).
+    // alt_deploys: Vec<Signed<DeployData>>,
+    alt_deploys: Vec<OfferedDeploy>,
 ) -> Result<BlockMessage, CasperError> {
     let validator_identity = producing_node
         .validator_id_opt
@@ -643,13 +712,27 @@ pub async fn propose_neglecting_block(
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
 
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    //     &mut producing_node.block_store,
+    //     parents.clone(),
+    //     alt_deploys,
+    //     system_deploys,
+    //     &snapshot,
+    //     &producing_node.runtime_manager,
+    //     block_data.clone(),
+    let adopted_casper = producing_node.casper.clone();
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_envelopes(
         &mut producing_node.block_store,
         parents.clone(),
-        alt_deploys,
+        alt_deploys
+            .into_iter()
+            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+            .collect(),
         system_deploys,
         &snapshot,
         &producing_node.runtime_manager,
+        adopted_casper.adopted_resource_policy.as_ref(),
         block_data.clone(),
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
@@ -658,7 +741,9 @@ pub async fn propose_neglecting_block(
     )
     .await?;
 
-    let interpreter_util::DeploysCheckpoint {
+    // Changed by DR-134 (DR-66 item 1).
+    // let interpreter_util::DeploysCheckpoint {
+    let interpreter_util::DeploysEnvelopeCheckpoint {
         pre_state_hash,
         post_state_hash,
         deploys: processed_deploys,
@@ -681,7 +766,10 @@ pub async fn propose_neglecting_block(
     };
     let body = Body {
         state,
-        deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+        // processed user deploys.
+        // deploys: processed_deploys.into_iter().map(Into::into).collect(),
+        deploys: processed_deploys,
         rejected_deploys,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),

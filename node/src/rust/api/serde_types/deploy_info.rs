@@ -3,10 +3,17 @@
 //! This module provides custom JSON serialization for the DeployInfo protobuf type
 //! that doesn't have serde derives by default.
 
-use models::casper::{DeployInfo, DeployInfoWithEventData, TransferInfo};
+// Changed by DR-134 (DR-70): the offered deploy report.
+// use models::casper::{DeployInfo, DeployInfoWithEventData, TransferInfo};
+use models::casper::{
+    DeployInfo, DeployInfoWithEventData, OfferedDeployReport, OfferedPurseReport,
+    OfferedSettlementReport, TransferInfo,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+// Added by DR-134 (DR-70): the byte encoding of the block report.
+use super::base64_bytes;
 use crate::rust::api::serde_types::system_deploy_info::SingleReportSerde;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -137,11 +144,117 @@ impl Default for DeployInfoSerde {
     }
 }
 
+/// Added by DR-134 (DR-70): one purse row of the settlement receipt of an
+/// offered deploy. The REV amounts are decimal strings, because they are
+/// 128-bit values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OfferedPurseReportSerde {
+    #[serde(with = "base64_bytes")]
+    pub address: Vec<u8>,
+    #[serde(rename = "resourceRev")]
+    pub resource_rev: String,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "postBalance")]
+    pub post_balance: u64,
+}
+
+/// Added by DR-134 (DR-70): the settlement receipt of an offered deploy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OfferedSettlementReportSerde {
+    #[serde(rename = "phloUsed")]
+    pub phlo_used: u64,
+    #[serde(rename = "freshPhlo")]
+    pub fresh_phlo: u64,
+    #[serde(rename = "retainedPhlo")]
+    pub retained_phlo: u64,
+    #[serde(rename = "phloLimit")]
+    pub phlo_limit: u64,
+    #[serde(rename = "phloPrice")]
+    pub phlo_price: u64,
+    #[serde(rename = "feeRev")]
+    pub fee_rev: String,
+    #[serde(rename = "revSpent")]
+    pub rev_spent: String,
+    #[serde(rename = "revCeiling")]
+    pub rev_ceiling: String,
+    pub purses: Vec<OfferedPurseReportSerde>,
+}
+
+/// Added by DR-134 (DR-70): the committed native cost evidence of an offered
+/// deploy and its settlement receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OfferedDeployReportSerde {
+    #[serde(rename = "nativeCostEvidence", with = "base64_bytes")]
+    pub native_cost_evidence: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<OfferedSettlementReportSerde>,
+}
+
+impl From<OfferedDeployReport> for OfferedDeployReportSerde {
+    fn from(report: OfferedDeployReport) -> Self {
+        Self {
+            native_cost_evidence: report.native_cost_evidence.to_vec(),
+            receipt: report.receipt.map(|receipt| OfferedSettlementReportSerde {
+                phlo_used: receipt.phlo_used,
+                fresh_phlo: receipt.fresh_phlo,
+                retained_phlo: receipt.retained_phlo,
+                phlo_limit: receipt.phlo_limit,
+                phlo_price: receipt.phlo_price,
+                fee_rev: receipt.fee_rev,
+                rev_spent: receipt.rev_spent,
+                rev_ceiling: receipt.rev_ceiling,
+                purses: receipt
+                    .purses
+                    .into_iter()
+                    .map(|purse| OfferedPurseReportSerde {
+                        address: purse.address.to_vec(),
+                        resource_rev: purse.resource_rev,
+                        fee_rev: purse.fee_rev,
+                        post_balance: purse.post_balance,
+                    })
+                    .collect(),
+            }),
+        }
+    }
+}
+
+impl From<OfferedDeployReportSerde> for OfferedDeployReport {
+    fn from(report: OfferedDeployReportSerde) -> Self {
+        Self {
+            native_cost_evidence: report.native_cost_evidence.into(),
+            receipt: report.receipt.map(|receipt| OfferedSettlementReport {
+                phlo_used: receipt.phlo_used,
+                fresh_phlo: receipt.fresh_phlo,
+                retained_phlo: receipt.retained_phlo,
+                phlo_limit: receipt.phlo_limit,
+                phlo_price: receipt.phlo_price,
+                fee_rev: receipt.fee_rev,
+                rev_spent: receipt.rev_spent,
+                rev_ceiling: receipt.rev_ceiling,
+                purses: receipt
+                    .purses
+                    .into_iter()
+                    .map(|purse| OfferedPurseReport {
+                        address: purse.address.into(),
+                        resource_rev: purse.resource_rev,
+                        fee_rev: purse.fee_rev,
+                        post_balance: purse.post_balance,
+                    })
+                    .collect(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployInfoWithEventDataSerde {
     #[serde(rename = "deployInfo")]
     pub deploy_info: Option<DeployInfoSerde>,
     pub report: Vec<SingleReportSerde>,
+    // Added by DR-134 (DR-70): set only for an offered deploy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offered: Option<OfferedDeployReportSerde>,
 }
 
 impl From<DeployInfoWithEventData> for DeployInfoWithEventDataSerde {
@@ -149,6 +262,8 @@ impl From<DeployInfoWithEventData> for DeployInfoWithEventDataSerde {
         Self {
             deploy_info: data.deploy_info.map(|d| d.into()),
             report: data.report.into_iter().map(|r| r.into()).collect(),
+            // Added by DR-134 (DR-70).
+            offered: data.offered.map(|offered| offered.into()),
         }
     }
 }
@@ -158,6 +273,8 @@ impl From<DeployInfoWithEventDataSerde> for DeployInfoWithEventData {
         Self {
             deploy_info: data.deploy_info.map(|d| d.into()),
             report: data.report.into_iter().map(|r| r.into()).collect(),
+            // Added by DR-134 (DR-70).
+            offered: data.offered.map(|offered| offered.into()),
         }
     }
 }

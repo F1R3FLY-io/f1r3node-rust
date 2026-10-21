@@ -35,10 +35,28 @@ const LIMIT: u64 = 1_000_000_000_000;
 
 fn runtime_funding() -> Sig { Sig::Ground(vec![4, 4, 4, 4]) }
 
+/// Added by G3 (DR-135): the schedule of the tests at `price`.
+fn priced_schedule(price: u64) -> PhloScheduleV1<'static> {
+    let mut descriptor = schedule(WEIGHTS);
+    descriptor.actual_price = price;
+    descriptor
+}
+
+/// Added by G3 (DR-135): the signed limit at `price`: `LIMIT`, lowered so
+/// that the signed charge ceiling `limit * price + 1` fits the machine
+/// maximum.
+fn priced_limit(price: u64) -> u64 { LIMIT.min((u64::MAX - 1) / price.max(1)) }
+
 /// A native runtime configuration with the bound `LIMIT` under the signed
 /// limit, so an overrun is a user failure and never a certificate failure.
-fn native_config() -> NativeRuntimeConfig {
-    let descriptor = schedule(WEIGHTS);
+///
+/// Changed by G3 (DR-135): the configuration takes the price of the
+/// schedule, and its limit is `priced_limit(price)`.
+// fn native_config() -> NativeRuntimeConfig {
+//     let descriptor = schedule(WEIGHTS);
+fn priced_native_config(price: u64) -> NativeRuntimeConfig {
+    let descriptor = priced_schedule(price);
+    let limit = priced_limit(price);
     let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS)
         .expect("a schedule binding");
     let selected = binding.schedule();
@@ -49,13 +67,17 @@ fn native_config() -> NativeRuntimeConfig {
         0,
         u64::MAX,
         SignedPhloControls {
-            limit: LIMIT,
+            // Changed by G3 (DR-135): the limit at the price.
+            // limit: LIMIT,
+            limit,
             price_ceiling: descriptor.actual_price,
             required_owner_ceilings: &owner_ceilings,
             permitted_schedules: &schedules,
         },
         selected,
-        LIMIT,
+        // Changed by G3 (DR-135): the limit at the price.
+        // LIMIT,
+        limit,
     )
     .expect("the controls admit the limit");
     let contract =
@@ -112,6 +134,18 @@ async fn fresh_runtime() -> RhoRuntimeImpl {
 /// and the measured usage is at most `B`. The estimate is returned for
 /// further checks.
 async fn assert_measured_within_estimate(source: &str, seed: &[u8]) -> Option<CostEstimate> {
+    // Added by G3 (DR-135): the check at the price of the schedule.
+    assert_measured_within_priced_estimate(source, seed, schedule(WEIGHTS).actual_price).await
+}
+
+// Changed by G3 (DR-135): the estimate and the run take one price, which
+// every region of the run records (R4).
+// async fn assert_measured_within_estimate(source: &str, seed: &[u8]) -> Option<CostEstimate> {
+async fn assert_measured_within_priced_estimate(
+    source: &str,
+    seed: &[u8],
+    price: u64,
+) -> Option<CostEstimate> {
     let mut runtime = fresh_runtime().await;
     let urn_map = runtime.reducer.urn_map.clone();
     let program = Compiler::source_to_adt(source).ok()?;
@@ -121,7 +155,9 @@ async fn assert_measured_within_estimate(source: &str, seed: &[u8]) -> Option<Co
     let estimate = linear_cost_estimate(
         &resolved,
         &runtime_funding(),
-        &schedule(WEIGHTS),
+        // Changed by G3 (DR-135): the schedule at the price.
+        // &schedule(WEIGHTS),
+        &priced_schedule(price),
         &runtime.reducer,
     )
     .expect("the estimate runs");
@@ -129,8 +165,19 @@ async fn assert_measured_within_estimate(source: &str, seed: &[u8]) -> Option<Co
     runtime
         .cost
         .set_deploy_signature_funded(seed, runtime_funding());
+    // Changed by G3 (DR-135): the configuration at the price.
+    // let evaluation = runtime
+    //     .evaluate_with_native_phlo(source, HashMap::new(), rand, None, native_config())
+    //     .await
+    //     .expect("the native evaluation runs");
     let evaluation = runtime
-        .evaluate_with_native_phlo(source, HashMap::new(), rand, None, native_config())
+        .evaluate_with_native_phlo(
+            source,
+            HashMap::new(),
+            rand,
+            None,
+            priced_native_config(price),
+        )
         .await
         .expect("the native evaluation runs");
     if estimate.completeness == Completeness::Complete {
@@ -231,6 +278,64 @@ proptest! {
         let source = render(&program);
         block_on(assert_measured_within_estimate(&source, &seed));
     }
+
+    /// Added by G3 (DR-135): every region of a run records the run's price,
+    /// so its stored seal grows by the price's varint. The estimate sizes each
+    /// region at that price, so a complete estimate still bounds every
+    /// measured quantity. The prices cover each varint length from zero bytes
+    /// (price 0, which prost omits) to six bytes.
+    #[test]
+    fn the_estimate_still_bounds_measured_bytes(
+        program in arb_program(true),
+        seed in any::<[u8; 8]>(),
+        price in prop_oneof![
+            Just(0_u64),
+            Just(1_u64),
+            Just(127_u64),
+            Just(128_u64),
+            Just(16_383_u64),
+            Just(16_384_u64),
+            Just((1_u64 << 21) - 1),
+            Just(1_u64 << 21),
+            Just((1_u64 << 28) - 1),
+            Just(1_u64 << 28),
+            Just(1_u64 << 35),
+            1_u64..(1_u64 << 35),
+        ],
+    ) {
+        let source = render(&program);
+        block_on(assert_measured_within_priced_estimate(&source, &seed, price));
+    }
+}
+
+/// Added by G3 (DR-135): the price property is not vacuous. A priced region
+/// is longer than an unpriced one, and the named programs keep a complete
+/// estimate that bounds their measurement at a six-byte price.
+#[test]
+fn a_priced_region_is_longer_and_still_bounded() {
+    let signature = sig_to_cost_signature(&runtime_funding()).expect("a ground funding signature");
+    let unpriced = region_field_bytes(&signature, 0, 0).expect("a sized region");
+    let priced = region_field_bytes(&signature, 0, 1 << 35).expect("a sized region");
+    assert_eq!(
+        priced,
+        unpriced + 1 + 6,
+        "a field tag and a six-byte varint"
+    );
+    block_on(async {
+        for (index, source) in [
+            "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ payer ]",
+            "new x, y in { x!(0) | y!(0) | for ({% @a <- x %}[ s ] & {% @b <- y %}[ s ]) { Nil } }",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let estimate =
+                assert_measured_within_priced_estimate(source, &[index as u8; 8], 1 << 35)
+                    .await
+                    .expect("the named program compiles and resolves");
+            assert_eq!(estimate.completeness, Completeness::Complete, "{source}");
+        }
+    });
 }
 
 /// The estimate evaluates with a copy of the reducer whose two meters are

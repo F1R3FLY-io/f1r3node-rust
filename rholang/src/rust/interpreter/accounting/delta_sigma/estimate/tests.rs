@@ -21,7 +21,9 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 use super::*;
-use crate::rust::interpreter::accounting::authority::{cost_region, cost_signature_to_sig};
+// Changed by G3 (DR-135): the test regions carry the schedule's price.
+// use crate::rust::interpreter::accounting::authority::{cost_region, cost_signature_to_sig};
+use crate::rust::interpreter::accounting::authority::{cost_signature_to_sig, priced_cost_region};
 use crate::rust::interpreter::accounting::byte_accounting::produce_introduction_charge;
 use crate::rust::interpreter::accounting::cost_accounting::CostAccounting;
 use crate::rust::interpreter::accounting::lexical::resolve_lexical_names_for_funding;
@@ -183,8 +185,19 @@ fn stored_datum(pars: Vec<Par>, regions: Vec<CostRegion>) -> ListParWithRandom {
     }
 }
 
+// Changed by G3 (DR-135): a region of the run carries the price of the
+// schedule of the tests (R4).
+// fn region(signature: &CostSignature, discriminator: u32) -> CostRegion {
+//     cost_region(signature, b"entropy", discriminator).expect("a canonical region")
+// }
 fn region(signature: &CostSignature, discriminator: u32) -> CostRegion {
-    cost_region(signature, b"entropy", discriminator).expect("a canonical region")
+    priced_cost_region(
+        signature,
+        b"entropy",
+        discriminator,
+        schedule([1; 4]).actual_price,
+    )
+    .expect("a canonical region")
 }
 
 fn ground(text: &str) -> CostSignature {
@@ -674,7 +687,10 @@ fn pass_one_emits_the_program_of_compile_term() {
     );
     let reducer = evaluator(HashMap::new());
     let core = isolated_evaluator(&reducer);
-    let mut estimator = Estimator::new(&funding(), &core).expect("an estimator");
+    // Changed by G3 (DR-135): the estimator takes the price of the regions.
+    // let mut estimator = Estimator::new(&funding(), &core).expect("an estimator");
+    let mut estimator =
+        Estimator::new(&funding(), schedule([1; 4]).actual_price, &core).expect("an estimator");
     estimator.measure(&par).expect("the program is measured");
     estimator.walk(&par).expect("pass 1 runs");
     use Instruction::{Alternative, Combine, Local, Push};
@@ -842,6 +858,8 @@ fn dismantle_drops_terms_nested_through_every_field_on_a_small_stack() {
                 ..Default::default()
             }),
             3 => outer.cost_signed_terms.push(CostSignedTerm {
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
                 body: None,
                 signature: Some(CostSignature {
                     value: Some(CostSignatureValue::Quote(par)),

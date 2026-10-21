@@ -15,7 +15,15 @@ use super::operation_sources::{channel_bytes, NativeCommSource, NativeOperationS
 use super::path_trie::{NativePathTrie, PathId};
 use super::recording::{recording_error, RecordedOccurrence};
 use super::{InterpreterError, NativeRuntimeConfig, RuntimeBudget};
+// Added by G3 (DR-135, S4): an operation keeps the owner budgets S_r at its
+// start.
+// Changed by G3 (DR-135, S5): the owner checks of an operation resolve
+// residue seals.
+// use crate::rust::interpreter::accounting::authority::ResourceMultiset;
+use crate::rust::interpreter::accounting::authority::{ResidueContext, ResourceMultiset};
 use crate::rust::interpreter::accounting::native_phlo_rules::NativeAttemptStage;
+// Added by G3 (DR-135, S5): the owner checks of an operation.
+use crate::rust::interpreter::accounting::owner_funding::OwnerOperationHandle;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeOperationOccurrence {
@@ -54,6 +62,16 @@ pub struct NativeCommRecord {
     pub observation: NativeObservationLink,
 }
 
+/// Added by G3 (DR-135, S4): a COMM that the operation formed and an owner
+/// of the tuple could not pay (R7). `position` is the number of attempts
+/// when the refusal took place, so replay checks the shortfall against the
+/// owner budgets at that position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeRefusal {
+    pub source: Arc<NativeCommSource>,
+    pub position: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeOperationRecord {
     pub occurrence: NativeOperationOccurrence,
@@ -63,6 +81,9 @@ pub struct NativeOperationRecord {
     pub predecessors: Arc<[usize]>,
     pub introduction: NativeObservationLink,
     pub comm: Option<NativeCommRecord>,
+    /// Added by G3 (DR-135, S4): the refused COMMs of the operation, in
+    /// their order (R7).
+    pub refusals: Arc<[NativeRefusal]>,
     pub completion: RSpaceOperationCompletion,
     pub budget_start: usize,
     pub budget_end: usize,
@@ -113,6 +134,12 @@ struct PendingOperation {
     completion: Option<RSpaceOperationCompletion>,
     budget_start: usize,
     budget_end: usize,
+    /// Added by G3 (DR-135, S4): the owner budgets S_r at the start of the
+    /// operation, captured with `budget_start` (§6.1). The owner checks of
+    /// the operation read them in the item tests (S5).
+    owner_snapshot: Option<Arc<ResourceMultiset<[u8; 32]>>>,
+    /// Added by G3 (DR-135, S4): the refused COMMs (R7).
+    refusals: Vec<NativeRefusal>,
 }
 
 #[derive(Default)]
@@ -220,6 +247,10 @@ impl NativeRuntimeConfig {
             completion: None,
             budget_start: self.recording.attempts.len(),
             budget_end: self.recording.attempts.len(),
+            // Added by G3 (DR-135, S4).
+            owner_snapshot: self.reservation.owners().map(|owners| owners.snapshot()),
+            // Added by G3 (DR-135, S4).
+            refusals: Vec::new(),
         };
         let mut updates = Vec::with_capacity(row.footprint.len());
         updates.extend(
@@ -326,6 +357,29 @@ impl NativeRuntimeConfig {
             return Err(recording_error("native charge stage is out of order"));
         }
         Ok(Some(index))
+    }
+
+    /// Added by G3 (DR-135, S4): records a refused COMM of the operation in
+    /// `slot` at `position` (R7). The COMM source moves into the refusal, so
+    /// the operation may observe another COMM.
+    pub(super) fn record_comm_refusal(&mut self, slot: Option<usize>, position: usize) {
+        if let Some(index) = slot {
+            let row = &mut self.operations.rows[index];
+            if let Some(source) = row.comm_source.take() {
+                row.refusals.push(NativeRefusal { source, position });
+            }
+        }
+    }
+
+    /// Added by G3 (DR-135, S4): the owner budgets that each operation
+    /// captured at its start, in row order.
+    #[cfg(test)]
+    pub(super) fn operation_snapshots(&self) -> Vec<Option<Arc<ResourceMultiset<[u8; 32]>>>> {
+        self.operations
+            .rows
+            .iter()
+            .map(|row| row.owner_snapshot.clone())
+            .collect()
     }
 
     pub(super) fn publish_operation_link(
@@ -452,6 +506,8 @@ impl NativeRuntimeConfig {
                 predecessors: Arc::clone(&row.predecessors),
                 introduction: introduction.link,
                 comm,
+                // Added by G3 (DR-135, S4).
+                refusals: Arc::from(row.refusals.as_slice()),
                 completion,
                 budget_start: row.budget_start,
                 budget_end: row.budget_end,
@@ -502,14 +558,63 @@ impl RuntimeBudget {
     // `None` without native accounting.
     // ) -> Result<(), InterpreterError> {
     //     self.update_native_operations(|native| native.start_operation(source, channels, joins))
-    pub(crate) fn start_native_operation(
+    // Changed by G3 (DR-135, S6): play starts every operation through
+    // start_native_owner_operation, and the tests do too. The replaced
+    // function follows.
+    // pub(crate) fn start_native_operation(
+    //     &self,
+    //     source: RSpaceOperationSource<'_>,
+    //     channels: &[Par],
+    //     joins: &[Vec<Par>],
+    // ) -> Result<Option<OperationOrder>, InterpreterError> {
+    //     self.update_native_operations(|native| {
+    //         native.start_operation(source, channels, joins).map(Some)
+    //     })
+    // }
+
+    // Changed by G3 (DR-135, S6): this is the only start of an operation.
+    // /// Added by G3 (DR-135, S5): `start_native_operation` with the owner
+    // /// checks of the operation. With owner funding, the handle holds the
+    /// Added by G3 (DR-135, S5): starts a recorded operation and returns the
+    /// name of its row, with the owner checks of the operation. Every
+    /// operation starts here. With owner funding, the handle holds the
+    /// budgets S_r that the start captured in the critical section that set
+    /// `budget_start` (§6.1), with the preparer and the region limits of the
+    /// meter and the residue context of the deployment (R5).
+    pub(crate) fn start_native_owner_operation(
         &self,
         source: RSpaceOperationSource<'_>,
         channels: &[Par],
         joins: &[Vec<Par>],
-    ) -> Result<Option<OperationOrder>, InterpreterError> {
+    ) -> Result<(Option<OperationOrder>, Option<Arc<OwnerOperationHandle>>), InterpreterError> {
+        let residue = match self.owner_binding() {
+            Some(_) => Some(
+                ResidueContext::new(&self.signature(), self.deploy_id())
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+                    .with_price(self.region_price()),
+            ),
+            None => None,
+        };
         self.update_native_operations(|native| {
-            native.start_operation(source, channels, joins).map(Some)
+            let name = native.start_operation(source, channels, joins)?;
+            let snapshot = native
+                .operations
+                .rows
+                .last()
+                .and_then(|row| row.owner_snapshot.clone());
+            let handle = match (native.owner.as_ref(), snapshot, residue) {
+                (Some(binding), Some(snapshot), Some(residue)) => {
+                    Some(Arc::new(OwnerOperationHandle {
+                        binding: Arc::clone(binding),
+                        snapshot,
+                        preparer: native.reservation.preparer(),
+                        limits: native.limits.regions,
+                        residue,
+                    }))
+                }
+                _ => None,
+            };
+            Ok((Some(name), handle))
         })
     }
 
@@ -549,6 +654,20 @@ impl RuntimeBudget {
             .as_ref()
             .map(NativeRuntimeConfig::capture_operations)
             .transpose()
+    }
+
+    /// Added by G3 (DR-135, S4): the owner budgets that each recorded
+    /// operation captured at its start.
+    #[cfg(test)]
+    pub(crate) fn native_operation_snapshots(
+        &self,
+    ) -> Vec<Option<Arc<ResourceMultiset<[u8; 32]>>>> {
+        let state = self.authority_state.lock().expect("authority state");
+        state
+            .native
+            .as_ref()
+            .map(NativeRuntimeConfig::operation_snapshots)
+            .unwrap_or_default()
     }
 }
 

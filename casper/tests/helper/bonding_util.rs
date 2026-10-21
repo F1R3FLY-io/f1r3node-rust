@@ -1,10 +1,14 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BondingUtil.scala
 
 use casper::rust::errors::CasperError;
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): the bonding deploy is an offered deploy.
+// use casper::rust::util::construct_deploy;
+// use crypto::rust::signatures::signed::Signed;
+// use models::rust::casper::protocol::casper_message::DeployData;
 use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::signed::Signed;
-use models::rust::casper::protocol::casper_message::DeployData;
+
+use crate::helper::offered_deploy as construct_deploy;
+use crate::helper::offered_deploy::OfferedDeploy;
 
 /// Creates a bonding deploy
 /// Scala equivalent: BondingUtil.bondingDeploy[F]
@@ -16,7 +20,9 @@ pub fn bonding_deploy(
     amount: i64,
     private_key: &PrivateKey,
     shard_id: Option<String>,
-) -> Result<Signed<DeployData>, CasperError> {
+    // Changed by DR-134 (DR-66 item 1).
+    // ) -> Result<Signed<DeployData>, CasperError> {
+) -> Result<OfferedDeploy, CasperError> {
     let source = format!(
         r#"
 new retCh, PoSCh, rl(`rho:registry:lookup`), stdout(`rho:io:stdout`), deployerId(`rho:system:deployerId`) in {{

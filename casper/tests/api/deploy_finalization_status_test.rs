@@ -393,7 +393,9 @@ async fn resolve_uses_known_block_fallback_when_the_register_misses() {
 /// (ingest at insert, observe at admission) with no test-side plumbing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn end_to_end_win_finalizes_via_admission_hook() {
-    use casper::rust::util::construct_deploy;
+    // Changed by DR-134 (DR-66 item 1): the network test uses offered deploys.
+    // use casper::rust::util::construct_deploy;
+    use crate::helper::offered_deploy as construct_deploy;
 
     // A SINGLE-validator genesis: with silent bonded validators the frozen
     // floor cannot advance (their witnessing weight never arrives — the

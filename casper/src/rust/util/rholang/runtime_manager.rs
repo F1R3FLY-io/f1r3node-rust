@@ -521,6 +521,169 @@ impl RuntimeManager {
         stats
     }
 
+    /// Added by DR-134 (dev parity of the offered replay): the fingerprint of
+    /// an offered block for the replay-cache key. It binds the exact encoding
+    /// of every processed user deploy (its envelope, cost, deploy log, failure
+    /// flag and native evidence), then dev's fingerprint of the system
+    /// deploys. Two blocks that differ in any of these bytes never share an
+    /// entry.
+    pub(crate) fn offered_replay_payload_hash(
+        usr_processed: &[ProcessedUserDeploy],
+        sys_processed: &[ProcessedSystemDeploy],
+    ) -> Vec<u8> {
+        const DOMAIN: &[u8] = b"offered-replay-payload-v1";
+        let encoded: Vec<Vec<u8>> = usr_processed
+            .iter()
+            .map(|deploy| prost::Message::encode_to_vec(&deploy.to_proto()))
+            .collect();
+        let system = Self::replay_payload_hash(&[], sys_processed, false);
+        let size = DOMAIN.len()
+            + size_of::<u64>()
+            + encoded
+                .iter()
+                .map(|deploy| size_of::<u64>() + deploy.len())
+                .sum::<usize>()
+            + system.len();
+        let mut bytes = Vec::with_capacity(size);
+        bytes.extend_from_slice(DOMAIN);
+        bytes.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+        for deploy in &encoded {
+            bytes.extend_from_slice(&(deploy.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(deploy);
+        }
+        bytes.extend_from_slice(&system);
+        Blake2b256::hash(bytes)
+    }
+
+    /// Added by DR-134 (dev parity of the offered replay): the replay-cache
+    /// admission of an offered play, as dev's play admits a block
+    /// (`compute_state_with_bonds`). The node that played the block can then
+    /// answer a later replay of the same block from the cache. The length of
+    /// the logs is checked before they are copied, so a block above the cap
+    /// copies nothing.
+    pub(crate) fn admit_offered_replay_cache(
+        &self,
+        start_hash: &StateHash,
+        sender: &PublicKey,
+        seq_num: i32,
+        usr_processed: &[ProcessedUserDeploy],
+        sys_processed: &[ProcessedSystemDeploy],
+        post_state: &StateHash,
+    ) {
+        fn user_logs(deploy: &ProcessedUserDeploy) -> &[Event] {
+            match deploy {
+                ProcessedUserDeploy::Legacy(deploy) => deploy.deploy_log.as_slice(),
+                ProcessedUserDeploy::Offered(deploy) => deploy.deploy_log(),
+            }
+        }
+        fn system_logs(deploy: &ProcessedSystemDeploy) -> &[Event] {
+            match deploy {
+                ProcessedSystemDeploy::Succeeded { event_list, .. } => event_list.as_slice(),
+                ProcessedSystemDeploy::Failed { event_list, .. } => event_list.as_slice(),
+            }
+        }
+        let Some(ref cache) = self.replay_cache else {
+            return;
+        };
+        let log_len = usr_processed
+            .iter()
+            .map(|deploy| user_logs(deploy).len())
+            .chain(sys_processed.iter().map(|deploy| system_logs(deploy).len()))
+            .sum::<usize>();
+        match (
+            log_len,
+            log_len <= Self::max_replay_cache_event_log_entries(),
+        ) {
+            (0, _) => {}
+            (_, true) => {
+                let mut all_logs = Vec::with_capacity(log_len);
+                for deploy in usr_processed {
+                    all_logs.extend(user_logs(deploy).iter().cloned());
+                }
+                for deploy in sys_processed {
+                    all_logs.extend(system_logs(deploy).iter().cloned());
+                }
+                let key = ReplayCacheKey::new(
+                    start_hash.clone(),
+                    sender.bytes.to_vec(),
+                    seq_num as i64,
+                    Self::offered_replay_payload_hash(usr_processed, sys_processed),
+                );
+                let entry = ReplayCacheEntry::new(all_logs, post_state.clone());
+                let replay_cached = cache.put(key, entry);
+                let (cache_entries, cache_retained_bytes) =
+                    Self::record_replay_cache_metrics(cache);
+                tracing::debug!("[CACHE] Replay cache admission for sender seq={}: cached={}, entries={}, retained_bytes={}", seq_num, replay_cached, cache_entries, cache_retained_bytes);
+            }
+            (_, false) => {
+                tracing::debug!(
+                    "[CACHE] Skipped replay cache store for sender seq={} (event_log={})",
+                    seq_num,
+                    log_len
+                );
+            }
+        }
+    }
+
+    /// Added by DR-134 (dev parity of the offered replay): dev's replay-cache
+    /// shortcut (`replay_compute_state`) for an offered block. The node that
+    /// played the block returns the cached post-state while the mergeable
+    /// entry of that post-state is stored. A missing entry, or a cached
+    /// post-state that differs from the block's commitment, falls back to the
+    /// full replay, which then decides the verdict. Dev also rigs a replay
+    /// runtime with the cached log and drops it at once. The offered replay
+    /// never reads a rigged replay space, so the shortcut does not spawn one.
+    pub(crate) fn offered_replay_cache_hit(
+        &self,
+        start_hash: &StateHash,
+        sender: &PublicKey,
+        seq_num: i32,
+        usr_processed: &[ProcessedUserDeploy],
+        sys_processed: &[ProcessedSystemDeploy],
+        expected_post_state: Option<&StateHash>,
+    ) -> Result<Option<StateHash>, CasperError> {
+        let Some(ref cache) = self.replay_cache else {
+            return Ok(None);
+        };
+        let key = ReplayCacheKey::new(
+            start_hash.clone(),
+            sender.bytes.to_vec(),
+            seq_num as i64,
+            Self::offered_replay_payload_hash(usr_processed, sys_processed),
+        );
+        let Some(entry) = cache.get(&key) else {
+            return Ok(None);
+        };
+        if expected_post_state.is_some_and(|expected| *expected != entry.post_state) {
+            tracing::warn!(
+                "[CACHE] ReplayCache hit with another post-state for sender seq={}; falling back to full replay",
+                seq_num
+            );
+            return Ok(None);
+        }
+        let mergeable_key = MergeableKey {
+            state_hash: StateHashSerde(entry.post_state.clone()),
+            creator: sender.bytes.clone(),
+            seq_num,
+        };
+        let mergeable_key_encoded = bincode::serialize(&mergeable_key).map_err(|e| {
+            CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
+        })?;
+        match self.mergeable_store.contains_key(mergeable_key_encoded)? {
+            true => {
+                tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
+                Ok(Some(entry.post_state))
+            }
+            false => {
+                tracing::warn!(
+                    "[CACHE] ReplayCache hit without mergeable entry for sender seq={}; falling back to full replay",
+                    seq_num
+                );
+                Ok(None)
+            }
+        }
+    }
+
     fn try_acquire_exploratory_deploy_permit_with(
         semaphore: Arc<Semaphore>,
     ) -> Option<OwnedSemaphorePermit> {
@@ -586,6 +749,10 @@ impl RuntimeManager {
         )
         .await
     }
+
+    /// Added by DR-134 (DR-71): the operator's exploratory limit, which bounds
+    /// the native dry run.
+    pub(crate) fn exploratory_deploy_phlo_limit(&self) -> i64 { self.exploratory_deploy_phlo_limit }
 
     /// Added by DR-114: the offered play runtime calls the node's external
     /// services once per recorded call. Every replay keeps the noop services,
@@ -673,6 +840,11 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        // Added by DR-134 (DR-66 item 5): a body-only user deploy returns the
+        // compatibility error before a runtime is spawned.
+        if !terms.is_empty() {
+            return Err(super::costacc::offered_only::body_only_deploys_unsupported());
+        }
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
@@ -771,6 +943,12 @@ impl RuntimeManager {
             .iter()
             .all(|candidate| matches!(candidate, PendingDeployCandidate::Legacy(_)))
         {
+            // Added by DR-134 (DR-66 item 5): only a block with no user deploy
+            // takes this branch. A body-only user deploy returns the
+            // compatibility error before a runtime is spawned.
+            if !terms.is_empty() {
+                return Err(super::costacc::offered_only::body_only_deploys_unsupported());
+            }
             let legacy = terms
                 .into_iter()
                 .map(|candidate| match candidate {
@@ -838,6 +1016,16 @@ impl RuntimeManager {
             user_mergeable.into_iter().chain(system_mergeable).collect(),
             &Blake2b256Hash::from_bytes_prost(start_hash),
         )?;
+        // Added by DR-134 (dev parity of the offered replay): the play admits the
+        // block to dev's replay cache, as dev's play does.
+        self.admit_offered_replay_cache(
+            start_hash,
+            &sender,
+            seq_num,
+            &user_processed,
+            &system_processed,
+            &state_hash,
+        );
         Ok((state_hash, user_processed, system_processed, bonds))
     }
 
@@ -1000,6 +1188,15 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<StateHash, CasperError> {
+        // Added by DR-134 (DR-66 item 5): body-only user deploys and a genesis
+        // that the legacy meter produced return the compatibility error before
+        // the replay cache, any runtime and any state reset.
+        if !is_genesis && !terms.is_empty() {
+            return Err(super::costacc::offered_only::body_only_deploys_unsupported());
+        }
+        if is_genesis && super::costacc::offered_only::is_legacy_metered_genesis(&terms) {
+            return Err(super::costacc::offered_only::legacy_metered_genesis_unsupported());
+        }
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
@@ -1275,15 +1472,34 @@ impl RuntimeManager {
         Ok(replayed)
     }
 
+    // Changed by DR-134 (DR-71, DR-66 item 3): the capture is the native
+    // unfunded dry run of the adopted policy. It reads the term and the signer
+    // key of `deploy`; the legacy meter and its evaluate are deleted.
+    // pub async fn capture_results(
+    //     &self,
+    //     start: &StateHash,
+    //     deploy: &Signed<DeployData>,
+    // ) -> Result<Vec<Par>, CasperError> {
+    //     let runtime = self.spawn_runtime().await?;
+    //     let mut runtime_ops = RuntimeOps::new(runtime);
+    //     let computed = runtime_ops.capture_results(start, deploy).await?;
+    //     Ok(computed)
+    // }
     pub async fn capture_results(
         &self,
         start: &StateHash,
         deploy: &Signed<DeployData>,
+        adopted: &AdoptedResourcePolicy,
     ) -> Result<Vec<Par>, CasperError> {
-        let runtime = self.spawn_runtime().await?;
-        let mut runtime_ops = RuntimeOps::new(runtime);
-        let computed = runtime_ops.capture_results(start, deploy).await?;
-        Ok(computed)
+        let (data, _phlo) = self
+            .play_exploratory_dry_run(
+                deploy.data.term.clone(),
+                start,
+                Some(deploy.pk.clone()),
+                adopted,
+            )
+            .await?;
+        Ok(data)
     }
 
     pub async fn get_active_validators(
@@ -1377,21 +1593,34 @@ impl RuntimeManager {
     }
 
     // Executes deploy as user deploy with immediate rollback
+    // Changed by DR-134 (DR-71, DR-66 item 3): the exploratory deploy is the
+    // native unfunded dry run of the adopted policy; the legacy meter and its
+    // evaluate are deleted.
+    // pub async fn play_exploratory_deploy(
+    //     &self,
+    //     term: String,
+    //     hash: &StateHash,
+    //     deployer: Option<PublicKey>,
+    // ) -> Result<(Vec<Par>, u64), CasperError> {
+    //     let runtime = self.spawn_runtime().await?;
+    //     let mut runtime_ops = RuntimeOps::new(runtime);
+    //     runtime_ops
+    //         .play_exploratory_deploy_with_phlo_limit(
+    //             term,
+    //             hash,
+    //             deployer,
+    //             self.exploratory_deploy_phlo_limit,
+    //         )
+    //         .await
+    // }
     pub async fn play_exploratory_deploy(
         &self,
         term: String,
         hash: &StateHash,
         deployer: Option<PublicKey>,
+        adopted: &AdoptedResourcePolicy,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        let runtime = self.spawn_runtime().await?;
-        let mut runtime_ops = RuntimeOps::new(runtime);
-        runtime_ops
-            .play_exploratory_deploy_with_phlo_limit(
-                term,
-                hash,
-                deployer,
-                self.exploratory_deploy_phlo_limit,
-            )
+        self.play_exploratory_dry_run(term, hash, deployer, adopted)
             .await
     }
 
@@ -1646,6 +1875,9 @@ impl RuntimeManager {
         &self,
         block: &models::rust::casper::protocol::casper_message::BlockMessage,
         invalid_blocks: HashMap<BlockHash, Validator>,
+        // Added by DR-134 (DR-66): the replay of an offered block needs the
+        // adopted policy, as validation passes it.
+        adopted: Option<&AdoptedResourcePolicy>,
     ) -> Result<(), CasperError> {
         if self.has_mergeable_entry(block)? {
             return Ok(());
@@ -1653,14 +1885,31 @@ impl RuntimeManager {
 
         let block_data = BlockData::from_block(block);
         let is_genesis = block.header.parents_hash_list.is_empty();
+        // Changed by DR-134 (DR-66): the offered replay refuses to run without
+        // the adopted policy and the block's post-state, so the recompute
+        // passes both, as validation does (interpreter_util.rs, the replay in
+        // validate_block_checkpoint_with_policy). The legacy branch ignores the
+        // expected post-state.
+        // let computed_post_state = self
+        //     .replay_compute_state_envelopes(
+        //         &block.body.state.pre_state_hash,
+        //         block.body.deploys.clone(),
+        //         block.body.system_deploys.clone(),
+        //         &block_data,
+        //         Some(invalid_blocks),
+        //         is_genesis,
+        //     )
+        //     .await?;
         let computed_post_state = self
-            .replay_compute_state_envelopes(
+            .replay_compute_state_envelopes_with_policy(
                 &block.body.state.pre_state_hash,
                 block.body.deploys.clone(),
                 block.body.system_deploys.clone(),
                 &block_data,
                 Some(invalid_blocks),
                 is_genesis,
+                adopted,
+                Some(&block.body.state.post_state_hash),
             )
             .await?;
 

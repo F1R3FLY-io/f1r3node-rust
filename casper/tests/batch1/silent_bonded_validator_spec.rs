@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::synchrony_constraint_checker;
-use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
 
 use crate::helper::bonding_util;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_VALIDATOR_KEY_PAIRS};
 

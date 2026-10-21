@@ -39,8 +39,13 @@ use models::rust::rholang::implicits::single_bundle;
 use prost::Message;
 
 use super::{static_authority_plan, static_authority_signatures, SigKey};
+// Changed by G3 (DR-135): the estimate sizes the priced region of the run.
+// use crate::rust::interpreter::accounting::authority::{
+//     canonical_cost_signature, cost_region, cost_signature_to_sig, sig_to_cost_signature,
+//     UnprovableDemand,
+// };
 use crate::rust::interpreter::accounting::authority::{
-    canonical_cost_signature, cost_region, cost_signature_to_sig, sig_to_cost_signature,
+    canonical_cost_signature, cost_signature_to_sig, priced_cost_region, sig_to_cost_signature,
     UnprovableDemand,
 };
 use crate::rust::interpreter::accounting::byte_accounting::{
@@ -292,7 +297,10 @@ pub fn linear_cost_estimate(
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the regions of the run carry the actual
+        // price of the schedule, so the estimate sizes them with it (R4).
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, schedule.actual_price, &core)?;
         estimator.measure(resolved)?;
         // Changed by the G1-4a fix (review M-2): the plan and the static
         // signature list canonicalize every signature recursively, so they
@@ -351,6 +359,12 @@ fn isolated_evaluator(core: &ReducerCore) -> ReducerCore {
         metering: metering.clone(),
         substitute: Substitute { metering },
         residue_seal: false,
+        // Added by G3 (DR-135): the estimate sizes the term of the deployment
+        // itself, outside any fired body.
+        owner: None,
+        caller: None,
+        // Added by G3 (DR-135, S3b): nor held values.
+        held: crate::rust::interpreter::accounting::owner_funding::HeldMap::default(),
         ..core.clone()
     }
 }
@@ -1114,6 +1128,9 @@ pub(crate) struct Estimator<'e> {
     deploy_signature: Option<CostSignature>,
     /// The field length of the deploy region inside a `CostAuthority`.
     deploy_seal: Option<u64>,
+    /// Added by G3 (DR-135): the price that every region of the run carries
+    /// (R4). It sizes each region.
+    price: u64,
     binders: Vec<Binder>,
     env: Env<Par>,
     /// Added by the second G1-4a fix (re-review HIGH-1): the peak binder count
@@ -1170,12 +1187,21 @@ enum Task<'a> {
 }
 
 impl<'e> Estimator<'e> {
-    pub(crate) fn new(funding: &Sig, core: &'e ReducerCore) -> Result<Self, InterpreterError> {
+    // Changed by G3 (DR-135): the estimator takes the price of the regions of
+    // the run (R4).
+    // pub(crate) fn new(funding: &Sig, core: &'e ReducerCore) -> Result<Self, InterpreterError> {
+    pub(crate) fn new(
+        funding: &Sig,
+        price: u64,
+        core: &'e ReducerCore,
+    ) -> Result<Self, InterpreterError> {
         let deploy_signature = sig_to_cost_signature(funding)
             .ok()
             .and_then(|signature| canonical_cost_signature(&signature).ok());
         let deploy_seal = match deploy_signature.as_ref() {
-            Some(signature) => region_field_bytes(signature, 0),
+            // Changed by G3 (DR-135): the deploy region carries the price.
+            // Some(signature) => region_field_bytes(signature, 0),
+            Some(signature) => region_field_bytes(signature, 0, price),
             None => None,
         };
         let mut estimator = Self {
@@ -1184,6 +1210,8 @@ impl<'e> Estimator<'e> {
             deploy_key: funding.lane_hash(),
             deploy_signature,
             deploy_seal,
+            // Added by G3 (DR-135).
+            price,
             binders: Vec::new(),
             env: Env::new(),
             peak_binders: 0,
@@ -1857,7 +1885,9 @@ impl<'e> Estimator<'e> {
                 Some(metrics)
                     if metrics.height.saturating_add(WRAPPER_MARGIN) <= SIZING_HEIGHT_LIMIT =>
                 {
-                    Ok(region_field_bytes(signature, discriminator))
+                    // Changed by G3 (DR-135): the region carries the price.
+                    // Ok(region_field_bytes(signature, discriminator))
+                    Ok(region_field_bytes(signature, discriminator, self.price))
                 }
                 Some(_) | None => Ok(None),
             },
@@ -2675,8 +2705,17 @@ impl SignatureUnitsMeter for EstimateUnits {
 /// The field length of the region of `signature` inside a `CostAuthority`,
 /// from the reducer's own region constructor. The identity is a 32-byte hash
 /// for every entropy, so a zero entropy gives the run-time length.
-fn region_field_bytes(signature: &CostSignature, discriminator: u32) -> Option<u64> {
-    cost_region(signature, &[0; 32], discriminator)
+///
+/// Changed by G3 (DR-135): the region carries `price`, the price of every
+/// region of the run, so the length counts its varint (R4). A residue region
+/// has price 0 and is shorter, so the estimate stays an upper bound.
+// fn region_field_bytes(signature: &CostSignature, discriminator: u32) -> Option<u64> {
+//     cost_region(signature, &[0; 32], discriminator)
+//         .ok()
+//         .and_then(|region| message_field_bytes(1, byte_count(region.encoded_len())).ok())
+// }
+fn region_field_bytes(signature: &CostSignature, discriminator: u32, price: u64) -> Option<u64> {
+    priced_cost_region(signature, &[0; 32], discriminator, price)
         .ok()
         .and_then(|region| message_field_bytes(1, byte_count(region.encoded_len())).ok())
 }

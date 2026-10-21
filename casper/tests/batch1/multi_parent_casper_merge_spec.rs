@@ -1,10 +1,14 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperMergeSpec.scala
 
 use casper::rust::block_status::ValidBlock;
-use casper::rust::casper::Casper;
-use casper::rust::util::{construct_deploy, rspace_util};
+// Changed by DR-134 (DR-66 item 1): the deploy goes through TestNode::deploy.
+// use casper::rust::casper::Casper;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, rspace_util};
+use casper::rust::util::rspace_util;
 use rspace_plus_plus::rspace::history::Either;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -136,7 +140,9 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         None
     };
     if deploy2_block.is_none() {
-        nodes[1].casper.deploy(deploys[2].clone()).ok();
+        // Changed by DR-134 (DR-66 item 1): TestNode::deploy takes offered deploys.
+        // nodes[1].casper.deploy(deploys[2].clone()).ok();
+        nodes[1].deploy(deploys[2].clone()).ok();
         for round in 0..6 {
             let proposer = round % 2;
             let block = {

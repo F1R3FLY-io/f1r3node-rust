@@ -230,6 +230,14 @@ impl<'a, A> DirectWalletFunding<'a, A> {
 }
 
 impl<'a, A> DirectWalletPolicySnapshot<'a, A> {
+    /// Added by DR-134 (DR-65 item 5, design §8.4, option B): the settlement
+    /// snapshot of a batch member. Each source capacity is capped by the later
+    /// holds on its custody (`DirectWalletSnapshot::cap_by_later_holds`).
+    pub(crate) fn capped_by_later_holds(mut self, later: &BTreeMap<[u8; 32], u128>) -> Self {
+        self.wallets.cap_by_later_holds(later);
+        self
+    }
+
     pub fn wallets(&self) -> &DirectWalletSnapshot<'a, A> { &self.wallets }
     pub fn canonical_custodies(&self) -> &[&'a [u8]] { &self.canonical_custodies }
     pub fn resource_scope(&self) -> [u8; 32] { self.resource_scope }

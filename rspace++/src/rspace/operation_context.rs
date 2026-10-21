@@ -6,6 +6,9 @@ use std::sync::{Arc, LazyLock};
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 
+// Added by G3 (DR-135, S5): the owner checks of a match.
+use crate::rspace::internal::{ConsumeCandidate, WaitingContinuation};
+
 pub type PathSegment = (u64, u64);
 
 /// The chained digest of a causal path (C7a, DR-85): the root digest for the
@@ -226,6 +229,63 @@ pub fn named<T>(name: Option<OperationOrder>, body: impl FnOnce() -> T) -> T {
     match name {
         Some(order) => sync_scope(order, body),
         None => body(),
+    }
+}
+
+/// Added by G3 (DR-135, S5): the owner checks of a match, which the play
+/// matcher asks while it searches (R5, R6). Without owner funding RSpace
+/// passes none, and the matcher matches as on dev.
+pub trait MatchAdmission<C, P: Clone, A: Clone, K: Clone> {
+    /// Whether `continuation` may take `datum` (the value that its pattern
+    /// binds) as one item of a match, before the other items are known. A
+    /// false result makes the datum a miss of the pattern (R5).
+    fn admit_item(
+        &self,
+        continuation: &K,
+        continuation_persistent: bool,
+        channel_count: usize,
+        datum: &A,
+        datum_persistent: bool,
+    ) -> bool;
+
+    /// The channel of the incoming datum of a produce, which every tuple of
+    /// the produce must hold (R6).
+    fn own_datum_channel(&self) -> Option<&C>;
+
+    /// Whether the owners can pay the COMM of a complete tuple (R5). A false
+    /// result rolls the tuple back, and the matcher tries the next
+    /// continuation.
+    fn admit_tuple(
+        &self,
+        waiting: &WaitingContinuation<P, K>,
+        candidates: &[ConsumeCandidate<C, A>],
+    ) -> bool;
+}
+
+/// Added by G3 (DR-135, S5): the item test of one continuation (R5).
+pub struct ItemAdmission<'a, C, P: Clone, A: Clone, K: Clone> {
+    pub admission: &'a dyn MatchAdmission<C, P, A, K>,
+    pub continuation: &'a K,
+    pub persistent: bool,
+    pub channel_count: usize,
+}
+
+impl<C, P: Clone, A: Clone, K: Clone> Clone for ItemAdmission<'_, C, P, A, K> {
+    fn clone(&self) -> Self { *self }
+}
+
+impl<C, P: Clone, A: Clone, K: Clone> Copy for ItemAdmission<'_, C, P, A, K> {}
+
+impl<C, P: Clone, A: Clone, K: Clone> ItemAdmission<'_, C, P, A, K> {
+    /// The item test of `datum`.
+    pub fn admits(&self, datum: &A, datum_persistent: bool) -> bool {
+        self.admission.admit_item(
+            self.continuation,
+            self.persistent,
+            self.channel_count,
+            datum,
+            datum_persistent,
+        )
     }
 }
 

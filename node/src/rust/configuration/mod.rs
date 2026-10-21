@@ -591,6 +591,76 @@ mod embedded_defaults_tests {
 
     use super::*;
 
+    // Added by DR-134 (DR-66 item 5): a genesis requires the active protocol-6
+    // resource policy. Each shipped configuration carries the default resource
+    // policy of its shard, which is the policy that `node deploy` signs by
+    // default. The remote configurations include `default.conf`.
+    #[test]
+    fn the_shipped_configurations_carry_the_default_resource_policy() {
+        use casper::rust::util::rholang::costacc::owner_offer::default_resource_policy;
+
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for relative in [
+            "docker/conf/default.conf",
+            "docker/conf/bootstrap.conf",
+            "docker/conf/validator1-remote.conf",
+            "docker/conf/validator2-remote.conf",
+            "docker/conf/readonly-remote.conf",
+            "docker/conf/standalone-dev.conf",
+            "run-local/conf/standalone.conf",
+        ] {
+            let cfg: NodeConf = hocon::HoconLoader::new()
+                .load_str(EMBEDDED_DEFAULTS)
+                .expect("load defaults.conf")
+                .load_file(workspace.join(relative))
+                .unwrap_or_else(|error| panic!("load {relative}: {error}"))
+                .resolve()
+                .unwrap_or_else(|error| panic!("deserialize {relative}: {error}"));
+            let expected = default_resource_policy(&cfg.casper.shard_name)
+                .expect("the default resource policy forms");
+            assert_eq!(
+                cfg.casper
+                    .genesis_block_data
+                    .lowered_resource_policy()
+                    .unwrap_or_else(|error| panic!("{relative}: {error}")),
+                Some(expected.clone()),
+                "{relative} must set casper.genesis-block-data.resource-policy = \"{}\"",
+                hex::encode(
+                    expected
+                        .encode()
+                        .expect("the default resource policy encodes")
+                ),
+            );
+        }
+    }
+
+    // Added by DR-134 (DR-66 item 5): the Helm node configurations of the root
+    // shard carry the same default resource policy.
+    #[test]
+    fn the_helm_node_configurations_carry_the_default_resource_policy() {
+        use casper::rust::util::rholang::costacc::owner_offer::default_resource_policy;
+
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let expected = hex::encode(
+            default_resource_policy("root")
+                .expect("the default resource policy forms")
+                .encode()
+                .expect("the default resource policy encodes"),
+        );
+        for relative in [
+            "docker/helm/f1r3fly/templates/deployable-rnode-configmaps.yaml",
+            "docker/helm/f1r3fly/templates/observer-rnode-configmaps.yaml",
+        ] {
+            let text = std::fs::read_to_string(workspace.join(relative))
+                .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+            assert!(text.contains("shard-name = root"), "{relative}");
+            assert!(
+                text.contains(&format!("resource-policy = \"{expected}\"")),
+                "{relative} must set resource-policy = \"{expected}\""
+            );
+        }
+    }
+
     #[test]
     fn embedded_defaults_deserialize_into_node_conf() {
         let cfg: NodeConf = hocon::HoconLoader::new()

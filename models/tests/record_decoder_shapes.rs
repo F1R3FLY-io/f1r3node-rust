@@ -657,6 +657,9 @@ fn the_narrow_numeric_arms_are_not_range_checked() {
 /// that contain `Par` (directly or through other types) and go on the machine,
 /// and the 18 that do not and are read by the bounded leaf readers.
 ///
+/// Changed by G3 (DR-135): `CostCaller` makes 73 types and 55 machine types.
+/// Its signature can quote a `Par`, so it goes on the machine (SA3).
+///
 /// Three guards keep the partition true:
 ///
 /// 1. A new FIELD on a machine type fails to compile: every `*Build` op of
@@ -669,7 +672,9 @@ fn the_narrow_numeric_arms_are_not_range_checked() {
 #[test]
 fn record_decoder_type_partition() {
     /// Contain `Par`; decoded by the machine.
-    const MACHINE_TYPES: [&str; 54] = [
+    // Changed by G3 (DR-135): one more machine type, `CostCaller`.
+    // const MACHINE_TYPES: [&str; 54] = [
+    const MACHINE_TYPES: [&str; 55] = [
         // the cycle through `Par` (46), the cost family included
         "Par",
         "Send",
@@ -726,6 +731,9 @@ fn record_decoder_type_partition() {
         "ListBindPatterns",
         "CostRegion",
         "CostAuthority",
+        // Added by G3 (DR-135): the caller of a region (9 types outside the
+        // cycle).
+        "CostCaller",
     ];
 
     /// Outside the cycle and without `Par`: a fixed maximum nesting, so a
@@ -782,7 +790,9 @@ fn record_decoder_type_partition() {
                 .expect("a type name")
         })
         .collect();
-    assert_eq!(generated.len(), 72, "the generated schema has 72 types");
+    // Changed by G3 (DR-135): `CostCaller` is the 73rd type.
+    // assert_eq!(generated.len(), 72, "the generated schema has 72 types");
+    assert_eq!(generated.len(), 73, "the generated schema has 73 types");
     let partition: BTreeSet<&str> = machine.union(&bounded).copied().collect();
     let unclassified: Vec<&&str> = generated.difference(&partition).collect();
     let stale: Vec<&&str> = partition.difference(&generated).collect();

@@ -431,12 +431,26 @@ async fn test_case(
     assert_eq!(rejected_sigs, expected_rejected);
 
     let mut runtime_ops = RuntimeOps::new(runtime);
-    let (res, _cost) = runtime_ops
-        .play_exploratory_deploy_with_phlo_limit(
-            RHO_EXPLORE_READ.to_owned(),
+    // Changed by DR-134 (DR-66 item 3, scope map): this read runs on a raw
+    // runtime with no genesis policy, so it is an internal read and uses the
+    // unmetered strict read. The legacy-metered exploratory deploy is deleted
+    // with the legacy meter.
+    // let (res, _cost) = runtime_ops
+    //     .play_exploratory_deploy_with_phlo_limit(
+    //         RHO_EXPLORE_READ.to_owned(),
+    //         &final_hash.to_bytes_prost(),
+    //         None,
+    //         5_000_000,
+    //     )
+    //     .await
+    //     .unwrap();
+    let res = runtime_ops
+        .play_exploratory_par_strict(
+            rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
+                RHO_EXPLORE_READ,
+            )
+            .expect("the read term compiles"),
             &final_hash.to_bytes_prost(),
-            None,
-            5_000_000,
         )
         .await
         .unwrap();

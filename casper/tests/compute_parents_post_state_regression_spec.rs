@@ -4,14 +4,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
+// Added by DR-134 (DR-66 item 1): the offered checkpoint takes pending
+// envelopes.
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
+// Added by DR-134 (DR-66 item 1): the side block runs under the adopted
+// genesis resource policy.
+use casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+// Changed by DR-134 (DR-66 item 1): the side block runs the offered checkpoint.
+// use casper::rust::util::rholang::interpreter_util::{
+//     compute_deploys_checkpoint, compute_parents_post_state,
+// };
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint, compute_parents_post_state,
+    compute_deploys_checkpoint, compute_deploys_checkpoint_envelopes, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -22,13 +32,35 @@ use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, ProcessedDeploy};
+// Changed by DR-134 (DR-66 item 1): the side block carries an offered deploy,
+// so no block of this file names a body-only processed deploy.
+// use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+// Added by DR-134 (DR-66 item 1): this file is also its own test target, which
+// has no `crate::helper`, so it includes the offered-deploy seam by its path.
+// The side-block test uses only part of the seam. In the `mod` target the seam
+// is also `crate::helper::offered_deploy`, so the file loads twice there.
+#[allow(dead_code, unused_imports, clippy::duplicate_mod)]
+#[path = "helper/offered_deploy.rs"]
+mod offered_deploy;
+
+/// Added by DR-134 (DR-66 item 1): the balance of a funded offered test vault,
+/// as `OFFERED_TEST_VAULT_BALANCE` of `util/genesis_builder.rs` sets it (step
+/// F0 of gap G1). It covers the hold of an offer at its signed limit.
+const OFFERED_VAULT_BALANCE: u64 = 1_000_000_000_000;
+
+/// Added by DR-134 (DR-66 item 1): the protocol version and the minimum phlo
+/// price that the offered genesis policy of the seam requires, as
+/// `GenesisBuilder::offered_v6` sets them.
+const OFFERED_PROTOCOL_VERSION: i64 = 6;
+const OFFERED_MIN_PHLO_PRICE: i64 = 1;
 
 fn now_millis() -> i64 {
     SystemTime::now()
@@ -152,6 +184,74 @@ async fn step_block(
     Ok(updated)
 }
 
+/// Added by DR-134 (DR-66 item 1): `step_block` for a block whose user deploys
+/// are offered envelopes. The offered checkpoint runs them under the adopted
+/// genesis resource policy, so the snapshot carries the protocol version and
+/// the minimum price of that policy.
+#[allow(clippy::too_many_arguments)]
+async fn step_offered_block(
+    block_store: &mut KeyValueBlockStore,
+    dag_storage: &BlockDagKeyValueStorage,
+    runtime_manager: &mut RuntimeManager,
+    block: &BlockMessage,
+    deploys: Vec<offered_deploy::OfferedDeploy>,
+    adopted: &AdoptedResourcePolicy,
+    validator: Validator,
+    shard_name: String,
+    last_finalized_block: BlockHash,
+) -> Result<BlockMessage, CasperError> {
+    let mut snapshot = mk_snapshot(
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
+        validator,
+        shard_name,
+        last_finalized_block,
+    );
+    snapshot.on_chain_state.shard_conf.casper_version = OFFERED_PROTOCOL_VERSION;
+    snapshot.on_chain_state.shard_conf.min_phlo_price = OFFERED_MIN_PHLO_PRICE;
+
+    let parents = proto_util::get_parents(block_store, block);
+    let candidates = deploys
+        .into_iter()
+        .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+        .collect::<Vec<_>>();
+
+    let checkpoint = Box::pin(compute_deploys_checkpoint_envelopes(
+        block_store,
+        parents,
+        candidates,
+        Vec::<SystemDeployEnum>::new(),
+        &snapshot,
+        runtime_manager,
+        Some(adopted),
+        BlockData::from_block(block),
+        HashMap::new(),
+        None,
+        None,
+        None,
+    ))
+    .await?;
+
+    let mut updated = block.clone();
+    updated.body.state.post_state_hash = checkpoint.post_state_hash;
+    updated.body.deploys = checkpoint.deploys;
+    updated.body.system_deploys = checkpoint.system_deploys;
+    updated.body.state.bonds = checkpoint.bonds;
+
+    block_store
+        .put_block_message(&updated)
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+    dag_storage
+        .insert(
+            &updated,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+
+    Ok(updated)
+}
+
 #[test]
 fn compute_parents_post_state_should_not_depend_on_local_finalized_set() {
     let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
@@ -180,7 +280,10 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
     let validator: Bytes = validator_pk.bytes.clone();
-    let shard_name = "test-shard".to_string();
+    // Changed by DR-134 (DR-66 item 5): the offered genesis policy of the seam
+    // names the test shard, and a genesis requires its policy to bind the shard.
+    // let shard_name = "test-shard".to_string();
+    let shard_name = offered_deploy::TEST_SHARD.to_string();
 
     let mut kvm = InMemoryStoreManager::new();
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -221,7 +324,9 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6.
+            // min_phlo_price: 0,
+            min_phlo_price: OFFERED_MIN_PHLO_PRICE,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -231,15 +336,26 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         },
         vaults: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6.
+        // version: 1,
+        version: OFFERED_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
-        .await
-        .expect("Failed to create genesis block");
+    // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6 with the
+    // offered-funded resource policy.
+    // let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+    //     .await
+    //     .expect("Failed to create genesis block");
+    let genesis_block = Genesis::create_genesis_block_with_policy(
+        &runtime_manager,
+        &genesis,
+        Some(&offered_deploy::offered_v6_policy()),
+    )
+    .await
+    .expect("Failed to create genesis block");
     block_store
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis block");
@@ -339,6 +455,8 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("Failed to compute parents post-state without finalized skew");
@@ -373,6 +491,8 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &latest_messages_with_skew,
         None,
         None,
+        None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
         None,
     )
     .await
@@ -416,7 +536,10 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
     let validator: Bytes = validator_pk.bytes.clone();
-    let shard_name = "test-shard".to_string();
+    // Changed by DR-134 (DR-66 item 1): the offered genesis policy of the seam
+    // names the test shard.
+    // let shard_name = "test-shard".to_string();
+    let shard_name = offered_deploy::TEST_SHARD.to_string();
 
     let mut kvm = InMemoryStoreManager::new();
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -457,7 +580,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            // Changed by DR-134 (DR-66 item 1): the offered genesis minimum.
+            // min_phlo_price: 0,
+            min_phlo_price: OFFERED_MIN_PHLO_PRICE,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -471,18 +596,32 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
                     &construct_deploy::DEFAULT_PUB,
                 )
                 .expect("Failed to create default deployer vault address"),
-            initial_balance: 9_000_000,
+            // Changed by DR-134 (DR-66 item 1): the vault funds the hold of
+            // an offer at its signed limit.
+            // initial_balance: 9_000_000,
+            initial_balance: OFFERED_VAULT_BALANCE,
         }],
         supply: i64::MAX,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6.
+        // version: 1,
+        version: OFFERED_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
-        .await
-        .expect("Failed to create genesis block");
+    // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6 with the
+    // offered-funded resource policy.
+    // let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+    //     .await
+    //     .expect("Failed to create genesis block");
+    let genesis_block = Genesis::create_genesis_block_with_policy(
+        &runtime_manager,
+        &genesis,
+        Some(&offered_deploy::offered_v6_policy()),
+    )
+    .await
+    .expect("Failed to create genesis block");
     block_store
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis block");
@@ -492,6 +631,16 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
         )
         .expect("Failed to insert genesis in DAG");
+
+    // Added by DR-134 (DR-66 item 1): the policy that a node adopts from the
+    // offered genesis when it starts.
+    let mut adopted_conf = CasperShardConf::new();
+    adopted_conf.shard_name = shard_name.clone();
+    adopted_conf.casper_version = OFFERED_PROTOCOL_VERSION;
+    adopted_conf.min_phlo_price = OFFERED_MIN_PHLO_PRICE;
+    let adopted = AdoptedResourcePolicy::load(&runtime_manager, &genesis_block, &adopted_conf)
+        .await
+        .expect("the offered genesis resource policy is adopted");
 
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
@@ -518,11 +667,21 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     .await
     .expect("Failed to step main block");
 
-    let side_deploy = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): the side deploy is an offered envelope.
+    // let side_deploy = construct_deploy::source_deploy_now_full(
+    //     r#"@"secondary-parent-fast-path"!!(1)"#.to_string(),
+    //     None,
+    //     Some(1),
+    //     Some(construct_deploy::DEFAULT_SEC.clone()),
+    //     None,
+    //     Some(shard_name.clone()),
+    // )
+    // .expect("Failed to build side deploy");
+    let side_deploy = offered_deploy::source_deploy_now_full(
         r#"@"secondary-parent-fast-path"!!(1)"#.to_string(),
         None,
         Some(1),
-        Some(construct_deploy::DEFAULT_SEC.clone()),
+        Some(offered_deploy::DEFAULT_SEC.clone()),
         None,
         Some(shard_name.clone()),
     )
@@ -537,17 +696,35 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(side_deploy)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint takes the
+        // side deploy, and the stepped block carries its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(side_deploy)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let side = step_block(
+    // Changed by DR-134 (DR-66 item 1): the side block runs the offered
+    // checkpoint under the adopted policy.
+    // let side = step_block(
+    //     &mut block_store,
+    //     &dag_storage,
+    //     &mut runtime_manager,
+    //     &side_raw,
+    //     validator.clone(),
+    //     shard_name.clone(),
+    //     genesis_hash.clone(),
+    // )
+    // .await
+    // .expect("Failed to step side block");
+    let side = step_offered_block(
         &mut block_store,
         &dag_storage,
         &mut runtime_manager,
         &side_raw,
+        vec![side_deploy],
+        &adopted,
         validator.clone(),
         shard_name.clone(),
         genesis_hash.clone(),
@@ -631,6 +808,8 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("Failed to compute parents post-state");
@@ -678,7 +857,10 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
     let validator: Bytes = validator_pk.bytes.clone();
-    let shard_name = "test-shard".to_string();
+    // Changed by DR-134 (DR-66 item 5): the offered genesis policy of the seam
+    // names the test shard, and a genesis requires its policy to bind the shard.
+    // let shard_name = "test-shard".to_string();
+    let shard_name = offered_deploy::TEST_SHARD.to_string();
 
     let mut kvm = InMemoryStoreManager::new();
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -719,7 +901,9 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6.
+            // min_phlo_price: 0,
+            min_phlo_price: OFFERED_MIN_PHLO_PRICE,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -729,15 +913,26 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         },
         vaults: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6.
+        // version: 1,
+        version: OFFERED_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
-        .await
-        .expect("Failed to create genesis block");
+    // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6 with the
+    // offered-funded resource policy.
+    // let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+    //     .await
+    //     .expect("Failed to create genesis block");
+    let genesis_block = Genesis::create_genesis_block_with_policy(
+        &runtime_manager,
+        &genesis,
+        Some(&offered_deploy::offered_v6_policy()),
+    )
+    .await
+    .expect("Failed to create genesis block");
     block_store
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis block");
@@ -851,6 +1046,8 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await;
 
@@ -906,7 +1103,10 @@ fn visible_blocks_should_not_grow_unbounded_with_dag_depth() {
 
 async fn run_visible_blocks_scope_test() {
     let secp = Secp256k1;
-    let shard_name = "test-shard".to_string();
+    // Changed by DR-134 (DR-66 item 5): the offered genesis policy of the seam
+    // names the test shard, and a genesis requires its policy to bind the shard.
+    // let shard_name = "test-shard".to_string();
+    let shard_name = offered_deploy::TEST_SHARD.to_string();
 
     let (_v1_sk, v1_pk) = secp.new_key_pair();
     let (_v2_sk, v2_pk) = secp.new_key_pair();
@@ -955,7 +1155,9 @@ async fn run_visible_blocks_scope_test() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6.
+            // min_phlo_price: 0,
+            min_phlo_price: OFFERED_MIN_PHLO_PRICE,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -965,15 +1167,26 @@ async fn run_visible_blocks_scope_test() {
         },
         vaults: Vec::new(),
         supply: i64::MAX,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6.
+        // version: 1,
+        version: OFFERED_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
-        .await
-        .expect("Failed to create genesis block");
+    // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6 with the
+    // offered-funded resource policy.
+    // let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+    //     .await
+    //     .expect("Failed to create genesis block");
+    let genesis_block = Genesis::create_genesis_block_with_policy(
+        &runtime_manager,
+        &genesis,
+        Some(&offered_deploy::offered_v6_policy()),
+    )
+    .await
+    .expect("Failed to create genesis block");
     block_store
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis");

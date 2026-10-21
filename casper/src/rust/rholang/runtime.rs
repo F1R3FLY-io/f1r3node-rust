@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::mem;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -37,9 +36,11 @@ use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
+// Changed by DR-134 (DR-66 item 3): used only by the deleted legacy evaluate.
+// use rholang::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
-use rholang::rust::interpreter::accounting::phlo_execution::PhloFailure;
+// Changed by DR-134 (DR-66 item 3): used only by the deleted legacy evaluate.
+// use rholang::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use rholang::rust::interpreter::accounting::{self, NativeRuntimeConfig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
@@ -59,20 +60,17 @@ use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsE
 
 use crate::rust::errors::{CasperError, OfferedCandidateRejection};
 use crate::rust::metrics_constants::{
-    BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC,
-    BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
+    BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
     BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
     EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
     EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
 };
-use crate::rust::rholang::types::eval_collector::EvalCollector;
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
-use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use crate::rust::util::rholang::costacc::prepaid_receipts::read_live_data;
-use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::interpreter_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_result::SystemDeployResult;
@@ -80,7 +78,6 @@ use crate::rust::util::rholang::system_deploy_user_error::{
     SystemDeployPlatformFailure, SystemDeployUserError,
 };
 use crate::rust::util::rholang::tools::Tools;
-use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 /// Process-wide ephemeral identity to sign exploratory deploys.
 /// The key pair is generated randomly once per node process, so values derived
@@ -88,7 +85,10 @@ use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 /// stable within a process but not across restarts or between nodes.
 static EXPLORATORY_KEY_PAIR: OnceLock<(PrivateKey, PublicKey)> = OnceLock::new();
 
-fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
+// Changed by DR-134 (DR-71): the exploratory dry run signs with this key when
+// the request names no deployer.
+// fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
+pub(crate) fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
 }
 
@@ -117,6 +117,9 @@ pub(crate) fn offered_candidate_rejection(
             deploy_id: *deploy_id,
             pre_state_root: pre_state_root.clone(),
             reason: error.to_string(),
+            // Added by DR-134 (DR-65 item 4): a rejection of one candidate
+            // alone names no group.
+            group: Vec::new(),
         }),
     }
 }
@@ -174,19 +177,16 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
     }
 }
 
-/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
-/// refund). Called lazily inside tracing field evaluation, so it costs nothing
-/// unless the event is enabled.
+/// Diagnostic label for a system deploy (closeBlock / slash). Called lazily
+/// inside tracing field evaluation, so it costs nothing unless the event is
+/// enabled. Changed by DR-134 (DR-66 item 5): the precharge and refund deploys
+/// of the legacy meter are deleted.
 fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
     let any = sd.as_any();
     if any.downcast_ref::<CloseBlockDeploy>().is_some() {
         "closeBlock"
     } else if any.downcast_ref::<SlashDeploy>().is_some() {
         "slash"
-    } else if any.downcast_ref::<PreChargeDeploy>().is_some() {
-        "precharge"
-    } else if any.downcast_ref::<RefundDeploy>().is_some() {
-        "refund"
     } else {
         "other"
     }
@@ -220,7 +220,10 @@ impl RuntimeOps {
         system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
         block_data: BlockData,
         invalid_blocks: HashMap<BlockHash, Validator>,
-        play_budget: Option<std::time::Duration>,
+        // Changed by DR-134 (DR-66 item 5): the play budget bounded only the
+        // body-only play loop, which no longer exists.
+        // play_budget: Option<std::time::Duration>,
+        _play_budget: Option<std::time::Duration>,
     ) -> Result<
         (
             StateHash,
@@ -232,6 +235,13 @@ impl RuntimeOps {
         // Using tracing events instead of spans for async context
         // Span[F].traceI("compute-state") equivalent from Scala
         tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-started");
+        // Added by DR-134 (DR-66 item 5): a body-only user deploy is historical
+        // execution and returns the compatibility error before any state reset.
+        if !terms.is_empty() {
+            return Err(
+                crate::rust::util::rholang::costacc::offered_only::body_only_deploys_unsupported(),
+            );
+        }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
@@ -257,9 +267,12 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_invalid_blocks", rss_kb);
         }
 
-        let (start_hash, processed_deploys) = self
-            .play_deploys_for_state(start_hash, terms, play_budget)
-            .await?;
+        // Changed by DR-134 (DR-66 item 5).
+        // let (start_hash, processed_deploys) = self
+        //     .play_deploys_for_state(start_hash, terms, play_budget)
+        //     .await?;
+        let (start_hash, processed_deploys) =
+            self.play_deploys_for_state(start_hash, terms).await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_play_deploys_for_state", rss_kb);
         }
@@ -340,14 +353,33 @@ impl RuntimeOps {
         ),
         CasperError,
     > {
-        if let [PendingDeployCandidate::Envelope(envelope)] = terms.as_slice() {
-            // Moved by G2-1 to
-            // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_block.rs`,
-            // unchanged.
+        // Changed by DR-134 (DR-65, O-7): every offered batch, of one member or
+        // more, plays as a batch
+        // (`casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_batch.rs`).
+        // if let [PendingDeployCandidate::Envelope(envelope)] = terms.as_slice() {
+        //     // Moved by G2-1 to
+        //     // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_block.rs`,
+        //     // unchanged.
+        //     return self
+        //         .compute_offered_envelope_state(
+        //             start_hash,
+        //             envelope,
+        //             system_deploys,
+        //             block_data,
+        //             invalid_blocks,
+        //             play_budget,
+        //             adopted,
+        //             manager,
+        //         )
+        //         .await;
+        // }
+        if let Some(envelopes) =
+            crate::rust::util::rholang::costacc::direct_wallet_funding::offered_envelopes(&terms)
+        {
             return self
-                .compute_offered_envelope_state(
+                .compute_offered_batch_state(
                     start_hash,
-                    envelope,
+                    &envelopes,
                     system_deploys,
                     block_data,
                     invalid_blocks,
@@ -430,14 +462,26 @@ impl RuntimeOps {
     /**
      * Evaluates deploys on root hash with checkpoint to get final state hash
      */
+    // Changed by DR-134 (DR-66 item 5): no body-only user deploy plays, so the
+    // play budget and the escrow play of the legacy meter are gone.
+    // pub async fn play_deploys_for_state(
+    //     &mut self,
+    //     start_hash: &StateHash,
+    //     terms: Vec<Signed<DeployData>>,
+    //     play_budget: Option<std::time::Duration>,
+    // ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
     pub async fn play_deploys_for_state(
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
-        play_budget: Option<std::time::Duration>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play_deploys", "play-deploys-started");
+        if !terms.is_empty() {
+            return Err(
+                crate::rust::util::rholang::costacc::offered_only::body_only_deploys_unsupported(),
+            );
+        }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
@@ -448,28 +492,7 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_reset", rss_kb);
         }
 
-        // Checked after each deploy, so one always plays and a spent budget
-        // defers the rest to the next proposal; the block carries exactly
-        // the played prefix.
-        let budget_started = std::time::Instant::now();
-        let total_terms = terms.len();
-        let mut res = Vec::with_capacity(total_terms);
-        for deploy in terms {
-            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
-            if let Some(budget) = play_budget {
-                if budget_started.elapsed() >= budget && res.len() < total_terms {
-                    tracing::info!(
-                        target: "f1r3fly.casper.play_deploys",
-                        executed = res.len(),
-                        deferred = total_terms - res.len(),
-                        budget_ms = budget.as_millis() as u64,
-                        elapsed_ms = budget_started.elapsed().as_millis() as u64,
-                        "play budget spent: remaining deploys deferred to a later proposal"
-                    );
-                    break;
-                }
-            }
-        }
+        let res = Vec::new();
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint", rss_kb);
@@ -517,190 +540,20 @@ impl RuntimeOps {
         Ok((final_checkpoint.root.to_bytes_prost(), res))
     }
 
-    /**
-     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
-     */
-    pub async fn play_deploy_with_cost_accounting(
-        &mut self,
-        deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
-        tracing::debug!(target: "f1r3fly.casper.play_deploy", "play-deploy-started");
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
-        }
-        let mut eval_collector_state = EvalCollector::new();
-
-        let deploy_pk = deploy.pk.bytes.clone();
-        let deploy_pk_hex = hex::encode(&deploy_pk);
-        let deploy_sig_hex = hex::encode(&deploy.sig);
-        let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
-        let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
-
-        // Evaluates Pre-charge system deploy
-        let pre_charge_result = {
-            // Using tracing events for async - Span[F].traceI("precharge") from Scala
-            tracing::debug!(target: "f1r3fly.casper.precharge", "precharge-started");
-            tracing::debug!(
-                "PreCharging {} for {}",
-                deploy_pk_hex.as_str(),
-                deploy.data.total_phlo_charge()
-            );
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_precharge_internal", rss_kb);
-            }
-            let precharge_start = Instant::now();
-            let (event_log, result, mergeable_channels) = self
-                .play_system_deploy_internal(&mut PreChargeDeploy {
-                    charge_amount: deploy.data.total_phlo_charge(),
-                    pk: deploy.pk.clone(),
-                    rand: pre_charge_rand,
-                })
-                .await?;
-            metrics::histogram!(BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(precharge_start.elapsed().as_secs_f64());
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_internal", rss_kb);
-            }
-            eval_collector_state.add(event_log, mergeable_channels);
-            if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_collect", rss_kb);
-            }
-            result
-        };
-        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge", rss_kb);
-        }
-
-        match pre_charge_result {
-            Either::Right(_) => {
-                // Evaluates user deploy
-                let pd = {
-                    // Using tracing events for async - Span[F].traceI("user-deploy") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.user_deploy", "user-deploy-started");
-                    tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
-                    // Evaluates user deploy and append event log to local state
-                    {
-                        let evaluate_start = Instant::now();
-                        let (mut pd, mc) = self.process_deploy(deploy).await?;
-                        metrics::histogram!(BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                            .record(evaluate_start.elapsed().as_secs_f64());
-                        let deploy_log = mem::take(&mut pd.deploy_log);
-                        eval_collector_state.add(deploy_log, mc);
-                        pd
-                    }
-                };
-                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_user_deploy", rss_kb);
-                }
-
-                // Evaluates Refund system deploy
-                let refund_result = {
-                    // Using tracing events for async - Span[F].traceI("refund") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.refund", "refund-started");
-                    tracing::debug!(
-                        "Refunding {} with {}",
-                        deploy_pk_hex.as_str(),
-                        pd.refund_amount()
-                    );
-                    let refund_start = Instant::now();
-                    let (event_log, result, mergeable_channels) = self
-                        .play_system_deploy_internal(&mut RefundDeploy {
-                            refund_amount: pd.refund_amount(),
-                            rand: refund_rand,
-                        })
-                        .await?;
-                    metrics::histogram!(BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                        .record(refund_start.elapsed().as_secs_f64());
-                    eval_collector_state.add(event_log, mergeable_channels);
-                    result
-                };
-                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
-                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_refund", rss_kb);
-                }
-
-                match refund_result {
-                    Either::Right(_) => {
-                        // Get mergeable channels data
-                        let mergeable_channels_data = self
-                            .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                            .await?;
-
-                        let deploy_log = mem::take(&mut eval_collector_state.event_log);
-                        if let Some(rss_kb) =
-                            crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
-                        {
-                            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_collect_result", rss_kb);
-                        }
-
-                        Ok((
-                            ProcessedDeploy { deploy_log, ..pd },
-                            mergeable_channels_data,
-                        ))
-                    }
-
-                    Either::Left(error) => {
-                        // If Pre-charge succeeds and Refund fails, it's a platform error.
-                        // Include deploy identifiers so operators can quickly isolate toxic deploys.
-                        let refund_amount = pd.refund_amount();
-                        let failure_context = format!(
-                            "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
-                            error.error_message,
-                            deploy_sig_hex,
-                            deploy_pk_hex.as_str(),
-                            refund_amount
-                        );
-                        metrics::counter!(
-                            "casper_runtime_refund_failures_total",
-                            "source" => CASPER_METRICS_SOURCE
-                        )
-                        .increment(1);
-                        tracing::warn!("Refund failure '{}'", failure_context);
-                        Err(CasperError::SystemRuntimeError(
-                            SystemDeployPlatformFailure::GasRefundFailure(failure_context),
-                        ))
-                    }
-                }
-            }
-
-            Either::Left(error) => {
-                tracing::error!(error = %error.error_message, "pre-charge evaluation failed");
-
-                // Handle evaluation errors from PreCharge
-                // - assigning 0 cost - replay should reach the same state
-                let mut empty_pd = ProcessedDeploy::empty(deploy);
-                empty_pd.is_failed = true;
-                empty_pd.system_deploy_error = Some(error.error_message);
-
-                // Update result with accumulated event logs
-                // Get mergeable channels data
-                let mergeable_channels_data = self
-                    .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                    .await?;
-
-                let deploy_log = mem::take(&mut eval_collector_state.event_log);
-
-                Ok((
-                    ProcessedDeploy {
-                        deploy_log,
-                        ..empty_pd
-                    },
-                    mergeable_channels_data,
-                ))
-            }
-        }
-    }
-
     pub async fn process_deploy(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        // Keep a soft checkpoint before user deploy execution so failed deploy rollback
-        // preserves pre-charge side effects required by refundDeploy.
+        // Changed by DR-134 (DR-66): only genesis deploys reach this function, and
+        // they run in the trusted install scope. A failed deploy rolls back to the
+        // soft checkpoint.
+        // // Keep a soft checkpoint before user deploy execution so failed deploy rollback
+        // // preserves pre-charge side effects required by refundDeploy.
         let fallback = self.runtime.create_soft_checkpoint().await;
 
         // Evaluate deploy
-        let eval_result = self.evaluate(&deploy).await?;
+        // let eval_result = self.evaluate(&deploy).await?;
+        let eval_result = self.evaluate_trusted_install(&deploy).await?;
 
         let deploy_log = self.runtime.take_event_log().await;
 
@@ -1062,56 +915,6 @@ impl RuntimeOps {
         Ok((r, eval_result))
     }
 
-    /**
-     * Evaluates exploratory (read-only) deploy.
-     *
-     * `phlo_limit` is always supplied by the caller: `RuntimeManager` passes the
-     * operator-configured ceiling, and test callers state their own. There is no
-     * compiled-in default, so no call site can diverge from the operator's
-     * configuration without saying so.
-     */
-    pub async fn play_exploratory_deploy_with_phlo_limit(
-        &mut self,
-        term: String,
-        hash: &StateHash,
-        deployer: Option<PublicKey>,
-        phlo_limit: i64,
-    ) -> Result<(Vec<Par>, u64), CasperError> {
-        let deploy_result = async {
-            let data = DeployData {
-                term,
-                time_stamp: 0,
-                phlo_price: 1,
-                phlo_limit,
-                valid_after_block_number: 0,
-                shard_id: String::new(),
-                expiration_timestamp: None,
-            };
-
-            let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
-            let deploy = Signed::create_unbound(
-                data,
-                deployer.unwrap_or(ephemeral_pk),
-                ephemeral_sk,
-                Box::new(Secp256k1),
-            )?;
-
-            // Create return channel as first private name created in deploy term
-            let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
-            let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
-                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                    id: rand.next().into_iter().map(|b| b as u8).collect(),
-                })),
-            }]);
-
-            // Execute deploy on top of specified block hash
-            self.capture_results_with_name(hash, &deploy, &return_name)
-                .await
-        };
-
-        deploy_result.await
-    }
-
     /// Lenient exploratory query: a runtime execution failure degrades to an
     /// empty result (logged, not propagated). Appropriate for display/API
     /// reads (bonds, active validators) — NEVER for consensus-level reads,
@@ -1251,113 +1054,30 @@ impl RuntimeOps {
         Ok(a)
     }
 
-    /* Evaluates and captures results */
-
-    // Return channel on which result is captured is the first name
-    // in the deploy term `new return in { return!(42) }`
-    pub async fn capture_results(
-        &mut self,
-        start: &StateHash,
-        deploy: &Signed<DeployData>,
-    ) -> Result<Vec<Par>, CasperError> {
-        // Create return channel as first unforgeable name created in deploy term
-        let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
-        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: rand.next().into_iter().map(|b| b as u8).collect(),
-            })),
-        }]);
-
-        let (data, _cost) = self
-            .capture_results_with_name(start, deploy, &return_name)
-            .await?;
-        Ok(data)
-    }
-
-    pub async fn capture_results_with_name(
-        &mut self,
-        start: &StateHash,
-        deploy: &Signed<DeployData>,
-        name: &Par,
-    ) -> Result<(Vec<Par>, u64), CasperError> {
-        self.capture_results_with_errors(start, deploy, name).await
-    }
-
-    pub async fn capture_results_with_errors(
-        &mut self,
-        start: &StateHash,
-        deploy: &Signed<DeployData>,
-        name: &Par,
-    ) -> Result<(Vec<Par>, u64), CasperError> {
-        self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(start))
-            .await?;
-
-        let eval_res = self.evaluate(deploy).await?;
-        if !eval_res.errors.is_empty() {
-            return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
-        }
-
-        let cost = eval_res.cost.value.max(0) as u64;
-        Ok((self.get_data_par(name).await, cost))
-    }
-
-    /* Evaluates Rholang source code */
-
-    pub async fn evaluate(
+    /// Added by DR-134 (DR-66 item 4, scope map): genesis play and replay run in
+    /// the trusted install scope. It is unmetered, carries the Unit signature,
+    /// and records cost 0. P1 fixes the free signature s0 for system-level
+    /// contracts (`cost-accounted-rho.tex:1636-1663`) and calls the bootstrap
+    /// free infrastructure (`:3366-3373`); P2 installs apparatus at zero charge
+    /// (`continued-gslt-cost-v2.tex:1098-1106`). The scope keeps the COMM
+    /// accounting scope of the interpreter, so stored seals do not change.
+    pub async fn evaluate_trusted_install(
         &mut self,
         deploy: &Signed<DeployData>,
     ) -> Result<EvaluateResult, CasperError> {
         let deploy_data = SystemProcessDeployData::from_deploy(deploy);
         self.runtime.set_deploy_data(deploy_data).await;
-        let _legacy_scope = self.runtime.cost.enter_legacy_scope();
-
-        let parsing_cost = Cost::create(deploy.data.term.len() as i64, "parsing");
-        if deploy.data.phlo_limit >= 0 && deploy.data.phlo_limit < parsing_cost.value {
-            self.runtime
-                .cost
-                .set(Cost::create(deploy.data.phlo_limit, "Evaluate deploy"));
-            return Ok(EvaluateResult {
-                cost: Cost::create(deploy.data.phlo_limit, "Evaluate deploy"),
-                errors: vec![InterpreterError::OutOfPhlogistonsError],
-                economic_failures: EvaluationFailureSummary::single(PhloFailure::Certificate),
-                ..EvaluateResult::default()
-            });
-        }
-
-        let execution_limit = if deploy.data.phlo_limit < 0 {
-            deploy.data.phlo_limit
-        } else {
-            deploy.data.phlo_limit - parsing_cost.value
-        };
-
-        let result = self
-            .runtime
+        self.runtime.cost.set_system_payer();
+        let _trusted_install_scope = self.runtime.cost.enter_unmetered_scope();
+        self.runtime
             .evaluate(
                 &deploy.data.term,
-                Cost::create(execution_limit, "Evaluate deploy"),
+                Cost::unsafe_max(),
                 normalizer_env_from_deploy(deploy),
                 Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
             )
-            .await;
-
-        match result {
-            Ok(mut eval_result) => {
-                if deploy.data.phlo_limit >= 0 {
-                    eval_result.cost.value = eval_result
-                        .cost
-                        .value
-                        .checked_add(parsing_cost.value)
-                        .ok_or_else(|| {
-                            CasperError::RuntimeError(
-                                "legacy parsing charge overflowed".to_string(),
-                            )
-                        })?;
-                }
-                Ok(eval_result)
-            }
-            Err(e) => Err(CasperError::InterpreterError(e)),
-        }
+            .await
+            .map_err(CasperError::InterpreterError)
     }
 
     pub async fn evaluate_system_source<S: SystemDeployTrait>(

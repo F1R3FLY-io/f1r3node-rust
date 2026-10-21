@@ -801,18 +801,55 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         match BlockAPI::list_pending_deploys(&self.engine_cell, deployer).await {
             Ok(snapshot) => {
-                let deploys: Vec<PendingDeployInfo> = snapshot
+                // Changed by DR-134 (DR-66): an entry is a legacy deploy or an
+                // offered envelope, each in its own proto form.
+                // let deploys: Vec<PendingDeployInfo> = snapshot
+                //     .deploys
+                //     .into_iter()
+                //     .map(|(signed, is_rejected)| PendingDeployInfo {
+                //         deploy: Some(
+                //             models::rust::casper::protocol::casper_message::DeployData::to_proto(
+                //                 signed,
+                //             ),
+                //         ),
+                //         is_rejected,
+                //     })
+                //     .collect();
+                let deploys: Result<Vec<PendingDeployInfo>, String> = snapshot
                     .deploys
                     .into_iter()
-                    .map(|(signed, is_rejected)| PendingDeployInfo {
-                        deploy: Some(
-                            models::rust::casper::protocol::casper_message::DeployData::to_proto(
-                                signed,
-                            ),
-                        ),
-                        is_rejected,
+                    .map(|(candidate, is_rejected)| {
+                        let deploy = match candidate {
+                            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Legacy(signed) => {
+                                models::rust::casper::protocol::casper_message::DeployData::to_proto(
+                                    signed,
+                                )
+                            }
+                            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Envelope(envelope) => {
+                                envelope.to_proto()?
+                            }
+                        };
+                        Ok(PendingDeployInfo {
+                            deploy: Some(deploy),
+                            is_rejected,
+                        })
                     })
                     .collect();
+                let deploys = match deploys {
+                    Ok(deploys) => deploys,
+                    Err(error) => {
+                        error!("Deploy service method error get_pending_deploys: {}", error);
+                        return Ok(tonic::Response::new(PendingDeploysResponse {
+                            message: Some(
+                                models::casper::v1::pending_deploys_response::Message::Error(
+                                    ServiceError {
+                                        messages: vec![error],
+                                    },
+                                ),
+                            ),
+                        }));
+                    }
+                };
                 let payload = PendingDeploysResponsePayload {
                     deploys,
                     total_available: snapshot.total_available,

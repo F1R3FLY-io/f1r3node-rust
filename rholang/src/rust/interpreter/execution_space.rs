@@ -79,6 +79,22 @@ impl From<RhoISpace> for ExecutionSpace {
 
 struct LegacyExecution(RhoISpace);
 
+/// Added by G3 (DR-135, S4): RSpace refuses an introduction whose owner
+/// cannot pay with `RSpaceError::IntroductionRefused`, after it recorded the
+/// refusal and stored nothing (R8). The reducer sees an operation that
+/// stored nothing. Only a run with owner funding refuses an introduction.
+// Changed by G3 (DR-135, S6): the replay backend maps a skipped
+// introduction with this function too.
+// fn refused_stores_nothing<T>(
+pub(crate) fn refused_stores_nothing<T>(
+    result: Result<Option<T>, RSpaceError>,
+) -> Result<Option<T>, RSpaceError> {
+    match result {
+        Err(RSpaceError::IntroductionRefused) => Ok(None),
+        other => other,
+    }
+}
+
 #[async_trait]
 impl ExecutionBackend for LegacyExecution {
     async fn consume(
@@ -89,9 +105,16 @@ impl ExecutionBackend for LegacyExecution {
         persistent: bool,
         peeks: BTreeSet<i32>,
     ) -> Result<ConsumeResult, RSpaceError> {
-        self.0
-            .consume(channels, patterns, continuation, persistent, peeks)
-            .await
+        // Changed by G3 (DR-135, S4): an introduction that its owner cannot
+        // pay stores nothing, and the run continues (R8).
+        // self.0
+        //     .consume(channels, patterns, continuation, persistent, peeks)
+        //     .await
+        refused_stores_nothing(
+            self.0
+                .consume(channels, patterns, continuation, persistent, peeks)
+                .await,
+        )
     }
 
     async fn produce(
@@ -100,7 +123,10 @@ impl ExecutionBackend for LegacyExecution {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<ProduceResult, RSpaceError> {
-        self.0.produce(channel, data, persistent).await
+        // Changed by G3 (DR-135, S4): an introduction that its owner cannot
+        // pay stores nothing, and the run continues (R8).
+        // self.0.produce(channel, data, persistent).await
+        refused_stores_nothing(self.0.produce(channel, data, persistent).await)
     }
 
     async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, RSpaceError> {

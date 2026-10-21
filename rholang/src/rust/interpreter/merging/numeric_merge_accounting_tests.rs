@@ -372,6 +372,8 @@ proptest! {
             regions: regions.iter().map(|id| models::rhoapi::CostRegion {
                 instance_id: vec![*id; 32],
                 signature: Some(signature(id % 2 == 0)),
+                // Added by G3 (DR-135): no price and no caller.
+                ..Default::default()
             }).collect(),
         }), None)).collect();
         let expected: BTreeSet<_> = writers.iter().flat_map(|regions| regions.iter().copied()).collect();

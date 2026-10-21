@@ -90,13 +90,17 @@ pub struct GenesisBuilder {
 }
 
 impl GenesisBuilder {
-    pub fn new() -> Self {
-        Self {
-            vaults: None,
-            resource_policy: None,
-            offered_v6: false,
-        }
-    }
+    // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6 with the
+    // offered-funded resource policy, so `new` builds the same genesis as
+    // `offered_v6`.
+    // pub fn new() -> Self {
+    //     Self {
+    //         vaults: None,
+    //         resource_policy: None,
+    //         offered_v6: false,
+    //     }
+    // }
+    pub fn new() -> Self { Self::offered_v6() }
 
     /// Added by DR-116 (gap G6): a builder for a genesis with the offered-funded
     /// v6 resource policy, header version 6 and minimum phlo price 1. Every
@@ -118,6 +122,23 @@ impl GenesisBuilder {
     pub fn with_resource_policy(mut self, policy: PhloGenesisPolicy) -> Self {
         self.resource_policy = Some(policy);
         self
+    }
+
+    /// Added by DR-134 (DR-66 item 5): the parameters of an offered-funded v6
+    /// genesis, as `offered_v6` builds it: header version 6, a minimum phlo
+    /// price of at least 1 (a test may set a higher one), and
+    /// `OFFERED_TEST_VAULT_BALANCE` in every funded vault. A test that compares
+    /// its own parameters with the built genesis applies it too. The adjustment
+    /// is idempotent.
+    pub fn apply_offered_v6(parameters: &mut GenesisParameters) {
+        parameters.2.version = 6;
+        parameters.2.proof_of_stake.min_phlo_price =
+            parameters.2.proof_of_stake.min_phlo_price.max(1);
+        for vault in parameters.2.vaults.iter_mut() {
+            if vault.initial_balance > 0 {
+                vault.initial_balance = OFFERED_TEST_VAULT_BALANCE;
+            }
+        }
     }
 
     pub fn create_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
@@ -295,14 +316,27 @@ impl GenesisBuilder {
     ) -> Result<GenesisContext, CasperError> {
         let mut parameters =
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
+        // Changed by DR-134 (DR-66 item 5): the adjustment is shared with tests
+        // that compare their own parameters with the built genesis.
+        // if self.offered_v6 {
+        //     parameters.2.version = 6;
+        //     parameters.2.proof_of_stake.min_phlo_price = 1;
+        //     for vault in parameters.2.vaults.iter_mut() {
+        //         if vault.initial_balance > 0 {
+        //             vault.initial_balance = OFFERED_TEST_VAULT_BALANCE;
+        //         }
+        //     }
+        // }
         if self.offered_v6 {
-            parameters.2.version = 6;
-            parameters.2.proof_of_stake.min_phlo_price = 1;
-            for vault in parameters.2.vaults.iter_mut() {
-                if vault.initial_balance > 0 {
-                    vault.initial_balance = OFFERED_TEST_VAULT_BALANCE;
-                }
-            }
+            Self::apply_offered_v6(&mut parameters);
+        }
+        // Added by DR-134 (DR-66 item 1): the vaults of `with_vaults` replace the
+        // vaults of the parameters before the cache lookup. The cache key then
+        // holds the vaults that the genesis contains. A genesis with its own vaults
+        // thus does not share a cache entry with the funded genesis of the same
+        // parameters, for example the RhoSpec genesis and the offered genesis.
+        if let Some(vaults) = &self.vaults {
+            parameters.2.vaults = vaults.clone();
         }
         CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
 
@@ -477,7 +511,12 @@ mod offered_vault_tests {
                 VaultAddress::from_public_key(public).expect("a genesis key forms a vault address");
             let (observed, _) = node
                 .runtime_manager
-                .play_exploratory_deploy(balance_query_source(&address), &root, None)
+                .play_exploratory_deploy(
+                    balance_query_source(&address),
+                    &root,
+                    None,
+                    node.adopted_policy(),
+                )
                 .await
                 .expect("the balance query runs on the genesis root");
             let [balance] = observed.as_slice() else {

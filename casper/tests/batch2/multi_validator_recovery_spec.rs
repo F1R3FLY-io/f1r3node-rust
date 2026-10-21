@@ -27,26 +27,49 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+// Added by DR-134 (DR-65, gap G2): the offered checkpoint takes pending
+// candidates.
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+// Changed by DR-134 (DR-65, gap G2): the snapshot takes the offered shard
+// configuration (`offered_shard_conf`), so `CasperShardConf` is not named.
+// use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::casper::{CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::genesis::Genesis;
+// Changed by DR-134 (DR-65, gap G2): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
+// Changed by DR-134 (DR-65, gap G2): the offered checkpoint runs each block's
+// batch of offers.
+// use casper::rust::util::rholang::interpreter_util::{
+//     compute_deploys_checkpoint, compute_parents_post_state,
+// };
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint, compute_parents_post_state,
+    compute_deploys_checkpoint_envelopes, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
-use casper::rust::util::{construct_deploy, proto_util};
 use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
-use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+// Changed by DR-134 (DR-65, gap G2): no block of this test carries a body-only
+// processed deploy.
+// use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
 
+// Added by DR-134 (DR-65, gap G2): offered deploys.
+use crate::helper::offered_deploy as construct_deploy;
+// Changed by DR-134 (DR-65, gap G2): the adopted policy of the test genesis and
+// the shard configuration under which an offered checkpoint adopts it again.
+// use crate::util::rholang::resources::{
+//     block_dag_storage_from_dyn, mergeable_store_from_dyn, mk_test_rnode_store_manager_from_genesis,
+// };
 use crate::util::rholang::resources::{
-    block_dag_storage_from_dyn, mergeable_store_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    adopted_policy, block_dag_storage_from_dyn, mergeable_store_from_dyn,
+    mk_test_rnode_store_manager_from_genesis, offered_shard_conf,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -74,6 +97,9 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
+    // Added by DR-134 (DR-65, gap G2): the offered checkpoints take the adopted
+    // policy of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_block).await;
 
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
@@ -114,7 +140,11 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         max_seq_nums.insert(validator_0.clone(), 0);
         max_seq_nums.insert(validator_1.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
-        let mut shard_conf = CasperShardConf::new();
+        // Changed by DR-134 (DR-65, gap G2): an offered checkpoint adopts the
+        // genesis policy again under this configuration, which needs the
+        // protocol version and the minimum price of the offered genesis.
+        // let mut shard_conf = CasperShardConf::new();
+        let mut shard_conf = offered_shard_conf(&genesis_block);
         shard_conf.shard_name = shard_name.clone();
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
@@ -163,6 +193,20 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
 for(@_v <- @"multi-validator-shared") { Nil }
 "#
     .to_string();
+    // Changed by DR-134 (DR-65, gap G2): one key signs the shared producer and
+    // both markers (DEFAULT_SEC). A deploy that consumes the datum of another
+    // signer needs the funding of that signer, which is gap G3.
+    // Changed by G3 (DR-135): dev's signer returns, and the producer's purse
+    // funds the read.
+    // let marker_v0 = construct_deploy::source_deploy_now_full(
+    //     rho_shared_consumer.clone(),
+    //     None,
+    //     None,
+    //     Some(construct_deploy::DEFAULT_SEC.clone()),
+    //     None,
+    //     None,
+    // )
+    // .expect("build marker_v0");
     let marker_v0 = construct_deploy::source_deploy_now_full(
         rho_shared_consumer.clone(),
         None,
@@ -175,6 +219,19 @@ for(@_v <- @"multi-validator-shared") { Nil }
     let sig_marker_v0 = marker_v0.sig.clone();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    // Changed by DR-134 (DR-65, gap G2): one key, as for marker_v0. The two
+    // markers have one signer and one term, so the distinct timestamps make
+    // them two envelopes.
+    // Changed by G3 (DR-135): dev's signer returns, as for marker_v0.
+    // let marker_v1 = construct_deploy::source_deploy_now_full(
+    //     rho_shared_consumer,
+    //     None,
+    //     None,
+    //     Some(construct_deploy::DEFAULT_SEC.clone()),
+    //     None,
+    //     None,
+    // )
+    // .expect("build marker_v1");
     let marker_v1 = construct_deploy::source_deploy_now_full(
         rho_shared_consumer,
         None,
@@ -191,6 +248,17 @@ for(@_v <- @"multi-validator-shared") { Nil }
     );
 
     // ── Recovery block R0 (sender = validator 0, body = [deploy_x, marker_v0]) ──
+    // Changed by DR-134 (DR-65, gap G2): the raw block names no body-only
+    // deploy. The offered checkpoint below runs the batch [deploy_x,
+    // marker_v0] and gives the block its processed offers.
+    // let r0_raw = block_implicits::get_random_block(
+    //     ...
+    //     Some(vec![
+    //         ProcessedDeploy::empty(deploy_x.clone()),
+    //         ProcessedDeploy::empty(marker_v0.clone()),
+    //     ]),
+    //     ...
+    // );
     let r0_raw = block_implicits::get_random_block(
         Some(1),
         Some(1),
@@ -201,25 +269,35 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(marker_v0.clone()),
-        ]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_r0 = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-65, gap G2): the offered checkpoint of the batch.
+    // let checkpoint_r0 = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![genesis_block.clone()],
+    //     proto_util::deploys(&r0_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&r0_raw),
+    let checkpoint_r0 = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&r0_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![
+            PendingDeployCandidate::Envelope(deploy_x.envelope.clone()),
+            PendingDeployCandidate::Envelope(marker_v0.envelope.clone()),
+        ],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&r0_raw),
         HashMap::new(),
         None,
@@ -228,23 +306,51 @@ for(@_v <- @"multi-validator-shared") { Nil }
     )
     .await
     .expect("compute R0 checkpoint");
+    // Added by DR-134 (DR-65, gap G2): R0 carries both offers.
+    assert_eq!(
+        checkpoint_r0.deploys.len(),
+        2,
+        "R0 carries [deploy_x, marker_v0]"
+    );
+    // Changed by DR-134 (DR-65, gap G2): a processed offer cannot commit a
+    // platform failure, so the message names its identity only.
+    // for pd in &checkpoint_r0.deploys {
+    //     assert!(
+    //         !pd.is_failed,
+    //         "deploy in R0 must execute cleanly (sig {}): {:?}",
+    //         hex::encode(&pd.deploy.sig[..8]),
+    //         pd.system_deploy_error
+    //     );
+    // }
     for pd in &checkpoint_r0.deploys {
         assert!(
-            !pd.is_failed,
-            "deploy in R0 must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.deploy.sig[..8]),
-            pd.system_deploy_error
+            !pd.is_failed(),
+            "deploy in R0 must execute cleanly (sig {})",
+            hex::encode(&pd.identity_bytes()[..8]),
         );
     }
     let mut r0 = r0_raw;
     r0.body.state.post_state_hash = checkpoint_r0.post_state_hash.clone();
-    r0.body.deploys = checkpoint_r0.deploys.into_iter().map(Into::into).collect();
+    // Changed by DR-134 (DR-65, gap G2): the checkpoint returns processed
+    // user deploys.
+    // r0.body.deploys = checkpoint_r0.deploys.into_iter().map(Into::into).collect();
+    r0.body.deploys = checkpoint_r0.deploys;
     r0.body.system_deploys = checkpoint_r0.system_deploys;
     r0.body.state.bonds = checkpoint_r0.bonds;
     block_store.put_block_message(&r0).expect("store R0");
     dag_storage.insert(&r0, InsertMode::Normal).expect("dag R0");
 
     // ── Recovery block R1 (sender = validator 1, body = [deploy_x, marker_v1]) ──
+    // Changed by DR-134 (DR-65, gap G2): the raw block names no body-only
+    // deploy, as for R0.
+    // let r1_raw = block_implicits::get_random_block(
+    //     ...
+    //     Some(vec![
+    //         ProcessedDeploy::empty(deploy_x.clone()),
+    //         ProcessedDeploy::empty(marker_v1.clone()),
+    //     ]),
+    //     ...
+    // );
     let r1_raw = block_implicits::get_random_block(
         Some(1),
         Some(1),
@@ -255,25 +361,35 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(marker_v1.clone()),
-        ]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_r1 = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-65, gap G2): the offered checkpoint of the batch.
+    // let checkpoint_r1 = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![genesis_block.clone()],
+    //     proto_util::deploys(&r1_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&r1_raw),
+    let checkpoint_r1 = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&r1_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![
+            PendingDeployCandidate::Envelope(deploy_x.envelope.clone()),
+            PendingDeployCandidate::Envelope(marker_v1.envelope.clone()),
+        ],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&r1_raw),
         HashMap::new(),
         None,
@@ -282,17 +398,33 @@ for(@_v <- @"multi-validator-shared") { Nil }
     )
     .await
     .expect("compute R1 checkpoint");
+    // Added by DR-134 (DR-65, gap G2): R1 carries both offers.
+    assert_eq!(
+        checkpoint_r1.deploys.len(),
+        2,
+        "R1 carries [deploy_x, marker_v1]"
+    );
+    // Changed by DR-134 (DR-65, gap G2): as for R0.
+    // for pd in &checkpoint_r1.deploys {
+    //     assert!(
+    //         !pd.is_failed,
+    //         "deploy in R1 must execute cleanly (sig {}): {:?}",
+    //         hex::encode(&pd.deploy.sig[..8]),
+    //         pd.system_deploy_error
+    //     );
+    // }
     for pd in &checkpoint_r1.deploys {
         assert!(
-            !pd.is_failed,
-            "deploy in R1 must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.deploy.sig[..8]),
-            pd.system_deploy_error
+            !pd.is_failed(),
+            "deploy in R1 must execute cleanly (sig {})",
+            hex::encode(&pd.identity_bytes()[..8]),
         );
     }
     let mut r1 = r1_raw;
     r1.body.state.post_state_hash = checkpoint_r1.post_state_hash.clone();
-    r1.body.deploys = checkpoint_r1.deploys.into_iter().map(Into::into).collect();
+    // Changed by DR-134 (DR-65, gap G2): as for R0.
+    // r1.body.deploys = checkpoint_r1.deploys.into_iter().map(Into::into).collect();
+    r1.body.deploys = checkpoint_r1.deploys;
     r1.body.system_deploys = checkpoint_r1.system_deploys;
     r1.body.state.bonds = checkpoint_r1.bonds;
     block_store.put_block_message(&r1).expect("store R1");
@@ -328,6 +460,8 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &latest_messages,
         Some(&rejected_deploy_buffer),
         None,
+        None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
         None,
     )
     .await

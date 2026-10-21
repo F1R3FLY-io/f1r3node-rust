@@ -830,6 +830,9 @@ fn offered_deploy(fee_next_cursor: Option<u32>, time_stamp: i64) -> ProcessedUse
         phlo_limit: 10,
         phlo_price: 2,
         fee_rev: 1,
+        // Added by G3 (DR-135, S7): no owner funding.
+        owner_phlo: 0,
+        owner_rev: 0,
         failure_class: NativeCostFailureClass::Success,
         budget_recording: b"budget",
         operation_journal: b"journal",

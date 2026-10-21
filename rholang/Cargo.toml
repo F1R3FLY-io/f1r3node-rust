@@ -31,6 +31,10 @@ itertools = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 crossbeam-queue = "0.3"
+# Added by G3 (DR-135): the lock-free owner binding of a native run (R11).
+arc-swap = { workspace = true }
+# Added by G3 (DR-135, S3b): the persistent held map of Rule H.
+imbl = { workspace = true }
 tree-sitter = "0.25.8"
 tree-sitter-rust = "0.24"
 hex = { workspace = true }

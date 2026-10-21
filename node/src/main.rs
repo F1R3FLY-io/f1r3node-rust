@@ -193,10 +193,13 @@ fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Resu
                 private_key_path,
                 location,
                 shard_id,
+                resource_policy,
             } => {
                 let mut deploy_client = deploy_client()?;
 
                 let private_key = get_private_key(private_key, private_key_path, console)?;
+                // Changed by DR-134 (DR-66 item 2): the offer signs the
+                // schedule of the shard's resource policy.
                 rt.block_on(DeployRuntime::deploy_file_program(
                     &mut deploy_client,
                     phlo_limit,
@@ -205,6 +208,7 @@ fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Resu
                     &private_key,
                     &location,
                     &shard_id,
+                    resource_policy.as_deref(),
                 ));
                 Ok(())
             }

@@ -528,6 +528,9 @@ mod tests {
             phlo_limit: 0,
             phlo_price: 0,
             fee_rev: 0,
+            // Added by G3 (DR-135, S7): no owner funding.
+            owner_phlo: 0,
+            owner_rev: 0,
             failure_class: NativeCostFailureClass::UserFailure,
             wallet_settlement_log_events: wallet_events,
             budget_recording: &[],

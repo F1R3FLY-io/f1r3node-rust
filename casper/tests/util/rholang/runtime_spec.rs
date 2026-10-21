@@ -85,8 +85,15 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     // installed continuations and patterns. The "without_hard_fork"
     // name now refers to the post-fork baseline; further unintended
     // drift would still be caught.
+    // Changed by G3 (DR-135): stored seals carry the region price, so every
+    // stored region also holds a price and the tag of an absent caller in the
+    // bincode that RSpace hashes, and the root changes (measured on
+    // 2026-10-19).
+    // let expected_hash = Blake2b256Hash::from_hex(
+    //     "b1995ca995a2b700303559675f1a6f07232972285ed0b2657ea1f0e48681f745",
+    // );
     let expected_hash = Blake2b256Hash::from_hex(
-        "b1995ca995a2b700303559675f1a6f07232972285ed0b2657ea1f0e48681f745",
+        "3ced75535459db0d9988001cfb88272c22112f901faa2c218cda20374eed4e42",
     );
 
     assert_eq!(expected_hash, checkpoint.root);

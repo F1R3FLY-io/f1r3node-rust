@@ -2,11 +2,14 @@
 
 use std::collections::HashSet;
 
-use casper::rust::util::{construct_deploy, proto_util};
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
 use models::rust::block_implicits::block_element_gen;
 use proptest::prelude::*;
 use prost::bytes::Bytes;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 

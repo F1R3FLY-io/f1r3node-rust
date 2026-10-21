@@ -75,8 +75,22 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
+                    // Added by G3 (DR-135): the body runs for the owner of its
+                    // seal, and a system body for its caller (R1, A1). Without an
+                    // owner binding the context is the DR-101 flag alone.
+                    let context =
+                        crate::rust::interpreter::accounting::owner_funding::fired_body_context(
+                            &reducer.metering.budget(),
+                            continuation.cost_authority.as_ref(),
+                            &data_list,
+                            system_body,
+                        )?;
+                    // Changed by G3 (DR-135): the body takes its context.
+                    // reducer
+                    //     .eval_continuation(body, env, merged_rand, system_body)
+                    //     .await?;
                     reducer
-                        .eval_continuation(body, env, merged_rand, system_body)
+                        .eval_continuation(body, env, merged_rand, context)
                         .await?;
 
                     Ok(DispatchType::DeterministicCall)

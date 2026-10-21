@@ -22,6 +22,9 @@ pub(super) struct ReplayAuthorityObservation {
     pub(super) observation: Arc<ByteObservation>,
     pub(super) granted: bool,
     pub(super) retry: bool,
+    /// Added by G3 (DR-135, S6): the owner of the introduction could not pay
+    /// (R8).
+    pub(super) owner_refused: bool,
 }
 
 pub(super) struct ReplayAuthorityPublication {
@@ -29,6 +32,11 @@ pub(super) struct ReplayAuthorityPublication {
     rows: [Option<Arc<ByteObservation>>; 2],
     event: Option<[u8; 32]>,
     frontier: Option<Arc<ByteObservation>>,
+    /// Added by G3 (DR-135, S6, SA5): the identity of an owner-refused
+    /// introduction. The publication records it in the owner ledger of the
+    /// replay configuration, so `RuntimeBudget::introduction_refused` gives
+    /// the answer of play.
+    refused: Option<[u8; 32]>,
     active: bool,
 }
 
@@ -58,7 +66,12 @@ fn replay_demand(
 impl ReplayAuthorityBinding {
     /// DR-101: the payer and deployment that resolve residue seals.
     pub(super) fn residue_context(&self) -> Result<authority::ResidueContext, InterpreterError> {
+        // Changed by G3 (DR-135): a resolved payer region carries the region
+        // price, as in play.
+        // authority::ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
+        //     .map_err(|error| recording_error(&error.to_string()))
         authority::ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
+            .map(|context| context.with_price(self.budget.region_price()))
             .map_err(|error| recording_error(&error.to_string()))
     }
 
@@ -106,8 +119,20 @@ impl ReplayAuthorityBinding {
         let mut rows = [None, None];
         let mut event = None;
         let mut frontier = None;
+        // Added by G3 (DR-135, S6, SA5): the identity of an owner-refused
+        // introduction.
+        let mut refused = None;
         for (slot, row) in observed.into_iter().enumerate() {
             let Some(row) = row else { continue };
+            // Added by G3 (DR-135, S6, SA5): an owner-refused introduction is
+            // not granted, so it adds no row and no event.
+            if row.owner_refused {
+                if row.granted || row.retry || row.observation.kind == AuthorityByteEventKind::Comm
+                {
+                    return Err(invalid());
+                }
+                refused = Some(row.observation.event_id);
+            }
             if row.observation.kind == AuthorityByteEventKind::Comm {
                 // Changed by C14 (DR-79): the lookup is charged at the live sizes
                 // of the three identity maps.
@@ -187,6 +212,8 @@ impl ReplayAuthorityBinding {
             rows,
             event: event_id,
             frontier,
+            // Added by G3 (DR-135, S6, SA5).
+            refused,
             active: true,
         })
     }
@@ -222,6 +249,18 @@ impl ReplayAuthorityPublication {
                 state.byte_observations.push(row);
                 state.pending_replay_rows -= 1;
             }
+        }
+        // Added by G3 (DR-135, S6, SA5): the ledger of the replay
+        // configuration records the owner-refused introduction, as the ledger
+        // of play does when it refuses it.
+        if let (Some(id), Some(owners)) = (
+            self.refused.take(),
+            state
+                .native
+                .as_mut()
+                .and_then(|native| native.reservation.owners_mut()),
+        ) {
+            owners.refuse(id);
         }
         if let Some(row) = self.frontier.take() {
             state.frontier.insert(row.event_id, row.authority.clone());

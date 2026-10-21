@@ -3,19 +3,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::Signed;
+// Changed by DR-134 (DR-66 item 2): `deploy` signs an owner-direct offered
+// envelope in place of a body-only deploy.
+// use crypto::rust::signatures::signed::Signed;
 use futures::FutureExt;
 use models::casper::{
     BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, FindDeployQuery,
     IsFinalizedQuery, MachineVerifyQuery, VisualizeDagQuery,
 };
-use models::rust::casper::protocol::casper_message::DeployData;
+// Changed by DR-134 (DR-66 item 2).
+// use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::cost_deploy_data::DeployData;
+use models::rust::phlo_schedule::PhloGenesisPolicy;
 use prost::bytes::Bytes;
 
 use crate::rust::util::comm::grpc_deploy_service::DeployService;
 use crate::rust::util::comm::grpc_propose_service::ProposeService;
 use crate::rust::util::comm::listen_at_name::{self, Name};
 use crate::rust::util::comm::ServiceResult;
+use crate::rust::util::rholang::costacc::owner_offer::{
+    default_resource_schedule, owner_direct_offer,
+};
 
 pub struct DeployRuntime;
 
@@ -104,6 +112,11 @@ impl DeployRuntime {
     }
 
     /// Accepts a Rholang source file and deploys it
+    // Changed by DR-134 (DR-66 item 2): the deploy is an owner-direct offer.
+    // It signs the genesis schedule of the shard: the schedule of
+    // `resource_policy` (the hexadecimal `resource-policy` of the shard's
+    // genesis configuration) or, without it, the default resource schedule of
+    // the shipped configurations.
     #[allow(clippy::too_many_arguments)]
     pub async fn deploy_file_program<S: DeployService>(
         svc: &mut S,
@@ -113,6 +126,7 @@ impl DeployRuntime {
         private_key: &PrivateKey,
         file: &str,
         shard_id: &str,
+        resource_policy: Option<&str>,
     ) {
         Self::graceful_exit(async {
             // Try reading file (Scala: Try(Source.fromFile(...)).toEither)
@@ -126,25 +140,64 @@ impl DeployRuntime {
                 Err(e) => return Err(vec![format!("Clock error: {e}")]),
             };
 
-            let d = DeployData {
+            // Changed by DR-134 (DR-66 item 2): the body-only deploy is
+            // replaced by the owner-direct offer below.
+            // let d = DeployData {
+            //     term: code,
+            //     time_stamp: now_ms,
+            //     phlo_price,
+            //     phlo_limit,
+            //     valid_after_block_number: valid_after_block,
+            //     shard_id: shard_id.to_string(),
+            //     expiration_timestamp: None,
+            // };
+            //
+            // // Signed(d, Secp256k1, privateKey)
+            // let signed = match Signed::create(
+            //     d,
+            //     Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+            //     private_key.clone(),
+            // ) {
+            //     Ok(signed) => signed,
+            //     Err(e) => return Err(vec![format!("Failed to sign deploy: {e}")]),
+            // };
+            let Ok(phlo_limit) = u64::try_from(phlo_limit) else {
+                return Err(vec!["The phlo limit must be nonnegative".to_string()]);
+            };
+            let Ok(phlo_price) = u64::try_from(phlo_price) else {
+                return Err(vec!["The phlo price must be nonnegative".to_string()]);
+            };
+            let genesis_policy = match resource_policy {
+                Some(encoded) => {
+                    let bytes = hex::decode(encoded)
+                        .map_err(|e| vec![format!("Invalid resource policy hex: {e}")])?;
+                    Some(
+                        PhloGenesisPolicy::decode(&bytes)
+                            .map_err(|e| vec![format!("Invalid resource policy: {e}")])?,
+                    )
+                }
+                None => None,
+            };
+            let schedule = match &genesis_policy {
+                Some(policy) => policy
+                    .schedule()
+                    .map_err(|e| vec![format!("Invalid resource policy schedule: {e}")])?,
+                None => default_resource_schedule(shard_id),
+            };
+            let body = DeployData {
                 term: code,
+                language: "rholang".to_string(),
                 time_stamp: now_ms,
-                phlo_price,
-                phlo_limit,
                 valid_after_block_number: valid_after_block,
                 shard_id: shard_id.to_string(),
                 expiration_timestamp: None,
+                authority_presentations: Vec::new(),
             };
-
-            // Signed(d, Secp256k1, privateKey)
-            let signed = match Signed::create(
-                d,
-                Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-                private_key.clone(),
-            ) {
-                Ok(signed) => signed,
-                Err(e) => return Err(vec![format!("Failed to sign deploy: {e}")]),
-            };
+            let signed =
+                match owner_direct_offer(private_key, body, phlo_limit, phlo_price, &schedule) {
+                    Ok(signed) => signed,
+                    Err(e) => return Err(vec![format!("Failed to sign deploy: {e}")]),
+                };
 
             let resp = match svc.deploy(signed).await {
                 Ok(resp) => resp,

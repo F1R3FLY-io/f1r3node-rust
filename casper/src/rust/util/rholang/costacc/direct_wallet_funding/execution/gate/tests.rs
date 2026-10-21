@@ -36,6 +36,8 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 use super::*;
+// Added by DR-134 (DR-65, design §8.4): the capacity cap of a batch member.
+use crate::rust::util::rholang::costacc::direct_wallet_funding::capped_capacity;
 use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
@@ -1653,4 +1655,176 @@ fn the_guard_keeps_a_later_hold_that_the_vault_condition_loses() {
         Ok(()),
         "a zero debit needs no balance"
     );
+}
+
+// ── Feasibility with later holds (DR-134, design §8.4 and §12) ─────────────
+
+/// The later hold of each source of `case`: the generated amount, but at most
+/// the room that the hold of the member leaves at R0. The group check of
+/// DR-65 item 4 admits exactly such holds, because the holds of the group on
+/// a purse fit its supply.
+fn later_holds_within_the_room(
+    case: &Case,
+    gate: &OfferedGate,
+    raw: &[u128],
+) -> BTreeMap<[u8; 32], u128> {
+    case.custody
+        .iter()
+        .zip(&case.sources)
+        .zip(raw)
+        .map(|((tag, source), raw)| {
+            let custody = [*tag; 32];
+            let hold = gate
+                .holds()
+                .iter()
+                .find(|(held, _)| *held == custody)
+                .map_or(0, |(_, hold)| *hold);
+            let room = u128::from(source.capacity).saturating_sub(hold);
+            (custody, (*raw).min(room))
+        })
+        .collect()
+}
+
+/// The realized case of `case`: each count lowered to its realized use, the
+/// permissions of the dropped counts removed, and the capacity of each source
+/// capped by its later hold.
+fn realized_under_later_holds(
+    case: &Case,
+    realized: &[u64],
+    later: &BTreeMap<[u8; 32], u128>,
+) -> Case {
+    let kept = case
+        .counts
+        .iter()
+        .zip(realized)
+        .map(|((_, _, count), used)| (*count).min(*used) > 0)
+        .collect::<Vec<_>>();
+    let counts = case
+        .counts
+        .iter()
+        .zip(realized)
+        .map(|((lane, class, count), used)| (*lane, *class, (*count).min(*used)))
+        .filter(|(_, _, used)| *used > 0)
+        .collect::<Vec<_>>();
+    let sources = case
+        .sources
+        .iter()
+        .zip(&case.custody)
+        .map(|(source, tag)| SourceCase {
+            capacity: capped_capacity(
+                source.capacity,
+                later.get(&[*tag; 32]).copied().unwrap_or(0),
+            ),
+            permits: source
+                .permits
+                .iter()
+                .zip(&kept)
+                .filter(|(_, kept)| **kept)
+                .map(|(permitted, _)| *permitted)
+                .collect(),
+            ..source.clone()
+        })
+        .collect();
+    let realized_case = Case {
+        counts,
+        sources,
+        ..case.clone()
+    };
+    Case {
+        extra: case.limit() - realized_case.bound(),
+        ..realized_case
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Feasibility with later holds (design §8.4 and §12): when the group of
+    /// the member fits at R0, realized use is at most the estimate and
+    /// balances do not change, the selection after execution succeeds with
+    /// capacity equal to the balance minus the later holds. The guard over
+    /// the unchanged balances then holds for the placed debits, so the later
+    /// holds stay covered.
+    #[test]
+    fn realized_use_within_the_estimate_settles_under_later_holds(
+        case in arb_case(3),
+        realized in prop::collection::vec(0u64..=3, 3),
+        raw_later in prop::collection::vec(0u128..=12, 3),
+    ) {
+        let case = Case { complete: true, ..case };
+        let onchain = signed_only(&case);
+        if let Ok(gate) = decide_case(&case, &onchain) {
+            let later = later_holds_within_the_room(&case, &gate, &raw_later);
+            let realized_case = realized_under_later_holds(&case, &realized, &later);
+            let settled = with_instance(&realized_case, &onchain, |estimate, terms, funding| {
+                let placed =
+                    with_estimated_obligations(estimate, terms, estimate.bound_phlo, limits(), |obligations| {
+                        let eligible = eligibility(obligations, funding, limits())?;
+                        place_holds(
+                            obligations,
+                            &funding.sources,
+                            &eligible,
+                            &funding.onchain,
+                            funding.total_exposure,
+                            funding.cursors,
+                            0,
+                            &funding.fill_order,
+                            limits().policy,
+                        )
+                    })?;
+                let mut balances = BTreeMap::new();
+                let mut debits = BTreeMap::new();
+                for (position, (source, tag)) in case.sources.iter().zip(&case.custody).enumerate() {
+                    balances.insert([*tag; 32], u128::from(source.capacity));
+                    debits.insert([*tag; 32], u128::from(placed.known[position]));
+                }
+                Ok::<_, OfferedGateRejection>(held_capacity_guard(&balances, &debits, &later))
+            });
+            prop_assert!(matches!(settled, Ok(Ok(()))), "{:?}", settled);
+        }
+    }
+}
+
+/// The generated instances of the property above reach accepted members
+/// whose later holds take all the room on a source, so the capped capacity
+/// equals the hold of the member there, and the property is not vacuous.
+#[test]
+fn generated_later_holds_reach_a_tight_capacity() {
+    let mut runner = TestRunner::deterministic();
+    let strategy = (arb_case(3), prop::collection::vec(0u128..=12, 3));
+    let (mut accepted, mut held, mut tight) = (0, 0, 0);
+    for _ in 0..256 {
+        let (case, raw_later) = strategy
+            .new_tree(&mut runner)
+            .expect("a generated case")
+            .current();
+        let case = Case {
+            complete: true,
+            ..case
+        };
+        if let Ok(gate) = decide_case(&case, &signed_only(&case)) {
+            accepted += 1;
+            let later = later_holds_within_the_room(&case, &gate, &raw_later);
+            if later.values().any(|hold| *hold > 0) {
+                held += 1;
+            }
+            let reaches_the_room = case.custody.iter().zip(&case.sources).any(|(tag, source)| {
+                let custody = [*tag; 32];
+                let hold = gate
+                    .holds()
+                    .iter()
+                    .find(|(held, _)| *held == custody)
+                    .map_or(0, |(_, hold)| *hold);
+                let later_hold = later.get(&custody).copied().unwrap_or(0);
+                hold > 0 && later_hold > 0 && u128::from(source.capacity) == hold + later_hold
+            });
+            if reaches_the_room {
+                tight += 1;
+            }
+        }
+    }
+    eprintln!("later holds: accepted {accepted}, with a later hold {held}, tight {tight}");
+    assert!(accepted >= 48, "{accepted} accepted");
+    assert!(held >= 32, "{held} accepted with a later hold");
+    assert!(tight >= 16, "{tight} accepted with a tight capacity");
 }

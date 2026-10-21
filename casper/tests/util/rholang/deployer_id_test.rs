@@ -7,12 +7,18 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Expr, GDeployerId, GUnforgeable, Par};
+// Changed by DR-134 (DR-66 item 1): the expected deployer id is a principal id.
+// use models::rhoapi::{Expr, GDeployerId, GUnforgeable, Par};
+use models::rhoapi::{Expr, GUnforgeable, Par};
 use prost::bytes::Bytes;
 
+// Added by DR-134 (DR-66 item 1): the deploy of a block is an offered deploy.
+use crate::helper::offered_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
-use crate::util::rholang::resources::with_runtime_manager;
+// Changed by DR-134 (DR-71): the capture takes the adopted policy.
+// use crate::util::rholang::resources::with_runtime_manager;
+use crate::util::rholang::resources::{adopted_policy, with_runtime_manager};
 
 fn default_sec() -> PrivateKey { construct_deploy::DEFAULT_SEC.clone() }
 
@@ -20,7 +26,11 @@ fn default_sec2() -> PrivateKey { construct_deploy::DEFAULT_SEC2.clone() }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deployer_id_should_be_equal_to_the_deployers_public_key() {
-    with_runtime_manager(|runtime_manager, _, _| async move {
+    // Changed by DR-134 (DR-71): the capture is the native dry run of the
+    // adopted policy.
+    // with_runtime_manager(|runtime_manager, _, _| async move {
+    with_runtime_manager(|runtime_manager, _, genesis_block| async move {
+        let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
         let sk = PrivateKey::from_bytes(
             &hex::decode("b18e1d0045995ec3d010c387ccfeb984d783af8fbb0f40fa7db126d889f6dadd")
                 .unwrap(),
@@ -39,17 +49,31 @@ async fn deployer_id_should_be_equal_to_the_deployers_public_key() {
 
         let empty_state_hash = RuntimeManager::empty_state_hash_fixed();
         let result = runtime_manager
-            .capture_results(&empty_state_hash, &deploy)
+            .capture_results(&empty_state_hash, &deploy, &adopted)
             .await
             .unwrap();
 
         assert_eq!(result.len(), 1);
 
+        // Changed by DR-134 (DR-66 item 1, DR-71): a protocol-6 deploy binds
+        // `rho:system:deployerId` to the signer's principal id, key family 1
+        // (models/src/rust/normalizer_env.rs), which holds the public key.
+        // let expected = Par {
+        //     unforgeables: vec![GUnforgeable {
+        //         unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+        //             public_key: pk.to_vec(),
+        //         })),
+        //     }],
+        //     ..Default::default()
+        // };
         let expected = Par {
             unforgeables: vec![GUnforgeable {
-                unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
-                    public_key: pk.to_vec(),
-                })),
+                unf_instance: Some(UnfInstance::GPrincipalIdBody(
+                    models::rhoapi::GPrincipalId {
+                        key_family: 1,
+                        public_key: pk.to_vec(),
+                    },
+                )),
             }],
             ..Default::default()
         };
@@ -91,7 +115,10 @@ new return, auth(`rho:system:deployerId`), ret in {
         .await
         .expect("Failed to create standalone node");
 
-    let contract = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): the deploy of the block is an offered
+    // deploy. The exploratory read below keeps a legacy deploy.
+    // let contract = construct_deploy::source_deploy_now_full(
+    let contract = offered_deploy::source_deploy_now_full(
         check_deployer_definition.to_string(),
         None,
         None,
@@ -115,7 +142,11 @@ new return, auth(`rho:system:deployerId`), ret in {
 
     let result = node
         .runtime_manager
-        .capture_results(&proto_util::post_state_hash(&block), &check_auth_deploy)
+        .capture_results(
+            &proto_util::post_state_hash(&block),
+            &check_auth_deploy,
+            node.adopted_policy(),
+        )
         .await
         .unwrap();
 

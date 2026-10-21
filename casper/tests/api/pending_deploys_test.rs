@@ -13,7 +13,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::api::pending_deploys::{PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS};
+// Changed by DR-134 (DR-66): the format-neutral entry helpers.
+// use casper::rust::api::pending_deploys::{PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS};
+use casper::rust::api::pending_deploys::{
+    deployer_key, lookup_id, timestamp, PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS,
+};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -122,7 +126,9 @@ async fn fresh_deploy_storage_returns_is_rejected_false() {
         !snapshot.deploys[0].1,
         "fresh deploy must be is_rejected=false"
     );
-    assert_eq!(snapshot.deploys[0].0.sig, deploy.sig);
+    // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+    // assert_eq!(snapshot.deploys[0].0.sig, deploy.sig);
+    assert_eq!(lookup_id(&snapshot.deploys[0].0), deploy.sig.as_ref());
 }
 
 /// A deploy in `rejected_deploy_buffer` is returned with `is_rejected = true`.
@@ -153,7 +159,9 @@ async fn rejected_deploy_buffer_returns_is_rejected_true() {
         snapshot.deploys[0].1,
         "rejected deploy must be is_rejected=true"
     );
-    assert_eq!(snapshot.deploys[0].0.sig, deploy.sig);
+    // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+    // assert_eq!(snapshot.deploys[0].0.sig, deploy.sig);
+    assert_eq!(lookup_id(&snapshot.deploys[0].0), deploy.sig.as_ref());
 }
 
 /// A signature that sits in BOTH pools is emitted exactly once, with
@@ -199,7 +207,9 @@ async fn sig_in_both_pools_emitted_once_as_rejected() {
     let by_sig: HashMap<_, _> = snapshot
         .deploys
         .iter()
-        .map(|(d, r)| (d.sig.clone(), *r))
+        // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+        // .map(|(d, r)| (d.sig.clone(), *r))
+        .map(|(d, r)| (prost::bytes::Bytes::copy_from_slice(lookup_id(d)), *r))
         .collect();
     assert_eq!(
         by_sig.get(&duplicated.sig),
@@ -243,7 +253,9 @@ async fn both_pools_snapshot_together() {
     let by_sig: HashMap<_, _> = snapshot
         .deploys
         .iter()
-        .map(|(d, r)| (d.sig.clone(), *r))
+        // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+        // .map(|(d, r)| (d.sig.clone(), *r))
+        .map(|(d, r)| (prost::bytes::Bytes::copy_from_slice(lookup_id(d)), *r))
         .collect();
     assert_eq!(by_sig.get(&fresh.sig), Some(&false));
     assert_eq!(by_sig.get(&rejected.sig), Some(&true));
@@ -276,7 +288,9 @@ async fn deployer_filter_returns_only_matching() {
 
     assert_eq!(snapshot.deploys.len(), 1);
     assert_eq!(snapshot.total_available, 1);
-    assert_eq!(snapshot.deploys[0].0.pk.bytes, pk_a);
+    // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+    // assert_eq!(snapshot.deploys[0].0.pk.bytes, pk_a);
+    assert_eq!(deployer_key(&snapshot.deploys[0].0), &pk_a[..]);
 }
 
 /// When more than `PENDING_DEPLOYS_MAX_RESULTS` deploys match, the result
@@ -327,13 +341,20 @@ async fn cap_truncates_and_reports_total_available() {
     // The result must be sorted by (timestamp, sig): the first entry is
     // the oldest deploy inserted (timestamp base), and every next entry's
     // timestamp is greater or equal.
+    // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+    // let mut prev = (
+    //     snapshot.deploys[0].0.data.time_stamp,
+    //     snapshot.deploys[0].0.sig.as_ref().to_vec(),
+    // );
     let mut prev = (
-        snapshot.deploys[0].0.data.time_stamp,
-        snapshot.deploys[0].0.sig.as_ref().to_vec(),
+        timestamp(&snapshot.deploys[0].0),
+        lookup_id(&snapshot.deploys[0].0).to_vec(),
     );
     assert_eq!(prev.0, 1_700_000_000_000, "oldest deploy kept first");
     for (d, _) in &snapshot.deploys[1..] {
-        let cur = (d.data.time_stamp, d.sig.as_ref().to_vec());
+        // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+        // let cur = (d.data.time_stamp, d.sig.as_ref().to_vec());
+        let cur = (timestamp(d), lookup_id(d).to_vec());
         assert!(
             prev < cur,
             "deploys must be sorted by (timestamp, sig): {:?} then {:?}",
@@ -391,7 +412,9 @@ async fn a_future_dated_deploy_is_still_reported_as_pending() {
         1,
         "a deploy ahead of its window is queued, not gone"
     );
-    assert_eq!(snapshot.deploys[0].0.sig, future.sig);
+    // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+    // assert_eq!(snapshot.deploys[0].0.sig, future.sig);
+    assert_eq!(lookup_id(&snapshot.deploys[0].0), future.sig.as_ref());
 }
 
 /// The recovery backlog gets the same window test as the fresh pool: a deploy
@@ -431,7 +454,9 @@ async fn an_expired_deploy_in_the_rejected_buffer_is_not_reported() {
     let sigs: Vec<_> = snapshot
         .deploys
         .iter()
-        .map(|(d, _)| d.sig.clone())
+        // Changed by DR-134 (DR-66): an entry is a legacy deploy or an envelope.
+        // .map(|(d, _)| d.sig.clone())
+        .map(|(d, _)| prost::bytes::Bytes::copy_from_slice(lookup_id(d)))
         .collect();
     assert!(
         sigs.contains(&live.sig),
@@ -441,4 +466,108 @@ async fn an_expired_deploy_in_the_rejected_buffer_is_not_reported() {
         !sigs.contains(&expired.sig),
         "an expired rejected deploy can never land, so it is not pending"
     );
+}
+
+// Added by DR-134 (DR-66): on protocol 6 the pool holds offered envelopes, and
+// the listing reports them under the rules of dev's legacy pool.
+
+fn offered(
+    term: &str,
+    sec: crypto::rust::private_key::PrivateKey,
+) -> crate::helper::offered_deploy::OfferedDeploy {
+    crate::helper::offered_deploy::source_deploy_now(term.to_string(), Some(sec), None, None)
+        .expect("an offered deploy")
+}
+
+/// A fresh offered envelope in `deploy_storage` is listed with
+/// `is_rejected = false`, under its 32-byte deploy id.
+#[tokio::test]
+async fn a_fresh_offered_envelope_is_listed_as_pending() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+    let offer = offered("@0!(0)", construct_deploy::DEFAULT_SEC.clone());
+    assert!(nodes[0]
+        .casper
+        .deploy_storage
+        .lock()
+        .add_envelope_if_absent(&offer.envelope)
+        .expect("add fresh envelope"));
+
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .expect("snapshot");
+
+    assert_eq!(snapshot.deploys.len(), 1);
+    assert_eq!(snapshot.total_available, 1);
+    assert!(!snapshot.deploys[0].1, "a fresh envelope is not rejected");
+    assert!(matches!(
+        snapshot.deploys[0].0,
+        block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Envelope(_)
+    ));
+    assert_eq!(lookup_id(&snapshot.deploys[0].0), offer.sig.as_ref());
+}
+
+/// An offered envelope in both pools is listed once, as rejected, as dev
+/// lists a legacy deploy in both pools.
+#[tokio::test]
+async fn an_offered_envelope_in_both_pools_is_listed_once_as_rejected() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+    let offer = offered("@1!(1)", construct_deploy::DEFAULT_SEC.clone());
+    assert!(nodes[0]
+        .casper
+        .deploy_storage
+        .lock()
+        .add_envelope_if_absent(&offer.envelope)
+        .expect("add fresh envelope"));
+    nodes[0]
+        .casper
+        .rejected_deploy_buffer
+        .lock()
+        .expect("rejected buffer lock")
+        .add_envelopes(std::slice::from_ref(&offer.envelope))
+        .expect("buffer the envelope");
+
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .expect("snapshot");
+
+    assert_eq!(snapshot.deploys.len(), 1, "the envelope is listed once");
+    assert!(snapshot.deploys[0].1, "the buffered envelope is rejected");
+    assert_eq!(lookup_id(&snapshot.deploys[0].0), offer.sig.as_ref());
+}
+
+/// The deployer filter matches the primary signer of an offered envelope.
+#[tokio::test]
+async fn the_deployer_filter_matches_the_primary_signer_of_an_envelope() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+    let first = offered("@2!(2)", construct_deploy::DEFAULT_SEC.clone());
+    let second = offered("@3!(3)", construct_deploy::DEFAULT_SEC2.clone());
+    for offer in [&first, &second] {
+        assert!(nodes[0]
+            .casper
+            .deploy_storage
+            .lock()
+            .add_envelope_if_absent(&offer.envelope)
+            .expect("add fresh envelope"));
+    }
+
+    let second_key = construct_deploy::DEFAULT_PUB2.bytes.clone();
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, Some(&second_key))
+        .await
+        .expect("snapshot");
+
+    assert_eq!(snapshot.deploys.len(), 1);
+    assert_eq!(deployer_key(&snapshot.deploys[0].0), &second_key[..]);
+    assert_eq!(lookup_id(&snapshot.deploys[0].0), second.sig.as_ref());
 }

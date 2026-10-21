@@ -1,7 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperSmokeSpec.scala
 
-use casper::rust::util::construct_deploy;
-
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 

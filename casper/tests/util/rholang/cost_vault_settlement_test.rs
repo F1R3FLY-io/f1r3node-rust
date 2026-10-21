@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 
 use casper::rust::rholang::runtime::RuntimeOps;
+use casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use casper::rust::util::rholang::costacc::monetary_cursor;
 use casper::rust::util::rholang::costacc::vault_cost_deploy::{
     ApplyCostDeploy, ApplyPhloCostDeploy, VaultAllocation, VaultSettlement,
@@ -17,24 +18,41 @@ use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::rho_type::RhoNumber;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
-use crate::util::rholang::resources::with_runtime_manager;
+// Changed by DR-134 (DR-71): the exploratory reads take the adopted policy.
+// use crate::util::rholang::resources::with_runtime_manager;
+use crate::util::rholang::resources::{adopted_policy, with_runtime_manager};
 
-async fn balance(manager: &RuntimeManager, root: &StateHash, address: &VaultAddress) -> i64 {
+// Changed by DR-134 (DR-71): the exploratory read is the native dry run of the
+// adopted policy.
+// async fn balance(manager: &RuntimeManager, root: &StateHash, address: &VaultAddress) -> i64 {
+//     let (values, _) = manager
+//         .play_exploratory_deploy(balance_query_source(address), root, None)
+async fn balance(
+    manager: &RuntimeManager,
+    adopted: &AdoptedResourcePolicy,
+    root: &StateHash,
+    address: &VaultAddress,
+) -> i64 {
     let (values, _) = manager
-        .play_exploratory_deploy(balance_query_source(address), root, None)
+        .play_exploratory_deploy(balance_query_source(address), root, None, adopted)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
     RhoNumber::unapply(&values[0]).unwrap()
 }
 
+// Changed by DR-134 (DR-71): the exploratory read is the native dry run of the
+// adopted policy.
 async fn cursor(
     manager: &RuntimeManager,
+    // Added by DR-134 (DR-71).
+    adopted: &AdoptedResourcePolicy,
     root: &StateHash,
     scope: [u8; 32],
 ) -> Option<MonetaryCursor> {
     let (values, _) = manager
-        .play_exploratory_deploy(monetary_cursor::query_source(&scope), root, None)
+        // .play_exploratory_deploy(monetary_cursor::query_source(&scope), root, None)
+        .play_exploratory_deploy(monetary_cursor::query_source(&scope), root, None, adopted)
         .await
         .unwrap();
     monetary_cursor::decode_snapshot(&values, NonZeroUsize::new(2).unwrap()).unwrap()
@@ -67,13 +85,15 @@ fn request(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn general_wallet_cost_settlement_advances_both_cursors_once() {
     with_runtime_manager(|manager, genesis, block| async move {
+        // Added by DR-134 (DR-71): the exploratory reads take the adopted policy.
+        let adopted = adopted_policy(&manager, &block).await;
         let initial = block.body.state.post_state_hash;
         let payer = VaultAddress::from_public_key(&genesis.genesis_vaults[0].1).unwrap();
         let recipient =
             VaultAddress::from_unforgeable(&models::rhoapi::GPrivate { id: vec![0xd1; 32] });
-        let before = balance(&manager, &initial, &payer).await;
-        assert_eq!(cursor(&manager, &initial, [0xe2; 32]).await, None);
-        assert_eq!(cursor(&manager, &initial, [0xe3; 32]).await, None);
+        let before = balance(&manager, &adopted, &initial, &payer).await;
+        assert_eq!(cursor(&manager, &adopted, &initial, [0xe2; 32]).await, None);
+        assert_eq!(cursor(&manager, &adopted, &initial, [0xe3; 32]).await, None);
         let mut runtime = RuntimeOps::new(manager.spawn_runtime().await.unwrap());
         let first = match runtime
             .play_system_deploy(&initial, &mut request(&payer, &recipient, 0, 0))
@@ -83,11 +103,20 @@ async fn general_wallet_cost_settlement_advances_both_cursors_once() {
             SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
             SystemDeployResult::PlayFailed { .. } => panic!("first settlement failed"),
         };
-        assert_eq!(balance(&manager, &first, &payer).await, before - 3);
-        assert_eq!(balance(&manager, &first, &recipient).await, 1);
+        assert_eq!(
+            balance(&manager, &adopted, &first, &payer).await,
+            before - 3
+        );
+        assert_eq!(balance(&manager, &adopted, &first, &recipient).await, 1);
         let advanced = Some(MonetaryCursor::new(1, 1, NonZeroUsize::new(2).unwrap()).unwrap());
-        assert_eq!(cursor(&manager, &first, [0xe2; 32]).await, advanced);
-        assert_eq!(cursor(&manager, &first, [0xe3; 32]).await, advanced);
+        assert_eq!(
+            cursor(&manager, &adopted, &first, [0xe2; 32]).await,
+            advanced
+        );
+        assert_eq!(
+            cursor(&manager, &adopted, &first, [0xe3; 32]).await,
+            advanced
+        );
         assert!(matches!(
             runtime
                 .play_system_deploy(&first, &mut request(&payer, &recipient, 0, 0))
@@ -101,10 +130,22 @@ async fn general_wallet_cost_settlement_advances_both_cursors_once() {
             .await
             .root
             .to_bytes_prost();
-        assert_eq!(balance(&manager, &failed_root, &payer).await, before - 3);
-        assert_eq!(balance(&manager, &failed_root, &recipient).await, 1);
-        assert_eq!(cursor(&manager, &failed_root, [0xe2; 32]).await, advanced);
-        assert_eq!(cursor(&manager, &failed_root, [0xe3; 32]).await, advanced);
+        assert_eq!(
+            balance(&manager, &adopted, &failed_root, &payer).await,
+            before - 3
+        );
+        assert_eq!(
+            balance(&manager, &adopted, &failed_root, &recipient).await,
+            1
+        );
+        assert_eq!(
+            cursor(&manager, &adopted, &failed_root, [0xe2; 32]).await,
+            advanced
+        );
+        assert_eq!(
+            cursor(&manager, &adopted, &failed_root, [0xe3; 32]).await,
+            advanced
+        );
     })
     .await
     .unwrap();

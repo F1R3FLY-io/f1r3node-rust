@@ -14,13 +14,22 @@ use crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource;
 use crate::rust::interpreter::accounting::native_runtime::tests::{
     priced_config_from, with_priced_contract_from,
 };
+// Added by G3 (DR-135, S3b H8): the forged replies of the plain-data tests.
+use crate::rust::interpreter::accounting::owner_funding::plain_data_tests::review_forgeries;
 use crate::rust::interpreter::grpc_client_service::{GrpcClientMockConfig, GrpcClientService};
 use crate::rust::interpreter::io::errors::FserrCode;
 use crate::rust::interpreter::io::response;
 use crate::rust::interpreter::openai_service::{OpenAIMockConfig, OpenAIService};
-use crate::rust::interpreter::rho_type::{RhoNumber, RhoString};
+// Changed by G3 (DR-135, S3b H8): the tests build a deep list reply.
+// use crate::rust::interpreter::rho_type::{RhoNumber, RhoString};
+use crate::rust::interpreter::rho_type::{RhoList, RhoNumber, RhoString};
+// Changed by G3 (DR-135, S3b H8): the tests call the play side of the
+// plain-data check.
+// use crate::rust::interpreter::system_processes::{
+//     is_native_recorded_op, non_deterministic_ops, BodyRefs,
+// };
 use crate::rust::interpreter::system_processes::{
-    is_native_recorded_op, non_deterministic_ops, BodyRefs,
+    is_native_recorded_op, native_played_reply, non_deterministic_ops, BodyRefs,
 };
 
 type Outcome = (Result<(), InterpreterError>, EvaluationFailureSummary);
@@ -717,4 +726,117 @@ fn native_recorded_set_extends_dev_set() {
     ] {
         assert!(!is_native_recorded_op(body_ref));
     }
+}
+
+/// Added by G3 (DR-135, S3b H8): plays `GPT4_TO_OUT` with the honest reply
+/// "A" and replays it with the record replaced by `forged` on every copy.
+async fn replay_with_forged_record(forged: &Par) -> Run {
+    play_and_replay(
+        Call {
+            play: services(
+                OpenAIService::Mock(OpenAIMockConfig::single_completion("A")),
+                GrpcClientService::new_noop(),
+            ),
+            ..Call::new(GPT4_TO_OUT)
+        },
+        |log| forge_record(log, vec![forged.encode_to_vec()]),
+    )
+    .await
+}
+
+/// Added by G3 (DR-135, S3b H8): the error of a replay whose record is not
+/// plain data.
+const NOT_PLAIN_REPLAY: &str = "native replay of gpt4 has a recorded output that is not plain data";
+
+/// Added by G3 (DR-135, S3b H8): a forged record that is not plain data
+/// passes the slot check, because its copies are equal. Replay checks the
+/// record before it produces it, and rejects the block with a platform
+/// error, as it does a missing record. Each forged shape of the review is
+/// rejected.
+#[tokio::test]
+async fn native_replay_rejects_a_recorded_reply_that_is_not_plain_data() {
+    for (label, forged) in review_forgeries() {
+        let run = replay_with_forged_record(&forged).await;
+        assert_eq!(run.played.0, Ok(()), "{label}: play succeeds");
+        assert_eq!(
+            run.record(),
+            vec![RhoString::create_par("A".to_owned())],
+            "{label}: play records the honest reply"
+        );
+        let error = format!("{:?}", run.replayed.0);
+        assert!(error.contains(NOT_PLAIN_REPLAY), "{label}: {error}");
+        assert!(error.contains("BugFoundError"), "{label}: {error}");
+    }
+}
+
+/// Added by G3 (DR-135, S3b H8): a forged record whose bundle lies 25 list
+/// levels deep is rejected in replay too. Prost decodes at most 100 nested
+/// messages, and each list level takes 3 (a Par, an Expr and an EList), so
+/// the record decodes, and the plain-data check finds the bundle.
+#[tokio::test]
+async fn native_replay_rejects_a_deep_recorded_reply_that_is_not_plain_data() {
+    let mut forged = Par {
+        bundles: vec![models::rhoapi::Bundle {
+            body: Some(RhoString::create_par("b".to_owned())),
+            write_flag: true,
+            read_flag: true,
+        }],
+        ..Default::default()
+    };
+    for _ in 0..25 {
+        forged = RhoList::create_par(vec![forged]);
+    }
+    assert!(
+        Par::decode(forged.encode_to_vec().as_slice()).is_ok(),
+        "the forged record decodes"
+    );
+    let run = replay_with_forged_record(&forged).await;
+    assert_eq!(run.played.0, Ok(()));
+    let error = format!("{:?}", run.replayed.0);
+    assert!(error.contains(NOT_PLAIN_REPLAY), "{error}");
+}
+
+/// Added by G3 (DR-135, S3b H8): in play, a service reply that is not plain
+/// data becomes the paid `EXT_FAILED` failure reply before the size fold and
+/// the record-room take, so it takes no room. A plain reply keeps its value
+/// and takes its bytes of the room.
+#[test]
+fn native_play_turns_a_reply_that_is_not_plain_data_into_a_failure_that_takes_no_room() {
+    let funding = FundingFixture::default();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget.set_deploy_signature_funded(b"native-played-reply", funding.authority());
+    budget
+        .reset_for_native_execution(
+            priced_config_from(
+                1_000_000,
+                funding.weights,
+                funding.price,
+                NativeBoundSource::Certificate,
+            )
+            .with_record_room(ROOM),
+        )
+        .expect("native play starts");
+    let failed = failure("gpt4", "EXT_FAILED", "external output is not plain data");
+    for (label, forged) in review_forgeries() {
+        assert_eq!(
+            native_played_reply(
+                "gpt4",
+                vec![RhoString::create_par("A".to_owned()), forged],
+                &budget
+            ),
+            vec![failed.clone()],
+            "{label}"
+        );
+    }
+    let plain = RhoString::create_par("A".to_owned());
+    let cost = u64::try_from(plain.encoded_len()).expect("a small reply") + 64;
+    assert_eq!(
+        native_played_reply("gpt4", vec![plain.clone()], &budget),
+        vec![plain]
+    );
+    assert!(
+        budget.take_native_record_room(ROOM - cost),
+        "the forged replies took no room"
+    );
+    assert!(!budget.take_native_record_room(1), "the room is full");
 }

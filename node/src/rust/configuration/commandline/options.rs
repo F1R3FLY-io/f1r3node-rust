@@ -106,6 +106,14 @@ pub enum OptionsSubCommand {
         private_key_path: Option<PathBuf>,
         location: String,
         shard_id: String,
+        // Added by DR-134 (DR-66 item 2): the deploy is an owner-direct offer
+        // that signs the genesis schedule of the shard.
+        /// The hexadecimal genesis resource policy of the shard (the
+        /// `resource-policy` of its genesis configuration). The deploy signs
+        /// its schedule. Without it, the deploy signs the default resource
+        /// schedule of the shipped configurations.
+        #[arg(long = "resource-policy")]
+        resource_policy: Option<String>,
     },
     FindDeploy {
         id: Vec<u8>,

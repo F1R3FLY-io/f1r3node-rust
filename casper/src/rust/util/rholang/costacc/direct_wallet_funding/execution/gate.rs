@@ -81,6 +81,13 @@ pub struct OfferedGate {
     resource_bound: u64,
     bound_source: NativeBoundSource,
     holds: Vec<([u8; 32], u128)>,
+    /// Added by G3 (DR-135, S7, G-1): the client lanes of the offer at R0.
+    /// Every other non-Unit region of the run is an owner region (R11).
+    /// Play and replay read the lanes from here, so both bind equal sets.
+    client_lanes: BTreeSet<[u8; 32]>,
+    /// Added by G3 (DR-135, S7, G-1): the room of the owner table at R0: the
+    /// receipt rows that the client's payers leave free (R3).
+    owner_room: usize,
 }
 
 impl OfferedGate {
@@ -95,6 +102,24 @@ impl OfferedGate {
     /// The hold of each purse in canonical custody order, the seam of the
     /// group check of DR-65 item 4.
     pub fn holds(&self) -> &[([u8; 32], u128)] { &self.holds }
+
+    /// Added by G3 (DR-135, S7, G-1): the client lanes of the offer at R0.
+    pub fn client_lanes(&self) -> &BTreeSet<[u8; 32]> { &self.client_lanes }
+
+    /// Added by G3 (DR-135, S7, G-1): the room of the owner table at R0.
+    pub fn owner_room(&self) -> usize { self.owner_room }
+
+    /// Added by G3 (DR-135, S7, G-1): the gate with the owner terms of
+    /// `offered_owner_terms`.
+    pub(crate) fn with_owner_terms(
+        mut self,
+        client_lanes: BTreeSet<[u8; 32]>,
+        owner_room: usize,
+    ) -> Self {
+        self.client_lanes = client_lanes;
+        self.owner_room = owner_room;
+        self
+    }
 
     /// H: B·phloPrice + 1 for a complete estimate, phloLimit·phloPrice + 1
     /// otherwise.
@@ -117,8 +142,43 @@ impl OfferedGate {
             resource_bound: limit,
             bound_source: NativeBoundSource::SignedLimit,
             holds: Vec::new(),
+            // Added by G3 (DR-135, S7, G-1): the hook sets them with
+            // `with_owner_terms`.
+            client_lanes: BTreeSet::new(),
+            owner_room: 0,
         }
     }
+}
+
+/// Added by G3 (DR-135, S7, G-1): the client lanes and the owner room of an
+/// offer at R0. The client lanes are the lanes that the sources of the offer
+/// may pay (`client_lane_set`). The owner room is the number of receipt rows
+/// that the client's payers leave free (R3). The check and its test hook
+/// compute them from the snapshot at R0, so play and replay hold equal terms.
+pub(crate) fn offered_owner_terms(
+    input: &OfferedGateInput<'_>,
+) -> Result<(BTreeSet<[u8; 32]>, usize), OfferedGateRejection> {
+    let DeployEnvelopeRef::OfferedFunded(signed) = input.envelope.view() else {
+        return Err(OfferedGateRejection::Invalid(
+            "the check needs an offered envelope".to_string(),
+        ));
+    };
+    let client = client_lane_set(
+        funding_sig(signed).lane_hash(),
+        source_lanes(input.snapshot)?,
+    );
+    Ok((client, owner_room(input.snapshot)))
+}
+
+/// Added by G3 (DR-135, S7, G-1): the receipt rows that the client's payers
+/// leave free. A receipt has at most one row for each signed source.
+fn owner_room(snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>) -> usize {
+    models::rust::cost_protocol_limits::offered_funded_v6_limits()
+        .envelope
+        .payload
+        .funding
+        .sources
+        .saturating_sub(snapshot.wallets().authorization().payers().len())
 }
 
 /// Why the holds do not fit. The rejection text starts with "insufficient
@@ -231,7 +291,10 @@ fn check_with_estimate(
         .authorization()
         .onchain_payers()
         .is_empty();
-    decide(
+    // Changed by G3 (DR-135, S7, G-1): the gate also keeps the client lanes
+    // and the owner room at R0.
+    // decide(
+    let gate = decide(
         &estimate,
         onchain,
         &GateTerms {
@@ -244,7 +307,9 @@ fn check_with_estimate(
         },
         &funding,
         input.limits,
-    )
+        // )
+    )?;
+    Ok(gate.with_owner_terms(client, owner_room(input.snapshot)))
 }
 
 /// ⟨read the inputs⟩, ⟨resolve the names of the deploy⟩ and ⟨run the linear
@@ -585,6 +650,10 @@ pub(super) fn decide(
         resource_bound,
         bound_source,
         holds,
+        // Added by G3 (DR-135, S7, G-1): the check sets them
+        // (`with_owner_terms`).
+        client_lanes: BTreeSet::new(),
+        owner_room: 0,
     })
 }
 

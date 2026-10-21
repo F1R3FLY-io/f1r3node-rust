@@ -4,12 +4,25 @@ use casper::rust::api::block_api::BlockAPI;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::casper::{Casper, DeployError};
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use casper::rust::util::construct_deploy::DEFAULT_PUB;
 use casper::rust::ProposeFunction;
 use rspace_plus_plus::rspace::history::Either;
 
+use crate::helper::offered_deploy as construct_deploy;
+use crate::helper::offered_deploy::{owner_offer_limited, OfferedDeploy};
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
+
+/// Added by DR-134 (DR-66 item 1): the wall-clock timestamp of an offer that
+/// signs its own phlo limit, as `source_deploy_now_full` takes it.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_millis() as i64
+}
 
 #[tokio::test]
 async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
@@ -24,7 +37,10 @@ async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
 
-    let result = node.casper.deploy(deploy.clone());
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an offered
+    // envelope.
+    // let result = node.casper.deploy(deploy.clone());
+    let result = node.deploy(deploy.clone());
 
     assert!(result.is_ok(), "Deploy failed: {:?}", result.err());
 
@@ -60,7 +76,15 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                casper.deploy(deploy).unwrap()
+                // Changed by DR-134 (DR-66 item 1): the offered envelope goes
+                // through the policy that the node adopted at start, as
+                // TestNode::deploy does.
+                // casper.deploy(deploy).unwrap()
+                let policy = casper
+                    .adopted_resource_policy
+                    .as_ref()
+                    .expect("an offered genesis adopts a resource policy");
+                casper.deploy_envelope(deploy.envelope, policy).unwrap()
             })
         })
         .collect::<Vec<_>>();
@@ -99,7 +123,10 @@ async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
     let deploy =
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
-    let first = node.casper.deploy(deploy.clone()).unwrap();
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an offered
+    // envelope.
+    // let first = node.casper.deploy(deploy.clone()).unwrap();
+    let first = node.deploy(deploy.clone()).unwrap();
     assert!(matches!(first, Either::Right(_)));
 
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -113,9 +140,22 @@ async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
     });
 
     let expected_id = deploy.sig.to_vec();
-    let result = BlockAPI::deploy(
+    // Changed by DR-134 (DR-66 item 1): the offered API takes the signed
+    // offer and checks duplicates as the legacy API did.
+    // let result = BlockAPI::deploy(
+    //     &node.engine_cell,
+    //     deploy,
+    //     &Some(trigger),
+    //     false,
+    //     &genesis.genesis_block.shard_id,
+    // )
+    // .await;
+    let result = BlockAPI::deploy_offered(
         &node.engine_cell,
-        deploy,
+        deploy
+            .envelope
+            .to_proto()
+            .expect("an offered test deploy encodes"),
         &Some(trigger),
         false,
         &genesis.genesis_block.shard_id,
@@ -145,9 +185,15 @@ async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
     node.add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .unwrap();
+    // Changed by DR-134 (DR-66 item 1): the pool removes an offered envelope by
+    // its deploy id.
+    // node.deploy_storage
+    //     .lock()
+    //     .remove(vec![deploy.clone()])
+    //     .unwrap();
     node.deploy_storage
         .lock()
-        .remove(vec![deploy.clone()])
+        .remove_by_sig(&deploy.sig)
         .unwrap();
 
     assert!(node
@@ -155,8 +201,14 @@ async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
         .deploy_canonical_appearance(&expected_id)
         .unwrap()
         .is_some());
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an offered
+    // envelope.
+    // assert!(matches!(
+    //     node.casper.deploy(deploy).unwrap(),
+    //     Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    // ));
     assert!(matches!(
-        node.casper.deploy(deploy).unwrap(),
+        node.deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
     ));
 }
@@ -173,14 +225,27 @@ async fn multi_parent_casper_should_reject_a_deploy_in_the_rejected_buffer() {
             .unwrap();
     let expected_id = deploy.sig.to_vec();
 
+    // Changed by DR-134 (DR-66 item 1): the rejected buffer holds offered
+    // envelopes.
+    // node.rejected_deploy_buffer
+    //     .lock()
+    //     .unwrap()
+    //     .add(vec![deploy.clone()])
+    //     .unwrap();
     node.rejected_deploy_buffer
         .lock()
         .unwrap()
-        .add(vec![deploy.clone()])
+        .add_envelopes(std::slice::from_ref(&deploy.envelope))
         .unwrap();
 
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an offered
+    // envelope.
+    // assert!(matches!(
+    //     node.casper.deploy(deploy).unwrap(),
+    //     Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    // ));
     assert!(matches!(
-        node.casper.deploy(deploy).unwrap(),
+        node.deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
     ));
 }
@@ -236,15 +301,36 @@ async fn multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos(
 
     let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
 
-    let deploy_data = construct_deploy::source_deploy_now_full(
-        "Nil".to_string(),
-        Some(1),
-        None,
-        None,
-        None,
-        Some(genesis.genesis_block.shard_id.clone()),
-    )
-    .unwrap();
+    // Changed by DR-134 (DR-66 item 1): an offer signs its own phlo limit. A
+    // Nil term costs 0 under the native meter (COMMs and bytes), so no limit
+    // is insufficient for it. The term therefore loops until it exhausts its
+    // signed limit, which is a charged user failure (DR-113). The limit is
+    // 20,000, as in
+    // `signed_limit_exhaustion_is_published_as_a_charged_user_failure`
+    // (casper/tests/api/offered_funded_api_test.rs). A limit of 1 is below the
+    // estimate of the contract and the first send of the loop, and the check
+    // refuses an offer whose estimate passes its signed limit before
+    // execution, so no block holds it (`decide` in
+    // casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/gate.rs,
+    // P1:2210-2212).
+    // let deploy_data = construct_deploy::source_deploy_now_full(
+    //     "Nil".to_string(),
+    //     Some(1),
+    //     None,
+    //     None,
+    //     None,
+    //     Some(genesis.genesis_block.shard_id.clone()),
+    // )
+    // .unwrap();
+    let phlo_limit = 20_000;
+    let deploy_data = OfferedDeploy::from_proto(owner_offer_limited(
+        &(construct_deploy::DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
+        now_millis(),
+        "new loop in { contract loop(@n) = { loop!(n + 1) } | loop!(0) }".to_string(),
+        0,
+        genesis.genesis_block.shard_id.clone(),
+        phlo_limit,
+    ));
 
     let result = node.create_block(&[deploy_data]).await.unwrap();
 
@@ -261,7 +347,16 @@ async fn multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos(
         block.body.deploys[0].is_failed(),
         "Deploy should be marked as failed due to insufficient phlos"
     );
-    assert_eq!(block.body.deploys[0].cost().cost, 1);
+    // Changed by DR-134 (DR-66 item 1): the native meter denies the first
+    // charge that does not fit the signed limit (`reserve_native_usage` in
+    // rholang/src/rust/interpreter/accounting/native_phlo_rules/execution.rs),
+    // so the failed deploy pays the work granted up to the limit.
+    // assert_eq!(block.body.deploys[0].cost().cost, 1);
+    let cost = block.body.deploys[0].cost().cost;
+    assert!(
+        cost > 0 && cost <= phlo_limit,
+        "Deploy should pay the work granted up to its signed limit ({phlo_limit}), got {cost}"
+    );
 }
 
 #[tokio::test]
@@ -273,15 +368,24 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
 
     let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
 
-    let deploy_data = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): an offer signs its own phlo limit.
+    // let deploy_data = construct_deploy::source_deploy_now_full(
+    //     "Nil".to_string(),
+    //     Some(100),
+    //     None,
+    //     None,
+    //     None,
+    //     Some(genesis.genesis_block.shard_id.clone()),
+    // )
+    // .unwrap();
+    let deploy_data = OfferedDeploy::from_proto(owner_offer_limited(
+        &(construct_deploy::DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
+        now_millis(),
         "Nil".to_string(),
-        Some(100),
-        None,
-        None,
-        None,
-        Some(genesis.genesis_block.shard_id.clone()),
-    )
-    .unwrap();
+        0,
+        genesis.genesis_block.shard_id.clone(),
+        100,
+    ));
 
     let result = node.create_block(&[deploy_data]).await.unwrap();
 
@@ -299,33 +403,43 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
         !block.body.deploys[0].is_failed(),
         "Deploy should succeed with sufficient phlos"
     );
-    assert_eq!(block.body.deploys[0].cost().cost, 3);
+    // Changed by DR-134 (DR-66 item 1): the native meter measures COMMs and
+    // bytes, and a Nil deploy has neither, so its measured phlo is 0.
+    // assert_eq!(block.body.deploys[0].cost().cost, 3);
+    assert_eq!(block.body.deploys[0].cost().cost, 0);
 }
 
-#[tokio::test]
-async fn legacy_matched_comm_keeps_exact_historical_cost() {
-    let genesis = GenesisBuilder::new()
-        .build_genesis_with_parameters(None)
-        .await
-        .expect("Failed to build genesis");
-
-    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
-    let deploy = construct_deploy::source_deploy_now_full(
-        "new x in { x!(1) | for (@n <- x) { Nil } }".to_string(),
-        Some(1_000_000),
-        None,
-        None,
-        None,
-        Some(genesis.genesis_block.shard_id.clone()),
-    )
-    .unwrap();
-
-    let block = node.add_block_from_deploys(&[deploy]).await.unwrap();
-
-    assert_eq!(block.body.deploys.len(), 1);
-    assert!(!block.body.deploys[0].is_failed());
-    assert_eq!(block.body.deploys[0].cost().cost, 443);
-}
+// Disabled by DR-134 (DR-66 item 3, user answer Q6 "Delete"): this test pins
+// the cost that the legacy meter charges for one matched COMM (443 phlo). The
+// cost-accounting branch added it to keep the historical cost of legacy
+// deploys (commit 068d51c65), and dev has no such test. The legacy meter and
+// body-only deploys are deleted. An offered deploy of this term pays for its
+// COMM and its storage bytes under the native meter, and no publication pins
+// that cost.
+// #[tokio::test]
+// async fn legacy_matched_comm_keeps_exact_historical_cost() {
+//     let genesis = GenesisBuilder::new()
+//         .build_genesis_with_parameters(None)
+//         .await
+//         .expect("Failed to build genesis");
+//
+//     let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+//     let deploy = construct_deploy::source_deploy_now_full(
+//         "new x in { x!(1) | for (@n <- x) { Nil } }".to_string(),
+//         Some(1_000_000),
+//         None,
+//         None,
+//         None,
+//         Some(genesis.genesis_block.shard_id.clone()),
+//     )
+//     .unwrap();
+//
+//     let block = node.add_block_from_deploys(&[deploy]).await.unwrap();
+//
+//     assert_eq!(block.body.deploys.len(), 1);
+//     assert!(!block.body.deploys[0].is_failed());
+//     assert_eq!(block.body.deploys[0].cost().cost, 443);
+// }
 
 #[tokio::test]
 async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min_phlo_price() {
@@ -343,20 +457,36 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     let is_node_read_only = false;
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let deploy_data = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): an offer signed at a price below the
+    // adopted minimum goes through the offered deploy API.
+    // let deploy_data = construct_deploy::source_deploy_now_full(
+    //     "Nil".to_string(),
+    //     None,
+    //     Some(phlo_price),
+    //     None,
+    //     None,
+    //     Some(shard_id.clone()),
+    // )
+    // .unwrap();
+    //
+    // // Scala: BlockAPI.deploy[Effect](deployData, None, minPhloPrice = minPhloPrice, isNodeReadOnly, shardId = SHARD_ID)
+    // let result = BlockAPI::deploy(
+    //     &node.engine_cell,
+    //     deploy_data,
+    //     &None,
+    //     is_node_read_only,
+    //     &shard_id,
+    // )
+    // .await;
+    let offer = crate::helper::offered_deploy::owner_offer_priced(
+        &(construct_deploy::DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
+        now_millis(),
         "Nil".to_string(),
-        None,
-        Some(phlo_price),
-        None,
-        None,
-        Some(shard_id.clone()),
-    )
-    .unwrap();
-
-    // Scala: BlockAPI.deploy[Effect](deployData, None, minPhloPrice = minPhloPrice, isNodeReadOnly, shardId = SHARD_ID)
-    let result = BlockAPI::deploy(
+        phlo_price as u64,
+    );
+    let result = BlockAPI::deploy_offered(
         &node.engine_cell,
-        deploy_data,
+        offer,
         &None,
         is_node_read_only,
         &shard_id,
@@ -373,10 +503,16 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     // Scala: ex.getMessage shouldBe s"Phlo price $phloPrice is less than minimum price $minPhloPrice."
     let error = result.unwrap_err();
     let error_message = format!("{:?}", error);
-    let expected_message = format!(
-        "Phlo price {} is less than minimum price {}",
-        phlo_price, min_phlo_price
+    // Changed by DR-134 (DR-66 item 1): the offered API's minimum-price message.
+    // let expected_message = format!(
+    //     "Phlo price {} is less than minimum price {}",
+    //     phlo_price, min_phlo_price
+    // );
+    assert!(
+        phlo_price < min_phlo_price,
+        "the offer is priced below the minimum"
     );
+    let expected_message = "offered phloPrice is below the adopted minimum".to_string();
     assert!(
         error_message.contains(&expected_message),
         "Error message should contain: '{}'\nGot: {}",

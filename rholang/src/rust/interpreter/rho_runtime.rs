@@ -48,7 +48,9 @@ use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::merging::mergeable_tags::bitmask_or_tag;
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::ChargingRSpace;
+// Changed by DR-134 (DR-66 item 3): the charging space is deleted with the
+// legacy meter.
+// use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -547,9 +549,26 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         joins: &[Vec<Par>],
     ) -> Result<Option<rspace_plus_plus::rspace::operation_context::OperationOrder>, RSpaceError>
     {
-        self.budget
-            .start_native_operation(source, channels, joins)
-            .map_err(RSpaceError::from)
+        // Changed by G3 (DR-135, S5): the start also returns the owner checks
+        // of the operation. The thread-local handle holds them until the
+        // finish hook, because RSpace runs the locked operation synchronously
+        // between the two hooks (plan §12 risk 5).
+        // self.budget
+        //     .start_native_operation(source, channels, joins)
+        //     .map_err(RSpaceError::from)
+        match self
+            .budget
+            .start_native_owner_operation(source, channels, joins)
+        {
+            Ok((name, handle)) => {
+                super::accounting::owner_funding::enter_owner_operation(handle);
+                Ok(name)
+            }
+            Err(error) => {
+                super::accounting::owner_funding::enter_owner_operation(None);
+                Err(RSpaceError::from(error))
+            }
+        }
     }
 
     fn observe_operation_finish(
@@ -557,7 +576,71 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         source: RSpaceOperationSource<'_>,
         completion: RSpaceOperationCompletion,
     ) {
+        // Added by G3 (DR-135, S5): the owner checks end with the operation.
+        super::accounting::owner_funding::leave_owner_operation();
         self.budget.finish_native_operation(source, completion);
+    }
+
+    /// Added by G3 (DR-135, S5): an operation of a run with owner funding
+    /// checks owners (R5, R6).
+    fn owner_checks_active(&self) -> bool {
+        super::accounting::owner_funding::current_owner_operation().is_some()
+    }
+
+    /// Added by G3 (DR-135, S5): the item test of the operation's owner
+    /// checks (R5).
+    fn admit_item(
+        &self,
+        continuation: &TaggedContinuation,
+        continuation_persistent: bool,
+        channel_count: usize,
+        datum: &ListParWithRandom,
+        datum_persistent: bool,
+    ) -> Result<bool, RSpaceError> {
+        match super::accounting::owner_funding::current_owner_operation() {
+            Some(handle) => handle.admit_item(
+                continuation,
+                continuation_persistent,
+                channel_count,
+                datum,
+                datum_persistent,
+            ),
+            None => Ok(true),
+        }
+    }
+
+    /// Added by G3 (DR-135, S5): with owner funding, the COMM carries the A5
+    /// transferee and the R9 restorations to the recorder. Without it, the
+    /// COMM is observed as on dev.
+    fn observe_comm_participants(
+        &self,
+        comm: &COMM,
+        continuation: &TaggedContinuation,
+        continuation_persistent: bool,
+        participants: &[rspace_plus_plus::rspace::rspace_interface::CommParticipant<
+            '_,
+            Par,
+            ListParWithRandom,
+        >],
+    ) -> Result<(), RSpaceError> {
+        match super::accounting::owner_funding::current_owner_operation() {
+            Some(handle) => self.budget.observe_owned_comm(
+                &handle,
+                comm,
+                continuation,
+                continuation_persistent,
+                participants,
+            ),
+            None => {
+                let mut data = Vec::with_capacity(participants.len());
+                data.extend(
+                    participants
+                        .iter()
+                        .map(|participant| (participant.matched, participant.persistent)),
+                );
+                self.observe_comm(comm, continuation, continuation_persistent, &data)
+            }
+        }
     }
 
     fn observe_produce(
@@ -685,11 +768,18 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             .observe_native_comm_source(comm)
             .map_err(RSpaceError::from)?;
         // DR-101: the deployment that resolves residue seals.
+        // Changed by G3 (DR-135): with the region price of the deployment.
+        // let residue = super::accounting::authority::ResidueContext::new(
+        //     &self.budget.signature(),
+        //     self.budget.deploy_id(),
+        // )
+        // .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         let residue = super::accounting::authority::ResidueContext::new(
             &self.budget.signature(),
             self.budget.deploy_id(),
         )
-        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
+        .with_price(self.budget.region_price());
         let observed = super::accounting::observation_construction::comm(
             comm,
             continuation,
@@ -1432,6 +1522,11 @@ async fn setup_reducer(
         // Changed by DR-132 (P16): no coordinator (D3-A).
         // reduction_coordinator,
         residue_seal: false,
+        // Added by G3 (DR-135): the root reducer has no owner and no caller.
+        owner: None,
+        caller: None,
+        // Added by G3 (DR-135, S3b): nor held values.
+        held: super::accounting::owner_funding::HeldMap::default(),
     });
 
     reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -1736,6 +1831,18 @@ impl NativeReplayEnvironment {
     }
 }
 
+/// Added by DR-134 (DR-70): the logger of a native replay for a block report.
+pub type RhoSpaceLogger = Box<
+    dyn rspace_plus_plus::rspace::logging::RSpaceLogger<
+        Par,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >,
+>;
+
+// Changed by DR-134 (DR-70): the body moved to
+// `create_native_replay_env_with_logger`; validation and play pass no logger.
 pub async fn create_native_replay_env(
     trace: CheckedNativeOperationTrace,
     history: RhoHistoryRepository,
@@ -1745,6 +1852,34 @@ pub async fn create_native_replay_env(
     extra_system_processes: &mut Vec<Definition>,
     cost: RuntimeBudget,
     external_services: ExternalServices,
+) -> Result<NativeReplayEnvironment, InterpreterError> {
+    create_native_replay_env_with_logger(
+        trace,
+        history,
+        matcher,
+        merge_chs,
+        mergeable_tags,
+        extra_system_processes,
+        cost,
+        external_services,
+        None,
+    )
+    .await
+}
+
+/// Added by DR-134 (DR-70): `create_native_replay_env` whose session logs its
+/// stored and matched operations to `logger`, for block reports. Without a
+/// logger the environment is the environment of `create_native_replay_env`.
+pub async fn create_native_replay_env_with_logger(
+    trace: CheckedNativeOperationTrace,
+    history: RhoHistoryRepository,
+    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
+    extra_system_processes: &mut Vec<Definition>,
+    cost: RuntimeBudget,
+    external_services: ExternalServices,
+    logger: Option<RhoSpaceLogger>,
 ) -> Result<NativeReplayEnvironment, InterpreterError> {
     if !cost.has_exclusive_authority_owner() {
         return Err(InterpreterError::ReduceError(
@@ -1768,8 +1903,16 @@ pub async fn create_native_replay_env(
         .into_iter()
         .map(system_process_install)
         .collect::<Result<Vec<_>, _>>()?;
-    let session =
-        Arc::new(trace.into_runtime_session(history, matcher, installations, cost.clone())?);
+    // Changed by DR-134 (DR-70): the session takes the optional logger.
+    // let session =
+    //     Arc::new(trace.into_runtime_session(history, matcher, installations, cost.clone())?);
+    let session = Arc::new(trace.into_runtime_session_with_logger(
+        history,
+        matcher,
+        installations,
+        cost.clone(),
+        logger,
+    )?);
     let reducer = setup_reducer(
         session.execution_space(cost.clone()),
         block_data.clone(),
@@ -1865,10 +2008,15 @@ where
     //     scheduled_rspace,
     //     cost.clone(),
     // )));
-    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
-        raw_rspace,
-        cost.clone(),
-    )));
+    // Changed by DR-134 (DR-66 item 3): the legacy meter and its charging space
+    // are deleted, so the reducer uses the observed raw space. Every space
+    // that the wrapper wrapped implements `consume_result` as the wrapper did
+    // (consume with the default continuation, then unpack), and the wrapper
+    // only delegated outside a legacy scope, so the behavior is unchanged.
+    // let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+    //     raw_rspace,
+    //     cost.clone(),
+    // )));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -1876,7 +2024,9 @@ where
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let core = setup_reducer(
-        charging_rspace.clone().into(),
+        // Changed by DR-134 (DR-66 item 3).
+        // charging_rspace.clone().into(),
+        raw_rspace.clone().into(),
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
@@ -1894,7 +2044,9 @@ where
     )
     .await;
     let reducer = Arc::new(DebruijnInterpreter {
-        space: charging_rspace,
+        // Changed by DR-134 (DR-66 item 3).
+        // space: charging_rspace,
+        space: raw_rspace,
         core,
     });
 

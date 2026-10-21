@@ -254,8 +254,10 @@ async fn stage_floor_covered_reinstatement() -> (
         None,
         None,
         // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
-        // Some(construct_deploy::DEFAULT_SEC2.clone()),
-        Some(construct_deploy::DEFAULT_SEC.clone()),
+        // Changed by G3 (DR-135): dev's signer returns, and the writer's purse
+        // funds the read.
+        // Some(construct_deploy::DEFAULT_SEC.clone()),
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
         Some(0),
         Some(shard_id.clone()),
     )
@@ -315,12 +317,14 @@ async fn stage_floor_covered_reinstatement() -> (
             None,
             None,
             // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
-            // Some(
-            // crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-            // .0
-            // .clone(),
-            // ),
-            Some(construct_deploy::DEFAULT_SEC.clone()),
+            // Changed by G3 (DR-135): dev's signer returns, and the writer's
+            // purse funds the read.
+            // Some(construct_deploy::DEFAULT_SEC.clone()),
+            Some(
+                crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+                    .0
+                    .clone(),
+            ),
             None,
             Some(shard_id.clone()),
         )

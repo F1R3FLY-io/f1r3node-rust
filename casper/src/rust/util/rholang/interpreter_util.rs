@@ -431,6 +431,8 @@ pub async fn validate_block_checkpoint_with_policy(
         rejected_deploy_buffer,
         floor_ctx,
         local_validator,
+        // Added by DR-134 (DR-66): the adopted policy for the recompute.
+        adopted,
     )
     .await;
     metrics::histogram!(
@@ -938,6 +940,8 @@ pub async fn compute_deploys_checkpoint_envelopes(
         rejected_deploy_buffer,
         floor_ctx,
         local_validator,
+        // Added by DR-134 (DR-66): the adopted policy for the recompute.
+        adopted_policy,
     )
     .await?;
     let parents_ms = parents_started.elapsed().as_millis();
@@ -1045,6 +1049,9 @@ pub(crate) async fn ensure_scope_mergeable_present(
     runtime_manager: &RuntimeManager,
     dag: &KeyValueDagRepresentation,
     scope: &HashSet<BlockHash>,
+    // Added by DR-134 (DR-66): the recompute of an offered block needs the
+    // adopted policy.
+    adopted: Option<&AdoptedResourcePolicy>,
 ) -> Result<(), CasperError> {
     for hash in scope {
         // Fast path: a cached BlockIndex implies load_mergeable_channels already
@@ -1079,8 +1086,12 @@ pub(crate) async fn ensure_scope_mergeable_present(
         let invalid_blocks: HashMap<BlockHash, Validator> =
             proto_util::slashed_block_senders(dag, &slashed_hashes)?;
 
+        // Changed by DR-134 (DR-66): the recompute passes the adopted policy.
+        // runtime_manager
+        //     .ensure_mergeable_entry(&block, invalid_blocks)
+        //     .await?;
         runtime_manager
-            .ensure_mergeable_entry(&block, invalid_blocks)
+            .ensure_mergeable_entry(&block, invalid_blocks, adopted)
             .await?;
 
         tracing::info!(
@@ -1229,6 +1240,9 @@ pub async fn compute_parents_post_state(
     // This node's validator identity for the OWNER-SCOPED buffer populate;
     // `None` buffers nothing.
     local_validator: Option<&Validator>,
+    // Added by DR-134 (DR-66): the policy adopted at start. The recompute of a
+    // missing mergeable entry of an offered block replays it with this policy.
+    adopted: Option<&AdoptedResourcePolicy>,
 ) -> Result<super::runtime_manager::MergedPreState, CasperError> {
     use super::runtime_manager::MergedPreState;
     let total_started = std::time::Instant::now();
@@ -1807,11 +1821,20 @@ pub async fn compute_parents_post_state(
                 .cloned()
                 .collect();
             let ensure_mergeable_started = std::time::Instant::now();
+            // Changed by DR-134 (DR-66): the recompute passes the adopted policy.
+            // ensure_scope_mergeable_present(
+            //     block_store,
+            //     runtime_manager,
+            //     &s.dag,
+            //     &mergeable_required,
+            // )
+            // .await?;
             ensure_scope_mergeable_present(
                 block_store,
                 runtime_manager,
                 &s.dag,
                 &mergeable_required,
+                adopted,
             )
             .await?;
             metrics::histogram!(PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)

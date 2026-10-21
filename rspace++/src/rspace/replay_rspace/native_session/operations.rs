@@ -85,7 +85,16 @@ where
         publication.complete();
         // Changed by DR-113: the epoch names the error of its denial.
         // Err(RSpaceError::OutOfPhlogistons)
-        Err(self.epoch.denial())
+        // Changed by G3 (DR-135, S6): a skipped introduction stores nothing,
+        // and the backend maps its error to "nothing stored" (R8).
+        // Err(self.epoch.denial())
+        match outcome {
+            NativeReplayOutcome::SkippedIntroduction => Err(RSpaceError::IntroductionRefused),
+            NativeReplayOutcome::Stored |
+            NativeReplayOutcome::Matched |
+            NativeReplayOutcome::DeniedIntroduction |
+            NativeReplayOutcome::DeniedComm => Err(self.epoch.denial()),
+        }
     }
 
     pub async fn consume(
@@ -154,9 +163,24 @@ where
             &peeks,
             authority,
         )?;
-        if outcome == NativeReplayOutcome::DeniedIntroduction {
-            require(decision, NativeReplayDecision::Denied)?;
-            return self.publish_denial(ticket, outcome).map(|()| None);
+        // Changed by G3 (DR-135, S6): an owner-refused introduction replays
+        // as a skip (R8).
+        // if outcome == NativeReplayOutcome::DeniedIntroduction {
+        //     require(decision, NativeReplayDecision::Denied)?;
+        //     return self.publish_denial(ticket, outcome).map(|()| None);
+        // }
+        match outcome {
+            NativeReplayOutcome::DeniedIntroduction => {
+                require(decision, NativeReplayDecision::Denied)?;
+                return self.publish_denial(ticket, outcome).map(|()| None);
+            }
+            NativeReplayOutcome::SkippedIntroduction => {
+                require(decision, NativeReplayDecision::OwnerRefused)?;
+                return self.publish_denial(ticket, outcome).map(|()| None);
+            }
+            NativeReplayOutcome::Stored |
+            NativeReplayOutcome::Matched |
+            NativeReplayOutcome::DeniedComm => {}
         }
         require(decision, NativeReplayDecision::Granted)?;
         // D-C2c (D-S1, DR-96): the group key of the consume's channels.
@@ -191,6 +215,33 @@ where
             data: &read_data,
             continuations: &read_continuations,
         };
+        // Added by G3 (DR-135, S6): the refused COMM of the row, which the
+        // ticket verifies with its live tuple (R7, SA4). A consume refuses at
+        // most one tuple.
+        for index in 0..ticket.refusal_count() {
+            let refused = {
+                let identity = ticket.refusal_identity(index).ok_or_else(mismatch)?;
+                self.space.find_refused_consume_tuple(
+                    &channels,
+                    &keys.channels,
+                    &patterns,
+                    &continuation,
+                    &source,
+                    &peeks,
+                    identity,
+                    &reader,
+                )?
+            };
+            let refused = refused.ok_or_else(mismatch)?;
+            ticket.verify_refusal(
+                index,
+                &refused.comm,
+                &continuation,
+                persist,
+                &refused.data,
+                None,
+            )?;
+        }
         let prepared = self.space.prepare_consume_candidate(
             &channels,
             &keys.channels,
@@ -199,12 +250,19 @@ where
             &source,
             &peeks,
             ticket.candidate_identity(),
+            // Added by G3 (DR-135, S6): the owner checks of the operation.
+            ticket.owner_filter().map(|filter| (filter, persist)),
             &reader,
         )?;
         if outcome == NativeReplayOutcome::Stored {
             if prepared.is_some() {
                 return Err(mismatch());
             }
+            // Added by DR-134 (DR-70): a reporting session logs the stored
+            // consume, as dev's ReplayRSpace does.
+            let logged = self
+                .logging
+                .then(|| (source.clone(), patterns.clone(), continuation.clone(), peeks.clone()));
             let waiting = WaitingContinuation {
                 patterns,
                 continuation,
@@ -226,6 +284,17 @@ where
             }
             completion.publish();
             publication.complete();
+            // Added by DR-134 (DR-70).
+            if let Some((source, patterns, continuation, peeks)) = logged {
+                self.space.log_consume(
+                    source,
+                    &channels,
+                    &patterns,
+                    &continuation,
+                    persist,
+                    &peeks,
+                );
+            }
             return Ok(None);
         }
         let prepared = prepared.ok_or_else(mismatch)?;
@@ -236,6 +305,17 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
+        // Added by DR-134 (DR-70): a reporting session logs the matched
+        // consume and its COMM, as dev's ReplayRSpace does.
+        let logged = self.logging.then(|| {
+            (prepared.data.clone(), prepared.comm.clone(), channels.clone(), WaitingContinuation {
+                patterns: patterns.clone(),
+                continuation: continuation.clone(),
+                persist,
+                peeks: peeks.clone(),
+                source: source.clone(),
+            })
+        });
         let result = result::prepare(prepared.data);
         let continuation = ContResult {
             patterns,
@@ -255,6 +335,19 @@ where
             .retire_data(&result.data, &keys.channels, &result.retirement)?;
         completion.publish();
         publication.complete();
+        // Added by DR-134 (DR-70).
+        if let Some((data_candidates, comm, channels, waiting)) = logged {
+            self.space.log_consume(
+                waiting.source.clone(),
+                &channels,
+                &waiting.patterns,
+                &waiting.continuation,
+                persist,
+                &waiting.peeks,
+            );
+            self.space
+                .log_comm(&data_candidates, &channels, waiting, comm, "comm.consume");
+        }
         Ok(Some((continuation, result.data)))
     }
 
@@ -311,9 +404,24 @@ where
         ticket.authenticate_footprint(std::slice::from_ref(&channel), &joins)?;
         let outcome = ticket.outcome();
         let decision = ticket.observe_produce(&source, &channel, &data, authority)?;
-        if outcome == NativeReplayOutcome::DeniedIntroduction {
-            require(decision, NativeReplayDecision::Denied)?;
-            return self.publish_denial(ticket, outcome).map(|()| None);
+        // Changed by G3 (DR-135, S6): an owner-refused introduction replays
+        // as a skip (R8).
+        // if outcome == NativeReplayOutcome::DeniedIntroduction {
+        //     require(decision, NativeReplayDecision::Denied)?;
+        //     return self.publish_denial(ticket, outcome).map(|()| None);
+        // }
+        match outcome {
+            NativeReplayOutcome::DeniedIntroduction => {
+                require(decision, NativeReplayDecision::Denied)?;
+                return self.publish_denial(ticket, outcome).map(|()| None);
+            }
+            NativeReplayOutcome::SkippedIntroduction => {
+                require(decision, NativeReplayDecision::OwnerRefused)?;
+                return self.publish_denial(ticket, outcome).map(|()| None);
+            }
+            NativeReplayOutcome::Stored |
+            NativeReplayOutcome::Matched |
+            NativeReplayOutcome::DeniedComm => {}
         }
         require(decision, NativeReplayDecision::Granted)?;
         // D-C2c (D-S1, DR-96): the keys of the joins, one digest per channel,
@@ -368,16 +476,58 @@ where
         //     ticket.candidate_identity(),
         //     &reader,
         // )?;
+        // Added by DR-134 (DR-70): a reporting session logs the produce, so it
+        // keeps a copy of the datum that the selection takes.
+        let logged_data = self.logging.then(|| data.clone());
+        // Changed by G3 (DR-135, S6): the refusals borrow the incoming datum
+        // before the selection takes it.
+        // let selection = self.space.prepare_produce_candidate(
+        //     &channel,
+        //     Datum {
+        //         a: data,
+        //         persist,
+        //         source,
+        //     },
+        //     joins,
+        //     &join_keys,
+        //     ticket.candidate_identity(),
+        //     &reader,
+        // )?;
+        let incoming = Datum {
+            a: data,
+            persist,
+            source,
+        };
+        // Added by G3 (DR-135, S6): each refused COMM of the row, which the
+        // ticket verifies with its live tuple (R7, SA4). The tuple keeps the
+        // produce's own datum, as in play (R6).
+        for index in 0..ticket.refusal_count() {
+            let refused = {
+                let identity = ticket.refusal_identity(index).ok_or_else(mismatch)?;
+                let own_datum = ticket
+                    .owner_filter()
+                    .is_some_and(|filter| filter.requires_own_datum());
+                self.space.find_refused_produce_tuple(
+                    &channel, &incoming, &joins, &join_keys, identity, own_datum, &reader,
+                )?
+            };
+            let refused = refused.ok_or_else(mismatch)?;
+            ticket.verify_refusal(
+                index,
+                &refused.comm,
+                &refused.continuation.continuation,
+                refused.continuation.persist,
+                &refused.data,
+                Some(&incoming.a),
+            )?;
+        }
         let selection = self.space.prepare_produce_candidate(
             &channel,
-            Datum {
-                a: data,
-                persist,
-                source,
-            },
+            incoming,
             joins,
             &join_keys,
             ticket.candidate_identity(),
+            ticket.owner_filter(),
             &reader,
         )?;
         if outcome == NativeReplayOutcome::Stored {
@@ -430,10 +580,17 @@ where
             //     },
             //     &reserve,
             // )?;
+            // Added by DR-134 (DR-70): the source of the stored datum.
+            let logged = logged_data.map(|data| (incoming.source.clone(), data));
             self.store.put_datum(&channel, key, incoming)?;
             counter.publish();
             completion.publish();
             publication.complete();
+            // Added by DR-134 (DR-70): a reporting session logs the stored
+            // produce, as dev's ReplayRSpace does.
+            if let Some((source, data)) = logged {
+                self.space.log_produce(source, &channel, &data, persist);
+            }
             return Ok(None);
         }
         // Changed by D-C2c (D-S1, DR-96): the candidate names its join group.
@@ -461,6 +618,17 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
+        // Added by DR-134 (DR-70): a reporting session logs the matched
+        // produce and its COMM, as dev's ReplayRSpace does.
+        let logged = logged_data.map(|data| {
+            (
+                data,
+                candidate.data_candidates.clone(),
+                candidate.channels.clone(),
+                candidate.continuation.clone(),
+                prepared.comm.clone(),
+            )
+        });
         let returned = ticket.returned_produce(&source)?;
         let result = result::prepare(candidate.data_candidates);
         let continuation = ContResult {
@@ -497,6 +665,13 @@ where
         counter.publish();
         completion.publish();
         publication.complete();
+        // Added by DR-134 (DR-70).
+        if let Some((data, data_candidates, channels, waiting, comm)) = logged {
+            self.space
+                .log_produce(source.clone(), &channel, &data, persist);
+            self.space
+                .log_comm(&data_candidates, &channels, waiting, comm, "comm.produce");
+        }
         Ok(Some((continuation, result.data, returned)))
     }
 }

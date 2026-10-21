@@ -4,14 +4,18 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+// Added by DR-134 (DR-66 item 1): offered compute takes pending candidates.
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use casper::rust::errors::CasperError;
 use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
-use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+// Disabled by DR-134 (DR-66 item 3): both system deploys are deleted with the
+// legacy meter.
+// use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+// use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
@@ -19,23 +23,42 @@ use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 use casper::rust::util::rholang::system_deploy_util;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use crypto::rust::signatures::signed::Signed;
+// Disabled by DR-134 (DR-65, gap G2): only the disabled legacy helpers
+// `compute_state` and `replay_compute_state` below named a body-only deploy.
+// use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
-use models::rust::casper::protocol::casper_message::{
-    DeployData, ProcessedDeploy, ProcessedSystemDeploy,
-};
-use rholang::rust::interpreter::accounting::costs::Cost;
+// Changed by DR-134 (DR-66 item 1): offered compute returns processed user
+// deploys.
+// use models::rust::casper::protocol::casper_message::{
+//     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
+// };
+// Changed by DR-134 (DR-65, gap G2): `DeployData` and `ProcessedDeploy` served
+// only the disabled legacy helpers below.
+// use models::rust::casper::protocol::casper_message::{
+//     DeployData, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy,
+// };
+use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, ProcessedUserDeploy};
+// Changed by DR-134 (DR-66 item 3): `Cost` and `Env` served only the disabled
+// legacy parse-charge test.
+// use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::env::Env;
+// use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 
+// Added by DR-134 (DR-66 item 1): offered deploys. The legacy builder stays
+// for the exploratory reads, the legacy-meter tests and the tests that need
+// gap G2.
+use crate::helper::offered_deploy;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::util::genesis_builder::GenesisContext;
-use crate::util::rholang::resources::with_runtime_manager;
+// Changed by DR-134 (DR-66 item 1): the adopted policy of the test genesis.
+// use crate::util::rholang::resources::with_runtime_manager;
+use crate::util::rholang::resources::{adopted_policy, with_runtime_manager};
 
 enum SystemDeployReplayResult<A> {
     ReplaySucceeded {
@@ -47,17 +70,81 @@ enum SystemDeployReplayResult<A> {
     },
 }
 
-async fn compute_state(
+// Disabled by DR-134 (DR-65, gap G2): the last callers of these two legacy
+// helpers, `replay_attribution_preserves_success_failure_and_cache_paths` and
+// the legacy-meter tests, now use the offered helpers below or are disabled.
+// Protocol 6 refuses the body-only deploys that these helpers play.
+// async fn compute_state(
+//     runtime_manager: &mut RuntimeManager,
+//     genesis_context: &GenesisContext,
+//     deploy: Signed<DeployData>,
+//     state_hash: &StateHash,
+// ) -> (StateHash, ProcessedDeploy) {
+//     let time_stamp = deploy.data.time_stamp;
+//     let (new_state_hash, processed_deploys, _extra) = runtime_manager
+//         .compute_state(
+//             state_hash,
+//             vec![deploy],
+//             Vec::new(), // No system deploys
+//             BlockData {
+//                 time_stamp,
+//                 block_number: 0,
+//                 sender: genesis_context.validator_pks()[0].clone(),
+//                 seq_num: 0,
+//             },
+//             None,
+//         )
+//         .await
+//         .unwrap();
+//
+//     let result = processed_deploys.into_iter().next().unwrap();
+//     (new_state_hash, result)
+// }
+//
+// async fn replay_compute_state(
+//     runtime_manager: &mut RuntimeManager,
+//     genesis_context: &GenesisContext,
+//     processed_deploy: ProcessedDeploy,
+//     state_hash: &StateHash,
+// ) -> Result<StateHash, CasperError> {
+//     let time_stamp = processed_deploy.deploy.data.time_stamp;
+//     runtime_manager
+//         .replay_compute_state(
+//             state_hash,
+//             vec![processed_deploy],
+//             Vec::new(),
+//             &BlockData {
+//                 time_stamp,
+//                 block_number: 0,
+//                 sender: genesis_context.validator_pks()[0].clone(),
+//                 seq_num: 0,
+//             },
+//             None,
+//             false,
+//         )
+//         .await
+// }
+
+// Changed by DR-134 (DR-65, gap G2): the legacy helpers above are disabled, so
+// the doc comment below no longer says that they stay. The former doc lines 2
+// and 3:
+// /// the adopted policy of the test genesis. The legacy helper above stays for the
+// /// legacy-meter test and the legacy replay-attribution test.
+/// Added by DR-134 (DR-66 item 1): `compute_state` for one offered deploy, under
+/// the adopted policy of the test genesis. The legacy helpers above are
+/// disabled, and this helper replaces them.
+async fn compute_offered_state(
     runtime_manager: &mut RuntimeManager,
     genesis_context: &GenesisContext,
-    deploy: Signed<DeployData>,
+    deploy: OfferedDeploy,
     state_hash: &StateHash,
-) -> (StateHash, ProcessedDeploy) {
-    let time_stamp = deploy.data.time_stamp;
-    let (new_state_hash, processed_deploys, _extra) = runtime_manager
-        .compute_state(
+) -> (StateHash, ProcessedUserDeploy) {
+    let time_stamp = deploy.envelope.body().time_stamp;
+    let adopted = adopted_policy(runtime_manager, &genesis_context.genesis_block).await;
+    let (new_state_hash, processed_deploys, _system, _bonds) = runtime_manager
+        .compute_state_with_bonds_envelopes(
             state_hash,
-            vec![deploy],
+            vec![PendingDeployCandidate::Envelope(deploy.envelope)],
             Vec::new(), // No system deploys
             BlockData {
                 time_stamp,
@@ -66,6 +153,8 @@ async fn compute_state(
                 seq_num: 0,
             },
             None,
+            None,
+            Some(&adopted),
         )
         .await
         .unwrap();
@@ -74,15 +163,20 @@ async fn compute_state(
     (new_state_hash, result)
 }
 
-async fn replay_compute_state(
+/// Added by DR-134 (DR-66 item 1): `replay_compute_state` for one offered
+/// deploy, under the adopted policy of the test genesis. An offered replay
+/// checks the post-state that play computed, so the caller passes it.
+async fn replay_offered_state(
     runtime_manager: &mut RuntimeManager,
     genesis_context: &GenesisContext,
-    processed_deploy: ProcessedDeploy,
+    processed_deploy: ProcessedUserDeploy,
     state_hash: &StateHash,
+    expected_post_state: &StateHash,
 ) -> Result<StateHash, CasperError> {
-    let time_stamp = processed_deploy.deploy.data.time_stamp;
+    let time_stamp = processed_deploy.timestamp();
+    let adopted = adopted_policy(runtime_manager, &genesis_context.genesis_block).await;
     runtime_manager
-        .replay_compute_state(
+        .replay_compute_state_envelopes_with_policy(
             state_hash,
             vec![processed_deploy],
             Vec::new(),
@@ -94,6 +188,8 @@ async fn replay_compute_state(
             },
             None,
             false,
+            Some(&adopted),
+            Some(expected_post_state),
         )
         .await
 }
@@ -114,7 +210,9 @@ async fn comput_state_should_charge_for_deploys() {
 
             // TODO: Prohibit negative gas prices and gas limits in deploys. - OLD
             // TODO: Make minimum maximum yield for deploy parameter of node. - OLD
-            let deploy = construct_deploy::source_deploy_now_full(
+            // Changed by DR-134 (DR-66 item 1): an offered deploy.
+            // let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = offered_deploy::source_deploy_now_full(
                 source.to_string(),
                 Some(100000),
                 None,
@@ -124,7 +222,9 @@ async fn comput_state_should_charge_for_deploys() {
             )
             .unwrap();
 
-            let (new_state_hash, processed_deploy) = compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let (new_state_hash, processed_deploy) = compute_state(
+            let (new_state_hash, processed_deploy) = compute_offered_state(
                 &mut runtime_manager,
                 &genesis_context,
                 deploy,
@@ -132,11 +232,20 @@ async fn comput_state_should_charge_for_deploys() {
             )
             .await;
 
-            let replay_state_hash = replay_compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered replay checks the
+            // post-state that play computed.
+            // let replay_state_hash = replay_compute_state(
+            //     &mut runtime_manager,
+            //     &genesis_context,
+            //     processed_deploy,
+            //     &gen_post_state,
+            // )
+            let replay_state_hash = replay_offered_state(
                 &mut runtime_manager,
                 &genesis_context,
                 processed_deploy,
                 &gen_post_state,
+                &new_state_hash,
             )
             .await
             .unwrap();
@@ -149,23 +258,52 @@ async fn comput_state_should_charge_for_deploys() {
 }
 
 /// Builds three distinct, individually-cheap deploys for the play-budget tests.
-fn three_budget_probe_deploys() -> Vec<Signed<DeployData>> {
+// Changed by DR-134 (DR-65, gap G2): the three deploys are offers of one
+// signer (DEFAULT_SEC), which one block carries as a batch. Each offer takes
+// its own timestamp, so the canonical order of the batch is the order below.
+// fn three_budget_probe_deploys() -> Vec<Signed<DeployData>> {
+//     [
+//         "@\"budget-a\"!(1)",
+//         "@\"budget-b\"!(2)",
+//         "@\"budget-c\"!(3)",
+//     ]
+//     .iter()
+//     .map(|source| {
+//         construct_deploy::source_deploy_now_full(
+//             source.to_string(),
+//             Some(100000),
+//             None,
+//             None,
+//             None,
+//             None,
+//         )
+//         .unwrap()
+//     })
+//     .collect()
+// }
+fn three_budget_probe_deploys() -> Vec<OfferedDeploy> {
+    let base_time_stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_millis() as i64;
     [
         "@\"budget-a\"!(1)",
         "@\"budget-b\"!(2)",
         "@\"budget-c\"!(3)",
     ]
     .iter()
-    .map(|source| {
-        construct_deploy::source_deploy_now_full(
+    .zip(0i64..)
+    .map(|(source, offset)| {
+        offered_deploy::source_deploy(
             source.to_string(),
+            base_time_stamp + offset,
             Some(100000),
             None,
             None,
             None,
             None,
         )
-        .unwrap()
+        .expect("a play-budget probe offer builds")
     })
     .collect()
 }
@@ -176,12 +314,41 @@ async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
         |runtime_manager, genesis_context, genesis_block| async move {
             let gen_post_state = genesis_block.body.state.post_state_hash;
             let deploys = three_budget_probe_deploys();
-            let time_stamp = deploys[0].data.time_stamp;
+            // Changed by DR-134 (DR-65, gap G2): the block time of the offers.
+            // let time_stamp = deploys[0].data.time_stamp;
+            let time_stamp = deploys[0].envelope.body().time_stamp;
+            // Added by DR-134 (DR-65, gap G2): the offered play takes the
+            // adopted policy of the test genesis.
+            let adopted = adopted_policy(&runtime_manager, &genesis_context.genesis_block).await;
 
+            // Changed by DR-134 (DR-65, gap G2): the offered play of the batch.
+            // The three offers share the signer's purse, so they form one
+            // funding group. The zero budget stops the batch after its first
+            // member, the group then holds a shipped and a dropped member, and
+            // the first member runs again from the block pre-state alone (O-10).
+            // let (_state, processed, _sys, _bonds) = runtime_manager
+            //     .compute_state_with_bonds(
+            //         &gen_post_state,
+            //         deploys,
+            //         Vec::new(),
+            //         BlockData {
+            //             time_stamp,
+            //             block_number: 0,
+            //             sender: genesis_context.validator_pks()[0].clone(),
+            //             seq_num: 0,
+            //         },
+            //         None,
+            //         Some(std::time::Duration::ZERO),
+            //     )
+            //     .await
+            //     .unwrap();
             let (_state, processed, _sys, _bonds) = runtime_manager
-                .compute_state_with_bonds(
+                .compute_state_with_bonds_envelopes(
                     &gen_post_state,
-                    deploys,
+                    deploys
+                        .into_iter()
+                        .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+                        .collect(),
                     Vec::new(),
                     BlockData {
                         time_stamp,
@@ -191,9 +358,10 @@ async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
                     },
                     None,
                     Some(std::time::Duration::ZERO),
+                    Some(&adopted),
                 )
                 .await
-                .unwrap();
+                .expect("the offered batch plays under a zero budget");
 
             // The floor: a spent budget defers the remainder but must never
             // produce an empty carrier — that would be starvation by budget.
@@ -214,12 +382,37 @@ async fn an_ample_play_budget_carries_the_whole_pool() {
         |runtime_manager, genesis_context, genesis_block| async move {
             let gen_post_state = genesis_block.body.state.post_state_hash;
             let deploys = three_budget_probe_deploys();
-            let time_stamp = deploys[0].data.time_stamp;
+            // Changed by DR-134 (DR-65, gap G2): the block time of the offers.
+            // let time_stamp = deploys[0].data.time_stamp;
+            let time_stamp = deploys[0].envelope.body().time_stamp;
+            // Added by DR-134 (DR-65, gap G2): the offered play takes the
+            // adopted policy of the test genesis.
+            let adopted = adopted_policy(&runtime_manager, &genesis_context.genesis_block).await;
 
+            // Changed by DR-134 (DR-65, gap G2): the offered play of the batch.
+            // let (_state, processed, _sys, _bonds) = runtime_manager
+            //     .compute_state_with_bonds(
+            //         &gen_post_state,
+            //         deploys,
+            //         Vec::new(),
+            //         BlockData {
+            //             time_stamp,
+            //             block_number: 0,
+            //             sender: genesis_context.validator_pks()[0].clone(),
+            //             seq_num: 0,
+            //         },
+            //         None,
+            //         Some(std::time::Duration::from_secs(120)),
+            //     )
+            //     .await
+            //     .unwrap();
             let (_state, processed, _sys, _bonds) = runtime_manager
-                .compute_state_with_bonds(
+                .compute_state_with_bonds_envelopes(
                     &gen_post_state,
-                    deploys,
+                    deploys
+                        .into_iter()
+                        .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+                        .collect(),
                     Vec::new(),
                     BlockData {
                         time_stamp,
@@ -229,9 +422,10 @@ async fn an_ample_play_budget_carries_the_whole_pool() {
                     },
                     None,
                     Some(std::time::Duration::from_secs(120)),
+                    Some(&adopted),
                 )
                 .await
-                .unwrap();
+                .expect("the offered batch plays under an ample budget");
 
             assert_eq!(
                 processed.len(),
@@ -379,85 +573,93 @@ async fn exec_replay_system_deploy<S: SystemDeployTrait>(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount() {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let user_pk = construct_deploy::DEFAULT_PUB.clone();
-            let state_hash_0 = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &genesis_block.body.state.post_state_hash,
-                &mut PreChargeDeploy {
-                    charge_amount: 9000000,
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&[0]),
-                },
-                &mut PreChargeDeploy {
-                    charge_amount: 9000000,
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&[0]),
-                },
-                |_| true,
-            )
-            .await
-            .unwrap();
-
-            let state_hash_1 = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &state_hash_0,
-                &mut CheckBalance {
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&[1]),
-                },
-                &mut CheckBalance {
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&[1]),
-                },
-                |result| *result == 0,
-            )
-            .await
-            .unwrap();
-
-            let state_hash_2 = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &state_hash_1,
-                &mut RefundDeploy {
-                    refund_amount: 9000000,
-                    rand: Blake2b512Random::create_from_bytes(&[2]),
-                },
-                &mut RefundDeploy {
-                    refund_amount: 9000000,
-                    rand: Blake2b512Random::create_from_bytes(&[2]),
-                },
-                |_| true,
-            )
-            .await
-            .unwrap();
-
-            let _ = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &state_hash_2,
-                &mut CheckBalance {
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&[3]),
-                },
-                &mut CheckBalance {
-                    pk: user_pk,
-                    rand: Blake2b512Random::create_from_bytes(&[3]),
-                },
-                |result| *result == 9000000,
-            )
-            .await
-            .unwrap();
-        },
-    )
-    .await
-    .unwrap()
-}
+// Disabled by DR-134 (DR-66 item 3, user answer Q6 "Delete"): this test plays
+// the PreChargeDeploy and RefundDeploy system deploys of the legacy meter. The
+// meter and both deploys are deleted. The offered settlement covers the same
+// behavior: the payer pays the measured cost and keeps the rest, checked by
+// a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_branch
+// (casper/tests/api/offered_funded_api_test.rs) and
+// general_wallet_cost_settlement_advances_both_cursors_once
+// (casper/tests/util/rholang/cost_vault_settlement_test.rs).
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount() {
+//     with_runtime_manager(
+//         |mut runtime_manager, genesis_context, genesis_block| async move {
+//             let user_pk = construct_deploy::DEFAULT_PUB.clone();
+//             let state_hash_0 = compare_successful_system_deploys(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 &genesis_block.body.state.post_state_hash,
+//                 &mut PreChargeDeploy {
+//                     charge_amount: 9000000,
+//                     pk: user_pk.clone(),
+//                     rand: Blake2b512Random::create_from_bytes(&[0]),
+//                 },
+//                 &mut PreChargeDeploy {
+//                     charge_amount: 9000000,
+//                     pk: user_pk.clone(),
+//                     rand: Blake2b512Random::create_from_bytes(&[0]),
+//                 },
+//                 |_| true,
+//             )
+//             .await
+//             .unwrap();
+//
+//             let state_hash_1 = compare_successful_system_deploys(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 &state_hash_0,
+//                 &mut CheckBalance {
+//                     pk: user_pk.clone(),
+//                     rand: Blake2b512Random::create_from_bytes(&[1]),
+//                 },
+//                 &mut CheckBalance {
+//                     pk: user_pk.clone(),
+//                     rand: Blake2b512Random::create_from_bytes(&[1]),
+//                 },
+//                 |result| *result == 0,
+//             )
+//             .await
+//             .unwrap();
+//
+//             let state_hash_2 = compare_successful_system_deploys(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 &state_hash_1,
+//                 &mut RefundDeploy {
+//                     refund_amount: 9000000,
+//                     rand: Blake2b512Random::create_from_bytes(&[2]),
+//                 },
+//                 &mut RefundDeploy {
+//                     refund_amount: 9000000,
+//                     rand: Blake2b512Random::create_from_bytes(&[2]),
+//                 },
+//                 |_| true,
+//             )
+//             .await
+//             .unwrap();
+//
+//             let _ = compare_successful_system_deploys(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 &state_hash_2,
+//                 &mut CheckBalance {
+//                     pk: user_pk.clone(),
+//                     rand: Blake2b512Random::create_from_bytes(&[3]),
+//                 },
+//                 &mut CheckBalance {
+//                     pk: user_pk,
+//                     rand: Blake2b512Random::create_from_bytes(&[3]),
+//                 },
+//                 |result| *result == 9000000,
+//             )
+//             .await
+//             .unwrap();
+//         },
+//     )
+//     .await
+//     .unwrap()
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn close_block_should_make_epoch_change_and_reward_validator() {
@@ -541,7 +743,9 @@ async fn compute_state_should_capture_rholang_errors() {
         |mut runtime_manager, genesis_context, genesis_block| async move {
             let bad_rholang =
                 r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
-            let deploy = construct_deploy::source_deploy_now_full(
+            // Changed by DR-134 (DR-66 item 1): an offered deploy.
+            // let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = offered_deploy::source_deploy_now_full(
                 bad_rholang.to_string(),
                 None,
                 None,
@@ -551,7 +755,9 @@ async fn compute_state_should_capture_rholang_errors() {
             )
             .unwrap();
 
-            let result = compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let result = compute_state(
+            let result = compute_offered_state(
                 &mut runtime_manager,
                 &genesis_context,
                 deploy,
@@ -559,7 +765,9 @@ async fn compute_state_should_capture_rholang_errors() {
             )
             .await;
 
-            assert!(result.1.is_failed);
+            // Changed by DR-134 (DR-66 item 1).
+            // assert!(result.1.is_failed);
+            assert!(result.1.is_failed());
         },
     )
     .await
@@ -591,11 +799,33 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                 .unwrap()
                 .as_millis() as i64;
 
+            // Changed by DR-134 (DR-65, gap G2): offers of one signer
+            // (DEFAULT_SEC), so every COMM of the two blocks is between deploys
+            // of that signer. The distinct timestamps stay load-bearing: two
+            // offers with the same signer, term and timestamp are the same
+            // envelope, and s0 and s3 share their term. They also give each
+            // batch the canonical order of the lists below.
+            // let deploys0 = vec![s0, s1, s2]
+            //     .into_iter()
+            //     .enumerate()
+            //     .map(|(i, s)| {
+            //         construct_deploy::source_deploy(
+            //             s.to_string(),
+            //             base_ts + i as i64,
+            //             Some(1000000),
+            //             None,
+            //             None,
+            //             None,
+            //             None,
+            //         )
+            //         .unwrap()
+            //     })
+            //     .collect::<Vec<_>>();
             let deploys0 = vec![s0, s1, s2]
                 .into_iter()
                 .enumerate()
                 .map(|(i, s)| {
-                    construct_deploy::source_deploy(
+                    offered_deploy::source_deploy(
                         s.to_string(),
                         base_ts + i as i64,
                         Some(1000000),
@@ -604,18 +834,35 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                         None,
                         None,
                     )
-                    .unwrap()
+                    .expect("an offer of block 0 builds")
                 })
                 .collect::<Vec<_>>();
 
             let s3 = "@1!(1)";
             let s4 = "for(@a <- @2){ @456!(5 * a) }";
 
+            // Changed by DR-134 (DR-65, gap G2): offers of the same signer.
+            // let deploys1 = vec![s3, s4]
+            //     .into_iter()
+            //     .enumerate()
+            //     .map(|(i, s)| {
+            //         construct_deploy::source_deploy(
+            //             s.to_string(),
+            //             base_ts + 3 + i as i64,
+            //             Some(1000000),
+            //             None,
+            //             None,
+            //             None,
+            //             None,
+            //         )
+            //         .unwrap()
+            //     })
+            //     .collect::<Vec<_>>();
             let deploys1 = vec![s3, s4]
                 .into_iter()
                 .enumerate()
                 .map(|(i, s)| {
-                    construct_deploy::source_deploy(
+                    offered_deploy::source_deploy(
                         s.to_string(),
                         base_ts + 3 + i as i64,
                         Some(1000000),
@@ -624,7 +871,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                         None,
                         None,
                     )
-                    .unwrap()
+                    .expect("an offer of block 1 builds")
                 })
                 .collect::<Vec<_>>();
 
@@ -633,39 +880,77 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                 .unwrap()
                 .as_millis() as i64;
 
-            let (play_state_hash_0, processed_deploys_0, processed_sys_deploys_0) = runtime_manager
-                .compute_state(
-                    &gps,
-                    deploys0,
-                    vec![
-                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        genesis_context.validator_pks()[0].clone(),
-                                        0,
-                                    ),
-                            },
-                        ),
-                    ],
-                    BlockData {
-                        time_stamp: time,
-                        block_number: 0,
-                        sender: genesis_context.validator_pks()[0].clone(),
-                        seq_num: 0,
-                    },
-                    None,
-                )
-                .await
-                .unwrap();
+            // Added by DR-134 (DR-65, gap G2): the offered play and replay take
+            // the adopted policy of the test genesis.
+            let adopted = adopted_policy(&runtime_manager, &genesis_context.genesis_block).await;
+
+            // Changed by DR-134 (DR-65, gap G2): the offered play of the batch.
+            // let (play_state_hash_0, processed_deploys_0, processed_sys_deploys_0) = runtime_manager
+            //     .compute_state(
+            //         &gps,
+            //         deploys0,
+            let (play_state_hash_0, processed_deploys_0, processed_sys_deploys_0, _bonds_0) =
+                runtime_manager
+                    .compute_state_with_bonds_envelopes(
+                        &gps,
+                        deploys0
+                            .into_iter()
+                            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+                            .collect(),
+                        vec![
+                            casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                                CloseBlockDeploy {
+                                    initial_rand:
+                                        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                            genesis_context.validator_pks()[0].clone(),
+                                            0,
+                                        ),
+                                },
+                            ),
+                        ],
+                        BlockData {
+                            time_stamp: time,
+                            block_number: 0,
+                            sender: genesis_context.validator_pks()[0].clone(),
+                            seq_num: 0,
+                        },
+                        None,
+                        // Added by DR-134 (DR-65, gap G2): no play budget, as
+                        // `compute_state` passes none, and the adopted policy.
+                        None,
+                        Some(&adopted),
+                    )
+                    .await
+                    .expect("block 0 plays");
+            // Added by DR-134 (DR-65, gap G2): the block carries all three
+            // offers.
+            assert_eq!(processed_deploys_0.len(), 3, "block 0 carries its whole batch");
 
             let bonds0 = runtime_manager
                 .compute_bonds(&play_state_hash_0)
                 .await
                 .unwrap();
 
+            // Changed by DR-134 (DR-65, gap G2): the offered replay of the
+            // batch checks the post-state that play computed.
+            // let replay_state_hash_0 = runtime_manager
+            //     .replay_compute_state(
+            //         &gps,
+            //         processed_deploys_0,
+            //         processed_sys_deploys_0,
+            //         &BlockData {
+            //             time_stamp: time,
+            //             block_number: 0,
+            //             sender: genesis_context.validator_pks()[0].clone(),
+            //             seq_num: 0,
+            //         },
+            //         None,
+            //         false,
+            //     )
+            //     .await
+            //     .unwrap();
             let replay_state_hash_0 = runtime_manager
-                .replay_compute_state(
+                .replay_compute_state_envelopes_with_policy(
                     &gps,
                     processed_deploys_0,
                     processed_sys_deploys_0,
@@ -677,9 +962,11 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     },
                     None,
                     false,
+                    Some(&adopted),
+                    Some(&play_state_hash_0),
                 )
                 .await
-                .unwrap();
+                .expect("block 0 replays");
 
             assert!(play_state_hash_0 == replay_state_hash_0);
 
@@ -690,39 +977,71 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
 
             assert!(bonds0 == bonds1);
 
-            let (play_state_hash_1, processed_deploys_1, processed_sys_deploys_1) = runtime_manager
-                .compute_state(
-                    &play_state_hash_0,
-                    deploys1,
-                    vec![
-                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        genesis_context.validator_pks()[0].clone(),
-                                        0,
-                                    ),
-                            },
-                        ),
-                    ],
-                    BlockData {
-                        time_stamp: time,
-                        block_number: 0,
-                        sender: genesis_context.validator_pks()[0].clone(),
-                        seq_num: 0,
-                    },
-                    None,
-                )
-                .await
-                .unwrap();
+            // Changed by DR-134 (DR-65, gap G2): the offered play of the batch.
+            // let (play_state_hash_1, processed_deploys_1, processed_sys_deploys_1) = runtime_manager
+            //     .compute_state(
+            //         &play_state_hash_0,
+            //         deploys1,
+            let (play_state_hash_1, processed_deploys_1, processed_sys_deploys_1, _bonds_1) =
+                runtime_manager
+                    .compute_state_with_bonds_envelopes(
+                        &play_state_hash_0,
+                        deploys1
+                            .into_iter()
+                            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+                            .collect(),
+                        vec![
+                            casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                                CloseBlockDeploy {
+                                    initial_rand:
+                                        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                            genesis_context.validator_pks()[0].clone(),
+                                            0,
+                                        ),
+                                },
+                            ),
+                        ],
+                        BlockData {
+                            time_stamp: time,
+                            block_number: 0,
+                            sender: genesis_context.validator_pks()[0].clone(),
+                            seq_num: 0,
+                        },
+                        None,
+                        // Added by DR-134 (DR-65, gap G2).
+                        None,
+                        Some(&adopted),
+                    )
+                    .await
+                    .expect("block 1 plays");
+            // Added by DR-134 (DR-65, gap G2).
+            assert_eq!(processed_deploys_1.len(), 2, "block 1 carries its whole batch");
 
             let bonds2 = runtime_manager
                 .compute_bonds(&play_state_hash_1)
                 .await
                 .unwrap();
 
+            // Changed by DR-134 (DR-65, gap G2): the offered replay of the
+            // batch checks the post-state that play computed.
+            // let replay_state_hash_1 = runtime_manager
+            //     .replay_compute_state(
+            //         &play_state_hash_0,
+            //         processed_deploys_1,
+            //         processed_sys_deploys_1,
+            //         &BlockData {
+            //             time_stamp: time,
+            //             block_number: 0,
+            //             sender: genesis_context.validator_pks()[0].clone(),
+            //             seq_num: 0,
+            //         },
+            //         None,
+            //         false,
+            //     )
+            //     .await
+            //     .unwrap();
             let replay_state_hash_1 = runtime_manager
-                .replay_compute_state(
+                .replay_compute_state_envelopes_with_policy(
                     &play_state_hash_0,
                     processed_deploys_1,
                     processed_sys_deploys_1,
@@ -734,9 +1053,11 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     },
                     None,
                     false,
+                    Some(&adopted),
+                    Some(&play_state_hash_1),
                 )
                 .await
-                .unwrap();
+                .expect("block 1 replays");
 
             assert!(play_state_hash_1 == replay_state_hash_1);
 
@@ -792,58 +1113,67 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
 //     .unwrap();
 // }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_charge_for_parsing_and_execution() {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let correct_rholang =
-                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(2) } "#;
-            let rand = Blake2b512Random::create_from_bytes(&Vec::new());
-            let inital_phlo = Cost::unsafe_max();
-            let deploy = construct_deploy::source_deploy_now_full(
-                correct_rholang.to_string(),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-
-            let runtime = runtime_manager.spawn_runtime().await.unwrap();
-            runtime.cost.set(inital_phlo.clone());
-            let _legacy_scope = runtime.cost.enter_legacy_scope();
-            let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
-            let _ = runtime.inj(term, Env::new(), rand).await;
-            let phlos_left = runtime.cost.get();
-            let reduction_cost = inital_phlo - phlos_left;
-
-            let parsing_cost = Cost::create(correct_rholang.len() as i64, "parsing");
-
-            let result = compute_state(
-                &mut runtime_manager,
-                &genesis_context,
-                deploy,
-                &genesis_block.body.state.post_state_hash,
-            )
-            .await;
-
-            assert_eq!(
-                result.1.cost.cost,
-                (reduction_cost + parsing_cost).value as u64
-            );
-        },
-    )
-    .await
-    .unwrap();
-}
+// Disabled by DR-134 (DR-66 item 3, user answer Q6 "Delete"): this test
+// measures the parse charge and the reduction cost of the legacy meter inside
+// a legacy scope. The legacy meter and its scope are deleted. A cost-accounted
+// deploy pays only for its COMMs and its storage bytes, and has no parse
+// charge. comput_state_should_charge_for_deploys (this file) checks that an
+// offered deploy is charged.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn compute_state_should_charge_for_parsing_and_execution() {
+//     with_runtime_manager(
+//         |mut runtime_manager, genesis_context, genesis_block| async move {
+//             let correct_rholang =
+//                 r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(2) } "#;
+//             let rand = Blake2b512Random::create_from_bytes(&Vec::new());
+//             let inital_phlo = Cost::unsafe_max();
+//             let deploy = construct_deploy::source_deploy_now_full(
+//                 correct_rholang.to_string(),
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//             )
+//             .unwrap();
+//
+//             let runtime = runtime_manager.spawn_runtime().await.unwrap();
+//             runtime.cost.set(inital_phlo.clone());
+//             let _legacy_scope = runtime.cost.enter_legacy_scope();
+//             let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
+//             let _ = runtime.inj(term, Env::new(), rand).await;
+//             let phlos_left = runtime.cost.get();
+//             let reduction_cost = inital_phlo - phlos_left;
+//
+//             let parsing_cost = Cost::create(correct_rholang.len() as i64, "parsing");
+//
+//             let result = compute_state(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 deploy,
+//                 &genesis_block.body.state.post_state_hash,
+//             )
+//             .await;
+//
+//             assert_eq!(
+//                 result.1.cost.cost,
+//                 (reduction_cost + parsing_cost).value as u64
+//             );
+//         },
+//     )
+//     .await
+//     .unwrap();
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn capture_result_should_return_the_value_at_the_specified_channel_after_a_rholang_computation(
 ) {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
-            let deployo0 = construct_deploy::source_deploy_now_full(
+            // Changed by DR-134 (DR-66 item 1): the computed deploy is an
+            // offered deploy. The exploratory read below keeps a legacy deploy.
+            // let deployo0 = construct_deploy::source_deploy_now_full(
+            let deployo0 = offered_deploy::source_deploy_now_full(
                 r#"
                         new rl(`rho:registry:lookup`), NonNegativeNumberCh in {
                         rl!(`rho:lang:nonNegativeNumber`, *NonNegativeNumberCh) |
@@ -861,7 +1191,9 @@ async fn capture_result_should_return_the_value_at_the_specified_channel_after_a
             )
             .unwrap();
 
-            let result0 = compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let result0 = compute_state(
+            let result0 = compute_offered_state(
                 &mut runtime_manager,
                 &genesis_context,
                 deployo0,
@@ -883,8 +1215,11 @@ async fn capture_result_should_return_the_value_at_the_specified_channel_after_a
             )
             .unwrap();
 
+            // Added by DR-134 (DR-71): the capture is the native dry run of the
+            // adopted policy.
+            let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
             let result1 = runtime_manager
-                .capture_results(&hash, &deployo1)
+                .capture_results(&hash, &deployo1, &adopted)
                 .await
                 .unwrap();
 
@@ -898,7 +1233,10 @@ async fn capture_result_should_return_the_value_at_the_specified_channel_after_a
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn capture_result_should_handle_multiple_results_and_no_results_appropriately() {
-    with_runtime_manager(|runtime_manager, _, _| async move {
+    // Changed by DR-134 (DR-71): the capture takes the adopted policy.
+    // with_runtime_manager(|runtime_manager, _, _| async move {
+    with_runtime_manager(|runtime_manager, _, genesis_block| async move {
+        let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
         let n = 8;
         let returns = (1..=n)
             .map(|i| format!("return!({})", i))
@@ -911,12 +1249,16 @@ async fn capture_result_should_handle_multiple_results_and_no_results_appropriat
             construct_deploy::source_deploy(term_no_res, 0, None, None, None, None, None).unwrap();
 
         let many_results = runtime_manager
-            .capture_results(&RuntimeManager::empty_state_hash_fixed(), &deploy)
+            .capture_results(&RuntimeManager::empty_state_hash_fixed(), &deploy, &adopted)
             .await
             .unwrap();
 
         let no_results = runtime_manager
-            .capture_results(&RuntimeManager::empty_state_hash_fixed(), &deploy_no_res)
+            .capture_results(
+                &RuntimeManager::empty_state_hash_fixed(),
+                &deploy_no_res,
+                &adopted,
+            )
             .await
             .unwrap();
 
@@ -931,7 +1273,10 @@ async fn capture_result_should_handle_multiple_results_and_no_results_appropriat
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn capture_result_should_throw_error_if_execution_fails() {
-    with_runtime_manager(|runtime_manager, _, _| async move {
+    // Changed by DR-134 (DR-71): the capture takes the adopted policy.
+    // with_runtime_manager(|runtime_manager, _, _| async move {
+    with_runtime_manager(|runtime_manager, _, genesis_block| async move {
+        let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
         let deploy = construct_deploy::source_deploy(
             "new return in { return.undefined() }".to_string(),
             0,
@@ -944,7 +1289,7 @@ async fn capture_result_should_throw_error_if_execution_fails() {
         .unwrap();
 
         let result = runtime_manager
-            .capture_results(&RuntimeManager::empty_state_hash_fixed(), &deploy)
+            .capture_results(&RuntimeManager::empty_state_hash_fixed(), &deploy, &adopted)
             .await;
 
         assert!(result.is_err());
@@ -957,11 +1302,16 @@ async fn capture_result_should_throw_error_if_execution_fails() {
 async fn empty_state_hash_should_not_remember_previous_hot_store_state() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
-            let deploy1 = construct_deploy::basic_deploy_data(0, None, None).unwrap();
-            let deploy2 = construct_deploy::basic_deploy_data(0, None, None).unwrap();
+            // Changed by DR-134 (DR-66 item 1): offered deploys.
+            // let deploy1 = construct_deploy::basic_deploy_data(0, None, None).unwrap();
+            // let deploy2 = construct_deploy::basic_deploy_data(0, None, None).unwrap();
+            let deploy1 = offered_deploy::basic_deploy_data(0, None, None).unwrap();
+            let deploy2 = offered_deploy::basic_deploy_data(0, None, None).unwrap();
 
             let hash1 = RuntimeManager::empty_state_hash_fixed();
-            let _ = compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let _ = compute_state(
+            let _ = compute_offered_state(
                 &mut runtime_manager,
                 &genesis_context,
                 deploy1,
@@ -970,7 +1320,9 @@ async fn empty_state_hash_should_not_remember_previous_hot_store_state() {
             .await;
 
             let hash2 = RuntimeManager::empty_state_hash_fixed();
-            let _ = compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let _ = compute_state(
+            let _ = compute_offered_state(
                 &mut runtime_manager,
                 &genesis_context,
                 deploy2,
@@ -989,7 +1341,20 @@ async fn empty_state_hash_should_not_remember_previous_hot_store_state() {
 async fn compute_state_should_be_replayed_by_replay_compute_state() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            let deploy = construct_deploy::source_deploy_now_full(
+            // Changed by DR-134 (DR-66 item 1): an offered deploy.
+            // let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = offered_deploy::source_deploy_now_full(
+                // Changed by DR-134 (DR-66 item 1): the term drops the last
+                // closing brace of dev's term. That brace closes no block, so
+                // dev's term does not parse (line 18, column 13 of the term).
+                // The check of an offered deploy refuses a term that does not
+                // parse before execution (`analysis_rejection` in
+                // casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/gate.rs),
+                // so play rejected the candidate and returned no processed
+                // deploy to replay. The term of the Scala original
+                // (RuntimeManagerTest.scala) has no such brace. The removed
+                // line of the term, after the line `              }`:
+                //             }
                 r#"
                   new deployerId(`rho:system:deployerId`),
                   rl(`rho:registry:lookup`),
@@ -1007,7 +1372,6 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                   }
                 }
               }
-            }
                 "#
                 .to_string(),
                 None,
@@ -1023,6 +1387,9 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                 .unwrap()
                 .as_millis();
 
+            // Added by DR-134 (DR-66 item 1): offered compute and replay take
+            // the adopted policy of the test genesis.
+            let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
             let genesis_post_state = genesis_block.body.state.post_state_hash;
             let block_data = BlockData {
                 time_stamp: time as i64,
@@ -1032,35 +1399,52 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
             };
 
             let invalid_blocks = HashMap::new();
-            let (play_post_state, processed_deploys, processed_system_deploys) = runtime_manager
-                .compute_state(
-                    &genesis_post_state,
-                    vec![deploy],
-                    vec![
-                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
-                        ),
-                    ],
-                    block_data.clone(),
-                    Some(invalid_blocks.clone()),
-                )
-                .await
-                .unwrap();
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let (play_post_state, processed_deploys, processed_system_deploys) = runtime_manager
+            //     .compute_state(
+            //         &genesis_post_state,
+            //         vec![deploy],
+            let (play_post_state, processed_deploys, processed_system_deploys, _bonds) =
+                runtime_manager
+                    .compute_state_with_bonds_envelopes(
+                        &genesis_post_state,
+                        vec![PendingDeployCandidate::Envelope(deploy.envelope)],
+                        vec![
+                            casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                                CloseBlockDeploy {
+                                    initial_rand:
+                                        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                            block_data.sender.clone(),
+                                            block_data.seq_num,
+                                        ),
+                                },
+                            ),
+                        ],
+                        block_data.clone(),
+                        Some(invalid_blocks.clone()),
+                        // Added by DR-134 (DR-66 item 1): no play budget, as
+                        // `compute_state` passes none, and the adopted policy.
+                        None,
+                        Some(&adopted),
+                    )
+                    .await
+                    .unwrap();
 
+            // Changed by DR-134 (DR-66 item 1): the offered replay checks the
+            // post-state that play computed.
+            // let replay_compute_state_result = runtime_manager
+            //     .replay_compute_state(
             let replay_compute_state_result = runtime_manager
-                .replay_compute_state(
+                .replay_compute_state_envelopes_with_policy(
                     &genesis_post_state,
                     processed_deploys,
                     processed_system_deploys,
                     &block_data,
                     Some(invalid_blocks),
                     false,
+                    // Added by DR-134 (DR-66 item 1).
+                    Some(&adopted),
+                    Some(&play_post_state),
                 )
                 .await
                 .unwrap();
@@ -1078,7 +1462,10 @@ async fn replay_attribution_preserves_success_failure_and_cache_paths() {
 
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
-            let deploy = construct_deploy::source_deploy_now_full(
+            // Changed by DR-134 (DR-65, gap G2): an offered deploy. Protocol 6
+            // refuses the body-only deploy of dev.
+            // let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = offered_deploy::source_deploy_now_full(
                 "@\"attribution\"!(1)".to_string(),
                 None,
                 None,
@@ -1086,10 +1473,14 @@ async fn replay_attribution_preserves_success_failure_and_cache_paths() {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("an offered attribution deploy builds");
             let initial = genesis_block.body.state.post_state_hash;
+            // Changed by DR-134 (DR-65, gap G2): the offered compute.
+            // let (expected, processed) =
+            //     compute_state(&mut runtime_manager, &genesis_context, deploy, &initial).await;
             let (expected, processed) =
-                compute_state(&mut runtime_manager, &genesis_context, deploy, &initial).await;
+                compute_offered_state(&mut runtime_manager, &genesis_context, deploy, &initial)
+                    .await;
             runtime_manager
                 .delete_mergeable_channels(
                     &expected,
@@ -1098,18 +1489,38 @@ async fn replay_attribution_preserves_success_failure_and_cache_paths() {
                 )
                 .unwrap();
             for attempt in 0..3 {
-                let mut candidate = processed.clone();
-                if attempt == 0 {
-                    candidate.cost.cost -= 1;
-                }
+                // Changed by DR-134 (DR-65, gap G2): an offered deploy binds its
+                // cost to its committed evidence, so the failing attempt lowers
+                // the usage by one phlo everywhere the deploy commits it
+                // (`lower_committed_usage` below). That deploy decodes, and
+                // replay rejects it, as dev's replay rejects the lowered cost.
+                // let mut candidate = processed.clone();
+                // if attempt == 0 {
+                //     candidate.cost.cost -= 1;
+                // }
+                let candidate = match attempt {
+                    0 => ProcessedUserDeploy::from_proto(lower_committed_usage(&processed))
+                        .expect("the consistently lowered deploy decodes"),
+                    _ => processed.clone(),
+                };
                 let recorder = DebuggingRecorder::new();
                 let snapshotter = recorder.snapshotter();
                 let guard = metrics::set_default_local_recorder(&recorder);
-                let result = replay_compute_state(
+                // Changed by DR-134 (DR-65, gap G2): the offered replay, which
+                // checks the post-state that play computed.
+                // let result = replay_compute_state(
+                //     &mut runtime_manager,
+                //     &genesis_context,
+                //     candidate,
+                //     &initial,
+                // )
+                // .await;
+                let result = replay_offered_state(
                     &mut runtime_manager,
                     &genesis_context,
                     candidate,
                     &initial,
+                    &expected,
                 )
                 .await;
                 drop(guard);
@@ -1150,9 +1561,20 @@ async fn replay_attribution_preserves_success_failure_and_cache_paths() {
 async fn compute_state_should_charge_deploys_separately() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 { p.iter().map(|d| d.cost.cost).sum() }
+            // Changed by DR-134 (DR-65, gap G2): the cost of an offered deploy is
+            // its native cost (its COMMs and its stored bytes at the schedule
+            // price). There is no precharge and no refund.
+            // fn deploy_cost(p: &[ProcessedDeploy]) -> u64 { p.iter().map(|d| d.cost.cost).sum() }
+            fn deploy_cost(p: &[ProcessedUserDeploy]) -> u64 {
+                p.iter().map(|d| d.cost().cost).sum()
+            }
 
-            let deploy0 = construct_deploy::source_deploy(
+            // Changed by DR-134 (DR-65, gap G2): offers of one signer
+            // (DEFAULT_SEC). Each one is the same envelope as the offer of the
+            // same term below, because the signer, the term and the timestamp
+            // are the same, so the compound batch holds both of them.
+            // let deploy0 = construct_deploy::source_deploy(
+            let deploy0 = offered_deploy::source_deploy(
                 r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
                 123,
                 None,
@@ -1161,9 +1583,11 @@ async fn compute_state_should_charge_deploys_separately() {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("offer 0 builds");
 
-            let deploy1 = construct_deploy::source_deploy(
+            // Changed by DR-134 (DR-65, gap G2): an offer of the same signer.
+            // let deploy1 = construct_deploy::source_deploy(
+            let deploy1 = offered_deploy::source_deploy(
                 r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(10) } "#
                     .to_string(),
                 123,
@@ -1173,7 +1597,7 @@ async fn compute_state_should_charge_deploys_separately() {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("offer 1 builds");
 
             let time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1187,21 +1611,42 @@ async fn compute_state_should_charge_deploys_separately() {
                 sender: genesis_context.validator_pks()[0].clone(),
                 seq_num: 0,
             };
+            // Added by DR-134 (DR-65, gap G2): the offered play takes the
+            // adopted policy of the test genesis.
+            let adopted = adopted_policy(&runtime_manager, &genesis_context.genesis_block).await;
 
             let invalid_blocks = HashMap::new();
-            let (_, first_deploy, _) = runtime_manager
-                .compute_state(
+            // Changed by DR-134 (DR-65, gap G2): the offered play of the first
+            // offer alone.
+            // let (_, first_deploy, _) = runtime_manager
+            //     .compute_state(
+            //         &genesis_post_state,
+            //         vec![construct_deploy::source_deploy(
+            //             r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
+            //             123,
+            //             None,
+            //             None,
+            //             None,
+            //             None,
+            //             None,
+            //         )
+            //         .unwrap()],
+            let (_, first_deploy, _, _) = runtime_manager
+                .compute_state_with_bonds_envelopes(
                     &genesis_post_state,
-                    vec![construct_deploy::source_deploy(
-                        r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
-                        123,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .unwrap()],
+                    vec![PendingDeployCandidate::Envelope(
+                        offered_deploy::source_deploy(
+                            r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
+                            123,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .expect("offer 0 builds")
+                        .envelope,
+                    )],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
                             CloseBlockDeploy {
@@ -1215,24 +1660,47 @@ async fn compute_state_should_charge_deploys_separately() {
                     ],
                     block_data.clone(),
                     Some(invalid_blocks.clone()),
+                    // Added by DR-134 (DR-65, gap G2): no play budget, as
+                    // `compute_state` passes none, and the adopted policy.
+                    None,
+                    Some(&adopted),
                 )
                 .await
-                .unwrap();
+                .expect("the first offer plays alone");
 
-            let (_, second_deploy, _) = runtime_manager
-                .compute_state(
+            // Changed by DR-134 (DR-65, gap G2): the offered play of the second
+            // offer alone.
+            // let (_, second_deploy, _) = runtime_manager
+            //     .compute_state(
+            //         &genesis_post_state,
+            //         vec![construct_deploy::source_deploy(
+            //             r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(10) } "#
+            //                 .to_string(),
+            //             123,
+            //             None,
+            //             None,
+            //             None,
+            //             None,
+            //             None,
+            //         )
+            //         .unwrap()],
+            let (_, second_deploy, _, _) = runtime_manager
+                .compute_state_with_bonds_envelopes(
                     &genesis_post_state,
-                    vec![construct_deploy::source_deploy(
-                        r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(10) } "#
-                            .to_string(),
-                        123,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .unwrap()],
+                    vec![PendingDeployCandidate::Envelope(
+                        offered_deploy::source_deploy(
+                            r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!(10) } "#
+                                .to_string(),
+                            123,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .expect("offer 1 builds")
+                        .envelope,
+                    )],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
                             CloseBlockDeploy {
@@ -1246,14 +1714,26 @@ async fn compute_state_should_charge_deploys_separately() {
                     ],
                     block_data.clone(),
                     Some(invalid_blocks.clone()),
+                    // Added by DR-134 (DR-65, gap G2).
+                    None,
+                    Some(&adopted),
                 )
                 .await
-                .unwrap();
+                .expect("the second offer plays alone");
 
-            let (_, compound_deploy, _) = runtime_manager
-                .compute_state(
+            // Changed by DR-134 (DR-65, gap G2): the offered play of the batch of
+            // both offers.
+            // let (_, compound_deploy, _) = runtime_manager
+            //     .compute_state(
+            //         &genesis_post_state,
+            //         vec![deploy0, deploy1],
+            let (_, compound_deploy, _, _) = runtime_manager
+                .compute_state_with_bonds_envelopes(
                     &genesis_post_state,
-                    vec![deploy0, deploy1],
+                    vec![
+                        PendingDeployCandidate::Envelope(deploy0.envelope),
+                        PendingDeployCandidate::Envelope(deploy1.envelope),
+                    ],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
                             CloseBlockDeploy {
@@ -1267,9 +1747,12 @@ async fn compute_state_should_charge_deploys_separately() {
                     ],
                     block_data.clone(),
                     Some(invalid_blocks.clone()),
+                    // Added by DR-134 (DR-65, gap G2).
+                    None,
+                    Some(&adopted),
                 )
                 .await
-                .unwrap();
+                .expect("the batch of both offers plays");
 
             assert!(first_deploy.len() == 1);
             assert!(second_deploy.len() == 1);
@@ -1282,16 +1765,25 @@ async fn compute_state_should_charge_deploys_separately() {
             assert!(first_deploy_cost < compound_deploy_cost);
             assert!(second_deploy_cost < compound_deploy_cost);
 
+            // Changed by DR-134 (DR-65, gap G2): an offered deploy is matched by
+            // its envelope identity.
+            // let matched_first = compound_deploy
+            //     .iter()
+            //     .find(|d| d.deploy == first_deploy[0].deploy)
             let matched_first = compound_deploy
                 .iter()
-                .find(|d| d.deploy == first_deploy[0].deploy)
+                .find(|d| d.identity_bytes() == first_deploy[0].identity_bytes())
                 .cloned()
                 .expect("Expected at least one matching deploy");
             assert_eq!(first_deploy_cost, deploy_cost(&[matched_first]));
 
+            // Changed by DR-134 (DR-65, gap G2): matched by envelope identity.
+            // let matched_second = compound_deploy
+            //     .iter()
+            //     .find(|d| d.deploy == second_deploy[0].deploy)
             let matched_second = compound_deploy
                 .iter()
-                .find(|d| d.deploy == second_deploy[0].deploy)
+                .find(|d| d.identity_bytes() == second_deploy[0].identity_bytes())
                 .cloned()
                 .expect("Expected at least one matching deploy");
             assert_eq!(second_deploy_cost, deploy_cost(&[matched_second]));
@@ -1307,6 +1799,27 @@ async fn compute_state_should_charge_deploys_separately() {
 async fn compute_state_should_just_work() {
     with_runtime_manager(|mut runtime_manager, genesis_context, genesis_block| async move {
       let gen_post_state = genesis_block.body.state.post_state_hash;
+      // Changed by DR-134 (DR-66 item 1): each of the nine contracts starts at
+      // depth 1, not 2. At depth 2 the term makes 999 sends and 999 COMMs,
+      // and each of them adds a measured region. The purse bindings of those
+      // regions pass the per-deploy binding byte limit of protocol 6
+      // (`custody_bytes` in models/src/rust/cost_protocol_limits.rs, which
+      // casper/src/rust/util/rholang/costacc/production_limits.rs binds), so
+      // the offered compute rejected the candidate ("native purse binding
+      // byte limit exceeded", `locate_purses` in
+      // rholang/src/rust/interpreter/accounting/native_phlo_rules/measurements/regions/purses.rs).
+      // At depth 1 the term makes 99 sends and 99 COMMs. It keeps the nine
+      // contracts, their tenfold fan-out and their recursion. The replaced
+      // lines of the term:
+      //         d1!(2) |
+      //         d2!(2) |
+      //         d3!(2) |
+      //         d4!(2) |
+      //         d5!(2) |
+      //         d6!(2) |
+      //         d7!(2) |
+      //         d8!(2) |
+      //         d9!(2)
       let source =  r#"
       new d1,d2,d3,d4,d5,d6,d7,d8,d9 in {
         contract d1(@depth) = {
@@ -1372,21 +1885,26 @@ async fn compute_state_should_just_work() {
             d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1) | d9!(depth - 1)
           }
         } |
-        d1!(2) |
-        d2!(2) |
-        d3!(2) |
-        d4!(2) |
-        d5!(2) |
-        d6!(2) |
-        d7!(2) |
-        d8!(2) |
-        d9!(2)
+        d1!(1) |
+        d2!(1) |
+        d3!(1) |
+        d4!(1) |
+        d5!(1) |
+        d6!(1) |
+        d7!(1) |
+        d8!(1) |
+        d9!(1)
       }
       "#.to_string();
 
-      let deploy = construct_deploy::source_deploy_now_full(source, Some(i64::MAX - 2), None, None, None, None).unwrap();
-      let (play_state_hash1, processed_deploy) = compute_state(&mut runtime_manager, &genesis_context, deploy, &gen_post_state).await;
-      let replay_compute_state_result = replay_compute_state(&mut runtime_manager, &genesis_context, processed_deploy, &gen_post_state).await.unwrap();
+      // Changed by DR-134 (DR-66 item 1): an offered deploy, its offered compute,
+      // and its offered replay, which checks the post-state that play computed.
+      // let deploy = construct_deploy::source_deploy_now_full(source, Some(i64::MAX - 2), None, None, None, None).unwrap();
+      // let (play_state_hash1, processed_deploy) = compute_state(&mut runtime_manager, &genesis_context, deploy, &gen_post_state).await;
+      // let replay_compute_state_result = replay_compute_state(&mut runtime_manager, &genesis_context, processed_deploy, &gen_post_state).await.unwrap();
+      let deploy = offered_deploy::source_deploy_now_full(source, Some(i64::MAX - 2), None, None, None, None).unwrap();
+      let (play_state_hash1, processed_deploy) = compute_offered_state(&mut runtime_manager, &genesis_context, deploy, &gen_post_state).await;
+      let replay_compute_state_result = replay_offered_state(&mut runtime_manager, &genesis_context, processed_deploy, &gen_post_state, &play_state_hash1).await.unwrap();
       assert!(play_state_hash1 == replay_compute_state_result);
       assert!(play_state_hash1 != gen_post_state);
     })
@@ -1394,10 +1912,125 @@ async fn compute_state_should_just_work() {
         .unwrap()
 }
 
-async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
+// Changed by DR-134 (DR-66 item 1): `invalid_replay` plays a body-only deploy,
+// which protocol 6 refuses ("body-only deploys are not supported",
+// casper/src/rust/util/rholang/costacc/offered_only.rs). Its offered form is
+// `invalid_offered_replay` below.
+// async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
+//     with_runtime_manager(
+//         |runtime_manager, genesis_context, genesis_block| async move {
+//             let deploy = construct_deploy::source_deploy_now_full(
+//                 source,
+//                 Some(10000),
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//             )
+//             .unwrap();
+//
+//             let time = SystemTime::now()
+//                 .duration_since(UNIX_EPOCH)
+//                 .unwrap()
+//                 .as_millis() as i64;
+//
+//             let gen_post_state = genesis_block.body.state.post_state_hash;
+//             let block_data = BlockData {
+//                 time_stamp: time,
+//                 block_number: 0,
+//                 sender: genesis_context.validator_pks()[0].clone(),
+//                 seq_num: 0,
+//             };
+//
+//             let invalid_blocks = HashMap::new();
+//
+//             let (_, processed_deploys, processed_system_deploys) = runtime_manager
+//                 .compute_state(
+//                     &gen_post_state,
+//                     vec![deploy],
+//                     vec![
+//                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+//                             CloseBlockDeploy {
+//                                 initial_rand:
+//                                     system_deploy_util::generate_close_deploy_random_seed_from_pk(
+//                                         block_data.sender.clone(),
+//                                         block_data.seq_num,
+//                                     ),
+//                             },
+//                         ),
+//                     ],
+//                     block_data.clone(),
+//                     Some(invalid_blocks.clone()),
+//                 )
+//                 .await
+//                 .unwrap();
+//             let processed_deploy = processed_deploys.into_iter().next().unwrap();
+//             let processed_deploy_cost = processed_deploy.cost.cost;
+//
+//             let invalid_processed_deploy = ProcessedDeploy {
+//                 cost: PCost {
+//                     cost: processed_deploy_cost - 1,
+//                 },
+//                 ..processed_deploy
+//             };
+//
+//             let result = runtime_manager
+//                 .replay_compute_state(
+//                     &gen_post_state,
+//                     vec![invalid_processed_deploy],
+//                     processed_system_deploys,
+//                     &block_data,
+//                     Some(invalid_blocks),
+//                     false,
+//                 )
+//                 .await;
+//
+//             result
+//         },
+//     )
+//     .await?
+// }
+
+/// Added by DR-134 (DR-66 item 1): the rejection of an offered processed
+/// deploy whose cost differs from the usage that its committed evidence
+/// holds (`OfferedProcessedDeploy::evidence` in
+/// models/src/rust/casper/protocol/offered_processed_deploy.rs).
+const OFFERED_COST_DISCREPANCY: &str =
+    "processed funded deploy differs from its signed offer or evidence";
+
+/// Added by DR-134 (DR-66 item 1): `invalid_replay` for an offered deploy.
+/// Play runs the deploy with the close-block system deploy, as
+/// `invalid_replay` does, and `failed` is the failure flag that play must
+/// publish. The offered replay of the play result must reach the play
+/// post-state. That replay rejects a measured usage other than the usage
+/// that the evidence commits (`replay_native_offered_witness` in
+/// casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs),
+/// so the committed usage is the replay cost. The proto form of the processed
+/// deploy then carries the play cost minus 1, as `invalid_replay` sets it.
+/// An offered processed deploy binds its cost to its committed evidence, so
+/// no offered processed deploy holds that cost, and the replay, which checks
+/// the same binding again, never receives it. The result is the lowered cost,
+/// the replay cost and the decode of the lowered proto form.
+// Changed by DR-134 (DR-66 item 1): the result also holds the replay of the
+// processed deploy whose usage `lower_committed_usage` lowers by one phlo in
+// every place that the deploy commits it. That deploy decodes, so replay must
+// reject it, as dev's replay rejects the lowered cost.
+// async fn invalid_offered_replay(
+//     source: String,
+//     failed: bool,
+// ) -> (u64, u64, Result<ProcessedUserDeploy, String>) {
+async fn invalid_offered_replay(
+    source: String,
+    failed: bool,
+) -> (
+    u64,
+    u64,
+    Result<ProcessedUserDeploy, String>,
+    Result<StateHash, CasperError>,
+) {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = offered_deploy::source_deploy_now_full(
                 source,
                 Some(10000),
                 None,
@@ -1405,13 +2038,14 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("an offered test deploy builds");
 
             let time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .expect("the clock is after the epoch")
                 .as_millis() as i64;
 
+            let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
             let gen_post_state = genesis_block.body.state.post_state_hash;
             let block_data = BlockData {
                 time_stamp: time,
@@ -1422,81 +2056,237 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
 
             let invalid_blocks = HashMap::new();
 
-            let (_, processed_deploys, processed_system_deploys) = runtime_manager
-                .compute_state(
+            let (play_post_state, processed_deploys, processed_system_deploys, _bonds) =
+                runtime_manager
+                    .compute_state_with_bonds_envelopes(
+                        &gen_post_state,
+                        vec![PendingDeployCandidate::Envelope(deploy.envelope)],
+                        vec![
+                            casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                                CloseBlockDeploy {
+                                    initial_rand:
+                                        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                            block_data.sender.clone(),
+                                            block_data.seq_num,
+                                        ),
+                                },
+                            ),
+                        ],
+                        block_data.clone(),
+                        Some(invalid_blocks.clone()),
+                        None,
+                        Some(&adopted),
+                    )
+                    .await
+                    .expect("play runs the offered deploy");
+            let processed_deploy = processed_deploys
+                .first()
+                .expect("play returns the offered deploy")
+                .clone();
+            assert_eq!(
+                processed_deploy.is_failed(),
+                failed,
+                "play publishes the expected failure flag"
+            );
+            let processed_deploy_cost = processed_deploy.cost().cost;
+
+            let replay_post_state = runtime_manager
+                .replay_compute_state_envelopes_with_policy(
                     &gen_post_state,
-                    vec![deploy],
-                    vec![
-                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
-                        ),
-                    ],
-                    block_data.clone(),
+                    processed_deploys,
+                    // Changed by DR-134 (DR-66 item 1): the lowered replay
+                    // below takes the same system deploys.
+                    // processed_system_deploys,
+                    processed_system_deploys.clone(),
+                    &block_data,
+                    // Changed by DR-134 (DR-66 item 1).
+                    // Some(invalid_blocks),
                     Some(invalid_blocks.clone()),
+                    false,
+                    Some(&adopted),
+                    Some(&play_post_state),
                 )
                 .await
-                .unwrap();
-            let processed_deploy = processed_deploys.into_iter().next().unwrap();
-            let processed_deploy_cost = processed_deploy.cost.cost;
+                .expect("the offered replay accepts the deploy that play processed");
+            assert_eq!(replay_post_state, play_post_state);
+            let replay_cost = processed_deploy
+                .as_offered()
+                .expect("play processes an offered deploy")
+                .evidence(models::rust::cost_protocol_limits::offered_funded_v6_limits().evidence)
+                .expect("the committed evidence decodes")
+                .phlo_used;
 
-            let invalid_processed_deploy = ProcessedDeploy {
-                cost: PCost {
-                    cost: processed_deploy_cost - 1,
-                },
-                ..processed_deploy
-            };
-
-            let result = runtime_manager
-                .replay_compute_state(
+            let initial_cost = processed_deploy_cost
+                .checked_sub(1)
+                .expect("the play cost is positive");
+            let mut invalid_proto = processed_deploy.to_proto();
+            invalid_proto.cost = Some(PCost { cost: initial_cost });
+            // Added by DR-134 (DR-66 item 1): the deploy that commits the
+            // lowered usage everywhere decodes, and replay receives it.
+            let lowered = ProcessedUserDeploy::from_proto(lower_committed_usage(&processed_deploy))
+                .expect("the consistently lowered deploy satisfies every binding of its type");
+            assert_eq!(lowered.cost().cost, initial_cost);
+            let lowered_replay = runtime_manager
+                .replay_compute_state_envelopes_with_policy(
                     &gen_post_state,
-                    vec![invalid_processed_deploy],
+                    vec![lowered],
                     processed_system_deploys,
                     &block_data,
                     Some(invalid_blocks),
                     false,
+                    Some(&adopted),
+                    Some(&play_post_state),
                 )
                 .await;
-
-            result
+            // Changed by DR-134 (DR-66 item 1): the replay of the lowered
+            // deploy is part of the result.
+            // (
+            //     initial_cost,
+            //     replay_cost,
+            //     ProcessedUserDeploy::from_proto(invalid_proto),
+            // )
+            (
+                initial_cost,
+                replay_cost,
+                ProcessedUserDeploy::from_proto(invalid_proto),
+                lowered_replay,
+            )
         },
     )
-    .await?
+    .await
+    .expect("the runtime manager of the test genesis starts")
 }
+
+/// Added by DR-134 (DR-66 item 1): the proto form of `processed` with its usage
+/// lowered by one phlo in every place that the processed deploy commits it:
+/// the cost, the committed usage and the fresh phlo of the evidence, and the
+/// resource debit and post balance of the wallet receipt. The lowered form
+/// satisfies every binding of the offered processed deploy type, so only the
+/// replay of the run can reject it.
+fn lower_committed_usage(processed: &ProcessedUserDeploy) -> models::casper::ProcessedDeployProto {
+    use models::rust::native_wallet_receipt::{NativeWalletReceiptLimits, NativeWalletReceiptV1};
+    use models::rust::phlo_wire::PhloWireLimits;
+
+    let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
+    let offered = processed
+        .as_offered()
+        .expect("play processes an offered deploy");
+    let mut evidence = offered
+        .evidence(protocol.evidence)
+        .expect("the committed evidence decodes");
+    let wallet_limits = NativeWalletReceiptLimits {
+        wire: PhloWireLimits {
+            total_bytes: protocol.evidence.field_bytes,
+            field_bytes: protocol.evidence.field_bytes,
+        },
+        payers: protocol.envelope.payload.funding.sources,
+    };
+    let mut wallet = NativeWalletReceiptV1::decode(evidence.wallet_settlement, wallet_limits)
+        .expect("the committed wallet receipt decodes");
+    assert_eq!(
+        evidence.retained_phlo, 0,
+        "an owner-direct offer retains no phlo"
+    );
+    assert_eq!(wallet.rows.len(), 1, "an owner-direct offer has one payer");
+    let price = u128::from(evidence.phlo_price);
+    evidence.phlo_used = evidence
+        .phlo_used
+        .checked_sub(1)
+        .expect("the committed usage is positive");
+    evidence.fresh_phlo = evidence
+        .fresh_phlo
+        .checked_sub(1)
+        .expect("the fresh phlo is positive");
+    wallet.resource_rev -= price;
+    wallet.rows[0].resource_rev -= price;
+    wallet.rows[0].post_balance += evidence.phlo_price;
+    let wallet_bytes = wallet
+        .encode(wallet_limits)
+        .expect("the lowered wallet receipt encodes");
+    evidence.wallet_settlement = &wallet_bytes;
+    let evidence_bytes = evidence
+        .encode(protocol.evidence)
+        .expect("the lowered evidence encodes");
+    let mut proto = processed.to_proto();
+    proto.cost = Some(PCost {
+        cost: evidence.phlo_used,
+    });
+    proto.native_cost_evidence = Some(evidence_bytes.into());
+    proto
+}
+
+/// Added by DR-134 (DR-66 item 1): the replay rejection of a deploy whose
+/// committed usage is lower than the usage that the run records
+/// (`decode_committed_runtime_recording` in
+/// casper/src/rust/util/rholang/costacc/offered_evidence.rs).
+const OFFERED_REPLAY_COST_DISCREPANCY: &str =
+    "native budget recording differs from committed offer or usage";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replaycomputestate_should_catch_discrepancies_in_initial_and_replay_cost_when_no_errors_are_thrown(
 ) {
-    let result = invalid_replay("@0!(0) | for(@0 <- @0){ Nil }".to_string()).await;
-    match result {
-        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostMismatch {
-            initial_cost,
-            replay_cost,
-        })) => {
-            assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
-        }
-        _ => panic!("Expected ReplayCostMismatch error"),
-    }
+    // Changed by DR-134 (DR-66 item 1): the offered form. The lowered cost is
+    // one less than the replay cost, and the processed deploy that carries it
+    // is rejected.
+    // let result = invalid_replay("@0!(0) | for(@0 <- @0){ Nil }".to_string()).await;
+    // match result {
+    //     Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostMismatch {
+    //         initial_cost,
+    //         replay_cost,
+    //     })) => {
+    //         assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
+    //     }
+    //     _ => panic!("Expected ReplayCostMismatch error"),
+    // }
+    // Changed by DR-134 (DR-66 item 1): the replay of the consistently
+    // lowered deploy is also checked.
+    // let (initial_cost, replay_cost, invalid) =
+    let (initial_cost, replay_cost, invalid, lowered_replay) =
+        invalid_offered_replay("@0!(0) | for(@0 <- @0){ Nil }".to_string(), false).await;
+    assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
+    assert_eq!(
+        invalid.expect_err("a processed deploy with the lowered cost is rejected"),
+        OFFERED_COST_DISCREPANCY
+    );
+    let error = lowered_replay.expect_err("replay rejects the consistently lowered usage");
+    assert!(
+        error.to_string().contains(OFFERED_REPLAY_COST_DISCREPANCY),
+        "replay rejects the lowered usage as a cost discrepancy: {error}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replaycomputestate_should_not_catch_discrepancies_in_initial_and_replay_cost_when_user_errors_are_thrown(
 ) {
-    let result = invalid_replay("@0!(0) | for(@x <- @0){ x.undefined() }".to_string()).await;
-    match result {
-        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostMismatch {
-            initial_cost,
-            replay_cost,
-        })) => {
-            assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
-        }
-        _ => panic!("Expected ReplayCostMismatch error"),
-    }
+    // Changed by DR-134 (DR-66 item 1): the offered form, for a deploy that
+    // throws a user error. Dev expects the discrepancy to be caught here too.
+    // A failed offered deploy is charged its measured usage, and its cost has
+    // the same binding to its evidence.
+    // let result = invalid_replay("@0!(0) | for(@x <- @0){ x.undefined() }".to_string()).await;
+    // match result {
+    //     Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostMismatch {
+    //         initial_cost,
+    //         replay_cost,
+    //     })) => {
+    //         assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
+    //     }
+    //     _ => panic!("Expected ReplayCostMismatch error"),
+    // }
+    // Changed by DR-134 (DR-66 item 1): the replay of the consistently
+    // lowered deploy is also checked.
+    // let (initial_cost, replay_cost, invalid) =
+    let (initial_cost, replay_cost, invalid, lowered_replay) =
+        invalid_offered_replay("@0!(0) | for(@x <- @0){ x.undefined() }".to_string(), true).await;
+    assert_eq!(initial_cost.checked_add(1), Some(replay_cost));
+    assert_eq!(
+        invalid.expect_err("a processed deploy with the lowered cost is rejected"),
+        OFFERED_COST_DISCREPANCY
+    );
+    let error = lowered_replay.expect_err("replay rejects the consistently lowered usage");
+    assert!(
+        error.to_string().contains(OFFERED_REPLAY_COST_DISCREPANCY),
+        "replay rejects the lowered usage as a cost discrepancy: {error}"
+    );
 }
 
 // This is additional test for sorting with joins and channels inside joins.
@@ -1513,8 +2303,13 @@ async fn joins_should_be_replayed_correctly() {
             }
             "#;
 
+            // Added by DR-134 (DR-66 item 1): offered compute and replay take
+            // the adopted policy of the test genesis.
+            let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
             let gen_post_state = genesis_block.body.state.post_state_hash;
-            let deploy = construct_deploy::source_deploy_now_full(
+            // Changed by DR-134 (DR-66 item 1): an offered deploy.
+            // let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = offered_deploy::source_deploy_now_full(
                 term.to_string(),
                 None,
                 None,
@@ -1537,25 +2332,41 @@ async fn joins_should_be_replayed_correctly() {
             };
 
             let invalid_blocks = HashMap::new();
-            let (state_hash, processed_deploys, processed_sys_deploys) = runtime_manager
-                .compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let (state_hash, processed_deploys, processed_sys_deploys) = runtime_manager
+            //     .compute_state(
+            //         &gen_post_state,
+            //         vec![deploy],
+            let (state_hash, processed_deploys, processed_sys_deploys, _bonds) = runtime_manager
+                .compute_state_with_bonds_envelopes(
                     &gen_post_state,
-                    vec![deploy],
+                    vec![PendingDeployCandidate::Envelope(deploy.envelope)],
                     Vec::new(), // No system deploys
                     block_data.clone(),
                     Some(invalid_blocks.clone()),
+                    // Added by DR-134 (DR-66 item 1): no play budget, as
+                    // `compute_state` passes none, and the adopted policy.
+                    None,
+                    Some(&adopted),
                 )
                 .await
                 .unwrap();
 
+            // Changed by DR-134 (DR-66 item 1): the offered replay checks the
+            // post-state that play computed.
+            // let replay_state_hash = runtime_manager
+            //     .replay_compute_state(
             let replay_state_hash = runtime_manager
-                .replay_compute_state(
+                .replay_compute_state_envelopes_with_policy(
                     &gen_post_state,
                     processed_deploys,
                     processed_sys_deploys,
                     &block_data,
                     Some(invalid_blocks),
                     false,
+                    // Added by DR-134 (DR-66 item 1).
+                    Some(&adopted),
+                    Some(&state_hash),
                 )
                 .await
                 .unwrap();
@@ -1591,12 +2402,21 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
     )
     .expect("Failed to read bridge.rho");
 
+    // Added by DR-134 (DR-66 item 1): offered compute and replay take the
+    // adopted policy of the test genesis. A third runtime manager loads it, so
+    // that the play and replay managers run no other evaluation.
+    let mut kvm_policy = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (rm_policy, _) = mk_runtime_manager_with_history_at(&mut *kvm_policy).await;
+    let adopted = adopted_policy(&rm_policy, &genesis_block).await;
+
     let mut failures = Vec::new();
     for attempt in 0..10 {
         let mut kvm_play = mk_test_rnode_store_manager_from_genesis(&genesis_context);
         let (rm_play, _) = mk_runtime_manager_with_history_at(&mut *kvm_play).await;
 
-        let deploy = construct_deploy::source_deploy_now_full(
+        // Changed by DR-134 (DR-66 item 1): an offered deploy.
+        // let deploy = construct_deploy::source_deploy_now_full(
+        let deploy = offered_deploy::source_deploy_now_full(
             bridge_rho.clone(),
             None,
             None,
@@ -1607,36 +2427,58 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
         .unwrap();
 
         let play_block_data = BlockData {
-            time_stamp: deploy.data.time_stamp,
+            // Changed by DR-134 (DR-66 item 1).
+            // time_stamp: deploy.data.time_stamp,
+            time_stamp: deploy.envelope.body().time_stamp,
             block_number: 1,
             sender: genesis_context.validator_pks()[0].clone(),
             seq_num: 1,
         };
 
-        let (_play_post, play_deploys, play_sys_deploys) = rm_play
-            .compute_state(
+        // Changed by DR-134 (DR-66 item 1): the offered compute. The replay
+        // below checks the play post-state.
+        // let (_play_post, play_deploys, play_sys_deploys) = rm_play
+        //     .compute_state(
+        //         &genesis_post_state,
+        //         vec![deploy],
+        //         Vec::new(),
+        //         play_block_data.clone(),
+        //         None,
+        //     )
+        let (play_post, play_deploys, play_sys_deploys, _bonds) = rm_play
+            .compute_state_with_bonds_envelopes(
                 &genesis_post_state,
-                vec![deploy],
+                vec![PendingDeployCandidate::Envelope(deploy.envelope)],
                 Vec::new(),
                 play_block_data.clone(),
                 None,
+                None,
+                Some(&adopted),
             )
             .await
             .unwrap();
 
-        let play_cost = play_deploys[0].cost.cost;
+        // Changed by DR-134 (DR-66 item 1).
+        // let play_cost = play_deploys[0].cost.cost;
+        let play_cost = play_deploys[0].cost().cost;
 
         let mut kvm_replay = mk_test_rnode_store_manager_from_genesis(&genesis_context);
         let (rm_replay, _) = mk_runtime_manager_with_history_at(&mut *kvm_replay).await;
 
+        // Changed by DR-134 (DR-66 item 1): the offered replay.
+        // let replay_result = rm_replay
+        //     .replay_compute_state(
         let replay_result = rm_replay
-            .replay_compute_state(
+            .replay_compute_state_envelopes_with_policy(
                 &genesis_post_state,
                 play_deploys,
                 play_sys_deploys,
                 &play_block_data,
                 None,
                 false,
+                // Added by DR-134 (DR-66 item 1).
+                Some(&adopted),
+                Some(&play_post),
             )
             .await;
 
@@ -1686,6 +2528,9 @@ async fn cross_deploy_bridge_full_admin_flow() {
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
     let (rm, _) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+    // Added by DR-134 (DR-66 item 1): offered compute takes the adopted policy
+    // of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_context.genesis_block).await;
 
     let uri_regex = regex::Regex::new(r"rho:id:[a-zA-Z0-9]+").unwrap();
 
@@ -1706,13 +2551,21 @@ async fn cross_deploy_bridge_full_admin_flow() {
     // Step 1: Deploy bridge.rho
     tracing::info!("Step 1: Deploying bridge.rho");
     block_number += 1;
+    // Changed by DR-134 (DR-66 item 1): an offered deploy.
+    // let deploy1 =
+    //     construct_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap();
     let deploy1 =
-        construct_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap();
+        offered_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap();
 
-    let (post_state_1, pd1_vec, _) = rm
-        .compute_state(
+    // Changed by DR-134 (DR-66 item 1): the offered compute.
+    // let (post_state_1, pd1_vec, _) = rm
+    //     .compute_state(
+    //         &current_state,
+    //         vec![deploy1],
+    let (post_state_1, pd1_vec, _, _bonds) = rm
+        .compute_state_with_bonds_envelopes(
             &current_state,
-            vec![deploy1],
+            vec![PendingDeployCandidate::Envelope(deploy1.envelope)],
             Vec::new(),
             BlockData {
                 time_stamp: SystemTime::now()
@@ -1724,26 +2577,45 @@ async fn cross_deploy_bridge_full_admin_flow() {
                 seq_num: block_number as i32,
             },
             None,
+            // Added by DR-134 (DR-66 item 1): no play budget, as
+            // `compute_state` passes none, and the adopted policy.
+            None,
+            Some(&adopted),
         )
         .await
         .unwrap();
 
     let pd1 = &pd1_vec[0];
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !pd1.is_failed,
+    //     "Step 1: bridge deploy failed: {:?}",
+    //     pd1.system_deploy_error
+    // );
+    // tracing::info!(
+    //     "Step 1: cost={}, events={}",
+    //     pd1.cost.cost,
+    //     pd1.deploy_log.len()
+    // );
     assert!(
-        !pd1.is_failed,
+        !pd1.is_failed(),
         "Step 1: bridge deploy failed: {:?}",
-        pd1.system_deploy_error
+        pd1.cost()
     );
     tracing::info!(
         "Step 1: cost={}, events={}",
-        pd1.cost.cost,
-        pd1.deploy_log.len()
+        pd1.cost().cost,
+        pd1.deploy_log().len()
     );
 
     let deploy1_data = rm
         .get_data(
             post_state_1.clone(),
-            &make_deploy_id_par(&pd1_vec[0].deploy.sig),
+            // Changed by DR-134 (DR-66 item 1): `rho:system:deployId` of an
+            // offered deploy is its identity.
+            // &make_deploy_id_par(&pd1_vec[0].deploy.sig),
+            &make_deploy_id_par(pd1_vec[0].identity_bytes()),
         )
         .await
         .unwrap();
@@ -1895,14 +2767,23 @@ in {{
         block_number += 1;
         tracing::info!("{}", name);
 
+        // Changed by DR-134 (DR-66 item 1): an offered deploy.
+        // let deploy =
+        //     construct_deploy::source_deploy_now_full(code.clone(), None, None, None, None, None)
+        //         .unwrap();
         let deploy =
-            construct_deploy::source_deploy_now_full(code.clone(), None, None, None, None, None)
+            offered_deploy::source_deploy_now_full(code.clone(), None, None, None, None, None)
                 .unwrap();
 
-        let (post_state_n, pdn_vec, _) = rm
-            .compute_state(
+        // Changed by DR-134 (DR-66 item 1): the offered compute.
+        // let (post_state_n, pdn_vec, _) = rm
+        //     .compute_state(
+        //         &current_state,
+        //         vec![deploy],
+        let (post_state_n, pdn_vec, _, _bonds) = rm
+            .compute_state_with_bonds_envelopes(
                 &current_state,
-                vec![deploy],
+                vec![PendingDeployCandidate::Envelope(deploy.envelope)],
                 Vec::new(),
                 BlockData {
                     time_stamp: SystemTime::now()
@@ -1914,38 +2795,68 @@ in {{
                     seq_num: block_number as i32,
                 },
                 None,
+                // Added by DR-134 (DR-66 item 1): no play budget, as
+                // `compute_state` passes none, and the adopted policy.
+                None,
+                Some(&adopted),
             )
             .await
             .unwrap();
 
         let pdn = &pdn_vec[0];
+        // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+        // system deploy error. The message shows its charged cost.
+        // assert!(
+        //     !pdn.is_failed,
+        //     "{}: deploy failed: {:?}",
+        //     name, pdn.system_deploy_error
+        // );
         assert!(
-            !pdn.is_failed,
+            !pdn.is_failed(),
             "{}: deploy failed: {:?}",
-            name, pdn.system_deploy_error
+            name,
+            pdn.cost()
         );
         let deploy_data = rm
             .get_data(
                 post_state_n.clone(),
-                &make_deploy_id_par(&pdn_vec[0].deploy.sig),
+                // Changed by DR-134 (DR-66 item 1): `rho:system:deployId` of
+                // an offered deploy is its identity.
+                // &make_deploy_id_par(&pdn_vec[0].deploy.sig),
+                &make_deploy_id_par(pdn_vec[0].identity_bytes()),
             )
             .await
             .unwrap();
         let has_data = !deploy_data.is_empty();
+        // Changed by DR-134 (DR-66 item 1).
+        // tracing::info!(
+        //     "  {}: cost={}, events={}, deployId_data={}",
+        //     name,
+        //     pdn.cost.cost,
+        //     pdn.deploy_log.len(),
+        //     has_data
+        // );
         tracing::info!(
             "  {}: cost={}, events={}, deployId_data={}",
             name,
-            pdn.cost.cost,
-            pdn.deploy_log.len(),
+            pdn.cost().cost,
+            pdn.deploy_log().len(),
             has_data
         );
 
         if !has_data {
+            // Changed by DR-134 (DR-66 item 1).
+            // failures.push(format!(
+            //     "{} returned no data. cost={}, events={}",
+            //     name,
+            //     pdn.cost.cost,
+            //     pdn.deploy_log.len()
+            // ));
             failures.push(format!(
                 "{} returned no data. cost={}, events={}",
                 name,
-                pdn.cost.cost,
-                pdn.deploy_log.len()
+                pdn.cost().cost,
+                pdn.deploy_log().len()
             ));
         }
         current_state = post_state_n;
@@ -1974,17 +2885,29 @@ async fn bridge_query_survives_multi_parent_merge() {
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
+    // Changed by DR-134 (DR-66 item 1): the deploys of blocks A and Q take the
+    // offered checkpoint. The empty block B keeps the legacy checkpoint.
+    // use casper::rust::util::rholang::interpreter_util::{
+    //     compute_deploys_checkpoint, compute_parents_post_state,
+    // };
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint, compute_parents_post_state,
+        compute_deploys_checkpoint, compute_deploys_checkpoint_envelopes,
+        compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
 
+    // Changed by DR-134 (DR-66 item 1): the shard configuration of an offered
+    // snapshot.
+    // use crate::util::rholang::resources::{
+    //     block_dag_storage_from_dyn, mergeable_store_from_dyn,
+    //     mk_test_rnode_store_manager_from_genesis,
+    // };
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mergeable_store_from_dyn,
-        mk_test_rnode_store_manager_from_genesis,
+        mk_test_rnode_store_manager_from_genesis, offered_shard_conf,
     };
 
     crate::init_logger();
@@ -2011,6 +2934,9 @@ async fn bridge_query_survives_multi_parent_merge() {
         Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
+    // Added by DR-134 (DR-66 item 1): an offered checkpoint takes the adopted
+    // policy of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_block).await;
 
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
@@ -2048,6 +2974,11 @@ async fn bridge_query_survives_multi_parent_merge() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
+        // Added by DR-134 (DR-66 item 1): an offered checkpoint adopts the
+        // genesis policy again under this shard configuration.
+        let offered = offered_shard_conf(&genesis_block);
+        shard_conf.casper_version = offered.casper_version;
+        shard_conf.min_phlo_price = offered.min_phlo_price;
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
@@ -2078,8 +3009,11 @@ async fn bridge_query_survives_multi_parent_merge() {
     .expect("Failed to read bridge.rho");
 
     // --- Block A: bridge deploy from genesis ---
+    // Changed by DR-134 (DR-66 item 1): an offered deploy.
+    // let bridge_deploy =
+    //     construct_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap();
     let bridge_deploy =
-        construct_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap();
+        offered_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap();
 
     let block_a_raw = block_implicits::get_random_block(
         Some(1),
@@ -2087,11 +3021,17 @@ async fn bridge_query_survives_multi_parent_merge() {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(bridge_deploy)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope, and the block takes its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(bridge_deploy)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -2099,18 +3039,30 @@ async fn bridge_query_survives_multi_parent_merge() {
     );
 
     let parents_a = vec![genesis_block.clone()];
-    let deploys_a = proto_util::deploys(&block_a_raw)
-        .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the offered candidate.
+    // let deploys_a = proto_util::deploys(&block_a_raw)
+    //     .into_iter()
+    //     .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //     .collect();
+    let deploys_a = vec![PendingDeployCandidate::Envelope(bridge_deploy.envelope)];
     let snapshot_a = mk_snapshot(&genesis_hash);
-    let checkpoint_a = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_a = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     parents_a,
+    //     deploys_a,
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &snapshot_a,
+    //     &rm,
+    //     BlockData::from_block(&block_a_raw),
+    let checkpoint_a = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         parents_a,
         deploys_a,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_a,
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -2120,20 +3072,30 @@ async fn bridge_query_survives_multi_parent_merge() {
     .await
     .expect("compute block A");
 
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_a.deploys[0].is_failed,
+    //     "Bridge deploy failed: {:?}",
+    //     checkpoint_a.deploys[0].system_deploy_error
+    // );
     assert!(
-        !checkpoint_a.deploys[0].is_failed,
+        !checkpoint_a.deploys[0].is_failed(),
         "Bridge deploy failed: {:?}",
-        checkpoint_a.deploys[0].system_deploy_error
+        checkpoint_a.deploys[0].cost()
     );
 
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a
-        .deploys
-        .clone()
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+    // processed user deploys.
+    // block_a.body.deploys = checkpoint_a
+    //     .deploys
+    //     .clone()
+    //     .into_iter()
+    //     .map(Into::into)
+    //     .collect();
+    block_a.body.deploys = checkpoint_a.deploys.clone();
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -2148,7 +3110,10 @@ async fn bridge_query_survives_multi_parent_merge() {
     let bridge_data = rm
         .get_data(
             checkpoint_a.post_state_hash.clone(),
-            &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
+            // Changed by DR-134 (DR-66 item 1): `rho:system:deployId` of an
+            // offered deploy is its identity.
+            // &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_a.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
@@ -2242,6 +3207,8 @@ async fn bridge_query_survives_multi_parent_merge() {
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("merge parents");
@@ -2280,8 +3247,13 @@ in {{
         query_uri
     );
 
+    // Changed by DR-134 (DR-66 item 1): an offered deploy. Block A is an
+    // ancestor of the query block, so its signer can sign this deploy too.
+    // let query_deploy =
+    //     construct_deploy::source_deploy_now_full(get_nonce_rho, None, None, None, None, None)
+    //         .unwrap();
     let query_deploy =
-        construct_deploy::source_deploy_now_full(get_nonce_rho, None, None, None, None, None)
+        offered_deploy::source_deploy_now_full(get_nonce_rho, None, None, None, None, None)
             .unwrap();
 
     let query_block_raw = block_implicits::get_random_block(
@@ -2290,11 +3262,17 @@ in {{
         Some(merged.state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone(), block_b.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(query_deploy)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope.
+        // Some(vec![ProcessedDeploy::empty(query_deploy)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -2302,18 +3280,30 @@ in {{
     );
 
     let parents_q = vec![block_a.clone(), block_b.clone()];
-    let deploys_q = proto_util::deploys(&query_block_raw)
-        .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the offered candidate.
+    // let deploys_q = proto_util::deploys(&query_block_raw)
+    //     .into_iter()
+    //     .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //     .collect();
+    let deploys_q = vec![PendingDeployCandidate::Envelope(query_deploy.envelope)];
     let snapshot_q = mk_snapshot(&genesis_hash);
-    let checkpoint_q = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_q = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     parents_q,
+    //     deploys_q,
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &snapshot_q,
+    //     &rm,
+    //     BlockData::from_block(&query_block_raw),
+    let checkpoint_q = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         parents_q,
         deploys_q,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_q,
         &rm,
+        Some(&adopted),
         BlockData::from_block(&query_block_raw),
         HashMap::new(),
         None,
@@ -2323,16 +3313,26 @@ in {{
     .await
     .expect("compute query block");
 
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_q.deploys[0].is_failed,
+    //     "Query deploy failed: {:?}",
+    //     checkpoint_q.deploys[0].system_deploy_error
+    // );
     assert!(
-        !checkpoint_q.deploys[0].is_failed,
+        !checkpoint_q.deploys[0].is_failed(),
         "Query deploy failed: {:?}",
-        checkpoint_q.deploys[0].system_deploy_error
+        checkpoint_q.deploys[0].cost()
     );
 
     let query_data = rm
         .get_data(
             checkpoint_q.post_state_hash,
-            &make_deploy_id_par(&checkpoint_q.deploys[0].deploy.sig),
+            // Changed by DR-134 (DR-66 item 1): `rho:system:deployId` of an
+            // offered deploy is its identity.
+            // &make_deploy_id_par(&checkpoint_q.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_q.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
@@ -2365,17 +3365,28 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
+    // Changed by DR-134 (DR-66 item 1): blocks A and B take the offered
+    // checkpoint.
+    // use casper::rust::util::rholang::interpreter_util::{
+    //     compute_deploys_checkpoint, compute_parents_post_state,
+    // };
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint, compute_parents_post_state,
+        compute_deploys_checkpoint_envelopes, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
 
+    // Changed by DR-134 (DR-66 item 1): the shard configuration of an offered
+    // snapshot.
+    // use crate::util::rholang::resources::{
+    //     block_dag_storage_from_dyn, mergeable_store_from_dyn,
+    //     mk_test_rnode_store_manager_from_genesis,
+    // };
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mergeable_store_from_dyn,
-        mk_test_rnode_store_manager_from_genesis,
+        mk_test_rnode_store_manager_from_genesis, offered_shard_conf,
     };
 
     crate::init_logger();
@@ -2400,6 +3411,9 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
+    // Added by DR-134 (DR-66 item 1): an offered checkpoint takes the adopted
+    // policy of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_block).await;
 
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
@@ -2434,6 +3448,11 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
+        // Added by DR-134 (DR-66 item 1): an offered checkpoint adopts the
+        // genesis policy again under this shard configuration.
+        let offered = offered_shard_conf(&genesis_block);
+        shard_conf.casper_version = offered.casper_version;
+        shard_conf.min_phlo_price = offered.min_phlo_price;
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
@@ -2461,7 +3480,9 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let key_b = construct_deploy::DEFAULT_SEC2.clone();
 
     // --- Block A: bridge deploy from genesis (funded deployer A) ---
-    let deploy_a = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): an offered deploy.
+    // let deploy_a = construct_deploy::source_deploy_now_full(
+    let deploy_a = offered_deploy::source_deploy_now_full(
         bridge_rho.clone(),
         None,
         None,
@@ -2477,11 +3498,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_a)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope, and the block takes its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(deploy_a)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -2489,18 +3516,30 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     );
 
     let parents_a = vec![genesis_block.clone()];
-    let deploys_a = proto_util::deploys(&block_a_raw)
-        .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the offered candidate.
+    // let deploys_a = proto_util::deploys(&block_a_raw)
+    //     .into_iter()
+    //     .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //     .collect();
+    let deploys_a = vec![PendingDeployCandidate::Envelope(deploy_a.envelope)];
     let snapshot_a = mk_snapshot(&genesis_hash);
-    let checkpoint_a = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_a = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     parents_a,
+    //     deploys_a,
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &snapshot_a,
+    //     &rm,
+    //     BlockData::from_block(&block_a_raw),
+    let checkpoint_a = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         parents_a,
         deploys_a,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_a,
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -2510,25 +3549,40 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     .await
     .expect("compute block A");
 
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_a.deploys[0].is_failed,
+    //     "Contract A deploy failed: {:?}",
+    //     checkpoint_a.deploys[0].system_deploy_error
+    // );
+    // tracing::info!(
+    //     "Block A: cost={}, events={}",
+    //     checkpoint_a.deploys[0].cost.cost,
+    //     checkpoint_a.deploys[0].deploy_log.len()
+    // );
     assert!(
-        !checkpoint_a.deploys[0].is_failed,
+        !checkpoint_a.deploys[0].is_failed(),
         "Contract A deploy failed: {:?}",
-        checkpoint_a.deploys[0].system_deploy_error
+        checkpoint_a.deploys[0].cost()
     );
     tracing::info!(
         "Block A: cost={}, events={}",
-        checkpoint_a.deploys[0].cost.cost,
-        checkpoint_a.deploys[0].deploy_log.len()
+        checkpoint_a.deploys[0].cost().cost,
+        checkpoint_a.deploys[0].deploy_log().len()
     );
 
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a
-        .deploys
-        .clone()
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+    // processed user deploys.
+    // block_a.body.deploys = checkpoint_a
+    //     .deploys
+    //     .clone()
+    //     .into_iter()
+    //     .map(Into::into)
+    //     .collect();
+    block_a.body.deploys = checkpoint_a.deploys.clone();
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -2537,8 +3591,13 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .expect("dag A");
 
     // --- Block B: second bridge deploy from genesis (sibling branch, funded deployer B) ---
+    // Changed by DR-134 (DR-66 item 1): an offered deploy. Its key differs from
+    // the key of the sibling block A.
+    // let deploy_b =
+    //     construct_deploy::source_deploy_now_full(bridge_rho, None, None, Some(key_b), None, None)
+    //         .unwrap();
     let deploy_b =
-        construct_deploy::source_deploy_now_full(bridge_rho, None, None, Some(key_b), None, None)
+        offered_deploy::source_deploy_now_full(bridge_rho, None, None, Some(key_b), None, None)
             .unwrap();
 
     let block_b_raw = block_implicits::get_random_block(
@@ -2547,11 +3606,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_b)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope, and the block takes its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(deploy_b)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -2559,18 +3624,30 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     );
 
     let parents_b = vec![genesis_block.clone()];
-    let deploys_b = proto_util::deploys(&block_b_raw)
-        .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the offered candidate.
+    // let deploys_b = proto_util::deploys(&block_b_raw)
+    //     .into_iter()
+    //     .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //     .collect();
+    let deploys_b = vec![PendingDeployCandidate::Envelope(deploy_b.envelope)];
     let snapshot_b = mk_snapshot(&genesis_hash);
-    let checkpoint_b = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_b = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     parents_b,
+    //     deploys_b,
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &snapshot_b,
+    //     &rm,
+    //     BlockData::from_block(&block_b_raw),
+    let checkpoint_b = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         parents_b,
         deploys_b,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_b,
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
@@ -2580,25 +3657,40 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     .await
     .expect("compute block B");
 
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_b.deploys[0].is_failed,
+    //     "Contract B deploy failed: {:?}",
+    //     checkpoint_b.deploys[0].system_deploy_error
+    // );
+    // tracing::info!(
+    //     "Block B: cost={}, events={}",
+    //     checkpoint_b.deploys[0].cost.cost,
+    //     checkpoint_b.deploys[0].deploy_log.len()
+    // );
     assert!(
-        !checkpoint_b.deploys[0].is_failed,
+        !checkpoint_b.deploys[0].is_failed(),
         "Contract B deploy failed: {:?}",
-        checkpoint_b.deploys[0].system_deploy_error
+        checkpoint_b.deploys[0].cost()
     );
     tracing::info!(
         "Block B: cost={}, events={}",
-        checkpoint_b.deploys[0].cost.cost,
-        checkpoint_b.deploys[0].deploy_log.len()
+        checkpoint_b.deploys[0].cost().cost,
+        checkpoint_b.deploys[0].deploy_log().len()
     );
 
     let mut block_b = block_b_raw;
     block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b
-        .deploys
-        .clone()
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+    // processed user deploys.
+    // block_b.body.deploys = checkpoint_b
+    //     .deploys
+    //     .clone()
+    //     .into_iter()
+    //     .map(Into::into)
+    //     .collect();
+    block_b.body.deploys = checkpoint_b.deploys.clone();
     block_b.body.system_deploys = checkpoint_b.system_deploys;
     block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
@@ -2618,13 +3710,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             );
 
         let eli_a = create_event_log_index(
-            &checkpoint_a.deploys[0].deploy_log,
+            // Changed by DR-134 (DR-66 item 1).
+            // &checkpoint_a.deploys[0].deploy_log,
+            checkpoint_a.deploys[0].deploy_log(),
             history_repo.clone(),
             &genesis_hash_b256,
             std::collections::BTreeMap::new(),
         );
         let eli_b = create_event_log_index(
-            &checkpoint_b.deploys[0].deploy_log,
+            // Changed by DR-134 (DR-66 item 1).
+            // &checkpoint_b.deploys[0].deploy_log,
+            checkpoint_b.deploys[0].deploy_log(),
             history_repo.clone(),
             &genesis_hash_b256,
             std::collections::BTreeMap::new(),
@@ -2674,11 +3770,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             .collect();
 
         // Search deploy A's event log for COMMs involving racing channels
+        // Changed by DR-134 (DR-66 item 1).
+        // tracing::info!(
+        //     "Searching deploy A events ({} total) for racing channels...",
+        //     checkpoint_a.deploys[0].deploy_log.len()
+        // );
+        // for (idx, event) in checkpoint_a.deploys[0].deploy_log.iter().enumerate() {
         tracing::info!(
             "Searching deploy A events ({} total) for racing channels...",
-            checkpoint_a.deploys[0].deploy_log.len()
+            checkpoint_a.deploys[0].deploy_log().len()
         );
-        for (idx, event) in checkpoint_a.deploys[0].deploy_log.iter().enumerate() {
+        for (idx, event) in checkpoint_a.deploys[0].deploy_log().iter().enumerate() {
             use models::rust::casper::protocol::casper_message::Event as CasperEvent;
             match event {
                 CasperEvent::Comm(comm) => {
@@ -2779,6 +3881,8 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("merge parents");
@@ -2802,8 +3906,12 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
 
         // Identify which deploy was rejected
-        let a_sig = hex::encode(&checkpoint_a.deploys[0].deploy.sig[..8]);
-        let b_sig = hex::encode(&checkpoint_b.deploys[0].deploy.sig[..8]);
+        // Changed by DR-134 (DR-66 item 1): a rejection record of an offered
+        // deploy carries its identity.
+        // let a_sig = hex::encode(&checkpoint_a.deploys[0].deploy.sig[..8]);
+        // let b_sig = hex::encode(&checkpoint_b.deploys[0].deploy.sig[..8]);
+        let a_sig = hex::encode(&checkpoint_a.deploys[0].identity_bytes()[..8]);
+        let b_sig = hex::encode(&checkpoint_b.deploys[0].identity_bytes()[..8]);
         let a_rejected = rejected_sigs.contains(&a_sig);
         let b_rejected = rejected_sigs.contains(&b_sig);
         tracing::warn!(
@@ -2847,14 +3955,19 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let data_a = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
+            // Changed by DR-134 (DR-66 item 1): `rho:system:deployId` of an
+            // offered deploy is its identity.
+            // &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_a.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
     let data_b = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&checkpoint_b.deploys[0].deploy.sig),
+            // Changed by DR-134 (DR-66 item 1).
+            // &make_deploy_id_par(&checkpoint_b.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_b.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
@@ -2879,11 +3992,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
 /// errors were silently swallowed, returning empty results).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exploratory_deploy_async_contract_query() {
-    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    // Changed by DR-134 (DR-66 item 1): the contract key is a funded genesis key.
+    // use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 
+    // Changed by DR-134 (DR-66 item 1, DR-71): the contract installs through an
+    // offered deploy, and the reads take the adopted policy.
+    // with_runtime_manager(
+    //     |runtime_manager, _genesis_context, genesis_block| async move {
     with_runtime_manager(
-        |runtime_manager, _genesis_context, genesis_block| async move {
+        |mut runtime_manager, genesis_context, genesis_block| async move {
             let genesis_state = genesis_block.body.state.post_state_hash.clone();
+            let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
 
             // Deploy a contract with a persistent state channel + persistent consume
             let contract_rho = r#"
@@ -2906,24 +4025,69 @@ in {
 }
 "#;
 
-            // Use a unique key to avoid GPrivate collision with exploratory deploy's DEFAULT_SEC
-            let (contract_key, _) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
-            let deploy = construct_deploy::source_deploy(
+            // Changed by DR-134 (DR-66 item 1): every user deploy is an offered
+            // deploy, so the contract installs through one, signed by the funded
+            // default key. The return channel of an offered deploy is the first
+            // name of its identity rng, so the URI is read there at the
+            // post-state. The names of an exploratory read derive from its own
+            // dry-run identity, so they cannot collide with the contract's names.
+            // // Use a unique key to avoid GPrivate collision with exploratory deploy's DEFAULT_SEC
+            // let (contract_key, _) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
+            // let deploy = construct_deploy::source_deploy(
+            //     contract_rho.to_string(),
+            //     0,
+            //     Some(500_000_000),
+            //     None,
+            //     Some(contract_key),
+            //     None,
+            //     None,
+            // )
+            // .unwrap();
+            //
+            // // Deploy and read URI via capture_results
+            // let uri_pars = runtime_manager
+            //     .capture_results(&genesis_state, &deploy)
+            //     .await
+            //     .expect("deploy contract");
+            let deploy = offered_deploy::source_deploy(
                 contract_rho.to_string(),
                 0,
                 Some(500_000_000),
                 None,
-                Some(contract_key),
+                None,
                 None,
                 None,
             )
             .unwrap();
-
-            // Deploy and read URI via capture_results
+            let deploy_identity = deploy.sig.clone();
+            let (post_state, processed) = compute_offered_state(
+                &mut runtime_manager,
+                &genesis_context,
+                deploy,
+                &genesis_state,
+            )
+            .await;
+            assert!(
+                !processed.is_failed(),
+                "the contract deploy failed at cost {:?}",
+                processed.cost()
+            );
+            let mut return_rand = casper::rust::util::rholang::tools::Tools::user_identity_rng(
+                deploy_identity.as_ref(),
+            );
+            let return_name = models::rhoapi::Par::default().with_unforgeables(vec![
+                models::rhoapi::GUnforgeable {
+                    unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody(
+                        models::rhoapi::GPrivate {
+                            id: return_rand.next().into_iter().map(|b| b as u8).collect(),
+                        },
+                    )),
+                },
+            ]);
             let uri_pars = runtime_manager
-                .capture_results(&genesis_state, &deploy)
+                .get_data(post_state.clone(), &return_name)
                 .await
-                .expect("deploy contract");
+                .expect("read the contract URI");
             assert!(!uri_pars.is_empty(), "Contract deploy returned no URI");
 
             let uri_str = format!("{:?}", uri_pars[0]);
@@ -2934,22 +4098,24 @@ in {
                 .as_str()
                 .to_string();
 
-            // Checkpoint via a fresh runtime so exploratory deploy can see the state
-            let runtime = runtime_manager.spawn_runtime().await.unwrap();
-            let mut runtime_ops = RuntimeOps::new(runtime);
-            runtime_ops
-                .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&genesis_state))
-                .await
-                .expect("reset");
-            let eval_result = runtime_ops.evaluate(&deploy).await.expect("evaluate");
-            assert!(
-                eval_result.errors.is_empty(),
-                "Deploy errors: {:?}",
-                eval_result.errors
-            );
-            let checkpoint = runtime_ops.runtime.create_checkpoint().await;
-            let post_state: StateHash = checkpoint.root.to_bytes_prost();
+            // Changed by DR-134 (DR-66 item 3): the offered compute above made the
+            // post-state; the legacy evaluate is deleted with the legacy meter.
+            // // Checkpoint via a fresh runtime so exploratory deploy can see the state
+            // let runtime = runtime_manager.spawn_runtime().await.unwrap();
+            // let mut runtime_ops = RuntimeOps::new(runtime);
+            // runtime_ops
+            //     .runtime
+            //     .reset(&Blake2b256Hash::from_bytes_prost(&genesis_state))
+            //     .await
+            //     .expect("reset");
+            // let eval_result = runtime_ops.evaluate(&deploy).await.expect("evaluate");
+            // assert!(
+            //     eval_result.errors.is_empty(),
+            //     "Deploy errors: {:?}",
+            //     eval_result.errors
+            // );
+            // let checkpoint = runtime_ops.runtime.create_checkpoint().await;
+            // let post_state: StateHash = checkpoint.root.to_bytes_prost();
             tracing::info!(
                 "Contract at {}, post_state={}",
                 uri,
@@ -2967,7 +4133,7 @@ in {
                 uri
             );
             let (query_result, _) = runtime_manager
-                .play_exploratory_deploy(query_term, &post_state, None)
+                .play_exploratory_deploy(query_term, &post_state, None, &adopted)
                 .await
                 .expect("query exploratory deploy");
             tracing::info!("Query with correct var name: {} pars", query_result.len());
@@ -2988,7 +4154,7 @@ in {
                 uri
             );
             let bad_result = runtime_manager
-                .play_exploratory_deploy(bad_term, &post_state, None)
+                .play_exploratory_deploy(bad_term, &post_state, None, &adopted)
                 .await;
             assert!(
                 bad_result.is_err(),
@@ -3010,6 +4176,9 @@ in {
 async fn parallel_replay_determinism() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
+            // Added by DR-134 (DR-66 item 1): offered compute and replay take
+            // the adopted policy of the test genesis.
+            let adopted = adopted_policy(&runtime_manager, &genesis_block).await;
             let gps = genesis_block.body.state.post_state_hash;
 
             // Registry lookup — system process with internal parallel composition
@@ -3019,7 +4188,9 @@ async fn parallel_replay_determinism() {
                 }
             "#;
 
-            let deploy = construct_deploy::source_deploy_now_full(
+            // Changed by DR-134 (DR-66 item 1): an offered deploy.
+            // let deploy = construct_deploy::source_deploy_now_full(
+            let deploy = offered_deploy::source_deploy_now_full(
                 parallel_contract.to_string(),
                 None,
                 None,
@@ -3042,10 +4213,15 @@ async fn parallel_replay_determinism() {
             };
 
             // Play the deploy with CloseBlockDeploy system deploy
-            let (play_state, processed_deploys, processed_sys_deploys) = runtime_manager
-                .compute_state(
+            // Changed by DR-134 (DR-66 item 1): the offered compute.
+            // let (play_state, processed_deploys, processed_sys_deploys) = runtime_manager
+            //     .compute_state(
+            //         &gps,
+            //         vec![deploy],
+            let (play_state, processed_deploys, processed_sys_deploys, _bonds) = runtime_manager
+                .compute_state_with_bonds_envelopes(
                     &gps,
-                    vec![deploy],
+                    vec![PendingDeployCandidate::Envelope(deploy.envelope)],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
                             CloseBlockDeploy {
@@ -3059,20 +4235,30 @@ async fn parallel_replay_determinism() {
                     ],
                     block_data.clone(),
                     None,
+                    // Added by DR-134 (DR-66 item 1): no play budget, as
+                    // `compute_state` passes none, and the adopted policy.
+                    None,
+                    Some(&adopted),
                 )
                 .await
                 .unwrap();
 
-            let play_cost = processed_deploys[0].cost.cost;
-            let play_failed = processed_deploys[0].is_failed;
-            let play_event_count = processed_deploys[0].deploy_log.len();
+            // Changed by DR-134 (DR-66 item 1).
+            // let play_cost = processed_deploys[0].cost.cost;
+            // let play_failed = processed_deploys[0].is_failed;
+            // let play_event_count = processed_deploys[0].deploy_log.len();
+            let play_cost = processed_deploys[0].cost().cost;
+            let play_failed = processed_deploys[0].is_failed();
+            let play_event_count = processed_deploys[0].deploy_log().len();
             let sys_deploy_count = processed_sys_deploys.len();
 
             // Hash the event log for comparison
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
             let mut hasher = DefaultHasher::new();
-            for ev in &processed_deploys[0].deploy_log {
+            // Changed by DR-134 (DR-66 item 1).
+            // for ev in &processed_deploys[0].deploy_log {
+            for ev in processed_deploys[0].deploy_log() {
                 format!("{:?}", ev).hash(&mut hasher);
             }
             let event_log_hash = hasher.finish();
@@ -3081,14 +4267,21 @@ async fn parallel_replay_determinism() {
                 play_cost, play_failed, play_event_count, sys_deploy_count, event_log_hash, &play_state[..8]);
 
             // Replay the same deploy — must produce identical state and cost
+            // Changed by DR-134 (DR-66 item 1): the offered replay checks the
+            // post-state that play computed.
+            // let replay_state = runtime_manager
+            //     .replay_compute_state(
             let replay_state = runtime_manager
-                .replay_compute_state(
+                .replay_compute_state_envelopes_with_policy(
                     &gps,
                     processed_deploys,
                     processed_sys_deploys,
                     &block_data,
                     None,
                     false,
+                    // Added by DR-134 (DR-66 item 1).
+                    Some(&adopted),
+                    Some(&play_state),
                 )
                 .await;
 
@@ -3144,17 +4337,28 @@ async fn stale_diff_application_corrupts_merged_state() {
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
+    // Changed by DR-134 (DR-66 item 1): blocks A to D take the offered
+    // checkpoint.
+    // use casper::rust::util::rholang::interpreter_util::{
+    //     compute_deploys_checkpoint, compute_parents_post_state,
+    // };
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint, compute_parents_post_state,
+        compute_deploys_checkpoint_envelopes, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
 
+    // Changed by DR-134 (DR-66 item 1): the shard configuration of an offered
+    // snapshot.
+    // use crate::util::rholang::resources::{
+    //     block_dag_storage_from_dyn, mergeable_store_from_dyn,
+    //     mk_test_rnode_store_manager_from_genesis,
+    // };
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mergeable_store_from_dyn,
-        mk_test_rnode_store_manager_from_genesis,
+        mk_test_rnode_store_manager_from_genesis, offered_shard_conf,
     };
 
     crate::init_logger();
@@ -3179,6 +4383,9 @@ async fn stale_diff_application_corrupts_merged_state() {
         Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
+    // Added by DR-134 (DR-66 item 1): an offered checkpoint takes the adopted
+    // policy of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_block).await;
 
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
@@ -3213,6 +4420,11 @@ async fn stale_diff_application_corrupts_merged_state() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
+        // Added by DR-134 (DR-66 item 1): an offered checkpoint adopts the
+        // genesis policy again under this shard configuration.
+        let offered = offered_shard_conf(&genesis_block);
+        shard_conf.casper_version = offered.casper_version;
+        shard_conf.min_phlo_price = offered.min_phlo_price;
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
@@ -3253,7 +4465,10 @@ new deployId(`rho:system:deployId`) in {
     .to_string();
 
     // ── Block A: bridge deployed by key_a, parent = genesis ──
-    let deploy_a = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): an offered deploy. Its key differs
+    // from the key of the sibling block B.
+    // let deploy_a = construct_deploy::source_deploy_now_full(
+    let deploy_a = offered_deploy::source_deploy_now_full(
         bridge_rho.clone(),
         None,
         None,
@@ -3268,26 +4483,42 @@ new deployId(`rho:system:deployId`) in {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_a)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope, and the block takes its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(deploy_a)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_a = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_a = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![genesis_block.clone()],
+    //     proto_util::deploys(&block_a_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&block_a_raw),
+    let checkpoint_a = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_a_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![PendingDeployCandidate::Envelope(deploy_a.envelope)],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -3296,19 +4527,29 @@ new deployId(`rho:system:deployId`) in {
     )
     .await
     .expect("compute block A");
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_a.deploys[0].is_failed,
+    //     "Bridge A failed: {:?}",
+    //     checkpoint_a.deploys[0].system_deploy_error
+    // );
     assert!(
-        !checkpoint_a.deploys[0].is_failed,
+        !checkpoint_a.deploys[0].is_failed(),
         "Bridge A failed: {:?}",
-        checkpoint_a.deploys[0].system_deploy_error
+        checkpoint_a.deploys[0].cost()
     );
     let mut block_a = block_a_raw;
     block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a
-        .deploys
-        .clone()
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+    // processed user deploys.
+    // block_a.body.deploys = checkpoint_a
+    //     .deploys
+    //     .clone()
+    //     .into_iter()
+    //     .map(Into::into)
+    //     .collect();
+    block_a.body.deploys = checkpoint_a.deploys.clone();
     block_a.body.system_deploys = checkpoint_a.system_deploys;
     block_a.body.state.bonds = checkpoint_a.bonds;
     block_store.put_block_message(&block_a).expect("store A");
@@ -3317,7 +4558,9 @@ new deployId(`rho:system:deployId`) in {
         .expect("dag A");
 
     // ── Block B: bridge deployed by key_b, parent = genesis (sibling of A) ──
-    let deploy_b = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): an offered deploy.
+    // let deploy_b = construct_deploy::source_deploy_now_full(
+    let deploy_b = offered_deploy::source_deploy_now_full(
         bridge_rho,
         None,
         None,
@@ -3332,26 +4575,42 @@ new deployId(`rho:system:deployId`) in {
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_b)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope, and the block takes its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(deploy_b)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_b = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_b = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![genesis_block.clone()],
+    //     proto_util::deploys(&block_b_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&block_b_raw),
+    let checkpoint_b = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_b_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![PendingDeployCandidate::Envelope(deploy_b.envelope)],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
@@ -3360,19 +4619,29 @@ new deployId(`rho:system:deployId`) in {
     )
     .await
     .expect("compute block B");
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_b.deploys[0].is_failed,
+    //     "Bridge B failed: {:?}",
+    //     checkpoint_b.deploys[0].system_deploy_error
+    // );
     assert!(
-        !checkpoint_b.deploys[0].is_failed,
+        !checkpoint_b.deploys[0].is_failed(),
         "Bridge B failed: {:?}",
-        checkpoint_b.deploys[0].system_deploy_error
+        checkpoint_b.deploys[0].cost()
     );
     let mut block_b = block_b_raw;
     block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b
-        .deploys
-        .clone()
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+    // processed user deploys.
+    // block_b.body.deploys = checkpoint_b
+    //     .deploys
+    //     .clone()
+    //     .into_iter()
+    //     .map(Into::into)
+    //     .collect();
+    block_b.body.deploys = checkpoint_b.deploys.clone();
     block_b.body.system_deploys = checkpoint_b.system_deploys;
     block_b.body.state.bonds = checkpoint_b.bonds;
     block_store.put_block_message(&block_b).expect("store B");
@@ -3381,7 +4650,10 @@ new deployId(`rho:system:deployId`) in {
         .expect("dag B");
 
     // ── Block C: trivial deploy by key_a, parent = A ──
-    let deploy_c = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): an offered deploy. Block A, the parent,
+    // has the same signer, and the sibling block D has another key.
+    // let deploy_c = construct_deploy::source_deploy_now_full(
+    let deploy_c = offered_deploy::source_deploy_now_full(
         trivial_rho.clone(),
         None,
         None,
@@ -3396,26 +4668,42 @@ new deployId(`rho:system:deployId`) in {
         Some(checkpoint_a.post_state_hash.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_c)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope, and the block takes its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(deploy_c)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_c = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_c = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![block_a.clone()],
+    //     proto_util::deploys(&block_c_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&block_c_raw),
+    let checkpoint_c = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![block_a.clone()],
-        proto_util::deploys(&block_c_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![PendingDeployCandidate::Envelope(deploy_c.envelope)],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_c_raw),
         HashMap::new(),
         None,
@@ -3424,19 +4712,29 @@ new deployId(`rho:system:deployId`) in {
     )
     .await
     .expect("compute block C");
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_c.deploys[0].is_failed,
+    //     "Trivial C failed: {:?}",
+    //     checkpoint_c.deploys[0].system_deploy_error
+    // );
     assert!(
-        !checkpoint_c.deploys[0].is_failed,
+        !checkpoint_c.deploys[0].is_failed(),
         "Trivial C failed: {:?}",
-        checkpoint_c.deploys[0].system_deploy_error
+        checkpoint_c.deploys[0].cost()
     );
     let mut block_c = block_c_raw;
     block_c.body.state.post_state_hash = checkpoint_c.post_state_hash.clone();
-    block_c.body.deploys = checkpoint_c
-        .deploys
-        .clone()
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+    // processed user deploys.
+    // block_c.body.deploys = checkpoint_c
+    //     .deploys
+    //     .clone()
+    //     .into_iter()
+    //     .map(Into::into)
+    //     .collect();
+    block_c.body.deploys = checkpoint_c.deploys.clone();
     block_c.body.system_deploys = checkpoint_c.system_deploys;
     block_c.body.state.bonds = checkpoint_c.bonds;
     block_store.put_block_message(&block_c).expect("store C");
@@ -3445,8 +4743,12 @@ new deployId(`rho:system:deployId`) in {
         .expect("dag C");
 
     // ── Block D: trivial deploy by key_b, parent = B ──
+    // Changed by DR-134 (DR-66 item 1): an offered deploy.
+    // let deploy_d =
+    //     construct_deploy::source_deploy_now_full(trivial_rho, None, None, Some(key_b), None, None)
+    //         .unwrap();
     let deploy_d =
-        construct_deploy::source_deploy_now_full(trivial_rho, None, None, Some(key_b), None, None)
+        offered_deploy::source_deploy_now_full(trivial_rho, None, None, Some(key_b), None, None)
             .unwrap();
     let block_d_raw = block_implicits::get_random_block(
         Some(2),
@@ -3454,26 +4756,42 @@ new deployId(`rho:system:deployId`) in {
         Some(checkpoint_b.post_state_hash.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+        // version.
+        // Some(1),
+        Some(genesis_block.header.version),
         Some(now_millis()),
         Some(vec![block_b.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_d)]),
+        // Changed by DR-134 (DR-66 item 1): the offered checkpoint below takes
+        // the envelope, and the block takes its processed deploy.
+        // Some(vec![ProcessedDeploy::empty(deploy_d)]),
+        Some(Vec::new()),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_d = compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint_d = compute_deploys_checkpoint(
+    //     &mut block_store,
+    //     vec![block_b.clone()],
+    //     proto_util::deploys(&block_d_raw)
+    //         .into_iter()
+    //         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+    //         .collect(),
+    //     Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+    //     &mk_snapshot(&genesis_hash),
+    //     &rm,
+    //     BlockData::from_block(&block_d_raw),
+    let checkpoint_d = compute_deploys_checkpoint_envelopes(
         &mut block_store,
         vec![block_b.clone()],
-        proto_util::deploys(&block_d_raw)
-            .into_iter()
-            .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-            .collect(),
+        vec![PendingDeployCandidate::Envelope(deploy_d.envelope)],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
+        Some(&adopted),
         BlockData::from_block(&block_d_raw),
         HashMap::new(),
         None,
@@ -3482,19 +4800,29 @@ new deployId(`rho:system:deployId`) in {
     )
     .await
     .expect("compute block D");
+    // Changed by DR-134 (DR-66 item 1): an offered processed deploy has no
+    // system deploy error. The message shows its charged cost.
+    // assert!(
+    //     !checkpoint_d.deploys[0].is_failed,
+    //     "Trivial D failed: {:?}",
+    //     checkpoint_d.deploys[0].system_deploy_error
+    // );
     assert!(
-        !checkpoint_d.deploys[0].is_failed,
+        !checkpoint_d.deploys[0].is_failed(),
         "Trivial D failed: {:?}",
-        checkpoint_d.deploys[0].system_deploy_error
+        checkpoint_d.deploys[0].cost()
     );
     let mut block_d = block_d_raw;
     block_d.body.state.post_state_hash = checkpoint_d.post_state_hash.clone();
-    block_d.body.deploys = checkpoint_d
-        .deploys
-        .clone()
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+    // processed user deploys.
+    // block_d.body.deploys = checkpoint_d
+    //     .deploys
+    //     .clone()
+    //     .into_iter()
+    //     .map(Into::into)
+    //     .collect();
+    block_d.body.deploys = checkpoint_d.deploys.clone();
     block_d.body.system_deploys = checkpoint_d.system_deploys;
     block_d.body.state.bonds = checkpoint_d.bonds;
     block_store.put_block_message(&block_d).expect("store D");
@@ -3519,6 +4847,8 @@ new deployId(`rho:system:deployId`) in {
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("merge [C, D]");
@@ -3528,10 +4858,16 @@ new deployId(`rho:system:deployId`) in {
         .iter()
         .map(|record| record.sig.clone())
         .collect();
-    let ba_rejected = rejected_set.contains(&checkpoint_a.deploys[0].deploy.sig);
-    let bb_rejected = rejected_set.contains(&checkpoint_b.deploys[0].deploy.sig);
-    let bc_rejected = rejected_set.contains(&checkpoint_c.deploys[0].deploy.sig);
-    let bd_rejected = rejected_set.contains(&checkpoint_d.deploys[0].deploy.sig);
+    // Changed by DR-134 (DR-66 item 1): a rejection record of an offered
+    // deploy carries its identity.
+    // let ba_rejected = rejected_set.contains(&checkpoint_a.deploys[0].deploy.sig);
+    // let bb_rejected = rejected_set.contains(&checkpoint_b.deploys[0].deploy.sig);
+    // let bc_rejected = rejected_set.contains(&checkpoint_c.deploys[0].deploy.sig);
+    // let bd_rejected = rejected_set.contains(&checkpoint_d.deploys[0].deploy.sig);
+    let ba_rejected = rejected_set.contains(checkpoint_a.deploys[0].identity_bytes());
+    let bb_rejected = rejected_set.contains(checkpoint_b.deploys[0].identity_bytes());
+    let bc_rejected = rejected_set.contains(checkpoint_c.deploys[0].identity_bytes());
+    let bd_rejected = rejected_set.contains(checkpoint_d.deploys[0].identity_bytes());
 
     tracing::info!("──────── Rejection outcome ────────");
     tracing::info!(
@@ -3552,31 +4888,37 @@ new deployId(`rho:system:deployId`) in {
     );
     tracing::info!("Total rejected: {} deploys", merged.rejected_user.len());
 
+    // Changed by DR-134 (DR-66 item 1): `rho:system:deployId` of an offered
+    // deploy is its identity.
     let ba_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
+            // &make_deploy_id_par(&checkpoint_a.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_a.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
     let bb_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&checkpoint_b.deploys[0].deploy.sig),
+            // &make_deploy_id_par(&checkpoint_b.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_b.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
     let bc_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&checkpoint_c.deploys[0].deploy.sig),
+            // &make_deploy_id_par(&checkpoint_c.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_c.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
     let bd_data = rm
         .get_data(
             merged.state.clone(),
-            &make_deploy_id_par(&checkpoint_d.deploys[0].deploy.sig),
+            // &make_deploy_id_par(&checkpoint_d.deploys[0].deploy.sig),
+            &make_deploy_id_par(checkpoint_d.deploys[0].identity_bytes()),
         )
         .await
         .unwrap();
@@ -3829,6 +5171,9 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     local_conf.max_parent_depth = 15;
     local_conf.deploy_lifespan = 50;
     local_conf.min_phlo_price = 1;
+    // Added by DR-134 (DR-66 item 5): a node configures the shard of its
+    // genesis, which the adopted resource policy checks (DR-99).
+    local_conf.shard_name = genesis_context.genesis_block.shard_id.clone();
 
     let casper = hash_set_casper(
         block_retriever,
@@ -3939,10 +5284,15 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
     let (rm, _) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+    // Added by DR-134 (DR-66 item 1): offered compute takes the adopted policy
+    // of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_context.genesis_block).await;
 
     let sender = genesis_context.validator_pks()[0].clone();
     let seq_num: i32 = 7;
-    let deploy = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): an offered deploy.
+    // let deploy = construct_deploy::source_deploy_now_full(
+    let deploy = offered_deploy::source_deploy_now_full(
         r#"@"probe"!(1)"#.to_string(),
         None,
         None,
@@ -3954,10 +5304,16 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
 
     // Propose-side compute: persists the mergeable entry AND populates the
     // replay cache under (pre_state, sender, seq, payload).
-    let (post_state, processed_deploys, processed_system_deploys) = rm
-        .compute_state(
+    // Changed by DR-134 (DR-66 item 1): the offered compute. It persists the
+    // mergeable entry. The offered path has no replay cache.
+    // let (post_state, processed_deploys, processed_system_deploys) = rm
+    //     .compute_state(
+    //         &genesis_post_state,
+    //         vec![deploy],
+    let (post_state, processed_deploys, processed_system_deploys, _bonds) = rm
+        .compute_state_with_bonds_envelopes(
             &genesis_post_state,
-            vec![deploy],
+            vec![PendingDeployCandidate::Envelope(deploy.envelope)],
             Vec::new(),
             BlockData {
                 time_stamp: SystemTime::now()
@@ -3969,6 +5325,10 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
                 seq_num,
             },
             None,
+            // Added by DR-134 (DR-66 item 1): no play budget, as
+            // `compute_state` passes none, and the adopted policy.
+            None,
+            Some(&adopted),
         )
         .await
         .unwrap();
@@ -3980,7 +5340,10 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
             // `is_genesis = false` the compute path hashed into the cache key.
             parents_hash_list: vec![prost::bytes::Bytes::from(vec![1u8; 32])],
             timestamp: 1,
-            version: 1,
+            // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+            // version.
+            // version: 1,
+            version: genesis_context.genesis_block.header.version,
             extra_bytes: prost::bytes::Bytes::new(),
         },
         body: Body {
@@ -3990,7 +5353,10 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
                 bonds: vec![],
                 block_number: 1,
             },
-            deploys: processed_deploys.into_iter().map(Into::into).collect(),
+            // Changed by DR-134 (DR-66 item 1): the offered compute returns
+            // processed user deploys.
+            // deploys: processed_deploys.into_iter().map(Into::into).collect(),
+            deploys: processed_deploys,
             rejected_deploys: vec![],
             system_deploys: processed_system_deploys,
             extra_bytes: prost::bytes::Bytes::new(),
@@ -4020,7 +5386,10 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
     assert!(!rm.has_mergeable_entry(&block).unwrap());
 
     // Step 3: the documented remedy must actually restore it.
-    rm.ensure_mergeable_entry(&block, HashMap::new())
+    // Changed by DR-134 (DR-66): the recompute of an offered block takes the
+    // adopted policy.
+    // rm.ensure_mergeable_entry(&block, HashMap::new())
+    rm.ensure_mergeable_entry(&block, HashMap::new(), Some(&adopted))
         .await
         .expect("recompute must materialize the mergeable entry");
     assert!(
@@ -4094,7 +5463,12 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
 
     let sender = genesis_context.validator_pks()[0].clone();
     let seq_num: i32 = 7;
-    let deploy = construct_deploy::source_deploy_now_full(
+    // Added by DR-134 (DR-66 item 1): offered compute takes the adopted policy
+    // of the test genesis.
+    let adopted = adopted_policy(&rm, &genesis_context.genesis_block).await;
+    // Changed by DR-134 (DR-66 item 1): an offered deploy.
+    // let deploy = construct_deploy::source_deploy_now_full(
+    let deploy = offered_deploy::source_deploy_now_full(
         r#"@"gc-horizon"!(1)"#.to_string(),
         None,
         None,
@@ -4107,10 +5481,16 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     // The propose-side path: persists the mergeable entry AND warms the replay
     // cache under (pre_state, sender, seq, payload) — the shape that makes the
     // later recompute a no-op.
-    let (post_state, processed_deploys, processed_system_deploys) = rm
-        .compute_state(
+    // Changed by DR-134 (DR-66 item 1): the offered compute. It persists the
+    // mergeable entry. The offered path has no replay cache.
+    // let (post_state, processed_deploys, processed_system_deploys) = rm
+    //     .compute_state(
+    //         &genesis_post_state,
+    //         vec![deploy],
+    let (post_state, processed_deploys, processed_system_deploys, _bonds) = rm
+        .compute_state_with_bonds_envelopes(
             &genesis_post_state,
-            vec![deploy],
+            vec![PendingDeployCandidate::Envelope(deploy.envelope)],
             Vec::new(),
             BlockData {
                 time_stamp: SystemTime::now()
@@ -4122,6 +5502,10 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
                 seq_num,
             },
             None,
+            // Added by DR-134 (DR-66 item 1): no play budget, as
+            // `compute_state` passes none, and the adopted policy.
+            None,
+            Some(&adopted),
         )
         .await
         .unwrap();
@@ -4131,7 +5515,10 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         header: Header {
             parents_hash_list: vec![chain_hash(LAGGING_HEIGHT - 1)],
             timestamp: 1,
-            version: 1,
+            // Changed by DR-134 (DR-66 item 1): the block carries the genesis
+            // version.
+            // version: 1,
+            version: genesis_context.genesis_block.header.version,
             extra_bytes: prost::bytes::Bytes::new(),
         },
         body: Body {
@@ -4141,7 +5528,10 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
                 bonds: vec![],
                 block_number: LAGGING_HEIGHT as i64,
             },
-            deploys: processed_deploys.into_iter().map(Into::into).collect(),
+            // Changed by DR-134 (DR-66 item 1): the offered compute returns
+            // processed user deploys.
+            // deploys: processed_deploys.into_iter().map(Into::into).collect(),
+            deploys: processed_deploys,
             rejected_deploys: vec![],
             system_deploys: processed_system_deploys,
             extra_bytes: prost::bytes::Bytes::new(),
@@ -4282,7 +5672,10 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
 
     // Production repair. A merge that reaches this block calls exactly this,
     // and it must materialize the entry.
-    rm.ensure_mergeable_entry(&lagging_block, HashMap::new())
+    // Changed by DR-134 (DR-66): the recompute of an offered block takes the
+    // adopted policy.
+    // rm.ensure_mergeable_entry(&lagging_block, HashMap::new())
+    rm.ensure_mergeable_entry(&lagging_block, HashMap::new(), Some(&adopted))
         .await
         .expect(
             "the recompute must rebuild what GC collected; failing here is the CI \
@@ -4293,3 +5686,9 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         "after the recompute the entry must be present under the block's declared key"
     );
 }
+
+// Added by DR-134 (DR-65, gap G2): the batch tests of the runtime manager. The
+// module is declared here and not in `util/rholang/mod.rs`, so the step changes
+// no test module list that the branch shares with dev.
+#[path = "offered_batch_runtime_test.rs"]
+mod offered_batch_runtime_test;

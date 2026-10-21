@@ -285,7 +285,17 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .await
     }
 
-    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    // Changed by DR-134 (DR-66): legacy deploys and offered envelopes.
+    // async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    async fn list_pending_deploys(
+        &self,
+    ) -> Result<
+        Vec<(
+            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate,
+            bool,
+        )>,
+        CasperError,
+    > {
         super::block_admission::admit_list_pending_deploys(self).await
     }
 }

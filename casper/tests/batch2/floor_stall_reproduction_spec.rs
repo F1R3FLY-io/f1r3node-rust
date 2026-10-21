@@ -37,13 +37,15 @@ use std::collections::HashMap;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::finality::floor::{floor_of_block, floor_of_view, Floor};
 use casper::rust::safety::clique_oracle::FtThreshold;
-use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -111,6 +113,10 @@ async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
         r#"@"race"!("s")"#.to_string(),
         None,
         None,
+        // Changed by DR-134 (gap G3): one key signs the seed and every reader.
+        // Changed by G3 (DR-135): dev's signer returns, and the writer's purse
+        // funds the read.
+        // Some(construct_deploy::DEFAULT_SEC.clone()),
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         Some(0),
         Some(shard_id.clone()),
@@ -154,6 +160,10 @@ async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
             .to_string(),
             None,
             None,
+            // Changed by DR-134 (gap G3): one key signs the seed and every reader.
+            // Changed by G3 (DR-135): dev's signer returns, and the writer's
+            // purse funds the read.
+            // Some(construct_deploy::DEFAULT_SEC.clone()),
             Some(
                 crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
                     .0

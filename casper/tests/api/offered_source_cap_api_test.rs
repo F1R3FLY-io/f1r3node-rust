@@ -196,7 +196,12 @@ async fn rooted_balance(
 ) -> u64 {
     let (values, _) = node
         .runtime_manager
-        .play_exploratory_deploy(balance_query_source(address), root, None)
+        .play_exploratory_deploy(
+            balance_query_source(address),
+            root,
+            None,
+            node.adopted_policy(),
+        )
         .await
         .unwrap();
     assert_eq!(values.len(), 1);

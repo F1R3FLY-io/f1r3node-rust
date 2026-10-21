@@ -196,3 +196,50 @@ proptest::proptest! {
         );
     }
 }
+
+/// Added by G3 (DR-135, S3): the residue of a system body records its caller
+/// (A1). Each residue region that a payer region becomes records the caller.
+/// A Unit region stays as it is, and a body without a caller stores the
+/// residue of dev. The caller is not part of the identity of a residue
+/// region, so the residue still resolves inside its deployment.
+#[test]
+fn the_residue_of_a_system_body_records_its_caller() {
+    let deploy_id = [7; 32];
+    let entropy = b"entropy".as_slice();
+    let paid = payer_region(&payer(1), entropy);
+    let genesis = payer_region(&Sig::Unit, b"genesis");
+    let introduction = seal(vec![paid.clone(), genesis.clone()]);
+    let caller = RegionOwner {
+        signature: sig_to_cost_signature(&payer(2)).expect("ground caller converts"),
+        price: 11,
+    };
+    assert_eq!(
+        system_residue_authority_with_caller(&introduction, &deploy_id, None)
+            .expect("residue without a caller"),
+        system_residue_authority(&introduction, &deploy_id).expect("residue of dev")
+    );
+    let recorded = system_residue_authority_with_caller(&introduction, &deploy_id, Some(&caller))
+        .expect("residue with a caller");
+    let residue = system_residue_region(&paid, &deploy_id).expect("residue region");
+    assert_eq!(
+        recorded,
+        seal(vec![
+            CostRegion {
+                caller: Some(CostCaller {
+                    signature: Some(caller.signature.clone()),
+                    price: 11,
+                }),
+                ..residue
+            },
+            genesis.clone(),
+        ])
+    );
+    assert!(is_system_seal(&recorded));
+    let context = ResidueContext::new(&payer(1), deploy_id).expect("context");
+    assert_eq!(
+        resolve_system_residue(&recorded, entropy, &context)
+            .expect("resolution")
+            .into_owned(),
+        seal(vec![paid, genesis])
+    );
+}

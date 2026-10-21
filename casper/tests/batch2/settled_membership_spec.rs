@@ -8,10 +8,12 @@
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
-use casper::rust::util::construct_deploy;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -60,12 +62,17 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
     }
     assert!(
         nodes[0]
+            // Changed by DR-134 (DR-66 item 1): the identity lookup covers offered deploys.
+            // .deploy_storage
+            // .lock()
+            // .read_all()
+            // .expect("storage read")
+            // .iter()
+            // .any(|d| d.sig == plain_sig),
             .deploy_storage
             .lock()
-            .read_all()
-            .expect("storage read")
-            .iter()
-            .any(|d| d.sig == plain_sig),
+            .contains_sig(&plain_sig)
+            .expect("storage read"),
         "staging precondition: the owner's pool holds the deploy after \
          proposing its carrier"
     );
@@ -141,12 +148,17 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
 
     assert!(
         !nodes[0]
+            // Changed by DR-134 (DR-66 item 1): the identity lookup covers offered deploys.
+            // .deploy_storage
+            // .lock()
+            // .read_all()
+            // .expect("storage read")
+            // .iter()
+            // .any(|d| d.sig == plain_sig),
             .deploy_storage
             .lock()
-            .read_all()
-            .expect("storage read")
-            .iter()
-            .any(|d| d.sig == plain_sig),
+            .contains_sig(&plain_sig)
+            .expect("storage read"),
         "the deploy's effect is settled in the floor state: the register's \
          Finalized verdict must release the pool copy, whatever the \
          effect's shape — a shape-gated membership answer would hold this \

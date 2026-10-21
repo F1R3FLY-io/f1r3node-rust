@@ -358,6 +358,26 @@ impl VerifiedOfferedGrantSources {
     pub fn payer_for_source(&self, source_index: u32) -> Option<&VaultPayer> {
         self.sources.get(&source_index).map(|source| &source.payer)
     }
+
+    /// Added by DR-134 (DR-65 O-8): the grant of each verified source: its
+    /// id, the custody that it draws from, and its remaining ceiling at the
+    /// snapshot root, which is the signed cumulative ceiling of the use minus
+    /// the amount that the rooted record has consumed. Settlement checks the
+    /// same bound for each draw (`prepare_measured_draws`).
+    pub(crate) fn grant_ceilings(&self) -> Vec<(Vec<u8>, [u8; 32], u128)> {
+        self.sources
+            .values()
+            .map(|source| {
+                (
+                    source.grant_id.clone(),
+                    source.record.custody,
+                    source
+                        .cumulative_ceiling
+                        .saturating_sub(source.record.consumed),
+                )
+            })
+            .collect()
+    }
     pub fn record_for_source(&self, source_index: u32) -> Option<&OfferedGrantRecord> {
         self.sources.get(&source_index).map(|source| &source.record)
     }

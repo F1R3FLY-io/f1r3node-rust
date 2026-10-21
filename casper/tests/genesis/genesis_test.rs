@@ -25,25 +25,39 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
+// Added by DR-134 (DR-66 item 1): the explicit vault set of the wallets-file
+// genesis.
+use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::bonds_parser::BondsParser;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::vault_parser::VaultParser;
-use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+use casper::rust::util::{proto_util, rspace_util};
 use comm::rust::test_instances::{LogStub, LogicalTime};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+// Changed by DR-134 (DR-66 item 1): an offered deploy seeds its names from its
+// identity, so no name derivation needs the deployer key.
+// use crypto::rust::signatures::secp256k1::Secp256k1;
+// use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use tempfile::TempDir;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS};
+// Changed by DR-134 (DR-66 item 1): the wallets-file genesis funds the default
+// deployer vaults as the offered genesis builder does.
+// use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS};
+use crate::util::genesis_builder::{
+    GenesisBuilder, DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS, OFFERED_TEST_VAULT_BALANCE,
+};
 use crate::util::rholang::resources;
 use crate::util::rholang::resources::generate_scope_id;
 
@@ -237,7 +251,10 @@ async fn from_input_files(
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            // Changed by DR-134 (DR-66 item 5): a protocol-6 genesis has minimum phlo
+            // price 1, as the offered genesis builder sets.
+            // min_phlo_price: 0,
+            min_phlo_price: 1,
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
@@ -245,13 +262,25 @@ async fn from_input_files(
         vaults,
         supply: i64::MAX,
         block_number: params.block_number,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 5): the genesis version is the protocol
+        // version of its resource policy, as approve_block_protocol.rs derives it.
+        // version: 1,
+        version: 6,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
+    // Changed by DR-134 (DR-66 item 5): a genesis requires the active
+    // offered-funded protocol-6 policy, which a node takes from its configured
+    // resource policy (approve_block_protocol.rs).
+    // let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
+    let genesis_block = Genesis::create_genesis_block_with_policy(
+        runtime_manager,
+        &genesis,
+        Some(&crate::helper::offered_deploy::offered_v6_policy()),
+    )
+    .await?;
 
     Ok(genesis_block)
 }
@@ -512,10 +541,14 @@ new ret, rl(`rho:registry:lookup`), RevVaultCh, vaultCh, balanceCh in {
 const BALANCE_QUERY_PHLO_LIMIT: i64 = 4_000_000;
 
 // Reconstructs the unforgeable id of the first `new`-bound name of a deploy signed by DEFAULT_SEC.
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+// Changed by DR-134 (DR-66 item 1): an offered deploy seeds its names from its
+// identity (`Tools::user_envelope_rng`).
+// fn calculate_unforgeable_name(timestamp: i64) -> String {
+//     let secp256k1 = Secp256k1;
+//     let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
+//     let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+fn calculate_unforgeable_name(deploy: &DeployEnvelope) -> String {
+    let unforgeable_id = Tools::user_envelope_rng(deploy).next();
     let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
     hex::encode(unforgeable_id_u8)
 }
@@ -541,7 +574,9 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
 
     let data = rspace_util::get_data_at_private_channel(
         &block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
+        // Changed by DR-134 (DR-66 item 1).
+        // &calculate_unforgeable_name(deploy.data.time_stamp),
+        &calculate_unforgeable_name(&deploy.envelope),
         &node.runtime_manager,
     )
     .await;
@@ -602,7 +637,31 @@ async fn genesis_from_input_files_should_parse_the_wallets_file_and_create_corre
         GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
     genesis_params.vaults.extend(parsed_vaults.clone());
 
+    // Changed by DR-134 (DR-66 item 1): the offered genesis builder raises every
+    // funded vault of its parameters to OFFERED_TEST_VAULT_BALANCE, which would
+    // also overwrite the wallets-file balance. The explicit vault set funds the
+    // default deployer vaults for their offers and keeps each parsed balance.
+    // The parameters still carry the parsed vaults, so the genesis-cache key
+    // stays unique to this vault set.
+    // let genesis_context = GenesisBuilder::new()
+    //     .build_genesis_with_parameters(Some((validator_key_pairs, genesis_vaults, genesis_params)))
+    //     .await
+    //     .expect("Failed to build genesis from parsed wallets");
+    let offered_vaults: Vec<Vault> = genesis_params
+        .vaults
+        .iter()
+        .map(
+            |vault| match (parsed_vaults.contains(vault), vault.initial_balance) {
+                (false, balance) if balance > 0 => Vault {
+                    vault_address: vault.vault_address.clone(),
+                    initial_balance: OFFERED_TEST_VAULT_BALANCE,
+                },
+                _ => vault.clone(),
+            },
+        )
+        .collect();
     let genesis_context = GenesisBuilder::new()
+        .with_vaults(offered_vaults)
         .build_genesis_with_parameters(Some((validator_key_pairs, genesis_vaults, genesis_params)))
         .await
         .expect("Failed to build genesis from parsed wallets");

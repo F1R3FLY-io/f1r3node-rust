@@ -1,16 +1,22 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/LimitedParentDepthSpec.scala
 
 use casper::rust::errors::CasperError;
-use casper::rust::util::construct_deploy;
-use crypto::rust::signatures::signed::Signed;
-use models::rust::casper::protocol::casper_message::DeployData;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use crypto::rust::signatures::signed::Signed;
+// use models::rust::casper::protocol::casper_message::DeployData;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 struct TestContext {
     genesis: crate::util::genesis_builder::GenesisContext,
-    produce_deploys: Vec<Signed<DeployData>>,
+    // Changed by DR-134 (DR-66 item 1).
+    // produce_deploys: Vec<Signed<DeployData>>,
+    produce_deploys: Vec<OfferedDeploy>,
 }
 
 impl TestContext {

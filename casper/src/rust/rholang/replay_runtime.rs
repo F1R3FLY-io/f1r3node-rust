@@ -16,9 +16,7 @@ use models::rust::validator::Validator;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::system_processes::{
-    BlockData, DeployData as SystemProcessDeployData,
-};
+use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -29,9 +27,8 @@ use super::runtime::{RuntimeOps, SysEvalResult};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC,
+    BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC,
+    BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC,
     BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC,
     BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC,
     BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC, BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
@@ -42,8 +39,6 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
-use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::replay_failure::ReplayFailure;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
@@ -286,6 +281,26 @@ impl ReplayRuntimeOps {
                 preflight.candidate_count,
             )));
         }
+        // Added by DR-134 (DR-66 item 5): body-only user deploys and a genesis
+        // that the legacy meter produced are historical execution. They return
+        // the compatibility error before any state reset.
+        if with_cost_accounting && !terms.is_empty() {
+            return Err(
+                crate::rust::util::rholang::costacc::offered_only::body_only_deploys_unsupported(),
+            );
+        }
+        if !with_cost_accounting {
+            let genesis_deploys = terms
+                .iter()
+                .filter_map(ProcessedUserDeploy::as_legacy)
+                .cloned()
+                .collect::<Vec<_>>();
+            if crate::rust::util::rholang::costacc::offered_only::is_legacy_metered_genesis(
+                &genesis_deploys,
+            ) {
+                return Err(crate::rust::util::rholang::costacc::offered_only::legacy_metered_genesis_unsupported());
+            }
+        }
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", start_hash = %hex::encode(&start_hash[..8.min(start_hash.len())]), n_user = terms.len(), n_system = system_deploys.len(), "replay.replay_deploys ENTER (reset to pre-state, then replay deploys vs recorded COMMs)");
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(terms.len() as f64);
@@ -370,6 +385,12 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
     ) -> Result<NumberChannelsEndVal, CasperError> {
+        // Added by DR-134 (DR-66 item 5): a body-only user deploy does not replay.
+        if with_cost_accounting {
+            return Err(
+                crate::rust::util::rholang::costacc::offered_only::body_only_deploys_unsupported(),
+            );
+        }
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
         let dsig = if tracing::enabled!(target: "f1r3fly.casper.replay_rho_runtime", tracing::Level::DEBUG)
@@ -393,11 +414,14 @@ impl ReplayRuntimeOps {
         // `extract_transfers_from_report`. Genesis (no cost accounting)
         // starts in User. The trait default is a no-op on plain replay
         // spaces.
-        let initial_phase = if with_cost_accounting {
-            ReportPhase::Precharge
-        } else {
-            ReportPhase::User
-        };
+        // Changed by DR-134 (DR-66 item 5): only genesis deploys reach this
+        // point, and they start in the User phase.
+        // let initial_phase = if with_cost_accounting {
+        //     ReportPhase::Precharge
+        // } else {
+        //     ReportPhase::User
+        // };
+        let initial_phase = ReportPhase::User;
         self.runtime_ops
             .runtime
             .set_report_phase(initial_phase)
@@ -406,13 +430,18 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
 
-        let eval_successful = if with_cost_accounting {
-            self.process_deploy_with_cost_accounting(processed_deploy, &mut mergeable_channels)
-                .await?
-        } else {
-            self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
-                .await?
-        };
+        // Changed by DR-134 (DR-66 item 5): the escrow replay of the legacy meter
+        // is deleted with the meter.
+        // let eval_successful = if with_cost_accounting {
+        //     self.process_deploy_with_cost_accounting(processed_deploy, &mut mergeable_channels)
+        //         .await?
+        // } else {
+        //     self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
+        //         .await?
+        // };
+        let eval_successful = self
+            .process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
+            .await?;
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, eval_successful, "replay.deploy eval done");
 
         let check_start = Instant::now();
@@ -435,115 +464,6 @@ impl ReplayRuntimeOps {
         Ok(channels_data)
     }
 
-    async fn process_deploy_with_cost_accounting(
-        &mut self,
-        processed_deploy: &ProcessedDeploy,
-        mergeable_channels: &mut HashMap<Par, MergeType>,
-    ) -> Result<bool, CasperError> {
-        let mut pre_charge_deploy = PreChargeDeploy {
-            charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
-            pk: processed_deploy.deploy.pk.clone(),
-            rand: system_deploy_util::generate_pre_charge_deploy_random_seed(
-                &processed_deploy.deploy,
-            ),
-        };
-
-        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-started");
-        let precharge_start = Instant::now();
-        // The precharge phase was set before rig in `replay_deploy_e`.
-        // No marker call is needed here.
-        let precharge_result = self
-            .replay_system_deploy_internal(
-                &mut pre_charge_deploy,
-                &processed_deploy.system_deploy_error,
-            )
-            .await;
-
-        match precharge_result {
-            Ok((_, mut system_eval_result)) => {
-                let discard_start = Instant::now();
-                self.discard_event_log("precharge", false).await;
-                metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "precharge")
-                    .record(discard_start.elapsed().as_secs_f64());
-                if system_eval_result.errors.is_empty() {
-                    mergeable_channels.extend(system_eval_result.mergeable.drain());
-                }
-                tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-done");
-            }
-            Err(err) => {
-                self.discard_event_log("precharge", true).await;
-                return Err(err);
-            }
-        };
-        metrics::histogram!(BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .record(precharge_start.elapsed().as_secs_f64());
-
-        let eval_successful = if processed_deploy.system_deploy_error.is_none() {
-            // Mark the user phase. This flushes the precharge segment
-            // (tagging it `Precharge`) and sets the phase for the user
-            // deploy's events.
-            self.runtime_ops
-                .runtime
-                .set_report_phase(ReportPhase::User)
-                .await;
-            // Run the user deploy in a transaction
-            let evaluate_start = Instant::now();
-            let (_, successful) = self
-                .run_user_deploy(processed_deploy, mergeable_channels)
-                .await?;
-            metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(evaluate_start.elapsed().as_secs_f64());
-            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-eval-done");
-
-            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "refund-started");
-            let refund_start = Instant::now();
-            let mut refund_deploy = RefundDeploy {
-                refund_amount: processed_deploy.refund_amount(),
-                rand: system_deploy_util::generate_refund_deploy_random_seed(
-                    &processed_deploy.deploy,
-                ),
-            };
-
-            // Mark the refund phase. This flushes the user segment
-            // (tagging it `User`) and sets the phase for the refund's
-            // events.
-            self.runtime_ops
-                .runtime
-                .set_report_phase(ReportPhase::Refund)
-                .await;
-            let refund_result = self
-                .replay_system_deploy_internal(&mut refund_deploy, &None)
-                .await;
-
-            match refund_result {
-                Ok((_, mut system_eval_result)) => {
-                    let discard_start = Instant::now();
-                    self.discard_event_log("refund", false).await;
-                    metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "refund")
-                        .record(discard_start.elapsed().as_secs_f64());
-                    if system_eval_result.errors.is_empty() {
-                        mergeable_channels.extend(system_eval_result.mergeable.drain());
-                    }
-                    tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "refund-done");
-                }
-                Err(err) => {
-                    self.discard_event_log("refund", true).await;
-                    return Err(err);
-                }
-            }
-            metrics::histogram!(BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(refund_start.elapsed().as_secs_f64());
-
-            successful
-        } else {
-            // If there was an expected failure in the system deploy, skip user deploy execution
-            true
-        };
-
-        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-done");
-        Ok(eval_successful)
-    }
-
     async fn process_deploy_without_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
@@ -562,14 +482,21 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<(EvaluateResult, bool), CasperError> {
-        // Mirror RuntimeOps behavior: rollback failed user deploy via soft checkpoint
-        // so pre-charge context remains available for refund replay.
+        // Changed by DR-134 (DR-66): genesis replay is symmetric with genesis play
+        // and runs in the trusted install scope, which also sets the deploy data.
+        // A failed deploy rolls back to the soft checkpoint.
+        // // Mirror RuntimeOps behavior: rollback failed user deploy via soft checkpoint
+        // // so pre-charge context remains available for refund replay.
         let fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
 
-        let deploy_data = SystemProcessDeployData::from_deploy(&processed_deploy.deploy);
-        self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
+        // let deploy_data = SystemProcessDeployData::from_deploy(&processed_deploy.deploy);
+        // self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
-        let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
+        // let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
+        let mut user_eval_result = self
+            .runtime_ops
+            .evaluate_trusted_install(&processed_deploy.deploy)
+            .await?;
         let discard_start = Instant::now();
         self.discard_event_log("user-deploy", false).await;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "user-deploy")

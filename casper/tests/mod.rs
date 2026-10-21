@@ -6,6 +6,8 @@ mod blocks;
 mod compute_parents_post_state_regression_spec;
 mod differential;
 mod engine;
+// Added by DR-134: the evaluation scopes of DR-66 and DR-71.
+mod evaluation_scopes;
 mod finalized_floor;
 mod fork_choice;
 mod genesis;

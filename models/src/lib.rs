@@ -167,7 +167,12 @@ impl Hash for CostSignatureCompound {
 
 impl PartialEq for CostSignedTerm {
     fn eq(&self, other: &Self) -> bool {
-        self.body == other.body && self.signature == other.signature
+        // Changed by G3 (DR-135, S3b): the equality also sees the held price,
+        // so a held term never equals a signed term of the surface syntax.
+        // self.body == other.body && self.signature == other.signature
+        self.body == other.body
+            && self.signature == other.signature
+            && self.held_price == other.held_price
     }
 }
 
@@ -175,12 +180,22 @@ impl Hash for CostSignedTerm {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.body.hash(state);
         self.signature.hash(state);
+        // Added by G3 (DR-135, S3b): the hash reads the fields that the
+        // equality reads.
+        self.held_price.hash(state);
     }
 }
 
 impl PartialEq for CostRegion {
     fn eq(&self, other: &Self) -> bool {
-        self.instance_id == other.instance_id && self.signature == other.signature
+        // Changed by G3 (DR-135): the equality also sees the price and the
+        // caller, so an observation with a forged price fails its
+        // authentication (SA1).
+        // self.instance_id == other.instance_id && self.signature == other.signature
+        self.instance_id == other.instance_id
+            && self.signature == other.signature
+            && self.price == other.price
+            && self.caller == other.caller
     }
 }
 
@@ -188,6 +203,25 @@ impl Hash for CostRegion {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.instance_id.hash(state);
         self.signature.hash(state);
+        // Added by G3 (DR-135): the hash reads the fields that the equality
+        // reads (SA1).
+        self.price.hash(state);
+        self.caller.hash(state);
+    }
+}
+
+// Added by G3 (DR-135): the build script removes the derived equality of
+// every rhoapi message, so the caller of a region needs its own (SA1).
+impl PartialEq for CostCaller {
+    fn eq(&self, other: &Self) -> bool {
+        self.signature == other.signature && self.price == other.price
+    }
+}
+
+impl Hash for CostCaller {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.signature.hash(state);
+        self.price.hash(state);
     }
 }
 

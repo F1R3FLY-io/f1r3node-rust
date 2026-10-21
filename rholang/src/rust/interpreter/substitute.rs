@@ -70,10 +70,12 @@ impl Substitute {
         match substitute(term.clone()) {
             Ok(subst_term) => {
                 let measured = subst_term.encoded_len();
-                self.metering.reserve_substitution(Cost::create(
-                    (measured as i64).max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
+                // Changed by DR-134 (DR-66 item 3): the legacy meter is deleted, so
+                // every substitution charges at least one unit.
+                // self.metering.reserve_substitution(Cost::create(
+                //     (measured as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                self.metering
+                    .reserve_substitution(Cost::create((measured as i64).max(1), "substitution"))?;
                 let measured = u64::try_from(measured).map_err(|_| {
                     InterpreterError::BugFoundError(
                         "substitution byte count does not fit in u64".to_string(),
@@ -82,8 +84,12 @@ impl Substitute {
                 Ok((subst_term, measured))
             }
             Err(th) => {
+                // Changed by DR-134 (DR-66 item 3): the legacy meter is deleted, so
+                // every substitution charges at least one unit.
+                // self.metering.reserve_substitution(Cost::create(
+                //     (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
                 self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                    (term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Err(th)
@@ -364,6 +370,8 @@ impl Substitute {
                 depth,
                 env,
             )?),
+            // Added by G3 (DR-135, S3b): a held term keeps its held price.
+            held_price: term.held_price,
         })
     }
 
@@ -2253,5 +2261,32 @@ mod tests {
         let env = env_with(gint(42));
         let deep: Par = substitute.substitute_no_sort(bound(0), 1, &env).unwrap();
         assert_eq!(deep.exprs, bound(0).exprs);
+    }
+
+    /// Added by G3 (DR-135, S3b): substitution keeps the held price of a held
+    /// term, in the sorting and in the non-sorting form.
+    #[test]
+    fn substitution_keeps_the_held_price() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+        let held = Par {
+            cost_signed_terms: vec![CostSignedTerm {
+                body: Some(bound(0)),
+                signature: Some(CostSignature {
+                    value: Some(CostSignatureValue::Ground(vec![7])),
+                }),
+                held_price: Some(11),
+            }],
+            ..Default::default()
+        };
+        let unsorted: Par = substitute
+            .substitute_no_sort(held.clone(), 0, &env)
+            .expect("the held term substitutes");
+        assert_eq!(unsorted.cost_signed_terms[0].held_price, Some(11));
+        assert_eq!(unsorted.cost_signed_terms[0].body, Some(gint(42)));
+        let sorted: Par = substitute
+            .substitute_and_charge(&held, 0, &env)
+            .expect("the held term substitutes");
+        assert_eq!(sorted.cost_signed_terms[0].held_price, Some(11));
     }
 }
