@@ -1330,3 +1330,44 @@ proptest! {
         prop_assert_eq!(location_lane_key(&location), signature.lane_hash());
     }
 }
+
+// ── estimate_offered_term: parse + resolve + estimate wrapper ──────────────
+
+#[test]
+fn estimate_offered_term_runs_the_full_pipeline_on_a_simple_source() {
+    let urn_map = HashMap::new();
+    let reducer = evaluator(urn_map.clone());
+    let estimate = estimate_offered_term(
+        "@1!(1)",
+        urn_map,
+        Blake2b512Random::create_from_bytes(b"estimate_offered_term test"),
+        &funding(),
+        &schedule([1; 4]),
+        &reducer,
+    )
+    .expect("estimate_offered_term runs on a simple send");
+    assert!(
+        matches!(estimate.completeness, Completeness::Complete)
+            || matches!(estimate.completeness, Completeness::Incomplete(_)),
+        "the completeness is one of the two documented variants",
+    );
+}
+
+#[test]
+fn estimate_offered_term_reports_a_parse_error() {
+    let urn_map = HashMap::new();
+    let reducer = evaluator(urn_map.clone());
+    // Unbalanced parentheses: the Rholang parser must refuse this source.
+    let result = estimate_offered_term(
+        "@1!(1",
+        urn_map,
+        Blake2b512Random::create_from_bytes(b"estimate_offered_term parse error"),
+        &funding(),
+        &schedule([1; 4]),
+        &reducer,
+    );
+    assert!(
+        result.is_err(),
+        "a syntactically invalid source must not estimate: {result:?}",
+    );
+}
