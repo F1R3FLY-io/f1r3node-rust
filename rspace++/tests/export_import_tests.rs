@@ -408,6 +408,43 @@ async fn export_with_an_unknown_or_malformed_start_path_returns_an_error() {
     }
 }
 
+// Issue #787: a node that restored its state through state sync must serve
+// that state whole. The importer writes data items under the raw hash, and
+// a checkpoint writes them under the bincode-serialized hash.
+#[tokio::test]
+async fn imported_state_exports_its_data_items() {
+    let (space1, exporter1, _, _, exporter2, importer2) = test_setup().await;
+
+    for i in 0..10 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let start_path: Vec<(Blake2b256Hash, Option<Byte>)> = vec![(root.clone(), None)];
+
+    let (history, data) =
+        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 1000).unwrap();
+    assert!(!data.items.is_empty(), "the source state has data items");
+    importer2.set_history_items(history.items.clone());
+    importer2.set_data_items(data.items.clone());
+    importer2.set_root(&root);
+
+    let (reexported_history, reexported_data) =
+        RSpaceExporterItems::get_history_and_data(exporter2, start_path, 0, 1000).unwrap();
+    let sorted = |mut items: Vec<(Blake2b256Hash, ByteVector)>| {
+        items.sort_by_key(|item| item.0.bytes());
+        items
+    };
+    assert_eq!(sorted(reexported_history.items), sorted(history.items));
+    assert_eq!(
+        sorted(reexported_data.items),
+        sorted(data.items),
+        "the imported state exports without the data items it was imported with"
+    );
+}
+
 async fn test_setup() -> (
     RSpace<String, Pattern, String, String>,
     Arc<dyn RSpaceExporter>,
