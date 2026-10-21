@@ -67,11 +67,12 @@ pub struct TestNode {
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     pub rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
     pub requested_blocks: RequestedBlocks,
+    pub block_retriever: BlockRetriever<TransportLayerTestImpl>,
     pub connections_cell: ConnectionsCell,
     pub rp_conf: RPConf,
     // Casper instance (Arc<Mutex> for shared ownership with interior mutability)
@@ -851,6 +852,7 @@ impl TestNode {
             None,
             test_network,
             deploy_lifespan,
+            true,
         )
         .await
     }
@@ -879,8 +881,38 @@ impl TestNode {
             Some(bootstrap_index),
             test_network,
             None,
+            true,
         )
         .await
+    }
+
+    /// A standalone node that answers `StoreItemsMessage` requests (state
+    /// exporter enabled). Regular `standalone`/`create_network` nodes disable
+    /// the exporter, so use this when a test must drive the real export path,
+    /// e.g. the issue #666 hostile-request resilience check.
+    pub async fn standalone_with_state_exporter(
+        genesis: GenesisContext,
+    ) -> Result<TestNode, CasperError> {
+        crate::init_logger();
+
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis.validator_sks().into_iter().take(1).collect();
+
+        let nodes = Self::network(
+            sks_to_use,
+            genesis,
+            0.0,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+            0,
+            None,
+            test_network,
+            None,
+            false,
+        )
+        .await?;
+
+        Ok(nodes.into_iter().next().unwrap())
     }
 
     /// Creates a network of TestNodes
@@ -895,6 +927,7 @@ impl TestNode {
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
         deploy_lifespan: Option<i64>,
+        disable_state_exporter: bool,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -941,6 +974,7 @@ impl TestNode {
                 &genesis_context,
                 bootstrap_peer.clone(),
                 deploy_lifespan,
+                disable_state_exporter,
             )
             .await;
             nodes.push(node);
@@ -979,6 +1013,7 @@ impl TestNode {
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
         deploy_lifespan: Option<i64>,
+        disable_state_exporter: bool,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1138,7 +1173,7 @@ impl TestNode {
             max_parent_depth: max_parent_depth.unwrap_or(30),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
-            // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
+            // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,
@@ -1172,6 +1207,12 @@ impl TestNode {
             ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
+            finalized_bond_cache:
+                casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
+                    &block_dag_storage,
+                    validator_id_opt.as_ref(),
+                )
+                .unwrap(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
@@ -1208,7 +1249,7 @@ impl TestNode {
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
             _approved_block.clone(),         // approved_block
             the_init,                        // the_init
-            true,                            // disable_state_exporter
+            disable_state_exporter,          // disable_state_exporter
             tle.clone(),                     // transport
             rp_conf.clone(),                 // conf
             block_retriever.clone(),         // block_retriever
@@ -1233,6 +1274,7 @@ impl TestNode {
             rejected_deploy_buffer,
             runtime_manager,
             requested_blocks,
+            block_retriever,
             connections_cell,
             rp_conf,
             casper,

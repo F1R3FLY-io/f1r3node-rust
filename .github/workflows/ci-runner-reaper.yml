@@ -14,6 +14,13 @@ name: CI Runner Reaper
 #
 # NOTE: the schedule trigger only fires from the default branch (master).
 # Until this file reaches master, run it manually via workflow_dispatch.
+#
+# The primary sweep is the OCI Function in oci/runner-reaper, which the OCI
+# Resource Scheduler invokes every 30 minutes. GitHub ran this schedule only
+# 3 to 7 times per day in late 2026-09 (EPIC-022). This workflow stays as a
+# second sweep and as the manual entry point. oci/runner-reaper/test-handler.sh
+# runs the jq program below and requires the same result as the Function, so
+# change both together.
 
 on:
   schedule:

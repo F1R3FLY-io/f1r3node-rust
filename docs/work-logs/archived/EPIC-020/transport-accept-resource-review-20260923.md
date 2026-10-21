@@ -8,7 +8,7 @@ Earlier sections retain their original results and limitations. The final sectio
 
 The user identified a missing operational boundary in the CbC harness review.
 The live lifecycle tests passed, but those tests did not inject descriptor exhaustion or establish a log storage bound.
-The existing [disk protection claim](../claims/soak-disk-protection.md) remains proposed and unratified.
+The existing [disk protection claim](../../../claims/soak-disk-protection.md) remains proposed and unratified.
 Its storage model assumes log caps that the node does not enforce.
 The transport accept loop has no CbC artifact registration.
 
@@ -131,7 +131,7 @@ Its second parent is the reviewed head. Its first parent is `aaabb6710ef8136713a
 
 Nine relevant source and build inputs match the GitHub tree at that tested commit. The API response was complete, and checkout logs confirm the tested identity.
 
-The [evidence report](./evidence/task-020-1-hosted-20260930-01/report.json) retains job identities, assertion limits, source hashes, and sanitized result lines.
+The [evidence report](../../evidence/task-020-1-hosted-20260930-01/report.json) retains job identities, assertion limits, source hashes, and sanitized result lines.
 
 Raw logs and API responses remain under `target/task-020-1-hosted-36651370411/`. No raw runner log or binary was published.
 
@@ -159,7 +159,7 @@ The user approved the proposed repair with “proceed with the repair”. The ch
 
 That commit records the earlier verification. It does not change the hosted test inputs or replace the tested merge identity.
 
-The repair adds [US-009](../UserStories.md#us-009-bounded-node-behavior-under-resource-faults) and [FLOW-002](../User-Flows.md#flow-002-operate-a-node-through-resource-faults).
+The repair adds [US-009](../../../UserStories.md#us-009-bounded-node-behavior-under-resource-faults) and [FLOW-002](../../../User-Flows.md#flow-002-operate-a-node-through-resource-faults).
 
 The operator story requires bounded retries and log storage. The flow describes fault detection, bounded errors, recovery, and storage checks.
 
@@ -185,7 +185,7 @@ A disposable control removed the story's flow back-reference. Strict completion 
 
 The live TASK-020-1 completion fields match the successful helper output. The task now has `status: complete`, `completion_gaps: []`, and `completed_date: 2026-09-30`.
 
-The [closure report](./evidence/task-020-1-flow-repair-20260930-01/report.json) records the helper identity, integrity results, refusal control, and evidence limits.
+The [closure report](../../evidence/task-020-1-flow-repair-20260930-01/report.json) records the helper identity, integrity results, refusal control, and evidence limits.
 
 The implementation owner, claim time, and verification fields remain unchanged. The requested `verification_status: in_progress` field is preserved separately from task completion.
 

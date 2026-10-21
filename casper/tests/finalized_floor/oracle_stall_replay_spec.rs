@@ -29,10 +29,24 @@
 // (the red that drove the fix). i1 carries NO such sample — all 264 of its
 // false verdicts are rival vetoes, which KEEP vetoing.
 //
-// Fixtures: casper/tests/resources/stall_fixtures/{i1,i5}.json, emitted by
-// the system-integration classifier's distiller, which validates that the
-// distilled structure replays identically to the full reconstructed shard
-// before emitting.
+// Fixtures: casper/tests/resources/stall_fixtures/{i1,i5}.json. FROZEN
+// artifacts of the two runs above, NOT regenerable — the runs have expired and
+// the distiller is not kept in-tree. Do not hand-patch them: a pin is worth
+// only what its provenance is, and these record what production did.
+//
+// `era` per block is the committee of that block's own floor. It was measured
+// at the main parent of each selected target — a logged sample's total names
+// the committee the oracle read — and propagated forward along main-parent
+// edges, since the bonds field is constant between bond events. Only three
+// blocks per instance were ever measured directly.
+//
+// So when a change to the committee source or the walk puts these red, DELETE
+// the affected pins or this whole spec. The rule they corroborate — ancestry is
+// not disagreement, while rival prefixes and at-or-above-height off-spine
+// blocks still veto — is covered synthetically and causally in
+// `casper/tests/batch2/clique_edge_stall_spec.rs`, which is the primary
+// guarantee. These two add only that the geometry occurred in production, and
+// that claim weakens with every oracle change re-derived on top of it.
 
 use std::collections::{BTreeMap, HashMap};
 

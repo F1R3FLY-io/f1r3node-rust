@@ -20,6 +20,11 @@ ignore = [
   { id = "RUSTSEC-2024-0437", reason = "The optional rust-bert feature uses protobuf 2.28.0 through rust_tokenizers. Untrusted model parsing requires review." },
   { id = "RUSTSEC-2025-0119", reason = "The optional rust-bert feature uses unmaintained number_prefix through cached-path." },
   { id = "RUSTSEC-2026-0173", reason = "The optional chroma feature uses unmaintained proc-macro-error2 through validator_derive." },
+  { id = "RUSTSEC-2026-0367", reason = "zip extract keeps SUID and SGID bits (GHSA-vv5m-jxxh-4627). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
+  { id = "RUSTSEC-2026-0368", reason = "zip extract creates symbolic links that point outside the destination (GHSA-4v9h-p7m9-rh26). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
+  { id = "RUSTSEC-2026-0369", reason = "zip extract applies permissions through symbolic links (GHSA-4684-h2q9-2vcp). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
+  { crate = "zip@3.0.0", reason = "zip yanked 99 of 100 versions after GHSA-4v9h-p7m9-rh26, GHSA-vv5m-jxxh-4627 and GHSA-4684-h2q9-2vcp (extract). The utoipa-swagger-ui 9 build script reads its own vendored archive, and casper-soak reads one member without extract. Bump to zip 9." },
+  { crate = "zip@0.6.6", reason = "zip yanked 99 of 100 versions after the October 2026 extract advisories. The optional rust-bert feature uses zip 0.6.6 through tch, torch-sys and cached-path. Replace when rust-bert moves to zip 9." },
 ]
 
 [licenses]
@@ -56,7 +61,7 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 deny = [
-  { crate = "rustls-webpki:<0.103.13", reason = "The legacy certificate verifier has been removed. Require the patched version." },
+  { crate = "rustls-webpki:<0.103.16", reason = "Require the version that rejects the distrusted emSign intermediates (RUSTSEC-2026-0382). It also has no legacy certificate verifier." },
   { crate = "h2:<0.3.27", reason = "Only h2 0.3.27 has a legacy HTTP exception." },
   { crate = "h2:>0.3.27,<0.4.16", reason = "The maintained HTTP stack must include the empty DATA frame fix." },
 ]
@@ -90,7 +95,7 @@ allow-build-scripts = [
   "quinn@0.11.11", "quote@1.0.47", "radium@0.7.0", "rayon-core@1.13.0",
   "ref-cast@1.0.26", "rend@0.4.2", "rholang-tree-sitter@0.1.2", "ring@0.17.14",
   "rkyv@0.7.46", "rstest_macros@0.19.0", "rust-bert@0.23.0", "rust_decimal@1.42.1",
-  "rust_tokenizers@8.1.1", "rustix@1.1.4", "rustix@1.1.5", "rustls@0.21.12", "rustls@0.23.45",
+  "rust_tokenizers@8.1.1", "rustix@1.1.4", "rustix@1.1.5", "rustls@0.21.12", "rustls@0.23.46",
   "rustversion@1.0.23", "serde@1.0.229", "serde_core@1.0.229", "serde_json@1.0.151",
   "stacker@0.1.24", "stacker@0.1.25", "syn@1.0.109",
   "system-configuration-sys@0.5.0", "system-configuration-sys@0.6.0", "tch@0.17.0",

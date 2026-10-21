@@ -1,0 +1,96 @@
+name: Release Train Soak Dispatch
+
+# Starts the soaks that gate the cost-accounting release train (issue #764,
+# issue #791). .github/scripts/ca-soak-dispatch.sh does the work.
+#
+#   ca-soak label on a ca/ pull request into ca-canary
+#       starts its 22-hour soak (gate ca-item). A passed soak posts
+#       "Soak Gate (22h)" on the head and adds ca-soaked, which the ca-item
+#       queue of .mergify.yml requires.
+#   push to that pull request by anyone except Mergify
+#       removes ca-soak and ca-soaked and cancels its running soak.
+#   push to ca-release
+#       starts the 60-hour soak (gate ca-release). A passed soak posts
+#       "Soak Gate (60h)", which `just ca-tag` requires.
+#
+# The ca-item soaks of different pull requests run in parallel. The daily and
+# weekend soaks of dev and master keep their own concurrency groups, and no
+# gate soak cancels them.
+#
+# pull_request_target runs this file and the checked-out script from the base
+# branch, never from the pull request, and nothing here checks out pull
+# request code. A workflow_dispatch through the API starts a run also with
+# GITHUB_TOKEN, so actions: write is enough to start or cancel a soak.
+on:
+  pull_request_target:
+    types: [labeled, synchronize]
+    branches: [ca-canary]
+  push:
+    branches: [ca-release]
+
+permissions: {}
+
+jobs:
+  pull-request:
+    name: Start or Invalidate the Item Soak
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.head_ref, 'ca/') &&
+      (github.event.action == 'synchronize' || github.event.label.name == 'ca-soak')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ca-soak-dispatch-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+    steps:
+      # No ref: under pull_request_target, checkout fetches the base branch.
+      - name: Checkout base branch scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Dispatch
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: bash .github/scripts/ca-soak-dispatch.sh
+
+  release:
+    name: Start the Release Soak
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Dispatch
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: push
+          PUSH_REF: ${{ github.ref }}
+          HEAD_SHA: ${{ github.sha }}
+        run: bash .github/scripts/ca-soak-dispatch.sh

@@ -1,6 +1,6 @@
 // Discriminates the four framework paths at which a verifying
-// handler's `journal` method will fire (the dispatcher's framework
-// loop is yet to land, slice 4.6).  Handlers pattern-match on the
+// handler's `journal` method fires (the dispatcher's framework
+// loop, slice 4.6).  Handlers pattern-match on the
 // path to select:
 //
 //   - The correct WAL-entry shape — fs_read's success-vs-divergence
@@ -22,9 +22,9 @@ use models::rhoapi::Par;
 
 /// Discriminates the four framework paths at which
 /// [`crate::rust::interpreter::io::handler_trait::reply::HandlerReply`]-producing
-/// handlers' `journal` methods fire.  Carried by the yet-to-land
-/// dispatcher framework (slice 4.6) into every journaling handler's
-/// `journal` call.
+/// handlers' `journal` methods fire.  Carried by the dispatcher
+/// framework (slice 4.6) into every journaling handler's `journal`
+/// call.
 pub enum JournalPath<'a> {
     /// `is_replay = false` — leader path after successful dispatch.
     /// `fresh_reply` is what will be produced to ack.

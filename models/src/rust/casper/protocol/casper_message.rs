@@ -4,7 +4,7 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
 use prost::Message;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::{Blake2b256Hash, LENGTH as HASH_LENGTH};
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
 use shared::rust::{Byte, ByteVector};
 
@@ -112,12 +112,18 @@ impl CasperMessage {
         )?))
     }
 
-    pub fn from_store_items_message_request(proto: StoreItemsMessageRequestProto) -> Self {
-        CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest::from_proto(proto))
+    pub fn from_store_items_message_request(
+        proto: StoreItemsMessageRequestProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::StoreItemsMessageRequest(
+            StoreItemsMessageRequest::from_proto(proto)?,
+        ))
     }
 
-    pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Self {
-        CasperMessage::StoreItemsMessage(StoreItemsMessage::from_proto(proto))
+    pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Result<Self, String> {
+        Ok(CasperMessage::StoreItemsMessage(
+            StoreItemsMessage::from_proto(proto)?,
+        ))
     }
 
     pub fn from_mergeable_entry_request(proto: MergeableEntryRequestProto) -> Self {
@@ -1078,6 +1084,13 @@ impl ProcessedDeploy {
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
             transfers: Vec::new(),
             transfers_available: false,
+            parameters: self
+                .deploy
+                .data
+                .parameters
+                .iter()
+                .map(|p| p.to_proto())
+                .collect(),
         }
     }
 
@@ -1295,6 +1308,12 @@ pub struct DeployData {
     pub shard_id: String,
     /// Optional millisecond timestamp after which deploy is invalid (None = no expiration)
     pub expiration_timestamp: Option<i64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::rust::deploy_parameters::deserialize_parameters"
+    )]
+    pub parameters: Vec<crate::rust::deploy_parameters::DeployParameter>,
 }
 
 impl ToMessage for DeployData {
@@ -1324,11 +1343,13 @@ impl DeployData {
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
             .map_err(|e| format!("Failed to decode DeployData: {}", e))?;
-        Ok(DeployData::_from_proto(proto))
+        DeployData::_from_proto(proto)
     }
 
-    fn _from_proto(proto: DeployDataProto) -> Self {
-        Self {
+    fn _from_proto(proto: DeployDataProto) -> Result<Self, String> {
+        let parameters = crate::rust::deploy_parameters::parameters_from_proto(proto.parameters)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
             term: proto.term,
             time_stamp: proto.timestamp,
             phlo_price: proto.phlo_price,
@@ -1341,7 +1362,8 @@ impl DeployData {
             } else {
                 Some(proto.expiration_timestamp)
             },
-        }
+            parameters,
+        })
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
@@ -1350,7 +1372,7 @@ impl DeployData {
 
         let sig = proto.sig.clone();
         let pk = PublicKey::from_bytes(&proto.deployer);
-        let signed = Signed::from_signed_data(DeployData::_from_proto(proto), pk, sig, algorithm)?;
+        let signed = Signed::from_signed_data(DeployData::_from_proto(proto)?, pk, sig, algorithm)?;
 
         match signed {
             Some(signed) => Ok(signed),
@@ -1368,6 +1390,11 @@ impl DeployData {
             shard_id: dd.shard_id,
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.expiration_timestamp.unwrap_or(0),
+            parameters: dd
+                .parameters
+                .iter()
+                .map(|parameter| parameter.to_proto())
+                .collect(),
             ..Default::default()
         }
     }
@@ -1387,6 +1414,12 @@ impl DeployData {
             sig_algorithm: dd.sig_algorithm.name(),
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.data.expiration_timestamp.unwrap_or(0),
+            parameters: dd
+                .data
+                .parameters
+                .iter()
+                .map(|parameter| parameter.to_proto())
+                .collect(),
             ..Default::default()
         }
     }
@@ -1583,7 +1616,15 @@ impl StoreNodeKey {
     // Encoding of non-existent index for store node (Skip or Leaf node)
     const NONE_INDEX: i32 = 0x100;
 
-    pub fn from_proto(proto: StoreNodeKeyProto) -> (Blake2b256Hash, Option<Byte>) {
+    pub fn from_proto(proto: StoreNodeKeyProto) -> Result<(Blake2b256Hash, Option<Byte>), String> {
+        if proto.hash.len() as i64 != HASH_LENGTH {
+            return Err(format!(
+                "StoreNodeKey hash must be {} bytes, got {}",
+                HASH_LENGTH,
+                proto.hash.len()
+            ));
+        }
+
         // Key hash
         let hash_bytes = Blake2b256Hash::from_bytes(proto.hash.to_vec());
 
@@ -1594,7 +1635,7 @@ impl StoreNodeKey {
             Some(proto.index as u8)
         };
 
-        (hash_bytes, idx)
+        Ok((hash_bytes, idx))
     }
 
     pub fn to_proto(s: &(Blake2b256Hash, Option<Byte>)) -> StoreNodeKeyProto {
@@ -1613,16 +1654,16 @@ pub struct StoreItemsMessageRequest {
 }
 
 impl StoreItemsMessageRequest {
-    pub fn from_proto(proto: StoreItemsMessageRequestProto) -> Self {
-        Self {
+    pub fn from_proto(proto: StoreItemsMessageRequestProto) -> Result<Self, String> {
+        Ok(Self {
             start_path: proto
                 .start_path
                 .into_iter()
                 .map(StoreNodeKey::from_proto)
-                .collect(),
+                .collect::<Result<_, _>>()?,
             skip: proto.skip,
             take: proto.take,
-        }
+        })
     }
 
     pub fn to_proto(self) -> StoreItemsMessageRequestProto {
@@ -1665,18 +1706,18 @@ impl StoreItemsMessage {
         )
     }
 
-    pub fn from_proto(proto: StoreItemsMessageProto) -> Self {
-        Self {
+    pub fn from_proto(proto: StoreItemsMessageProto) -> Result<Self, String> {
+        Ok(Self {
             start_path: proto
                 .start_path
                 .into_iter()
                 .map(StoreNodeKey::from_proto)
-                .collect(),
+                .collect::<Result<_, _>>()?,
             last_path: proto
                 .last_path
                 .into_iter()
                 .map(StoreNodeKey::from_proto)
-                .collect(),
+                .collect::<Result<_, _>>()?,
             history_items: proto
                 .history_items
                 .into_iter()
@@ -1697,7 +1738,7 @@ impl StoreItemsMessage {
                     )
                 })
                 .collect(),
-        }
+        })
     }
 
     pub fn to_proto(self) -> StoreItemsMessageProto {
@@ -2231,6 +2272,7 @@ mod tests {
             valid_after_block_number: 4,
             shard_id: "root".to_string(),
             expiration_timestamp: Some(500),
+            parameters: Vec::new(),
         };
         assert_eq!(
             DeployData::decode(DeployData::encode(with_expiration.clone())).unwrap(),
@@ -2259,6 +2301,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            parameters: Vec::new(),
         };
         assert_eq!(deploy.total_phlo_charge(), 77);
         assert!(!deploy.has_expiration());
@@ -2298,13 +2341,13 @@ mod tests {
     fn store_node_key_round_trips_with_and_without_index() {
         let with_index = (hash32(1), Some(7u8));
         assert_eq!(
-            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&with_index)),
+            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&with_index)).unwrap(),
             with_index
         );
 
         let without_index = (hash32(2), None);
         assert_eq!(
-            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&without_index)),
+            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&without_index)).unwrap(),
             without_index
         );
     }
@@ -2317,7 +2360,7 @@ mod tests {
             take: 10,
         };
         assert_eq!(
-            StoreItemsMessageRequest::from_proto(request.clone().to_proto()),
+            StoreItemsMessageRequest::from_proto(request.clone().to_proto()).unwrap(),
             request
         );
 
@@ -2328,12 +2371,38 @@ mod tests {
             data_items: vec![(hash32(4), Bytes::from_static(b"data"))],
         };
         assert_eq!(
-            StoreItemsMessage::from_proto(message.clone().to_proto()),
+            StoreItemsMessage::from_proto(message.clone().to_proto()).unwrap(),
             message
         );
 
         let pretty = message.pretty();
         assert!(pretty.starts_with("StoreItemsMessage(history: 1, data: 1"));
+    }
+
+    #[test]
+    fn store_node_key_rejects_a_hash_that_is_not_32_bytes() {
+        for len in [0usize, 3, 31, 33] {
+            let key = StoreNodeKeyProto {
+                hash: Bytes::from(vec![7u8; len]),
+                index: 0x100,
+            };
+            assert!(StoreNodeKey::from_proto(key.clone()).is_err(), "len {len}");
+
+            let request = StoreItemsMessageRequestProto {
+                start_path: vec![StoreNodeKey::to_proto(&(hash32(1), None)), key.clone()],
+                skip: 0,
+                take: 1,
+            };
+            assert!(CasperMessage::from_store_items_message_request(request).is_err());
+
+            let message = StoreItemsMessageProto {
+                start_path: vec![],
+                last_path: vec![key],
+                history_items: vec![],
+                data_items: vec![],
+            };
+            assert!(CasperMessage::from_store_items_message(message).is_err());
+        }
     }
 
     #[test]

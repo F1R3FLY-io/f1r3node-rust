@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -209,6 +210,23 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     transport: Arc<U>,
     conf: RPConf,
     block_retriever: BlockRetriever<U>,
+    // Phase 7b-1: optional snapshot chunk-fetch context.  When
+    // `Some`, the running engine's packet dispatch routes
+    // snapshot-related CasperMessage variants to the sync driver
+    // + server handlers.  `None` disables snapshot sync (observer
+    // nodes without an `fs_snapshot_writer`, test harnesses that
+    // don't wire the boot pipeline).  Installed via
+    // `Running::install_snapshot_chunk_context` after construction
+    // + before `engine_cell.set` so no CasperMessage reaches a
+    // half-wired Running.
+    snapshot_chunk_ctx: Option<crate::rust::engine::running::SnapshotChunkContext>,
+    // Phase 7b-2: optional WAL payload-fetch context.  Same
+    // install-before-publish shape as `snapshot_chunk_ctx`.  Tick-
+    // loop spawn + `tick_stop` population are a follow-up slice
+    // (requires threading `recovery_context` / `ConnectionsCell`
+    // through this function to feed `wal_payload_sync::
+    // spawn_periodic_tick`).
+    wal_payload_ctx: Option<crate::rust::engine::running::WalPayloadContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
     state_items_tx: Option<
@@ -233,7 +251,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     let block_hash_string =
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
 
-    let running = Running::new(
+    let running = Arc::new(Running::new(
         block_processing_queue_tx,
         blocks_in_processing,
         casper,
@@ -244,9 +262,21 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
         conf,
         block_retriever,
         state_items_tx,
-    );
+    ));
 
-    engine_cell.set(Arc::new(running)).await;
+    // Install contexts BEFORE publishing the engine so the very
+    // first incoming CasperMessage is dispatched under the full
+    // wiring (avoids a race window where messages arrive before
+    // the context install).  Install-once per OnceLock — a second
+    // call silently no-ops.
+    if let Some(ctx) = snapshot_chunk_ctx {
+        running.install_snapshot_chunk_context(ctx);
+    }
+    if let Some(ctx) = wal_payload_ctx {
+        running.install_wal_payload_context(ctx);
+    }
+
+    engine_cell.set(running).await;
 
     if let Err(e) = event_log.publish(F1r3flyEvent::entered_running_state(block_hash_string)) {
         tracing::error!(

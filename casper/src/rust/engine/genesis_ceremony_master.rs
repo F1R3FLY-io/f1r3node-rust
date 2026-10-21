@@ -8,8 +8,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -162,6 +163,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     transport_layer.clone(),
                     rp_conf_ask.clone(),
                     block_retriever.clone(),
+                    // Phase 7b-1: ceremony-master path is genesis-rooted.
+                    // Snapshot chunk fetch has nothing to anchor against
+                    // (no prior snapshot exists), so passing `None` is
+                    // correct here regardless of boot pipeline state.
+                    None,
+                    // Phase 7b-2: ceremony-master also has no prior
+                    // WAL slice to fetch between snapshots, so the
+                    // payload-fetch dispatch stays disabled.
+                    None,
                     &engine_cell,
                     event_publisher,
                     // The ceremony master transitions genesis-rooted: its

@@ -388,6 +388,17 @@ pub fn sequential_export(
     let init_node_path: Box<
         dyn Fn(NodePathData) -> Result<Either<NodePathData, Path>, RadixTreeError>,
     > = Box::new(|p: NodePathData| {
+        let prefix_not_found = || {
+            let mut node_prefix_cloned = p.node_prefix.clone();
+            let mut rest_prefix_cloned = p.rest_prefix.clone();
+            node_prefix_cloned.append(&mut rest_prefix_cloned);
+
+            RadixTreeError::PrefixError(format!(
+                "Radix Tree - Export error: node with prefix {} not found.",
+                hex::encode(node_prefix_cloned)
+            ))
+        };
+
         let process_child_item = |node: Node| {
             let item_idx = byte_to_int(*p.rest_prefix.first().unwrap());
             match node.get(item_idx) {
@@ -399,22 +410,15 @@ pub fn sequential_export(
                     let (mut prefix_common, prefix_rest, ptr_prefix_rest) =
                         common_prefix(rest_prefix_tail.to_vec(), ptr_prefix.to_vec());
 
-                    assert!(ptr_prefix_rest.is_empty(), "{}", {
-                        let mut node_prefix_cloned = p.node_prefix.clone();
-                        let mut rest_prefix_cloned = p.rest_prefix.clone();
-                        node_prefix_cloned.append(&mut rest_prefix_cloned);
-
-                        format!(
-                            "Radix Tree - Export error: node with prefix {} not found.",
-                            hex::encode(node_prefix_cloned)
-                        )
-                    });
+                    if !ptr_prefix_rest.is_empty() {
+                        return Err(prefix_not_found());
+                    }
 
                     let mut node_prefix_appended = p.node_prefix.clone();
                     node_prefix_appended.push(*p.rest_prefix.first().unwrap());
                     node_prefix_appended.append(&mut prefix_common);
 
-                    Either::Left(NodePathData {
+                    Ok(Either::Left(NodePathData {
                         hash: ptr.to_vec(),
                         node_prefix: node_prefix_appended,
                         rest_prefix: prefix_rest,
@@ -429,22 +433,9 @@ pub fn sequential_export(
                             new_path.extend(p.path.clone());
                             new_path
                         },
-                    })
+                    }))
                 }
-                _ => {
-                    assert!(false, "{}", {
-                        let mut node_prefix_cloned = p.node_prefix.clone();
-                        let mut rest_prefix_cloned = p.rest_prefix.clone();
-                        node_prefix_cloned.append(&mut rest_prefix_cloned);
-
-                        format!(
-                            "Radix Tree - Export error: node with prefix {} not found.",
-                            hex::encode(node_prefix_cloned)
-                        )
-                    });
-
-                    Either::Right(Vec::<NodeData>::new()) // Not found
-                }
+                _ => Err(prefix_not_found()),
             }
         };
 
@@ -463,7 +454,7 @@ pub fn sequential_export(
                 new_path.extend(p.path);
                 Ok(Either::Right(new_path)) // Happy end
             } else {
-                Ok(process_child_item(decoded_node)) // Go dipper
+                process_child_item(decoded_node) // Go dipper
             }
         }
     });
@@ -975,6 +966,12 @@ impl RadixTreeImpl {
      * If detected collision with older KVDB data - execute Exception
      */
     pub fn commit(&self) -> Result<(), RadixTreeError> {
+        let pending = self.pending_writes()?;
+        self.store.put(pending)?;
+        Ok(())
+    }
+
+    pub fn pending_writes(&self) -> Result<Vec<(ByteVector, ByteVector)>, RadixTreeError> {
         fn collision_panic(collisions: Vec<(ByteVector, ByteVector)>) -> RadixTreeError {
             RadixTreeError::CollisionError(format!(
                 "{} collisions in KVDB (first collision with key = {}.",
@@ -1030,13 +1027,7 @@ impl RadixTreeImpl {
             .map(|(kv, _)| kv)
             .collect();
 
-        let serialized_kv_absent = kv_absent
-            .into_iter()
-            .map(|(key, value)| (key, value))
-            .collect();
-
-        self.store.put(serialized_kv_absent)?;
-        Ok(())
+        Ok(kv_absent)
     }
 
     /**

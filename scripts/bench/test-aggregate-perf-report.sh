@@ -175,10 +175,46 @@ SOAK_DIR="$TMP/segments" OUT_DIR="$TMP/segments-report" RUN_ID=4 RUN_ATTEMPT=1 \
 jq -e '
   .active.segments_total == 1
   and .active.segments_ok == 1
+  and .active.segments_failed == 0
+  and .active.segments_attempted == 1
   and (.active.segments | length) == 1
   and .active.segments[0].offset_seconds == 60
   and .passive.cpu_peak_core_grid_pct == {"validator1": {"all": 55.5}, "bootstrap": {"all": 12}}
 ' "$TMP/segments-report/weekly-summary.json" >/dev/null
+
+# A bench segment whose shard never starts writes no metrics.json, so the
+# segment list alone cannot show it. Soak 38184406100 had two such segments
+# while the summary showed 15/15. The run state count makes them visible.
+mkdir -p "$TMP/bench-failed/bench-segment-00001" "$TMP/bench-failed-report"
+jq '.bench_segments = 3 | .bench_failures = 2' "$TMP/passing/summary.json" \
+	>"$TMP/bench-failed/summary.json"
+cp "$TMP/segments/bench-segment-00001/metrics.json" \
+	"$TMP/bench-failed/bench-segment-00001/metrics.json"
+SOAK_DIR="$TMP/bench-failed" OUT_DIR="$TMP/bench-failed-report" RUN_ID=10 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '
+  .active.segments_total == 1
+  and .active.segments_ok == 1
+  and .active.segments_failed == 2
+  and .active.segments_attempted == 3
+' "$TMP/bench-failed-report/weekly-summary.json" >/dev/null
+jq -e '.warnings | any(. == "2 active benchmark segment(s) failed")' \
+	"$TMP/bench-failed-report/verdict.json" >/dev/null
+grep -Fq '| segments ok | 1/3 (2 failed) |' "$TMP/bench-failed-report/perf-report.md"
+
+# Every bench segment failed before it wrote metrics: the all-failed warning
+# must fire, as it does when failed segments did write metrics.
+mkdir -p "$TMP/bench-all-failed" "$TMP/bench-all-failed-report"
+jq '.bench_segments = 2 | .bench_failures = 2' "$TMP/passing/summary.json" \
+	>"$TMP/bench-all-failed/summary.json"
+SOAK_DIR="$TMP/bench-all-failed" OUT_DIR="$TMP/bench-all-failed-report" RUN_ID=11 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '.warnings | any(. == "all active benchmark segments failed")' \
+	"$TMP/bench-all-failed-report/verdict.json" >/dev/null
+jq -e '.active.segments_attempted == 2 and .active.segments_ok == 0' \
+	"$TMP/bench-all-failed-report/weekly-summary.json" >/dev/null
 
 mkdir -p "$TMP/breach" "$TMP/breach-report"
 cp "$TMP/passing/summary.json" "$TMP/breach/summary.json"
@@ -204,5 +240,40 @@ jq -e '
   .verdict == "in_progress"
   and (.failures | any(. == "host protection breach aborted the soak"))
 ' "$TMP/breach-checkpoint-report/verdict.json" >/dev/null
+
+# A long soak's summary.json outgrows MAX_ARG_STRLEN (128 KB on Linux), the
+# cap on a single argv entry. Passing it with --argjson "$(cat ...)" made jq
+# exit 126 "Argument list too long" and lost the final report of a 49-iteration
+# run. Every JSON input must reach jq through --slurpfile, including the
+# baseline (a previous weekly-summary.json embeds the same large passive block).
+ARG_STRLEN_LIMIT=131072
+mkdir -p "$TMP/large" "$TMP/large-report" "$TMP/large-baselined-report"
+jq --argjson n 4000 '
+	.iterations = 49
+	| .tracked_metrics = ([range(0; $n)]
+		| map({key: "metric_\(.)", value: {samples: [range(0; 8)], unit: "ms"}})
+		| from_entries)' \
+	"$TMP/passing/summary.json" >"$TMP/large/summary.json"
+[ "$(wc -c <"$TMP/large/summary.json")" -gt "$ARG_STRLEN_LIMIT" ] || {
+	echo "large summary fixture must exceed MAX_ARG_STRLEN to exercise the regression" >&2
+	exit 1
+}
+SOAK_DIR="$TMP/large" OUT_DIR="$TMP/large-report" RUN_ID=6 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '.verdict == "pass" and .bootstrap == true' \
+	"$TMP/large-report/verdict.json" >/dev/null
+jq -e '.passive.iterations == 49 and (.passive.tracked_metrics | length) == 4000' \
+	"$TMP/large-report/weekly-summary.json" >/dev/null
+grep -q '^## Verdict: PASS' "$TMP/large-report/perf-report.md"
+[ "$(wc -c <"$TMP/large-report/weekly-summary.json")" -gt "$ARG_STRLEN_LIMIT" ]
+SOAK_DIR="$TMP/large" OUT_DIR="$TMP/large-baselined-report" RUN_ID=7 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	BASELINE_JSON="$TMP/large-report/weekly-summary.json" \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '.verdict == "pass" and .bootstrap == false and .baseline_run.run_id == "6"' \
+	"$TMP/large-baselined-report/verdict.json" >/dev/null
+grep -q '| iterations | 49 | 49 |' "$TMP/large-baselined-report/perf-report.md"
+[ ! -e "$TMP/large-baselined-report/.null.json" ]
 
 printf 'soak report verdict tests passed\n'

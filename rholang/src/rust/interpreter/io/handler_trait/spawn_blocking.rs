@@ -1,6 +1,6 @@
-// Syscall-dispatch wrapper the handler framework (yet to land,
-// slice 4.9+) uses to run long-blocking fs syscalls off the tokio
-// reactor.  Centralizes two invariants:
+// Syscall-dispatch wrapper the handler framework (slice 4.9) uses
+// to run long-blocking fs syscalls off the tokio reactor.
+// Centralizes two invariants:
 //
 //   1. **Fail-closed on JoinError** — a panic inside the blocking
 //      task propagates as `super::super::errors::join_err_abort`

@@ -13,7 +13,8 @@ use casper::rust::blocks::proposer::proposer::{
 use casper::rust::casper::Casper;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
-    PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
+    PROPOSER_QUEUE_DEPTH_METRIC, PROPOSER_QUEUE_PENDING_METRIC,
+    PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -37,6 +38,24 @@ fn should_retry_immediately_on_trigger(result: &ProposeResult, is_async: bool) -
 }
 
 fn proposer_min_interval() -> Duration { PROPOSER_MIN_INTERVAL }
+
+fn take_queued_request(propose_queue_pending: &AtomicUsize) {
+    let before = propose_queue_pending
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+            Some(curr.saturating_sub(1))
+        })
+        .unwrap_or_else(|curr| curr);
+    metrics::histogram!(
+        PROPOSER_QUEUE_DEPTH_METRIC,
+        "source" => VALIDATOR_METRICS_SOURCE
+    )
+    .record(before as f64);
+    metrics::gauge!(
+        PROPOSER_QUEUE_PENDING_METRIC,
+        "source" => VALIDATOR_METRICS_SOURCE
+    )
+    .set(propose_queue_pending.load(Ordering::Relaxed) as f64);
+}
 
 /// Proposer instance that processes propose requests from a queue
 ///
@@ -127,16 +146,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
             while let Some((casper, is_async, propose_id_sender, immediate_retry_count)) =
                 propose_requests_queue_rx.recv().await
             {
-                let _ = propose_queue_pending.fetch_update(
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                    |curr| Some(curr.saturating_sub(1)),
-                );
-                metrics::gauge!(
-                    PROPOSER_QUEUE_PENDING_METRIC,
-                    "source" => VALIDATOR_METRICS_SOURCE
-                )
-                .set(propose_queue_pending.load(Ordering::Relaxed) as f64);
+                take_queued_request(&propose_queue_pending);
 
                 let min_interval = proposer_min_interval();
                 // Allow one immediate follow-up after a trigger collision so deploy-driven
@@ -418,6 +428,34 @@ mod tests {
     use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
 
     use super::*;
+
+    #[test]
+    fn each_take_from_the_queue_records_the_pending_depth_before_it() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let pending = AtomicUsize::new(3);
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            take_queued_request(&pending);
+            take_queued_request(&pending);
+        });
+
+        let samples: Vec<f64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == PROPOSER_QUEUE_DEPTH_METRIC)
+            .flat_map(|(.., value)| match value {
+                DebugValue::Histogram(values) => {
+                    values.into_iter().map(|v| v.into_inner()).collect()
+                }
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(samples, vec![3.0, 2.0]);
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
+    }
 
     /// `BlockNotHeld` is availability, not a bug: the classification must
     /// name the block so the caller requests it, and must not report the

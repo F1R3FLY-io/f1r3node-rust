@@ -29,6 +29,13 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Deploy parameter
+
+A deploy parameter is a named, typed Rholang value included in the signed deploy data.
+Rholang code accesses the value through `rho:deploy:param:<name>`.
+
+**Preferred usage.** Use this term for values in `DeployData.parameters`.
+
 ### Soak harness
 
 The soak harness is the driver, profile adapters, collectors, and classifier that run [soak profiles](#soak-profile) against a [soak candidate](#soak-candidate) and retain evidence.
@@ -546,6 +553,18 @@ until the decision lands.
 *Distinguish from* the [retry gate](#retry-gate): the gate is a consensus
 legality rule; this packaging policy is node-local discretion on top of it.
 *Avoid*: "retry deferral" without qualification.
+
+### Value stream
+
+A value stream is the end-to-end sequence of activities that delivers a discrete unit of value. Each user story names its value stream, and an epic inherits it through the story.
+
+**Preferred usage.** Use this term for the `**Value Stream:**` line of a story in `docs/UserStories.md`. The [task tracking guide](task-tracking.md#value-streams) lists the current value streams. *Distinguish from* an epic, which is the implementation scope for one story. *Avoid*: workstream or track for this concept.
+
+### Task claim
+
+A task claim records who works on a task in `docs/ToDos.md`. It sets the `claimed_by` and `claimed_at` fields of the task.
+
+**Preferred usage.** Use task claim, or claim a task, for this coordination record. *Distinguish from* [Claim](#claim), which is a correctness property under `docs/claims/`. *Avoid*: bare claim where the CbC sense is possible.
 
 ## Architecture Stack Mapping
 

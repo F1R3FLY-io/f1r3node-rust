@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-09-21
+last_updated: 2026-10-13
 mr_status:
   ready: false
   target_branch: master
@@ -18,7 +18,9 @@ This document tracks implementation work through **epics** (logical groupings of
 - Completed work: `docs/CompletedTasks.md`
 - Backlog: `docs/Backlog.md`
 
-**Shared Coordination File:** `/tmp/migrationPlan.md` (read by agents in both f1r3node and f1r3node-rust)
+**Guide:** The [task tracking guide](task-tracking.md) gives the epic, task, claim, and value stream rules.
+
+The migration epics, EPIC-003 through EPIC-008, used a local coordination file, `/tmp/migrationPlan.md`. Other work does not use the file.
 
 ---
 
@@ -71,6 +73,743 @@ mr_status:
 
 ---
 
+### EPIC-029: Trusted Daily Back-merges
+
+```yaml
+epic_id: EPIC-029
+title: "Trusted Daily Back-merges"
+status: in_progress
+priority: p1
+user_story: US-013
+branch: ci/ca-release-train
+tasks:
+  - id: TASK-029-1
+    title: "Validate daily back-merges with trusted code and permit clean base merges"
+    status: in_progress
+    claimed_by: pi-session
+    claimed_at: 2026-10-20T19:05:51Z
+    review_requested_at: 2026-10-20
+    review_type: human
+    progress: "Local provenance, protected-head, tag, routing, and workflow invariant tests pass. ShellCheck passes. Hosted validation remains pending."
+    notes: "Review follow-up for issues #791 and PR #792. Preserve the accepted ca-soaked label risk."
+    acceptance:
+      - "Tests accept the release source and repeated clean base merges."
+      - "Tests reject foreign sources, edited merge trees, single-parent additions, forks, and invalid metadata."
+      - "A pull_request_target workflow runs only base code and posts CA Daily Provenance on the event head SHA."
+      - "The ca-daily queue requires CA Daily Provenance, and the existing workflow invariant checks pass."
+```
+
+---
+
+### EPIC-024: Spike: Tokio and LMDB Disk Access, and Detection of Delayed Writes
+
+```yaml
+---
+epic_id: EPIC-024
+title: "Spike: Tokio and LMDB Disk Access, and Detection of Delayed Writes"
+status: pending
+priority: p1
+user_story: null
+issues:
+  - https://github.com/F1R3FLY-io/f1r3node-rust/issues/24
+blocked_by: []
+created_at: 2026-10-10
+updated_at: 2026-10-10
+claimed_by: null
+claimed_at: null
+branch: docs/tokio-lmdb-disk-spike
+pr_base_branch: dev
+origin: "On 2026-10-10, after PR #695 merged, the user asked if the LMDB disk interface can ensure real-time access. The answer was no. The user asked for a spike to investigate Tokio, LMDB, and disk optimization, and the detection of delayed writes."
+execution_contract:
+  base_branch: dev
+  scope: "Investigate only. Measure where LMDB disk time goes on the propose and validate paths, and add the detection of delayed writes. Change the storage configuration only after a measurement shows a disk problem."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent. Branch creation belongs to the user."
+  oci_policy: "Use OCI only through a user-run pre-flight and soak."
+findings:
+  real_time: "The LMDB layer gives no latency bound for a read or a write. It has no timeout or deadline on a transaction, no reader or writer priority, no dedicated I/O thread pool, and no mlock or madvise. A read that misses the page cache blocks on a page fault for as long as the disk takes."
+  durability: "rspace++/src/rspace/shared/env_cache.rs:55 opens each environment with map_size, max_dbs, and max_readers(2048) only. It sets no NO_SYNC, NO_META_SYNC, MAP_ASYNC, or WRITE_MAP. Each write_txn commit therefore waits for an fsync, and the commit time follows the disk sync time."
+  concurrency: "shared/src/rust/store/lmdb_key_value_store.rs:10 removed the old mutex. Read transactions run in parallel under LMDB MVCC. The LMDB writer lock serializes all write transactions of one environment."
+  tokio: "in_blocking (lmdb_key_value_store.rs:24) runs each store operation in tokio::task::block_in_place on a multi-thread runtime. Other tasks keep running, but the wait is not shorter. On a current-thread runtime the operation runs inline and blocks the runtime."
+  tokio_scheduling: |
+    Tokio (1.53.1 in Cargo.lock) is a cooperative scheduler. It gives no real-time guarantee:
+    - No preemption, no task priority, and no deadline. A task holds its worker thread until it reaches an .await that yields.
+    - The coop budget (128 operations) forces a yield only at Tokio resources. CPU work such as Rholang evaluation, hashing, and a synchronous LMDB call is not budgeted.
+    - Tasks in the local queue of a blocked worker wait until another worker steals them. The LIFO slot of a worker cannot be stolen, so the task in it waits for that worker.
+    - block_in_place hands the other tasks of the worker to a new thread. That keeps the runtime moving, but it costs a thread handoff on each store call.
+    - The spawn_blocking pool has up to 512 threads by default and an unbounded queue with no priority.
+    - Timers have 1 ms resolution, and the workers drive them. When all workers are busy, timers fire late. tokio::time::timeout cannot stop a synchronous LMDB call. It acts only at the next .await.
+    - Worker threads have normal OS priority. The node sets no real-time scheduling class and no CPU affinity.
+  tokio_runtime_config: |
+    - node/src/main.rs:48 builds one multi-thread runtime for the node. TOKIO_WORKER_THREADS can set the worker count (issue #43). Otherwise Tokio uses available_parallelism(). No other runtime option is set.
+    - node/src/rust/runtime/servers_instances.rs:276 runs the HTTP API on a dedicated 4-worker runtime, and line 310 runs the admin HTTP API on a dedicated current-thread runtime. This isolates the API servers from the main runtime. On the admin runtime, in_blocking runs store calls inline.
+    - The node records no Tokio runtime metrics. It records no worker busy time, no queue depth, no poll-time histogram, and no scheduling delay. Some of these metrics need --cfg tokio_unstable. Check which ones Tokio 1.53 makes stable.
+  separation: "A stage histogram such as proposer.create.time includes the time a task waits for a worker. A slow stage can come from the disk, from the CPU, or from the scheduler. The spike must measure each part separately before it attributes a delay to the disk."
+  load_control: "PR #695 controls load above the storage layer. A slow disk shows as LFB lag, and the admission caps reduce deploy intake: 16 under soft backpressure while the LFB advances, 8 while it stalls, and 4 at lag 8 or more."
+  existing_metrics: "The stage histograms measure whole stages, not single LMDB operations: proposer.constraints.time, proposer.create.time, proposer.validate.time, proposer.effect.time, deploy-lifecycle.observe.time, and deploy-lifecycle.carrier-prune.time. The slow lifecycle-observe warning reports rebuild_ms and prune_ms."
+  prior_evidence: "The issue #24 analysis found that the checkpoint fsync is about 1 percent of the cost. Do not assume that the disk is the bottleneck."
+  carrier_prune_history: |
+    The carrier-index prune stall shows how one write pattern can block every proposer:
+    - Before: prune_below committed one LMDB transaction for each changed row. Inside deploy_lifecycle.observe_block this stalled every proposer for 10 to 19 s at each prune stride.
+    - 0ed7d82ff: writes the changed rows in 2 transactions (one delete, one put). last-prune is written after the row writes.
+    - c11d302b9: splits the 2 batches into chunks of PRUNE_WRITE_CHUNK (1024) rows. The test a_prune_walk_writes_no_batch_larger_than_the_write_chunk bounds the batch size.
+    - 37dfffef5: adds fail_puts and the test a_prune_that_fails_part_way_is_finished_by_the_next_walk. A walk that fails part way leaves last-prune unchanged, so the next walk does the prune again. The commit amends C4 of CLAIM-FINALITY-002.
+  baseline_soak: "Weekend-60h soak run 38076682321 on master 761cc0d59 (dispatched 2026-10-10) records the stage histograms after PR #695. Use it as the baseline for this spike."
+tasks:
+  - id: TASK-024-1
+    title: "List the LMDB write paths that run on the propose, validate, and finalization paths"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A table lists each store that these paths write, the caller, the transaction size, and the runtime context (block_in_place, current-thread inline, or blocking thread)."
+      - "The table marks each write that runs while a lock that a proposer needs is held, as the carrier prune did."
+  - id: TASK-024-2
+    title: "Detect delayed writes"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A histogram records the commit time of each LMDB write transaction, labeled by store."
+      - "A histogram records the wait for the LMDB writer lock, separate from the commit time."
+      - "A warning with the store name and the times is logged when one commit is slower than a set threshold."
+      - "A test with a slow store double proves the warning and the histograms. The soak harness scrapes the new histograms (scripts/bench/extend-issue24-metrics.sh)."
+  - id: TASK-024-5
+    title: "Detect Tokio scheduling delay separately from disk delay"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A periodic probe task on the main runtime records how late each wake-up is, as a scheduling-delay histogram."
+      - "The node exports the stable Tokio runtime metrics that apply: worker busy time, global queue depth, blocking queue depth, and alive tasks. The record states which useful metrics need --cfg tokio_unstable and what that flag costs."
+      - "A test with a task that blocks a worker proves that the probe reports the delay."
+      - "The soak harness scrapes the new metrics, so that TASK-024-3 can split each stage time into disk, CPU, and scheduling parts."
+  - id: TASK-024-3
+    title: "Measure the LMDB commit times on a local SSD and in a user-run OCI soak"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: [TASK-024-2, TASK-024-5]
+    acceptance:
+      - "A local test_load run and a user-run soak give the commit-time distribution for each store."
+      - "The result states which part of the proposer.*.time and deploy-lifecycle.*.time values comes from LMDB commits, compared with soak 38076682321."
+  - id: TASK-024-4
+    title: "Decide on storage optimizations from the measurements"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: [TASK-024-3]
+    acceptance:
+      - "A decision record evaluates each option against the measurements: a dedicated writer thread or spawn_blocking, larger or fewer write batches, NO_META_SYNC or other sync flags, and read-ahead settings."
+      - "The record also evaluates the Tokio options: a dedicated runtime or thread pool for consensus work (as the HTTP API already has), the worker count, explicit yield points in long CPU work, and an OS thread priority for the proposer."
+      - "Each option that reduces durability states the crash-recovery result before a maintainer accepts it."
+      - "No option changes code unless TASK-024-3 shows a disk cause."
+---
+```
+
+---
+
+### EPIC-026: Hierarchical CbC Attributes (Nested .gitattributes Files)
+
+```yaml
+---
+epic_id: EPIC-026
+title: "Hierarchical CbC Attributes (Nested .gitattributes Files)"
+status: blocked
+priority: p2
+user_story: null
+blocked_by: ["top-level-gitlab-profile docs/ToDos.md INBOX: hierarchical cbc .gitattributes design (2026-10-12)"]
+created_at: 2026-10-12
+updated_at: 2026-10-12
+plan: docs/plans/cbc-hierarchical-attributes.md
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-12T14:00:00Z
+branch: chore/cbc-hierarchical-attributes
+pr_base_branch: dev
+origin: "On 2026-10-12 the maintainer asked to move the cbc=mandatory tags out of the flat root .gitattributes (160 lines) into .gitattributes files in subdirectories, following the new CbC workflow in top-level-gitlab-profile."
+roles:
+  design: "top-level-gitlab-profile owns the design, the tooling change, and its tests (its docs/ToDos.md INBOX entry of 2026-10-12)."
+  implementation: "This epic. It applies the ratified design to this repository and reorganizes the .gitattributes files."
+execution_contract:
+  design_policy: "No change to any .gitattributes file before the maintainer approves the design. The rule moves follow docs/plans/cbc-hierarchical-attributes.md. The revised R1 to R7 apply: the owner map routes proposals only, existing rules keep their coverage, and R7 is a separate change."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+baseline:
+  root_file: ".gitattributes has 160 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 125) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
+  evidence_dirs: "docs/cbc-evidence/ (tooling default) and docs/casper/cbc-evidence/ (selected through CBC_EVIDENCE_DIR in docs/casper/README.md)."
+  acceptance: "No entry sets cbc-acceptance yet."
+tasks:
+  - id: TASK-026-1
+    title: "Record the attribute baseline"
+    status: pending
+    blocked_by: []
+    acceptance:
+      - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
+  - id: TASK-026-2
+    title: "Declare the owner directories"
+    status: pending
+    blocked_by: ["design approval", "shared owner map interface (R1)"]
+    acceptance:
+      - "The owner map of the shared tooling lists the nine owner directories of plan section 4."
+      - "The owner map routes new proposals only. The snapshot diff stays empty."
+  - id: TASK-026-3
+    title: "Move the rules into the owner .gitattributes files"
+    status: pending
+    blocked_by: [TASK-026-1, TASK-026-2]
+    acceptance:
+      - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
+      - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
+      - "No owner file uses an [attr] macro."
+      - "The snapshot diff against the previous commit is empty after each commit."
+      - "The root file keeps only rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
+  - id: TASK-026-4
+    title: "Remove the duplicate lines"
+    status: pending
+    blocked_by: [TASK-026-3]
+    acceptance:
+      - "A separate commit removes the second copy of .github/workflows/slashing-tests.yml and scripts/ci/check-tla-invariants.sh."
+      - "The snapshot diff is empty."
+  - id: TASK-026-5
+    title: "Prove that the migration is exact"
+    status: pending
+    blocked_by: [TASK-026-4, "shared R5 snapshot command"]
+    acceptance:
+      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work. Each such path is recorded with its commit."
+      - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
+      - "cbc discharge --strict gives the same result at the branch base and the branch head."
+      - "The independent verifier in top-level-gitlab-profile confirms the result."
+---
+```
+
+---
+
+### EPIC-023: Disk Admission Test Flake and the Lint Job Scope
+
+```yaml
+---
+epic_id: EPIC-023
+title: "Disk Admission Test Flake and the Lint Job Scope"
+status: in_progress
+priority: p0
+user_story: null
+issues: []
+blocked_by: []
+created_at: 2026-10-08
+updated_at: 2026-10-08
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-08T14:00:00Z
+branch: fix/lint-flake-resolution
+pr_base_branch: dev
+origin: "On 2026-10-08 the dev merge queue returned PRs #665, #670, and #671 with a Lint failure in the step Verify isolated disk admission and emergency scenarios. The user asked if the failure is a flake, and then asked why a static analysis job can fail on a timeout."
+execution_contract:
+  base_branch: dev
+  scope: "Remove the timing flake of scripts/bench/test-soak-disk-admission.sh and make its fixture failures diagnosable from the CI log. Then reorganize the CI jobs by purpose and relabel each job and step so that its name states what it runs."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent. Branch creation belongs to the user."
+  language_policy: "Bash only for new scripts (repository rule)."
+evidence:
+  rate: "From 2026-10-03 to 2026-10-08 the step failed in 6 of 119 Lint runs (about 5%) and passed in 113. Four failures came before the FileIO Wave 5 merges, so the FileIO changes did not cause it."
+  signature: "Each failure is a different scenario with the same result: The fixture did not complete the required driver path (exit 2), so the scenario gave no behavioral verdict. The six scenarios are cleanup-sufficient, log-within-budget, log-sudo-fallback, log-budget-disabled, log-probe-vanished, and benchmark-disabled. Each one runs a full iteration. No refusal scenario failed."
+  reproduction: "Local runs on 2026-10-08 (12 CPUs): all 48 runs of the six scenarios passed without load. With all host CPUs saturated, log-probe-vanished failed once in 4 runs with driver exit 124: the 50 s driver timeout killed it at 52 s. It needs about 28 s without load, which leaves less than 2x margin. The other five scenarios need 3 to 4 s against a 20 s driver cap, even under the local load."
+  failing_log: "The killed driver log ends at The boundary workload fixture completed., so the scenario waits and does not compute."
+  stress_finding: "2026-10-08: with 10 of 12 CPUs saturated and six scenarios in parallel, 25 of 60 runs gave no pass. The runs are bimodal: a pass needs 3 to 4 s, and a failure hangs until the driver timeout (exit 124, Summary: missing). In each hung run the driver log ends at The boundary workload fixture completed. and output/signal is not consumed, so the driver stalls before its signal check (run-merge-recovery-soak.sh line 1917). The CI flake is most likely this stall, not a tight timeout."
+  lint_scope: "The Lint job of ci.yml has 32 steps. Only cargo fmt, clippy, the workflow invariants, and the supply-chain controls are static checks. The other steps run behavioral tests of the CI and soak scripts. The disk admission step builds an image and the soak harness and runs the real soak driver in about 60 containers under wall-clock timeouts. PR #668 adds five more script tests to this job."
+tasks:
+  - id: TASK-023-1
+    title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T17:00:00Z
+    blocked_by: []
+    progress: "B3 and B4 are done (abffaba3b, 8fa26ea27): log-probe-vanished needs 11 to 12 s instead of 27 s. The saturated-CPU criterion waits for the stall fix in TASK-023-8."
+    acceptance:
+      - "The analysis names the wait in the log-probe-vanished path (fixture or driver) that takes most of its 28 s, with the evidence."
+      - "After the fix, the scenario takes less than one third of its driver timeout without load. Decision 2026-10-08: the guardian samples every 5 s (cbc=mandatory driver), so 12 s is the floor without a driver change. The timing test is not a hard CI gate."
+      - "The saturated-CPU reproduction loop gives 0 fixture failures of the six scenarios in at least 10 rounds."
+      - "No scenario changes its behavioral verdict, and the driver timeouts stay unchanged unless a measurement justifies a change."
+  - id: TASK-023-2
+    title: "Make a disk admission fixture failure diagnosable from the CI log"
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T15:10:00Z
+    progress: "The report (2da04d374) prints the scenario, the driver exit code, the summary state, and the last 20 driver log lines after an exit 2. The test (0791e99a6) shows no host path or key value. The Lint job runs scripts/bench/test-soak-disk-admission-timing.sh with SOAK_DISK_TEST_SKIP_TIMING=1 (6 s), so the scenario timing checks stay out of the CI gate."
+    blocked_by: []
+    acceptance:
+      - "When a scenario exits 2, the CI log shows the driver exit code, the summary.json degraded field or its absence, and the last lines of the driver log."
+      - "A test proves the diagnostic output for a forced fixture failure."
+      - "The output contains no secret and no host path outside the evidence directory."
+  - id: TASK-023-3
+    title: "Measure the 20 s driver cap of the short full-iteration scenarios under CI load"
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    resolution: "2026-10-08: TASK-023-7 showed that the failing runs stall in session_bounded and do not exceed a correct cap. A stalled run needs the full 60 s watchdog budget, so no driver cap is too short. Decision for review: no cap change. The CI driver exit codes come from the TASK-023-2 report during the TASK-023-5 measurement."
+    acceptance:
+      - "The diagnostic output of TASK-023-2 shows the driver exit code for each CI failure of the five 3 to 4 s scenarios."
+      - "If a CI failure shows driver exit 124, a measured driver duration on the CI runner sets any new cap. Without a measurement the cap stays."
+  - id: TASK-023-4
+    title: "Reorganize the CI jobs by purpose"
+    status: in_progress
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T21:00:00Z
+    branch: chore/ci-reorganize-and-relabel
+    decision: "2026-10-08: the user chose the two-step switch. Step 1 adds Static Checks, Script Tests, and Soak Harness Tests, renames the misleading jobs, and keeps temporary jobs with the old required names. TASK-023-9 is step 2."
+    blocked_by: []
+    branch_note: "Separate branch, because the change moves jobs that the merge queue and the branch rulesets require."
+    hygiene_note: "2026-10-16 hygiene: PRs #687 and #689 merged, and the rulesets name the new jobs. Open: no record shows that the total CI time grew by at most one job setup."
+    acceptance:
+      - "An inventory lists every job and step of ci.yml and _integration-pipeline.yml with what it runs: static check, unit test, script behavioral test, Docker soak harness test, build, integration test, or gate. The inventory is recorded in docs/ci.md."
+      - "Each job holds one purpose. Lint keeps only static checks: cargo fmt, clippy, the workflow invariants, and the supply-chain controls."
+      - "The script behavioral tests run in their own job. The Docker soak harness tests (fail-closed driver, disk admission) run in a separate job."
+      - "The required checks of the dev and master rulesets and the CI aggregators name the new jobs. A merge group with the change passes the queue."
+      - "check-workflow-invariants.sh passes, and the change does not increase the total CI time by more than the measured cost of one extra job setup."
+  - id: TASK-023-6
+    title: "Relabel the CI jobs and steps so that each name states what it runs"
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #687 merged. docs/ci.md maps each old job name to its new name, and the rulesets use the new names."
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T21:00:00Z
+    branch: chore/ci-reorganize-and-relabel
+    blocked_by: [TASK-023-4]
+    branch_note: "Same branch as TASK-023-4, so that the rulesets change once."
+    acceptance:
+      - "No job or step name describes a different kind of work than it runs. For example, no behavioral test runs under a name that says lint or check."
+      - "Each name tells a reader which category failed when it is red: static check, unit test, script test, soak harness test, build, or integration test."
+      - "The required-check names in the rulesets, the aggregator jobs that match job names (for example the per-arch integration aggregators), and docs/ci.md use the new names."
+      - "docs/ci.md maps each old name to its new name, so that old PR checks and run links stay readable."
+  - id: TASK-023-7
+    title: "Name the command that stalls the soak driver after the first iteration"
+    status: complete
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    finding: "2026-10-08: a process snapshot 3 s before the driver timeout, in 7 hung runs, showed the driver in anon_pipe_read on a command substitution. Its subshell waited in do_wait on the session_bounded watchdog (sleep 60), and the bounded command had already exited. Cause: session_bounded runs kill -KILL -- -$watchdog before the watchdog process calls setsid, so the group kill fails silently and wait blocks for the full watchdog budget. CPU saturation makes the bounded command win that race. The stall is in run-merge-recovery-soak.sh, not in a fixture command. The watchdog ran in a scratch copy of the fixture; the repository fixture has no permanent watchdog."
+    blocked_by: []
+    acceptance:
+      - "A fixture watchdog writes the process tree of the scenario container shortly before the driver timeout. The watchdog changes no scenario verdict."
+      - "The SOAK_DISK_TEST_STRESS_ROUNDS stage keeps the evidence of each hung run, and at least three hung runs name the blocked command with its parent chain."
+      - "The analysis states whether the stall is in run-merge-recovery-soak.sh or in a fixture command, with the evidence."
+  - id: TASK-023-8
+    title: "Update CLAIM-SOAK-001 and fix the driver stall"
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T19:00:00Z
+    progress: "Claim updated first (bounded-command liveness statement, session_bounded surface, timing test, check row). Fix: kill the watchdog by PID when its process group does not exist yet. Late-watchdog check: 9.5 s RED, 1 ms GREEN. SOAK_DISK_TEST_STRESS_ROUNDS=10: 60 of 60 pass in 160 s (was 25 failures in 505 s). Disk suite: 54 of 54. test-run-merge-recovery-soak.sh cannot run faithfully on this workstation: macOS has no setsid, and the Docker VM disk is inside the admission band, where the HEAD and fixed drivers fail at the same band step. Committed in 8f657a9d2. Remaining: the CI Lint run, and CbC evidence records for scripts/run-merge-recovery-soak.sh and scripts/bench/test-soak-disk-admission-timing.sh. The evidence records are deferred by user decision (2026-10-08) until the CbC acceptance policy and the updated /cbc command are settled."
+    blocked_by: [TASK-023-7]
+    cbc_policy: "scripts/run-merge-recovery-soak.sh is cbc=mandatory. The claim update comes before any driver change."
+    acceptance:
+      - "If the stall is in the driver, docs/claims/soak-disk-protection.md (CLAIM-SOAK-001) states the liveness property that the fix restores: after an iteration completes, the driver reaches its signal check and its admission checks within a bounded time, also under CPU saturation."
+      - "The claim lists scripts/bench/test-soak-disk-admission-timing.sh in its tests."
+      - "The driver fix keeps every verdict of the 54 disk admission scenarios."
+      - "SOAK_DISK_TEST_STRESS_ROUNDS=10 gives 0 runs without a pass."
+      - "The CbC evidence record for scripts/run-merge-recovery-soak.sh is updated for the new commit, or a maintainer waiver records why not."
+      - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
+  - id: TASK-023-9
+    title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #689 merged. devProtect and masterProtect require Static Checks, Script Tests, Soak Harness Tests, and the integration and test gates. masterProtect has no required_deployments rule. ci.yml has no Lint job."
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T02:00:00Z
+    branch: chore/ci-ruleset-switch
+    merge_order: "Merge only after #687 is merged and a repository admin has changed devProtect and masterProtect. Merging earlier removes checks that the rulesets still require."
+    codeql_note: "2026-10-09: the commit identity check moves to a new Commit Policy job without a cache step, because the CodeQL rule actions/cache-poisoning/poisonable-step re-raised a false positive (alerts #93 to #110) each time the old job shifted lines. Commit Policy joins the required checks in the admin command."
+    blocked_by: [TASK-023-4, TASK-023-6]
+    owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
+    ruleset_note: "2026-10-12: an admin removed the required_deployments rule (environment protected-branch-image-publish) from masterProtect. Only a push to dev or master deploys to that environment, so a pull request head never had the deployment. Auto-merge never fired, and every PR to master needed a rule bypass (#698). The current masterProtect rules are deletion, non_fast_forward, required_status_checks, and pull_request. The step 2 ruleset change must not add required_deployments again."
+    acceptance:
+      - "devProtect requires Static Checks, Script Tests, Soak Harness Tests, Integration Gate (amd64), and Integration Gate (arm64) instead of Lint and Integration Tests (amd64), (arm64)."
+      - "masterProtect requires Static Checks, Script Tests, Soak Harness Tests, and Test Gate (casper) instead of Lint and Test (casper)."
+      - "masterProtect has no required_deployments rule, so a pull request to master can merge with auto-merge and without a bypass."
+      - "In one commit: the build_base heavy reuse gate and release-train.sh validate-ci-evidence read Integration Gate (amd64), (arm64); test-ci-stack-gate.sh and test-release-train.sh use the new names; the temporary jobs leave ci.yml and ci-fork-pr.yml."
+      - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
+  - id: TASK-023-10
+    title: "Promote dev to master from a promote/* branch and reject promotions with head dev"
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #689 merged. masterProtect requires Promotion Source. The promotions #694, #723, #727, and #732 used promote/* heads, so no promotion retargeted an open pull request."
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T10:00:00Z
+    branch: chore/ci-ruleset-switch
+    blocked_by: []
+    finding: "The repository deletes the head branch of a merged pull request (delete_branch_on_merge). Promotions #619 (2026-10-04) and #684 (2026-10-09) had head dev, so GitHub retargeted every open dev pull request to master: 7 and then 10 AutomaticBaseChangeSucceeded events within 13 seconds of each merge. The 13 affected pull requests other than #671 and the stacked #189 were retargeted back to dev on 2026-10-09."
+    decision: "2026-10-09: the user chose a local command (just promote) over an Actions workflow, because a pull request opened with GITHUB_TOKEN does not trigger CI and the CI GitHub App has only administration permissions."
+    acceptance:
+      - "just promote creates promote/<UTC timestamp> at the origin/dev commit and opens the pull request to master. test-open-promotion-pr.sh covers the nothing-to-promote case and the created branch and pull request."
+      - "The Promotion Source job rejects a pull request from dev to master and accepts promote/* and hotfix/* heads."
+      - "masterProtect requires Promotion Source after the admin ruleset change of TASK-023-9."
+      - "The next promotion retargets no open pull request."
+  - id: TASK-023-11
+    title: "Make failed bench segments visible in the soak log and report"
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #701 merged. TASK-023-12 diagnosed the compose failures as host port conflicts in the ephemeral range."
+    priority: p1
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-12T15:30:00Z
+    branch: hotfix/soak-bench-failure-visibility
+    pr_base_branch: master
+    finding: "Soak 38184406100 segment 1: bench segments 11 and 13 failed with shard compose up failed. The job log showed only that line, because compose-up.log stays on the runner until the run ends. The checkpoint report showed 15/15 segments ok, because a segment without metrics.json is missing from the segment list."
+    acceptance:
+      - "run-bench-segment.sh puts the last 15 lines of compose-up.log on stderr when compose up fails. test-run-bench-segment.sh checks this with a fake docker."
+      - "The weekly summary carries active.segments_failed from the run state bench_failures. The verdict warns about failed segments. The all-failed warning also fires when no failed segment wrote metrics. The report row shows the failed count."
+      - "The cause of the compose failures is diagnosed separately from bench-segment-00011 and bench-segment-00013/compose-up.log in the run artifact."
+  - id: TASK-023-12
+    title: "Move the soak bench shard host ports below the ephemeral range"
+    status: in_progress
+    review_requested_at: 2026-10-12
+    review_type: human
+    priority: p1
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-12T17:30:00Z
+    branch: hotfix/soak-bench-port-range
+    pr_base_branch: master
+    finding: "Soak 38184406100 artifact: bench segments 11 and 13 failed with failed to bind host port 0.0.0.0:40452/tcp and 0.0.0.0:40412/tcp: address already in use. docker/shard.yml publishes 40400-40455, inside the kernel ephemeral range 32768-60999, so an outbound connection on the soak runner can hold the port. CI already avoids this with docker/ci-ports.shard.yml, but run-bench-segment.sh did not use it."
+    hygiene_note: "2026-10-16 hygiene: PR #702 merged. Open: the next weekend soak must show no bench segment that fails with address already in use."
+    acceptance:
+      - "run-bench-segment.sh starts the bench shard with docker/shard.yml and docker/ci-ports.shard.yml, and probes and benchmarks validator1 on host port 14413."
+      - "test-run-bench-segment.sh checks both compose files and the probe port with a fake docker and curl."
+      - "The merged compose configuration publishes no host port at or above 32768."
+      - "The next weekend soak has no bench segment that fails with address already in use."
+  - id: TASK-023-13
+    title: "Back-merge master into dev from a backmerge/* branch and reject pull requests with a protected head"
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #749 merged into dev on 2026-10-16 with just backmerge, the Promotion Source check for a protected head, and the Protected Head Guard workflow."
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T17:00:00Z
+    branch: fix/protected-head-branch
+    pull_request: 749
+    finding: "#747 was a back-merge with head master and base dev. Update branch on it merged dev into master through the OrganizationAdmin bypass of masterProtect (bf4915d57, pushed 2026-10-16T14:52:58Z), outside just promote. The maintainers accepted the result (#747 comment 6219901355). Back-merges #716 and #569 also used head master."
+    decision: "2026-10-16: the user chose the CI check and a local command first. The change of the human bypass actors of masterProtect and devProtect from always to pull_request is still open."
+    acceptance:
+      - "just backmerge creates backmerge/<UTC timestamp> at the origin/master commit and opens the pull request to dev. test-open-backmerge-pr.sh covers the nothing-to-back-merge cases, the created branch and pull request, and the branch delete after a failed pull request."
+      - "check-promotion-source.sh rejects a pull request from this repository with head master or dev, for every base, and accepts a fork pull request from the fork's master or dev. Since issue #791 it also rejects head ca-canary and ca-release, the release train branches. The Promotion Source job in ci.yml runs it with a read-only token. protected-head-guard.yml runs it from the base branch under pull_request_target and closes the pull request with the remedy and the reason. test-check-promotion-source.sh covers both events, the close, and a failed close."
+      - "just backmerge names an open backmerge/* pull request to dev and creates nothing. The branch name backmerge/master-<sha> makes a second run for the same master commit fail at branch creation."
+      - "docs/ci.md and CLAUDE.md name just backmerge and the reason."
+  - id: TASK-023-14
+    title: "Harmonize the AI workflow guidance and record the tasking conventions"
+    status: in_progress
+    priority: p2
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T23:00:00Z
+    branch: chore/harmonize-ai-worklflows
+    blocked_by: []
+    finding: "On 2026-10-16, /harmonize on dev 38dac3c2f with profile 63050a9 removed the YAML frontmatter of three task files, replaced local STE prose with template prose, wrote a relative link that does not resolve here, and raised the CLAUDE.md STE Check findings from 1 to 14. The task files were restored. CLAUDE.md is kept unrestored as a fixture."
+    notes:
+      - "top-level-gitlab-profile-02 took the tooling fix. The regression fixture is in that repository under docs/work-logs/harmonize-regressions-f1r3node-rust-2026-10-16/."
+      - "2026-10-16: profile commit 7942385 fixes R1 to R5, R7 Slash Commands, and R8. A run on 38dac3c2f gave 0 errors and kept the frontmatter and the local STE prose. Commit 2d7152602 holds that run. The profile takes the two semicolon fixes upstream as a follow-up."
+      - "2026-10-16: CLAUDE.md moves Key Principles and the claim steps into a Project Workflow section, adds Tasking Conventions, and records the value stream on the user story. AGENTS.md gains condensed Project Workflow, Cross-Repository References, and Development Modes sections."
+      - "No guidance file links epic-task-structure.md or user-stories-standard.md, or states the repository conventions: TASK-NNN-N identifiers, task-level acceptance, and the notes, branch, pr_base_branch, pull_request, finding, and decision fields. No file defines where a value stream is recorded."
+      - "Harmonize derives AGENTS.md only when the file is missing (process_agents_md in harmonize-markdown.sh, intended since bef5869). After the next run, update AGENTS.md by hand to match the new CLAUDE.md sections. The tooling owner takes a WARN or a new derivation to its maintainer as a follow-up."
+    acceptance:
+      - "A /harmonize run with the fixed tooling keeps the frontmatter, the local STE prose, and resolvable links, and adds no STE Check findings."
+      - "CLAUDE.md and AGENTS.md link the epic, user story, and ToDos standards and state the repository tasking conventions. AGENTS.md also carries the sections that harmonize adds to CLAUDE.md."
+      - "The guidance states where a value stream is recorded, after the maintainer chooses the user story, the epic, or both."
+  - id: TASK-023-5
+    title: "Measure the disk admission failure rate after the fix"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: [TASK-023-1, TASK-023-8]
+    acceptance:
+      - "Over at least 100 CI runs after the merge, the disk admission step has 0 fixture failures, or each failure has a diagnosed cause."
+---
+```
+
+**Current state:** TASK-023-1, -2, -3, and -8 are in review on fix/lint-flake-resolution. TASK-023-8 CbC evidence records wait for the CbC acceptance policy decision. TASK-023-4 and TASK-023-6 need their own branch. TASK-023-5 runs after the merge.
+
+---
+
+### EPIC-022: OCI CI Spend Alerting and Runner Cleanup
+
+```yaml
+---
+epic_id: EPIC-022
+title: "OCI CI Spend Alerting and Runner Cleanup"
+status: in_progress
+priority: p1
+user_story: null
+issues: []
+blocked_by: []
+created_at: 2026-10-07
+updated_at: 2026-10-07
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-07T22:00:00Z
+branch: ci/oci-spend-budget-reaper-control
+pr_base_branch: dev
+pr: 668
+origin: "On 2026-10-07 the user asked why the OCI spend of this billing cycle is almost twice the spend of August. The October pace is about 4,090 USD for the month against 2,203 USD in August. All of the increase is ephemeral CI runner compute in the ci-runner compartment: 37.76 USD per day in August, 73.46 in September, 98.85 on October 1 to 7. The user chose three controls: a daily spend alert above 70 USD, a reaper outside the GitHub scheduler, and run-scoped VM cleanup when a launch is cancelled or fails."
+execution_contract:
+  base_branch: dev
+  scope: "Add a daily tenancy spend alert, move the ephemeral runner reaper to an OCI Function on the OCI Resource Scheduler, and terminate the VMs of a heavy CI run when the run ends for any reason. The reaper stays as the backstop."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  oci_policy: "Creating or changing OCI resources (topics, functions, schedules, dynamic groups, policies) and sending subscription emails needs a separate user go-ahead for each deploy."
+  language_policy: "Bash only for new scripts and handlers (repository rule)."
+evidence:
+  monthly_cost_usd: {2026-08: 2203.33, 2026-09: 3262.19, 2026-10-01_to_07: 922.71}
+  ci_runner_compute_usd_per_day: {2026-08: 37.76, 2026-09: 73.46, 2026-10-01_to_07: 98.85}
+  spike: "2026-09-29 to 2026-10-01: 924 USD of ci-runner compute in 3 days. On those days 42 to 72 VMs per day cost 2 USD or more each. Other days had 0 to 6 such VMs."
+  reaper_cadence: "ci-runner-reaper.yml is scheduled every 30 minutes (48 runs per day). GitHub ran it 3 to 7 times per day from 2026-09-20 to 2026-10-07."
+  reclaim_gap: "In a sample of 30 cancelled or failed CI runs from 2026-09-25 to 2026-10-07 whose launch job ran, the Reclaim Ephemeral Runners job did not exist in 18. The reclaim job finds VMs only through GitHub runner registrations, so it cannot see a VM that never registered."
+  not_proven: "The cause of the long-lived VMs of 2026-09-29 to 2026-10-01 is not proven. Run 36820334083 had a failed launch and no reclaim job, but all six launches failed with LimitExceeded and created no VM. OCI does not return the terminated instances, so the VMs cannot be named."
+  budgets: "OCI budgets reset only monthly and only send alerts. ci-runner-monthly (500 USD) was at 689.84 USD on 2026-10-07. Monthly-Tenancy-Budget (5,000 USD) forecast 4,073.71 USD, below its alert."
+tasks:
+  - id: TASK-022-1
+    title: "Send an email when the tenancy spend of one UTC day is above 70 USD"
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T21:00:00Z
+    blocked_by: []
+    files:
+      - oci/spend-alert/handler.sh
+      - oci/spend-alert/test-handler.sh
+      - oci/spend-alert/Dockerfile
+      - oci/spend-alert/README.md
+      - scripts/oci/deploy-spend-alert.sh
+    design: "An OCI Function in the f1r3node-ci-schedulers application runs at 14:00 UTC daily from the OCI Resource Scheduler. It sums the previous UTC day's tenancy cost from the Usage API and publishes to the ONS topic oci-daily-spend-alerts when the total is above THRESHOLD_USD (70). The topic subscribers are the recipients of the two monthly budget alert rules. The recipient list stays in OCI."
+    acceptance:
+      - "bash oci/spend-alert/test-handler.sh passes. It covers the UTC day window, above, at, and under the threshold, a custom threshold, and failure on missing data, a Usage API error, and a bad threshold. Done 2026-10-07."
+      - "After deployment, a manual invoke returns alerted or under_threshold for the previous UTC day."
+      - "Each budget alert recipient has a confirmed ONS subscription."
+      - "The first scheduled run appears in the invoke log of the f1r3node-ci-schedulers application."
+    notes: "At 70 USD the alert would have fired on 36 of the 67 days from 2026-08-01 to 2026-10-06 (median day 72 USD). The Usage API lags by hours, so the alert reports the previous day and does not stop resources."
+  - id: TASK-022-2
+    title: "Run the ephemeral runner reaper from an OCI Function on the OCI Resource Scheduler"
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T23:30:00Z
+    blocked_by: []
+    files:
+      - oci/runner-reaper/handler.sh
+      - oci/runner-reaper/test-handler.sh
+      - oci/runner-reaper/Dockerfile
+      - oci/runner-reaper/README.md
+      - scripts/oci/deploy-runner-reaper.sh
+      - scripts/oci/lib/fn-deploy.sh
+      - scripts/oci/test-fn-deploy.sh
+      - .github/workflows/ci-runner-reaper.yml
+    progress: "2026-10-07: handler, tests, and deploy script written and not deployed. The tests run the jq program of ci-runner-reaper.yml on the same instances as the handler and require the same result. A deliberate change of the 7-day cap in the workflow made the test fail. scripts/oci/lib/fn-deploy.sh now holds the upserts that deploy-spend-alert.sh and deploy-runner-reaper.sh share. scripts/oci/test-fn-deploy.sh runs both deploy scripts with stub oci and docker commands."
+    design: "Port the reap rule of ci-runner-reaper.yml to a Bash handler in oci/runner-reaper/, deployed to the f1r3node-ci-schedulers application and invoked every 30 minutes. The rule stays the same: terminate RUNNING or STOPPED ci-eph-* instances in the ci-runner compartment that are older than MAX_AGE_HOURS (2), unless a valid soak-deadline-epoch tag is in the future. The GitHub workflow keeps workflow_dispatch and its schedule as a second, idempotent sweep."
+    acceptance:
+      - "Handler tests prove parity with the workflow filter: untagged old instance reaped, young instance kept, future soak deadline kept, expired deadline reaped, and Infinity, NaN, 1e309, unparseable, and more-than-7-day deadlines reaped."
+      - "The handler never terminates an instance whose name does not start with ci-eph-, and it has a dry-run mode."
+      - "The compartment OCID of the Function config equals the literal in ci-runner-reaper.yml. The deploy script reads it from that file and stops on a different OCI_COMPARTMENT_OCID. Done 2026-10-07 (scripts/oci/test-fn-deploy.sh)."
+      - "IAM lets the Function manage instance-family only in the ci-runner compartment, the same grant as ci-runner-ephemeral-policy that the runners use to terminate themselves."
+      - "The first deployment uses DRY_RUN=true, and its result matches a manual dry run of the GitHub workflow."
+      - "Over 24 hours after deployment, the invoke log shows at least 44 of 48 scheduled sweeps."
+  - id: TASK-022-3
+    title: "Tag each heavy-pipeline runner VM with its GitHub run at launch"
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T00:30:00Z
+    blocked_by: []
+    files:
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ephemeral-run-tagging.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: the launch step passes RUNNER_NAMES_FILE, and the new step Tag launched VMs with this run (if: always()) tags each listed VM. The step accepts only names that match ^ci-eph-[A-Za-z0-9._-]+$, retries each VM 6 times at 10 s, and only warns when a VM stays untagged. test-ephemeral-run-tagging.sh extracts the step from the workflow and runs it against a stub oci CLI. A deliberate mutation that dropped the existing tags made the test fail. The Lint job of ci.yml now runs this test and the three EPIC-022 Function and deploy tests. All four pass in an ubuntu:24.04 container with mawk."
+    design: "launch_ephemeral_runners passes RUNNER_NAMES_FILE to launch-runner.sh, which appends the name of each VM that OCI accepted. A step with if: always() in the same job tags each named instance with github-run-id and github-run-key (run id and attempt, the key that merge-recovery-soak.yml already uses), with the read-modify-write and retry of the soak self-tag step, also when some launches failed or the launch step was cancelled. The step stays inline because the launch job holds the OCI secrets and checks out only system-integration."
+    acceptance:
+      - "Every VM that a launch job creates carries github-run-id and github-run-key, including the created VMs of a partly failed launch."
+      - "A VM created after a step was cancelled and before it was tagged is left to the reaper (accepted residual)."
+      - "No change to the system-integration repository is necessary."
+  - id: TASK-022-4
+    title: "Terminate the VMs of a heavy CI run when the run ends for any reason"
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-08T01:30:00Z
+    blocked_by: [TASK-022-3]
+    files:
+      - .github/workflows/ci-runner-reclaim.yml
+      - .github/workflows/_integration-pipeline.yml
+      - .github/scripts/test-ci-runner-reclaim.sh
+      - .github/scripts/check-workflow-invariants.sh
+      - .github/workflows/ci.yml
+    progress: "2026-10-08: ci-runner-reclaim.yml runs on workflow_run (CI and CI (fork PRs), completed). Its detect job uses only GITHUB_TOKEN and starts the oci-credentials job only when the run launch job ran. That job terminates live VMs whose name matches ^ci-eph-[A-Za-z0-9._-]+$ and whose github-run-id and github-run-key equal the completed run attempt. A workflow_dispatch input allows a manual run with dry_run. The in-run reclaim step now also finds VMs by tag, does not stop when no runner registered, and skips the VMs that its runner loop already terminated. Invariant 6 now covers the compartment literal of the new workflow. test-ci-runner-reclaim.sh runs the three steps against stub gh and oci commands. Deliberate removals of the attempt-key filter and of the handled-list skip each made the test fail. The Lint job runs the test. All EPIC-022 tests pass in ubuntu:24.04, and the invariants pass there with a UTF-8 locale."
+    out_of_scope: "Full OCI Validation (oci-validation.yml) launches 22 VMs with its own launcher and does not tag them. The reaper still covers those VMs."
+    review_followup: "2026-10-08 multi-agent review of PR #668 (comment 6047352001, 2 of 5 providers voted, 0 critical, 0 major). Decision of the user: fork pull requests use OCI only after approval. The detect job now starts the credential job only when Await Launch Approval succeeded and the launch job ran in that attempt, with anchored job names. The in-run reclaim no longer counts a failed termination twice. The tag step lists the compartment once per round, at most 6 list calls. fn-deploy.sh uses jq first() instead of head -1 under pipefail. Deliberate removals of the approval gate and of the name anchors each made test-ci-runner-reclaim.sh fail."
+    design: "A new workflow on workflow_run (CI, completed) terminates the VMs tagged with the completed run id and deregisters their runners, for every conclusion. It does not check out code. It complements the in-run reclaim job, which also changes to find VMs by tag instead of only by GitHub registration."
+    acceptance:
+      - "A cancelled heavy run and a run with a failed launch leave no VM tagged with their run id 15 minutes after the run completes."
+      - "A successful run terminates idle leftover runners, for example the second arm64 runner that waits up to 2 hours."
+      - "The workflow never terminates an instance without both the ci-eph- name prefix and a matching github-run-id tag."
+      - "The task records why the Reclaim job did not exist in 18 of 30 sampled runs, or records that the cause is not found. Recorded 2026-10-08: the cause is not found. The sampled run 36820334083 had a failed launch, skipped integration matrices that never expanded, and no Reclaim job. ci-runner-reclaim.yml does not depend on that job."
+    notes: "workflow_run runs only from the default branch, so the new workflow is effective after master promotion."
+  - id: TASK-022-5
+    title: "Measure the effect one week after deployment"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-022-1, TASK-022-2, TASK-022-4]
+    acceptance:
+      - "Compare ci-runner compute per day, the count of VMs that cost 2 USD or more per day, and the alert count against 2026-10-01 to 07."
+      - "Report the reaper sweep count per day and the count of instances that each sweep terminates."
+---
+```
+
+**Current state:** TASK-022-1 code and tests are in PR #668 and not deployed. TASK-022-1 to TASK-022-4 code and tests are in PR #668. The two OCI Functions are not deployed, and ci-runner-reclaim.yml becomes active after master promotion. TASK-022-5 measures the effect one week after deployment.
+
+---
+
+### EPIC-027: Adaptive Execution Across Hardware Tiers (Issue #24 Close-Out)
+
+```yaml
+---
+epic_id: EPIC-027
+title: "Adaptive Execution Across Hardware Tiers (Issue #24 Close-Out)"
+status: in_progress
+priority: p0
+user_story: US-012
+issues: [24]
+blocked_by: []
+created_at: 2026-10-13
+updated_at: 2026-10-13
+design: docs/designs/adaptive-execution.md
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-13T15:00:00Z
+branch: perf/issue-24-adaptive-execution
+pr_base_branch: dev
+closes: "issue #24 (the PR body uses 'Closes #24')"
+related_epics:
+  EPIC-021: "Issue #24 root-cause epic. It keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to this epic."
+  EPIC-025: "Pluggable State Machine Replication Boundary (design PR #627, decision D7). This epic adds a node service on its lifecycle layer."
+  EPIC-014: "Test net. Its modular soak decision of 2026-10-11 lets each mechanism define its own soak profile."
+related_issues: ["#624 (lifecycle runtime)", "#625 (Cordial Miners adapter)"]
+related_prs: ["#651 (lifecycle runtime and F1r3fly CbC Casper adapter)", "#627 (replication boundary design)", "#695 (backlog-following non-leader admission cap)"]
+origin: "On 2026-10-13 the user chose to close issue #24 with a design that relies on adaptive execution, continuous telemetry, and tiered degradation, so that shards run on hardware with different performance. Soak 37996403003 showed that all three high-phase failures ran on Docker, with about twice the left-out deploys and twice the selection age of subprocess shards."
+decisions_2026_10_13:
+  consensus_neutral: "The controller is a node service on ConsensusRuntime. Each mechanism declares its controls and signals in an adaptation descriptor. F1r3fly CbC Casper (cbc-casper) is the first binding. The RGB peer clique (peer-clique), Casanova (casanova), and Cordial Miners (cordial-miners) have provisions in design section 11 (design decision A1)."
+  node_local_only: "No control changes block validity or replicated state (design decision A2)."
+  tier_selection: "A startup hardware probe selects the tier profile, and a closed-loop controller with hysteresis adjusts inside it (design decision A3)."
+  telemetry: "Local Prometheus metrics and structured records, tagged with tier, host class, and protocol, collected by soak and test net runs. Central opt-in aggregation goes to the Backlog (design decision A4)."
+  close_gate: "The close-out gate depends on the mechanism. Each mechanism supplies a soak profile. The cbc-casper profile closes issue #24 (design decision A5)."
+  sequencing: "Design now against D7. Implementation tasks wait for PR #651 to merge into dev (design decision A7)."
+  ethereum_practices: "The node adopts two node-local practices from Ethereum: published hardware targets for each tier, and a probe warning when the host is below a target. Neither practice enforces a minimum (design decision A8, design section 16). Timeliness rewards stay open as design question Q7."
+execution_contract:
+  design_policy: "No code change before the maintainer approves docs/designs/adaptive-execution.md (TASK-027-1)."
+  cbc_policy: "Register the pending claim for invariants I1 to I6 before the controller code (TASK-027-4)."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+tasks:
+  - id: TASK-027-1
+    title: "Write and approve the adaptive execution design"
+    status: in_progress
+    review_requested_at: 2026-10-13
+    review_type: human
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-13T15:00:00Z
+    blocked_by: []
+    acceptance:
+      - "docs/designs/adaptive-execution.md records decisions A1 to A8, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I6, the F1r3fly CbC Casper binding, the provisions for the RGB peer clique, Casanova, and Cordial Miners, and the soak profile for each mechanism, and the comparison with Ethereum with cited sources (section 16)."
+      - "The design uses the names of the D7 boundary layers and states which names change when PR #651 merges."
+      - "The architects ratify the parts listed in design section 2.1, or the review comments are resolved. Design section 19 gives the task that each open question blocks and a recommended answer."
+      - "The new terms of design section 20 are in docs/Glossary.md."
+  - id: TASK-027-2
+    title: "Add the adaptive telemetry signals and records with no behavior change"
+    status: pending
+    blocked_by: [TASK-027-1, "PR #651 merged into dev"]
+    acceptance:
+      - "The node exports the signals of design section 9.1 with the prefix adaptive_ and the labels tier, host_class, and protocol."
+      - "The cbc-casper adapter exports the signals of design section 10.2."
+      - "A soak run collects the records in its artifacts, and the records contain no keys, addresses, deploy contents, or host names."
+      - "A comparison run shows no change in the soak results."
+  - id: TASK-027-3
+    title: "Add the hardware probe and the tier profiles"
+    status: pending
+    blocked_by: [TASK-027-2]
+    acceptance:
+      - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
+      - "tier = auto selects a profile from the probe. A named tier selects that profile, and the node records the choice. The probe runs in both cases."
+      - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
+      - "The probe compares the host with the published targets of design section 14.3: the named tier, or the Constrained targets when tier = auto."
+      - "Below a target, the node writes a warning record that names each value below its target and sets the gauge adaptive_probe_below_target to 1. The node still starts. A test proves both the warning and the normal start."
+  - id: TASK-027-4
+    title: "Add the adaptive controller and the degradation levels"
+    status: pending
+    blocked_by: [TASK-027-3]
+    acceptance:
+      - "A pending CbC claim states invariants I1 to I6 before the controller code."
+      - "Unit tests drive the controller as a function of signal windows and a tier profile, with time as the only boundary."
+      - "The tests prove one step for each action, the N and M interval rules, the cooldown, the bounds, and no step up without data."
+      - "Levels L1 to L3 follow design section 8. A full intake queue returns a typed retryable overload error."
+      - "A mixed-tier test shows that validators with different control values reach the same finalized state."
+      - "A test with a required duty that has a declared deadline shows that no degradation level delays the duty past the deadline (I6)."
+  - id: TASK-027-5
+    title: "Bind the F1r3fly CbC Casper admission controls to the controller"
+    status: pending
+    blocked_by: [TASK-027-4]
+    acceptance:
+      - "The non-leader fallback cap and the fresh-deploy escalation delays in block_creator.rs come from the controller inside the tier profile bounds."
+      - "The PR #695 backlog rule stays, and its bound comes from the profile."
+      - "Block validation does not read any controlled value."
+      - "A local high-phase run shows a lower deploy age at selection than the fixed cap of 8."
+  - id: TASK-027-6
+    title: "Fix the sustained-phase wait from inclusion to finality"
+    status: pending
+    blocked_by: [TASK-021-13, TASK-027-2]
+    acceptance:
+      - "The TASK-021-13 attribution names the stage that causes the wait, with the evidence on issue #24."
+      - "The fix or the new control for that stage has a test that fails before the change."
+      - "Design open question Q1 is closed in the design document."
+  - id: TASK-027-7
+    title: "Add the constrained tier CI run, the cbc-casper soak profile, and the first published tier targets"
+    status: pending
+    blocked_by: [TASK-027-5]
+    acceptance:
+      - "A CI job runs a node under cgroup CPU and memory limits and checks the degradation level and the absence of out-of-memory stops."
+      - "The cbc-casper soak profile states the gates of design section 14.1 and reports them separately for each host class."
+      - "Each tier has a baseline for deploys per second, inclusion p95, and finalization p95."
+      - "The operator documentation publishes the cbc-casper target for each tier, with the fields of design section 14.3. Each value names the release and the soak run that set it."
+      - "The targets are recommendations. No node refuses to start below a target."
+  - id: TASK-027-8
+    title: "Run the close-out soak and report on issue #24"
+    status: pending
+    blocked_by: [TASK-027-6, TASK-027-7]
+    acceptance:
+      - "The cbc-casper soak profile passes: at most 5 test_load failures in 100 sessions on the Docker host class, on the subprocess host class, and on the constrained tier."
+      - "No run shows an out-of-memory stop, a watchdog stop, or a guardian stop."
+      - "The controller records show at least one step down and one step up in a high phase."
+      - "An issue #24 comment reports the result, and the PR that merges this branch closes issue #24."
+  - id: TASK-027-9
+    title: "Add the adaptation provisions for the RGB peer clique, Casanova, and Cordial Miners"
+    status: pending
+    blocked_by: [TASK-027-4, "the adapter of each mechanism (Cordial Miners: issue #625)"]
+    notes:
+      - "This task does not block the close-out of issue #24. Each mechanism completes its part when its adapter lands."
+    acceptance:
+      - "Each adapter declares its controls, signals, required duties, and protocol deadlines in an AdaptationDescriptor, following design section 11.2."
+      - "Each adapter supplies default tier profiles and a soak profile with the gate shape of design section 14.1."
+      - "Each binding shows invariants I1 to I6 for its own controls."
+      - "The controller has no mechanism-specific code."
+---
+```
+
+---
+
 ### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
 
 ```yaml
@@ -81,9 +820,10 @@ status: in_progress
 priority: p0
 user_story: null
 issues: [24]
+closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-23, adaptive-execution.md section 10.4)."
 blocked_by: []
 created_at: 2026-10-03
-updated_at: 2026-10-05
+updated_at: 2026-10-06
 claimed_by: claude-session-aa467dea
 claimed_at: 2026-10-03T21:10:00Z
 branch: fix/issue-24
@@ -150,6 +890,7 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-021-3, TASK-021-4, TASK-021-8]
+    fix_decision_2026_10_06: "The one-transaction checkpoint commit of TASK-021-10 is contention reduction, not the issue #24 fix. The full run of soak 37343966570 (issue #24 comment 6016872961) shows no per-node stage that separates failing iterations from passing ones: root commit about 1.2 ms (AUC 0.60, the area under the receiver operating characteristic curve), roots lock wait AUC 0.57. The open cause is the finality round length and the blocks that wait for missing parents. The soak does not measure these yet."
     candidate_fix: "0ef0966c6 on fix/issue-24-root-cause-fix (PR #620): reset() validates the root with a read and no longer writes current-root, the roots lock is released before the history lock, and record_root writes in one LMDB transaction. 2cd9790f9 removes the unused validate_and_set_current_root path. The code review of 2026-10-05 found no correctness defect. After a restart, history opens at the last checkpointed root, not at the last reset root. Soak 37343966570 tests the candidate. The acceptance items still apply: the maintainer chooses the fix, and the TASK-021-8 findings do not yet show that the roots lock is the root cause."
     acceptance:
       - "A written root cause names the stage, the mechanism, and the evidence that excludes the other causes."
@@ -158,7 +899,7 @@ tasks:
       - "A new branch off dev carries the claim, the profile, the fix, and the cited evidence. PR #580 merges first with TASK-021-6 and the EPIC-021 plan only (decision of 2026-10-04)."
   - id: TASK-021-6
     title: "Stop the soak failure-evidence copy from duplicating earlier harness sessions"
-    status: done
+    status: complete
     claimed_by: claude-session-aa467dea
     claimed_at: 2026-10-04T03:20:00Z
     completed_at: 2026-10-04
@@ -294,184 +1035,321 @@ tasks:
       - "masterProtect keeps protected-branch-image-publish and drops casper-campaign and ephemeral-launch from required deployments."
       - "The release process documents that a promotion PR carries the exact soaked SHA, and that a later dev commit voids the verdict."
       - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
+  - id: TASK-021-10
+    title: "Write the checkpoint nodes and root in one LMDB transaction (contention reduction)"
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    merged: "PR #653 merged to dev on 2026-10-07 (31b228604) and reached master through PR #632 (e6564599c). The merge did not wait for the soak comparison or for CLAIM-RSPACE-002."
+    post_merge_obligations:
+      - "Compare a soak of master e6564599c or later with the dev soak 37469364217. The soak must show lower root commit and roots lock times and a sustained finalization p95 that is not worse."
+      - "TASK-021-11 registers and discharges CLAIM-RSPACE-002."
+    pr_base_branch: dev
+    discovered_in: docs/discoveries/architecture-review-2026-10-06T114619Z.md
+    design: docs/casper/design/history-checkpoint-commit.md
+    glossary_terms:
+      - docs/Glossary.md#finalization-latency-p95
+    dependency_category: local-substitutable
+    tdd_plan: docs/tdd-plans/history-checkpoint-commit-2026-10-06.md
+    decision: "On 2026-10-06 the user chose the one-transaction write (F2) over F1 as contention reduction, not as the issue #24 fix. Maintainer approval is pending. rspace-history and rspace-roots share the LMDB environment rspace/history, so each checkpoint takes the single writer lock twice and fsyncs twice. The root commit also holds the global roots mutex. F1 alone would move the wait to the LMDB writer lock. F2 writes the nodes and the root in one transaction, outside the roots mutex."
+    plan:
+      step_1: "Checkpoint writer for the most common caller: History::stage, RadixTreeImpl::take_pending_writes, CheckpointWriter with KvCheckpointWriter over batched_put, roots_store::root_record_kvs. do_checkpoint stages under the current-history mutex and writes after it releases the mutex. No trait signature changes for callers in casper or rspace."
+      step_2: "Deferred until the soak of step 1 shows a measurable gain. One CheckpointCommit module (open, commit, contains_root) replaces RootRepository. The global roots mutex is deleted, and the collision check moves into the write transaction. A separate PR after step 1 has soak evidence."
+    rejected:
+      - "C2, an immutable History for issue #24: in production, checkpoints run on spawned repositories with their own mutex, so readers never wait for a checkpoint fsync. See the design record, section 3."
+      - "The flexible StateCommit interface with sync policies: three variants have no caller, and group commit weakens the durability of finalized state."
+    files:
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/history/history.rs
+      - rspace++/src/rspace/history/instances/radix_history.rs
+      - rspace++/src/rspace/history/radix_tree.rs
+      - rspace++/src/rspace/history/roots_store.rs
+      - rspace++/src/rspace/history/root_repository.rs
+      - rspace++/src/rspace/history/history_repository.rs
+      - rspace++/tests/history/roots_lock_contention_tests.rs
+    hygiene_note: "2026-10-16 hygiene: PR #653 merged. Open: the post-merge soak comparison and CLAIM-RSPACE-002 (TASK-021-11)."
+    acceptance:
+      - "A checkpoint advances the last_txn_id of the rspace/history LMDB environment by exactly 1, in a real-LMDB test through the history repository interface."
+      - "A checkpoint with actions makes exactly one CheckpointWriter write, an empty checkpoint makes none, and the written root equals the root of the new history, in tests through the repository interface with a recording adapter."
+      - "No CheckpointWriter write occurs while the roots mutex is held, asserted on one thread without timing."
+      - "A failing CheckpointWriter leaves the history store and current-root unchanged."
+      - "A key with a different stored value still fails with the collision error, and a key with an equal stored value is still skipped."
+      - "A process call with cache_r bounded to one entry completes without a missing-node error, which confirms or rejects the eviction defect in the design record."
+      - "Mocks sit only at the CheckpointWriter seam. No internal collaborator of the history repository is mocked."
+      - "The ignored roots_lock_contention_probe and its helpers are deleted. The remaining LMDB shape tests use the last_txn_id difference."
+      - "A soak of this branch, compared with a soak of dev after PR #622 and PR #620 merge, shows lower root commit and roots lock times and a sustained finalization p95 that is not worse."
+  - id: TASK-021-11
+    title: "Apply the CbC method to the checkpoint commit of TASK-021-10"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    origin: "On 2026-10-06 the user asked for a /cbc task for the checkpoint commit enhancements. The EPIC-021 cbc_policy requires a pending claim before any code change. The step-1 code of TASK-021-10 (74ab85dd2) was written without a claim. PR #653 merged on 2026-10-07 before the claim existed, so this task closes that gap after the merge."
+    method: "/cbc identify, then /cbc verify, then /cbc discharge. Follow the pattern of CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): specification first, a mechanized model, and a property test against the previous code path as the oracle."
+    files:
+      - docs/claims/rspace-history-checkpoint-commit.md
+      - rspace++/src/rspace/history/checkpoint_writer.rs
+      - rspace++/src/rspace/history/history_repository_impl.rs
+      - rspace++/src/rspace/history/instances/radix_history.rs
+      - rspace++/src/rspace/history/radix_tree.rs
+      - rspace++/src/rspace/history/roots_store.rs
+      - shared/src/rust/store/lmdb_key_value_store.rs
+    acceptance:
+      - "/cbc identify classifies each step-1 artifact. Each one is cbc=mandatory, or a maintainer decision records why it stays untagged."
+      - "docs/claims/rspace-history-checkpoint-commit.md registers CLAIM-RSPACE-002 with status pending before any further code change."
+      - "The claim states four properties. Atomicity: a recorded root always has all of its nodes in the history store. State equivalence: for every action list, stage and write produce the same root and the same store contents as the previous process and record_root path. Collision: a stored node with a different value fails the checkpoint and records no root. Write shape: one checkpoint with actions makes one write transaction on the history environment."
+      - "A bounded model checks atomicity over every crash point of the write sequence, both for one shared environment and for the fallback with separate stores. A negative control shows that root-before-nodes ordering violates atomicity."
+      - "A property test checks state equivalence on random action batches, with the previous process and record_root path as the oracle. The state root is consensus data, so any difference fails the test."
+      - "/cbc verify writes an evidence record for CLAIM-RSPACE-002, and /cbc discharge passes for the step-1 diff. The claims audit of CLAIM-CASPER-SOAK-001 to -008 still exits 0."
+      - "The maintainer accepts the evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
+  - id: TASK-021-12
+    title: "Release parked blocks without queue, scan, and stale-link delays (issue #24)"
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-07T00:40:00Z
+    blocked_by: []
+    branch: fix/issue-24-deepening-resolution
+    pr: 653
+    tdd_plan: docs/tdd-plans/issue-24-parked-block-release-2026-10-07.md
+    merged: "PR #653 merged to dev on 2026-10-07 (31b228604) and reached master through PR #632 (e6564599c). All plan behaviors B1 to B11 are done."
+    evidence:
+      - "Soak 37579803394 on master e6564599c failed in the integration preflight: test_load had 7 deploys not finalized within 45s in the high phase, with inclusion p95 21.9 s. The sustained phase passed with 0 unfinalized. The 24-hour soak did not start."
+      - "On the test_load shard, each node parked 0 to 5 of 271 to 364 processed blocks, and each park had one release. The 2026-09-25 breakdown measured 56% on a saturated local host, so the values do not compare directly."
+      - "Issue #24 comment 6040401089 records the phase table, the park counts, and the attribution limits."
+      - "Soak 37640235959 (daily-24h without the integration preflight, target 1381ecbe9, the node code of dev 31b228604): segment 1 failed with 6 test_load failures in 32 iterations (19%). Each failure was N deploy(s) not finalized within 45s. On 2026-10-07 at 21:50 UTC the final segment was running with 4 more failures. The rate did not change materially after PR #653: soak 37224478325 segment 2 had 19 failures in 91 iterations (21%), and dev 778cc6754 had 8 in 49 (16%)."
+    open:
+      - "A soak that passes the integration preflight. Soak 37640235959 gave the 24-hour test_load failure rate without the preflight."
+      - "CLAIM-CASPER-BUFFER-001 discharge items 2 to 7, and maintainer acceptance of the soak and CbC evidence."
+      - "Follow-up outside this task: deploy inclusion latency in the test_load high phase (TASK-021-13)."
+    origin: "On 2026-10-07 the user chose to fix issue #24 on the #653 branch. Soak 37469364217 on dev 778cc6754 failed 8 of 49 iterations with test_load 'N deploy(s) not finalized within 45s'. The 2026-09-25 issue breakdown shows that 56% of blocks park on missing parents, 7.1 s median and 39.6 s p90. A code trace found three release-path causes."
+    scope: "Release priority, the stale-link defect, and an incremental release scan, plus the round-length metrics. The recovery re-request for parents that the node already holds is out of scope."
+    files:
+      - docs/claims/casper-buffer-release.md
+      - casper/src/rust/blocks/block_processor.rs
+      - casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs
+      - casper/src/rust/engine/multi_parent_casper/block_admission.rs
+      - casper/src/rust/engine/multi_parent_casper/dispatch.rs
+      - casper/src/rust/engine/block_retriever.rs
+      - casper/src/rust/casper.rs
+      - casper/src/rust/metrics_constants.rs
+      - node/src/rust/instances/block_processor_instance.rs
+      - node/src/rust/instances/release_queue.rs
+      - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
+      - block-storage/src/rust/dag/buffer_dag_transition.rs
+      - scripts/bench/extend-issue24-metrics.sh
+    hygiene_note: "2026-10-16 hygiene: PR #653 merged. Open: a soak that passes the integration preflight, CLAIM-CASPER-BUFFER-001 items 2 to 7, and maintainer acceptance."
+    acceptance:
+      - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 as pending before any code change (EPIC-021 cbc_policy)."
+      - "Each plan behavior has a test that fails before its change and passes after it. B5 reproduces the stale-link hold on the current code."
+      - "The soak records park time, release queue wait, release scan duration, and recovery re-requests."
+      - "A comparison soak against the scheduled dev soak on the same base reports sustained finalization p95, the test_load failure count, and the new metrics."
+      - "The maintainer accepts the soak and CbC evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
+  - id: TASK-021-13
+    title: "Find why test_load deploys are not finalized within 45 s in the high and sustained phases (issue #24)"
+    status: pending
+    priority: p0
+    claimed_by: null
+    blocked_by: []
+    origin: "On 2026-10-07 two integration preflights on master e6564599c failed in the same test_load phase after PR #653 nearly stopped block parking. The user asked for a task that owns the deploy inclusion delay."
+    problem: "test_load fails with deploys not finalized within 45 s in two phases. The two preflights of 2026-10-07 showed only the high phase. The 24-hour soak 37640235959 shows failures in the high and sustained phases, and the sustained phase fails more often. In failing iterations, the mean p95 inclusion latency rises most in the high phase, and the mean p95 finalization latency rises most in the sustained phase. These are aggregate values. They do not show if each unfinalized deploy was included, so the stage that holds a deploy is not known yet."
+    evidence:
+      - "Soak 37579803394, preflight: high phase inclusion p50 9.0 s and p95 21.9 s, finalization p95 33.2 s, 7 unfinalized. The other phases had inclusion p95 5.3 to 13.7 s. Sustained finalization p95 31.2 s, 0 unfinalized."
+      - "Scheduled soak 37598606554, preflight: high phase inclusion p50 8.9 s and p95 21.7 s, finalization p95 41.2 s, 7 unfinalized."
+      - "The 2026-09-16 issue #24 comment found every earlier failure in the sustained phase and none in the high phase. Correction of 2026-10-07: the failure did not move to the high phase after PR #653. The preflights sampled one iteration each. Soak 37640235959 shows both phases."
+      - "Soak 37640235959 (daily-24h without the integration preflight, target 1381ecbe9, the node code of dev 31b228604): segment 1 failed with 6 test_load failures in 32 iterations (19%). Each failure was N deploy(s) not finalized within 45s. On 2026-10-07 at 21:50 UTC the final segment was running with 4 more failures."
+      - "Soak 37640235959 by phase, 41 iterations: sustained phase failed 7 times (40, 45, 11, 12, 147, 11, and 43 unfinalized), high phase 4 times (13, 14, 15, 8), burst phase never."
+      - "Soak 37640235959 latency, failing against passing iterations. High phase: inclusion p95 mean 21.6 s against 13.2 s, finalization p95 mean 38.5 s against 30.2 s. Sustained phase: inclusion p95 mean 18.0 s against 11.7 s, finalization p95 mean 60.7 s against 38.4 s."
+      - "Fewer than 2% of the blocks parked on the failing test_load shard (issue #24 comment 6040401089), so parked blocks do not explain the delay."
+      - "Issue #24 comment 6043103631 (2026-10-07) records the state of every optimization in the issue. Fixed: settled-signature probes (PR #362), prior_rejection_counts (PR #366), and parked blocks (PR #653). Open: the bonds query, the precharge and refund cost, the heartbeat wait, the deploy admission cap, and the suppression of empty heartbeat blocks."
+    evidence_gap: "The soak cannot give the cause yet. Its ISSUE24_METRICS cover block replay, repeat-deploy validation, and merge selection only. No metric covers the deploy pool wait, the proposal trigger, block creation, propagation, admission cap hits, heartbeat waits, empty heartbeat blocks, the finalizer runs, or the API-driven LFB computation. More soak iterations improve the failure rate and the phase split, but not the cause. In soak 37640235959, segment 1 ran its full window to the 13:00 Pacific checkpoint and the final segment continued to the 24-hour end. Segments 2 to 5 were skipped for a reason that is not confirmed yet. A run with the new metrics must give data from at least two segments."
+    hypothesis: "Two causes, not proven, from the aggregate latency split only. High phase: deploys wait for inclusion, because deploy selection or the proposer cadence holds them under the high-phase submit rate (10 deploys/s for 15 s). Sustained phase: included deploys wait for finalization, so the finalizer metrics and the API-driven LFB computation apply there first. The per-deploy timeline of the stage metrics confirms or rejects each part. The first step measures before any change."
+    first_suspects:
+      - "Deploy admission cap. block_creator.rs caps ordinary user deploys per block at 4, 8, or 16 in the non-leader fallback (NON_LEADER_FALLBACK_*_ORDINARY_DEPLOY_CAP). In the 2026-09-25 breakdown the cap held at 4 under sustained load, and about 484 of 1512 deploys were never included. At 10 deploys/s, a cap of 4 or 8 per block can hold deploys for several blocks."
+      - "Heartbeat wait. The 2026-09-25 breakdown measured 5.6 s of each 7 s idle round as validators waiting for their next heartbeat tick before they propose (casper.heartbeat check-interval 5 s). Each wait adds directly to inclusion time."
+      - "Empty heartbeat blocks. The proposer skips an empty proposal only outside the heartbeat lane (block_creator.rs). Heartbeat proposals use EmptyBlocks::HeartbeatLane (proposer.rs) and still emit empty blocks, which every peer must replay. The issue measured about 54% empty blocks in April. The current share is not measured. The counters block-creator.empty-block.built and heartbeat.proposals on feat/issue-24-stage-metrics measure it."
+      - "API-driven LFB computation. MultiParentCasper::last_finalized_block (dispatch.rs) calls compute_last_finalized_block directly, outside the single-flight guard of run_queued_finalizer. The bond_status and exploratory_deploy API endpoints (casper/src/rust/api/block_api.rs) call it. A request during a background finalizer run starts a second, overlapping evaluation that can apply the finalization effect. record_directly_finalized tolerates concurrent callers (global write lock and a reconcile loop). Whether the effect closure (process_finalized: event publication and mergeable-channel GC) can run twice for one block is not verified."
+    finalizer_facts:
+      - "The background finalizer is single-flight (finalizer_task_in_progress). Triggers during a run set finalizer_task_queued and coalesce into one rerun (finalization_runner.rs)."
+      - "Each run selects at most one new LFB through floor::floor_of_view. record_directly_finalized then finalizes the LFB and all its unfinalized ancestors in one batch."
+      - "A run that exceeds 15 s is abandoned for that cycle with a warning."
+      - "Decision D-05 (ratified 2026-09-16) keeps single-flight as the default. The bounded parallel evaluation of PR #216 is optional, and the casper-soak publication profile blocks it (parallel_policy_not_approved). That profile is qualified only on synthetic fixtures and does not model the API-driven path."
+    not_suspects:
+      - "Merger conflict detection: compute_relation_map is still O(N²), but the merger buckets measure about 45 ms per merge."
+      - "Replay runtime spawn: about 3.8 ms per block in the soak."
+      - "Block parking: below 2% after PR #653."
+    measurement: "Branch feat/issue-24-stage-metrics (2026-10-07) adds 15 metrics under the pending claim CLAIM-CASPER-STAGE-METRICS-001 (docs/claims/casper-stage-metrics.md), all registered in ISSUE24_METRICS. Finalizer: finalizer.run.time, failures, timeouts, reruns, queued. API: finalizer.api-lfb.calls, overlaps, time. Block creator: block-creator.ordinary-deploys.deferred, ordinary-lane.disabled, empty-block.skipped, empty-block.built, and deploy.selection.age.time. Heartbeat: heartbeat.checks, heartbeat.proposals. The branch also tags finalization_runner.rs and proposer.rs cbc=mandatory. cargo test --release -p casper -p node passed with 1,896 tests. The next soak on a base that includes the branch gives the first stage data."
+    scope: "Measurement first: the time from deploy submit to the first block that includes the deploy, split by stage (deploy pool wait, proposal trigger, block creation, block propagation). Add finalizer metrics to ISSUE24_METRICS: finalizer run duration, queued reruns, 15 s timeouts, and API-triggered LFB computations with their overlap with a background run. Check whether the system-integration test_load calls exploratory_deploy or bond_status during its load phases. A fix starts only after a measurement names the stage. The fix needs its own TDD plan and, under the EPIC-021 cbc_policy, a pending claim before any code change."
+    acceptance:
+      - "A per-deploy timeline for failing high-phase and sustained-phase iterations names the stage that holds the deploy, with evidence from two runs."
+      - "A pending CbC claim exists before any code change to proposal or deploy selection."
+      - "The soak record reports the finalizer metrics and the API-triggered LFB computations."
+      - "Each fix behavior has a test that fails before its change and passes after it."
+      - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in every phase."
+      - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
+    candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
+    candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
+  - id: TASK-021-14
+    title: "Run subprocess soak nodes on the jemalloc build of the image (allocator parity)"
+    status: in_progress
+    review_requested_at: 2026-10-13
+    review_type: human
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-13T16:00:00Z
+    branch: hotfix/subprocess-allocator-parity
+    pr_base_branch: master
+    blocked_by: []
+    origin: "Soak 38300649650 segment 2 (master e5a0531a6): 28 of 86 iterations failed test_load, all on the subprocess provider (28 of 42), none on Docker (0 of 43). The subprocess checkpoint and trie-apply stages were 3 to 23 times slower. The Docker entrypoint preloads jemalloc, and the subprocess binary runs on glibc malloc (issue #24 comment 6148770562)."
+    change: "The merge-recovery-soak workflow extracts the jemalloc library of the image with the binary and starts subprocess nodes through a wrapper that preloads it. The step fails when the wrapper does not run the node on jemalloc."
+    hygiene_note: "2026-10-16 hygiene: PR #715 merged. Open: the soak values for the subprocess checkpoint times, the test_load gate on each provider, and the subprocess RSS."
+    acceptance:
+      - "The Extract subprocess binary step reports the jemalloc version of the image."
+      - "In the sustained phase, the subprocess replay checkpoint and apply_trie_actions times are near the Docker values (about 270 ms and 13 ms)."
+      - "The test_load failure rate meets the issue #24 gate (at most 5 in 100 sessions) on each provider."
+      - "Subprocess node RSS stays inside the soak envelope."
+  - id: TASK-021-15
+    title: "Link jemalloc into the node binary as its global allocator"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-14]
+    notes:
+      - "Start only if TASK-021-14 shows that the allocator causes the subprocess slowdown."
+    acceptance:
+      - "The node uses jemalloc on every launch path, so the Docker entrypoint and the soak wrapper no longer need LD_PRELOAD."
+      - "The arm64 build sets a page size that works on 64 KiB page hosts, and the Dockerfile cross-compile builds the allocator."
+      - "cargo deny passes with the new dependency."
+      - "The issue #244 memory ceiling (TASK-012-25) is measured before and after the change."
+  - id: TASK-021-16
+    title: "Record the pre-cost-accounting baseline soak"
+    status: pending
+    claimed_by: null
+    pr_base_branch: null
+    blocked_by: ["PR #741 on master", "PR #748 on master"]
+    notes:
+      - "Plan step 0 of 2026-10-16 (adaptive-execution.md section 10.4). The stall-loop design (https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) is a code reading without profiling, so the plan measures first."
+      - "PR #748 removes the 8-hour merge exit, so a daily soak runs its full window."
+    acceptance:
+      - "A full-length soak on current dev with the node I/O sampler gives at least 100 test_load sessions on each provider."
+      - "The issue #24 report records the failure rate, the phase of each failure, and the stage metrics as the baseline for TASK-021-23."
+      - "The result answers Q8 of adaptive-execution.md."
+  - id: TASK-021-17
+    title: "Measure each stall-loop Track A item in the soak"
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T19:00:00Z
+    branch: feat/issue-24-track-a-metrics
+    pr_base_branch: dev
+    blocked_by: []
+    notes:
+      - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
+      - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
+    hygiene_note: "2026-10-16 hygiene: PR #751 merged the Track A metrics. Open: one soak that ranks the Track A items, and the issue #24 report of the rank."
+    acceptance:
+      - "ISSUE24_METRICS records the deploy-pool lock hold time and the signature checks for each proposal (A4), the proposer queue depth and the empty-block rate (A2), the floor distance (A3), the tokio worker saturation (A6), and the finalizer run time against its 15 s deadline (A1)."
+      - "One soak ranks the Track A items by measured cost, and the issue #24 report records the rank."
+  - id: TASK-021-18
+    title: "Fix the buffer eviction order and the re-fetch cooldown (stall-loop A7)"
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T21:00:00Z
+    branch: fix/issue-24-buffer-eviction-refetch
+    pr_base_branch: dev
+    blocked_by: []
+    notes:
+      - "Plan step 2. Both defects are independent of load. casper_buffer_key_value_storage.rs computes age as now - first_seen, sorts ascending, and removes the first entry, which is the youngest pendant (verified on dev 555a5e442)."
+    acceptance:
+      - "Eviction removes the oldest dependency-free entry. A unit test fails on the old order."
+      - "A duplicate reply to a re-fetch keeps the cooldown and the retry counter. A unit test fails on the old behavior."
+  - id: TASK-021-19
+    title: "Keep finalizer progress at the run deadline (stall-loop A1)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 4. finalization_runner.rs drops a run that exceeds 15 s, so a later run starts again over a larger cone."
+    acceptance:
+      - "A run that reaches its deadline adopts the highest candidate proven so far. One oracle run cache is shared across a frontier derivation."
+      - "finalizer.run.timeouts stays 0 in a 60-hour soak, and the last finalized block never stalls."
+  - id: TASK-021-20
+    title: "Coalesce proposals and stop empty deploy-triggered blocks (stall-loop A2, issue #24 item 4)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 4. A fixed rule first. adaptive-execution.md section 10.1 later puts it under the controller, with these values as tier bounds."
+    acceptance:
+      - "Deploy-triggered proposal requests coalesce into one pending proposal, and the proposer queue depth stays at most 1."
+      - "A deploy-triggered proposal never builds an empty block, and the empty-block rate under load falls against TASK-021-16."
+  - id: TASK-021-21
+    title: "Pace proposals by floor distance and cap pool admission (stall-loop A3)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 4. Fixed thresholds first, set from TASK-021-17 data. The controller later uses them as tier bounds."
+    acceptance:
+      - "Above a floor-distance threshold well below 256, proposals include no ordinary deploys and only advance finality."
+      - "The deploy pool rejects new deploys above a size threshold with a typed, retryable busy error."
+      - "Floor distance stays bounded under the burst phase of test_load."
+  - id: TASK-021-22
+    title: "Fix the remaining Track A items in measured order (stall-loop A4, A5, A6, A8, A9)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 5. TASK-021-17 sets the order. A9 (merging_logic.rs) and the hot-channel representation touch files near the cost-accounting merge, so they come last and carry a note for the cost-accounting lane."
+    acceptance:
+      - "Each item meets the exit criterion of the stall-loop design, for example prepare time flat in pool size for A4."
+      - "Each fix outside the 38 conflict files, or a recorded reason with a note to the cost-accounting lane."
+  - id: TASK-021-23
+    title: "Repeat the baseline soak after cost accounting lands in dev"
+    status: pending
+    claimed_by: null
+    pr_base_branch: null
+    blocked_by: [TASK-021-16, "cost accounting in dev (PR #216 or stall-loop B1)"]
+    notes:
+      - "Plan step 6. The scope that lands is not decided (2026-10-16). PR #216 as it stands costs legacy shards 15 to 23 percent more CPU on its own profiles. Stall-loop B1 keeps the legacy path byte-identical and within 3 percent."
+    acceptance:
+      - "The same soak profile as TASK-021-16 runs on dev with cost accounting."
+      - "The issue #24 report compares both runs and records new baselines if legacy cost changed."
+  - id: TASK-021-26
+    title: "Attribute and remove the soak disk growth that stops weekend soaks after 16 to 18 hours"
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-19T17:45:00Z
+    branch: fix/soak-disk-attribution
+    pr_base_branch: dev
+    pull_request: 782
+    blocked_by: ["PR #774 in dev (accepted driver digest 4626f343)"]
+    finding: "Soak 38995239992 stopped at 16.7 h (output directory 10.4 GB, Docker build cache 7.0 GB with 6.6 GB reclaimable, .subprocess-data 4.6 GB between iterations). Soak 39089710676 stopped at 18.2 h after the gzip fix. Its output directory was about 1.5 GB, but the space outside it was about 10 GB larger. It stopped on the benchmark admission path, which wrote no du snapshot."
+    decision: "2026-10-19: the maintainer holds the H1 comparison soak of TASK-021-13 until this fix lands."
+    notes:
+      - "Blocks TASK-021-16 and the TASK-021-13 comparison: a long soak cannot reach 100 sessions on each provider before the disk floor stops it."
+      - "Coordination: Claude Code (f1r3node-rust-71) owns the code, the fixture, the workflow, docs/claims/soak-disk-protection.md, and the ledger records. The Pi agent (pi-session-heartbeat-h1-cbc) owns the CbC review package casper-soak-disk-attribution-20261019-01 and the draft refresh of the workflow evidence record. The exchange is in the gitignored channel docs/handoffs/channel-soak-disk-attribution-2026-10-19.md."
+      - "Step 1 (this PR): a per-component disk usage record (disk-usage.tsv), a du snapshot on the benchmark admission refusal, and a Docker build cache prune after the node image build. Step 2: a daily soak with the record names the growing component. Step 3: remove that growth."
+    acceptance:
+      - "disk-usage.tsv has rows for segment start, each iteration, each benchmark segment, and the soak end. scripts/bench/test-soak-disk-admission.sh covers them, including disk-record-degraded."
+      - "A maintainer accepts the review package for the driver, the fixture, and the workflow under CLAIM-CASPER-SOAK-001."
+      - "A soak with the record names the component that grows, with its growth rate."
+      - "After the growth fix, a weekend soak runs past 24 hours without a disk floor stop."
 ---
 ```
 
 **Current state:** Created on 2026-10-03 after soak 37090117438 failed. Soak 37153082817 runs weekend-60h on master f93b72699 with the stage metrics. TASK-021-1 starts from the failed run, and TASK-021-4 waits for the new run.
-
----
-
-### EPIC-020: Node Log and Accept-Path Self-Limits
-
-```yaml
----
-epic_id: EPIC-020
-title: "Node Log and Accept-Path Self-Limits"
-status: in_progress
-priority: p0
-user_story: US-009
-user_flow: FLOW-002
-blocked_by: []
-created_at: 2026-09-23
-updated_at: 2026-09-30
-claimed_by: null
-branch: fix/node-log-and-accept-backoff
-pr_base_branch: dev
-stack_order: "Branches from dev and merges to dev before PR #447. PR #447 then merges dev. The soak branch inherits the fix through its next merge of the observation branch."
-origin: "On 2026-09-23 a nine-day compose network from a system-integration checkout filled 2.7 TB in one day. Its bootstrap ran out of file descriptors, the transport accept loop retried with no backoff and logged one ERROR line per attempt, the node wrote every line to its data volume and to stdout, and the container's json-file log had no size cap."
-execution_contract:
-  base_branch: dev
-  scope: "Make the node self-limiting under an error storm: backoff and rate-limited logging on accept failures, a byte-bounded file log, one sink per deployment, and a repository check that every node compose service caps its container log. Harness enforcement belongs to EPIC-017 on the soak branch."
-  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
-  cbc_policy: "The transport server and the logging module carry no cbc tag today. Propose cbc=mandatory for the accept path with a pending claim before the fix lands, or record the maintainer decision that the change stays untagged."
-  cbc_decision: "The maintainer decided on 2026-09-30 that the accept path stays untagged for TASK-020-1. The regression tests in f1r3fly_server_resource_tests.rs are the verification."
-tasks:
-  - id: TASK-020-1
-    title: "Back off and rate-limit the transport accept-error path"
-    status: complete
-    claimed_by: claude-session-f3cbc961
-    claimed_at: 2026-09-30T00:40:00Z
-    verification_claimed_by: 01a0ab62-71b3-7248-a800-37a6fde2e4fa
-    verification_claimed_at: 2026-09-30T01:03:01Z
-    verification_status: in_progress
-    blocked_by: []
-    work_log: docs/work-logs/transport-accept-resource-review-20260923.md
-    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. The approved story and flow repair now links EPIC-020 to US-009 and FLOW-002."
-    hosted_verification: docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json
-    hosted_run: 36651370411
-    hosted_job: 109688126217
-    unit_tests: [comm/src/rust/transport/f1r3fly_server_resource_tests.rs]
-    completion_blocker: null
-    remaining: []
-    files:
-      - comm/src/rust/transport/f1r3fly_server.rs
-    acceptance:
-      - "On an accept error the listener sleeps with exponential backoff, capped at one second, before the next accept."
-      - "Under sustained descriptor exhaustion the listener emits at most one ERROR line per backoff window and one summary line per minute with the suppressed count."
-      - "A test injects descriptor exhaustion against the listener and asserts the bounded line count and the recovery once descriptors return."
-      - "Ordinary accept throughput is unchanged. No backoff applies to a successful accept."
-    implementation_plan:
-      - "Step 1. Add a backoff state to the listener task: reset on success, double on error from 10 ms to 1 s."
-      - "Step 2. Route accept errors through a rate limiter that logs the first error, suppresses repeats inside the window, and logs a periodic summary with the suppressed count."
-      - "Step 3. Add the descriptor-exhaustion test with a lowered RLIMIT_NOFILE in a child process or a socket-pair fixture, and a regression that the current code fails."
-    completion_gaps: []
-    completed_date: 2026-09-30
-  - id: TASK-020-2
-    title: "Bound the file log by bytes, not only by time"
-    status: complete
-    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
-    claimed_at: 2026-09-30T01:20:37Z
-    blocked_by: []
-    work_log: docs/work-logs/task-020-2-byte-bounded-logging-20260930.md
-    files:
-      - shared/src/rust/tracing_init/mod.rs
-      - shared/src/rust/tracing_init/bounded_file.rs
-      - node/src/main/resources/defaults.conf
-      - node/src/rust/configuration/mod.rs
-    acceptance:
-      - "logging.file accepts a maximum size per file and a maximum total size for the log directory, with defaults that bound a node to a few gigabytes."
-      - "When the total bound is reached the oldest rotated file is removed before the appender writes further."
-      - "A test drives a hot error loop through the appender and asserts the directory never exceeds the bound."
-      - "The defaults comment no longer describes minutely rotation as the only way to bound disk use."
-    implementation_plan:
-      - "Step 1. Extend the rotation configuration with size-based rolling alongside the existing period."
-      - "Step 2. Enforce the total directory bound in the appender with an oldest-first eviction."
-      - "Step 3. Add the appender test and update the configuration test that pins daily rotation."
-    unit_tests: [shared/src/rust/tracing_init/mod.rs, shared/src/rust/tracing_init/bounded_file.rs, node/src/rust/configuration/mod.rs]
-    completion_gaps: []
-    completed_date: 2026-09-30
-  - id: TASK-020-3
-    title: "One sink per deployment and a container log cap check"
-    status: complete
-    completed_on: "2026-09-30"
-    recorded_by: claude-session-f3cbc961
-    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
-    claimed_at: 2026-09-30T02:23:57Z
-    claimed_at_source: clock_checkpoint_after_claim
-    blocked_by: []
-    work_log: docs/work-logs/task-020-3-deployment-log-caps-20260930.md
-    implementation_status: "The node deployment commands and repository guards pass at 7d64c9d03. The external single-sink change merged into system-integration dev on 2026-09-30. Its main promotion is pending and is appended when it lands."
-    external_handoff: docs/handoffs/task-020-3-system-integration-20260930.md
-    external_main_revision: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
-    external_single_sink_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
-    external_change:
-      repository: F1R3FLY-io/system-integration
-      pull_request: 146
-      branch: fix/single-log-sink-per-deployment
-      base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
-      receiver: claude-session-fbb1f4d0
-      dev_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
-      dev_merged_at: 2026-09-30T22:10:44Z
-      main_promotion_revision: null
-      request_record: "system-integration docs/ToDos.md, section REQUEST: one node log sink per deployment (SI-TASK-020-3)"
-    sink_contract:
-      compose_and_smoke_test: "stdout through sink = stdout in conf/rust.conf and conf/standalone-dev.conf, bounded by json-file 100m x 3, read by docker logs and shardctl"
-      integration_docker_provider: "file through --log-sink=file before run at 6 launch sites (NODE_LOG_SINK_ARGS in integration-tests/test/infra/compose.py), read from /var/lib/rnode/logs/node.log*"
-      integration_subprocess_provider: "stdout through the conf, read from the captured process output"
-      development_override: "both only through an explicit --log-sink=both before run"
-    external_verification:
-      - "unit-tests/test_log_sink_policy.py at ccd717195: 34 passed (run from a git archive export with the repository Poetry environment)."
-      - "poetry run pytest unit-tests at the PR head: 355 passed. ruff 0.16.0 check and format clean."
-      - "docker compose config for the 5 node variants: 11 node services, all json-file 100m and 3 files, Compose files unchanged."
-      - "Live suites (system-integration commit e7163d57): test_heartbeat passed in PR CI. test_token_metadata standalone and shared, and test_shard_degradation: 15 of 15 passed locally with F1R3FLY_NODE_DEFAULTS_CONF set."
-    node_verification_at_7d64c9d03:
-      - "scripts/ci/test-compose-log-policy.sh: shard-vps2 3, ci-shard 5, ci-standalone 1 node services passed."
-      - "cargo nextest run -p node --test log_sink_cli: 3 passed."
-      - "scripts/supply-chain cargo test --test repository: 18 passed."
-      - "Pre-commit fmt, clippy, test, and deny passed at the merge commit 7d64c9d03 (dev ccd4a4823 merged)."
-    remaining_outside_this_task:
-      - "The byte limits of node commit 6e1c8833a reach system-integration runs through the next node repin of SYSTEM_INTEGRATION_REF. TASK-020-4 on formal/soak-casper-consensus enforces them in the harness."
-      - "Append the system-integration main promotion revision to external_change when it lands."
-    unit_tests: [scripts/supply-chain/tests/repository.rs, scripts/supply-chain/tests/support/compose_logging.rs, node/tests/log_sink_cli.rs]
-    files:
-      - Cargo.lock
-      - scripts/supply-chain/Cargo.toml
-      - scripts/supply-chain/tests/repository.rs
-      - scripts/supply-chain/tests/support/compose_logging.rs
-      - scripts/ci/test-compose-log-policy.sh
-      - node/tests/log_sink_cli.rs
-      - docker/shard.yml
-      - docker/standalone.yml
-      - docker/observer.yml
-      - docker/validator4.yml
-      - docker/shard.vps1.yml
-      - docker/shard.vps2.yml
-      - docs/node/README.md
-    acceptance:
-      - "Every compose service in this repository that runs a node image sets logging.options.max-size and max-file."
-      - "A repository test fails when a node compose service lacks the cap, in the same style as the workflow cache-write test."
-      - "Deployment defaults use one sink. The sink both is documented as a development setting that doubles disk use."
-      - "The system-integration compose file receives the same cap through a coordinated change in that repository, recorded here with its merge revision."
-    notes:
-      - "The six base Compose files already cap at 100m and three files. The CI port overlays inherit these limits."
-      - "The monitoring Compose file has no blockchain node service. Its storage policy is outside this task."
-      - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
-  - id: TASK-020-4
-    title: "Harness enforcement of node log growth under EPIC-017"
-    status: done
-    completed_at: 2026-10-05
-    reopened_at: 2026-10-05
-    reopened_reason: "The PR #622 review of 2026-10-05 found two probe defects. A container that stopped during a sample caused a false breach. An unreadable rotated container log was skipped without a report. The fix changes the driver and the disk fixture, so the acceptance of 2026-10-04 does not cover the new bytes."
-    resolution: "First version implemented in 83a41b564 (PR #622). Review package casper-soak-log-budget-guardian-20261004-01 at 6ea45dc8f, accepted by jltatbeach in PR #622 comment 5983133741. The acceptance package casper-soak-log-budget-guardian-acceptance-20261004-01 and the ledger records of the driver and the disk fixture carry the new digests. The probe fix 82fe22a0a has review package casper-soak-log-budget-guardian-20261005-01 at 1a04095da, accepted by jltatbeach in PR #622 comment 6005866151. The acceptance package casper-soak-log-budget-guardian-acceptance-20261005-01 and the two ledger records carry the new digests."
-    claimed_by: claude-session-aa467dea
-    claimed_at: 2026-10-04T14:36:28Z
-    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
-    mirrored_as: TASK-017-17
-    design: docs/casper/design/soak-log-budget-guardian.md
-    implementation_status: "Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04. The driver samples the container json-file log and the node log directory of each owned container, refuses admission on an unreadable probe, and breaches on 3 strikes or one sample at two times the budget. Ten log scenarios in scripts/bench/test-soak-disk-admission.sh pass in the disposable container, and the breach and refusal scenarios fail against the previous driver. CLAIM-SOAK-001 records the log caps as enforced. The 2026-10-05 fix skips a container that stops during a sample and fails the probe on a rotated log that exists but cannot be read. Scenarios log-probe-vanished and log-rotated-unreadable pass, and both fail against the driver at 514eb3026. All 12 log scenarios pass. The maintainer accepted the fix on 2026-10-05."
-    owner_branch: formal/soak-casper-consensus
-    blocked_by: []
-    blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
-    acceptance:
-      - "The soak guardian samples the node log directory and the container json-file size, not only free space, and stops the run when either exceeds its budget."
-      - "A soak fixture injects descriptor exhaustion into a node and asserts the guardian and the node limits hold."
-      - "CLAIM-SOAK-001 records the log cap as an enforced check instead of an assumption."
-    notes:
-      - "This task is tracked here for ordering only. The downstream agent mirrors it into EPIC-017 on the soak branch, where the claim and the driver live."
----
-```
-
-**Current state:** TASK-020-1, TASK-020-2, and TASK-020-3 merged to dev through PR #451 on 2026-10-03 and reached master with the soak stack. TASK-020-4 is implemented on PR #622: the soak guardian samples the node log directory and the container json-file size, and CLAIM-SOAK-001 records the log caps as enforced. The maintainer accepted the first version on 2026-10-04 and the probe fix on 2026-10-05. Soak 37343966570 runs the guardian for the first time. Also open: the TASK-020-1 verification status and the system-integration main promotion revision of TASK-020-3.
 
 ---
 
@@ -1532,6 +2410,11 @@ tasks:
     unit_tests: [scripts/casper-soak/tests/authority_finality.rs]
     completion_gaps: []
     completed_date: 2026-09-19
+    notes:
+      - "2026-10-13, branch fix/authority-finality-timeout-flake: the timeout test asserted a 5 s bound on the whole execute_fixture call. That call also copies and hashes the debug test binary."
+      - "A loaded GitHub runner exceeded the 5 s bound in run 38480514170. The bound is now TIMEOUT_TEST_BOUND (15 s), half of the 30 s fixture sleep."
+      - "The test fails if the profile waits for the stuck executor or kills it 15 s or more after the start. The executor_deadline assertion still proves that the 200 ms deadline caused the stop."
+      - "The change does not alter the acceptance items or CLAIM-CASPER-SOAK-002. The suite still reports 12 passed and 1 ignored."
   - id: TASK-017-6
     title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]
@@ -1997,7 +2880,7 @@ tasks:
 
   - id: TASK-017-17
     title: "Enforce the node log budgets in the soak guardian"
-    status: done
+    status: complete
     completed_at: 2026-10-05
     reopened_at: 2026-10-05
     resolution: "See TASK-020-4. Accepted in PR #622 comment 5983133741, and the probe fix in comment 6005866151."
@@ -2380,7 +3263,9 @@ tasks:
       - "release-evidence.yml generates exact-run evidence; release.yml and soak-in.yml are held-state stubs; release-evidence.sh plus unit tests and the test-release-workflows.sh contract guard are in place."
   - id: TASK-013-3
     title: "Phase 2: canary publication (canary-publish.yml)"
-    status: in_progress
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "canary-publish.yml publishes canary prereleases from master runs, for example v0.4.46-canary.3730 on 2026-10-16."
     branch: feature/release-phase2-canary-publication
     blocked_by: []
     notes:
@@ -2400,6 +3285,7 @@ tasks:
       - "promote-release.sh and release.yml copy the stable tag and latest into OCIR as well as Docker Hub."
       - "The regress alert reuses the soak's existing ONS verdict email; promotion holds until maintainer-review.json is uploaded."
       - "2026-08-22 multi-agent review of PR #325: gate documents carry candidate_evidence_sha256 and are written from the evidence file the run kept as a same-run artifact, never a re-downloaded release asset; release-gates.sh requires that digest to equal the evidence under evaluation. A candidate soak restart must name restart_of_run_id and match the original run's soak-window artifact (candidate, attempt 0, weekend, end epoch); coverage_preserved is true only for a verified restart."
+    hygiene_note: "2026-10-16 hygiene: PR #325 merged. Open: one exact-candidate OCI validation run and one candidate weekend soak with Section 8.1 documents."
     acceptance:
       - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
       - "The canary publisher publishes the same index digest to OCIR and Docker Hub, and evidence records the OCIR digest"
@@ -2415,6 +3301,7 @@ tasks:
       - "Section 8.1 defines the gate-evidence contract that Phase 3 must publish as candidate prerelease assets. Until Phase 3 lands, the OCI, soak, and verdict gates hold, so no candidate is promotable end to end."
       - "The regress-verdict OCI Notifications alert belongs to the soak workflow (Phase 3); the controller holds on regress until maintainer-review.json accepts it."
       - "2026-08-22 multi-agent review of PR #323: fail-closed gate evaluation (a malformed document fails its gate, the report always holds all eight gates), API-verified run identity for the OCI and soak documents, API-verified reviewer permission for maintainer-review.json, resume verifies existing release assets and refuses when a newer stable exists, latest is verified after the move, the next-version step is idempotent and keeps the token out of the remote URL, and the workflow_run resume is bound to a default-branch dispatch of a gate workflow whose marker names the evidence source. Concurrency was already serialized by the concurrency group; documented in Section 11.1."
+    hygiene_note: "2026-10-16 hygiene: PR #323 merged. Open: one live promotion of a candidate to a stable tag. Only canary prereleases exist."
     acceptance:
       - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
       - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
@@ -2435,6 +3322,7 @@ tasks:
       - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
       - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
       - "2026-08-23 multi-agent review of PR #328: plan-ci also requires head_repository.full_name to match (the run list reports the base repository for every run); a merged member proves merge-commit reachability from integration_branch through a reach-<N>.json compare document; a member whose predecessor has merged may target integration_branch, because GitHub retargets the pull request when the merged branch is deleted; setup fails fast on a member head outside this repository. 23 rejection cases plus merged and retargeted acceptance paths."
+    hygiene_note: "2026-10-16 hygiene: PRs #328 and #321 merged. Open: the single-train and stack-train rehearsals. deployment-train.yml has no run."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
       - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
@@ -3042,7 +3930,9 @@ source_head: fb59611fbf2be202a6d6450850de1435c9dec7a4
 tasks:
   - id: TASK-004-1
     title: "Sync Rust workspace crates from f1r3node rust/staging"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-17
+    review_type: human
     claimed_by: claude-session-epic004
     claimed_at: 2026-04-17T19:19:55Z
     completed_at: 2026-04-29T18:50:45Z
@@ -3290,7 +4180,9 @@ claimed_at: 2026-04-13T19:00:00Z
 tasks:
   - id: TASK-009-1
     title: "OCI VPS provisioning scripts"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     completed_at: 2026-04-13T19:05:00Z
     acceptance:
@@ -3306,7 +4198,9 @@ tasks:
 
   - id: TASK-009-2
     title: "Image distribution via docker save + scp + load"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     blocked_by: [TASK-009-1]
     completed_at: 2026-04-13T19:10:00Z
@@ -3321,7 +4215,9 @@ tasks:
 
   - id: TASK-009-3
     title: "Distributed compose file split"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T19:15:00Z
     completed_at: 2026-04-13T19:30:00Z
@@ -3339,7 +4235,9 @@ tasks:
 
   - id: TASK-009-4
     title: "Justfile recipes for end-to-end orchestration"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T19:40:00Z
     completed_at: 2026-04-13T19:58:00Z
@@ -3359,7 +4257,9 @@ tasks:
 
   - id: TASK-009-5
     title: "Port latency benchmark (Scala -> native grpcurl/curl)"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T21:19:00Z
     completed_at: 2026-04-13T21:25:00Z
@@ -3483,7 +4383,9 @@ tasks:
 
   - id: TASK-010-8
     title: "De-duplicate the CI runner compartment OCID without weakening the reaper"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-07-30
+    review_type: human
     claimed_by: claude-session-9f68c6fa
     completed_at: 2026-07-30T22:20:00Z
     branch: chore/reaper-compartment-invariant
@@ -3720,8 +4622,9 @@ PR #390 meeting record + PR #216 candidate ─> EPIC-017 pre-merge plan and base
 PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisites
 EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
 EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
-EPIC-020 (node log and accept-path limits, fix branch -> dev) ─> merges before PR #447
+EPIC-020 (node log and accept-path limits, complete 2026-10-06) ─> merged to dev before PR #447
 EPIC-017 harness + PR #441 stage metrics ─> EPIC-021 (issue #24 root cause, fix/issue-24 -> dev)
+EPIC-021 evidence + EPIC-025 boundary (PR #651) ─> EPIC-027 (issue #24 close-out, perf/issue-24-adaptive-execution -> dev)
 EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)

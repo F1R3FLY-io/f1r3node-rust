@@ -26,7 +26,7 @@ The logging implementation is `shared/src/rust/tracing_init/mod.rs`. `NodeConf` 
 
 The corrected task scope includes the shared logging module and its bounded writer. It does not require a second node configuration type.
 
-The [glossary](../Glossary.md#byte-budget) now defines byte budget and managed log. The story and flow retain separate local and deployment evidence boundaries.
+The [glossary](../../../Glossary.md#byte-budget) now defines byte budget and managed log. The story and flow retain separate local and deployment evidence boundaries.
 
 The implemented defaults are 100 MiB per file and 2 GiB across the log directory. Period-based rotation and the retention count remain available.
 
@@ -78,7 +78,7 @@ The bound assumes that unrelated processes do not modify the trusted directory a
 
 ## Verification results
 
-The [evidence package](./evidence/task-020-2-20260930-01/report.json) records source hashes, results, tool identities, and completion integrity.
+The [evidence package](../../evidence/task-020-2-20260930-01/report.json) records source hashes, results, tool identities, and completion integrity.
 
 | Check | Result |
 | --- | --- |

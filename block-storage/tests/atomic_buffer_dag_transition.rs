@@ -18,7 +18,8 @@ use std::collections::HashSet;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::dag::buffer_dag_transition::{
-    atomic_insert_then_buffer, reconcile_buffer_against_dag, BufferTransition,
+    atomic_commit_dependencies, atomic_insert_then_buffer, reconcile_buffer_against_dag,
+    BufferTransition,
 };
 use models::rust::block_hash::BlockHashSerde;
 use models::rust::block_implicits::get_random_block;
@@ -293,4 +294,95 @@ async fn atomic_insert_then_buffer_idempotent_on_repeat() {
         .unwrap()
         .contains(&block.block_hash));
     assert!(!buffer.is_pendant(&hash_serde));
+}
+
+fn buffer_hash(data: &'static [u8]) -> BlockHashSerde {
+    BlockHashSerde(prost::bytes::Bytes::from_static(data))
+}
+
+fn park_time_samples(f: impl FnOnce()) -> usize {
+    let recorder = metrics_util::debugging::DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, f);
+    snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter(|(key, _, _, _)| key.key().name() == "casper.buffer.park.time")
+        .map(|(_, _, _, value)| match value {
+            metrics_util::debugging::DebugValue::Histogram(samples) => samples.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
+#[tokio::test]
+async fn releasing_a_parked_block_records_its_park_time() {
+    let mut kvm = InMemoryStoreManager::new();
+    let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut kvm)
+        .await
+        .unwrap();
+    let parent_a = buffer_hash(b"parent-a");
+    let parent_b = buffer_hash(b"parent-b");
+    let child = buffer_hash(b"child");
+    let ready = buffer_hash(b"ready");
+
+    let samples = park_time_samples(|| {
+        buffer
+            .add_relation(parent_a.clone(), child.clone())
+            .unwrap();
+        buffer
+            .add_relation(parent_b.clone(), child.clone())
+            .unwrap();
+        buffer.put_pendant(ready.clone()).unwrap();
+        buffer.remove(parent_a.clone()).unwrap();
+    });
+    assert_eq!(
+        samples, 0,
+        "a block with one missing parent left and a block that never parked record no park time"
+    );
+
+    let samples = park_time_samples(|| buffer.remove(parent_b.clone()).unwrap());
+    assert_eq!(
+        samples, 1,
+        "removing the last missing parent releases the child and records its park time once"
+    );
+    assert!(buffer.is_pendant(&child));
+}
+
+#[tokio::test]
+async fn a_child_committed_after_its_parent_enters_the_dag_keeps_no_stale_relation() {
+    let (dag, buffer) = setup_stores().await;
+    let parent = make_block();
+    let parent_hash = BlockHashSerde(parent.block_hash.clone());
+    let child_hash = buffer_hash(b"child-of-the-racing-parent");
+
+    let dependencies_seen_missing = vec![parent_hash.clone()];
+
+    atomic_insert_then_buffer(
+        &dag,
+        &parent,
+        InsertMode::Normal,
+        &buffer,
+        BufferTransition::RemoveFromBuffer(parent_hash.clone()),
+    )
+    .unwrap();
+
+    atomic_commit_dependencies(
+        &dag,
+        &buffer,
+        child_hash.clone(),
+        &dependencies_seen_missing,
+    )
+    .unwrap();
+
+    assert_eq!(
+        buffer.get_parents(&child_hash),
+        None,
+        "the parent is in the DAG when the child commits, so no relation to it may remain"
+    );
+    assert!(
+        buffer.is_pendant(&child_hash),
+        "with no unmet dependency left, the child waits as a pendant for the next release scan"
+    );
 }

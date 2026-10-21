@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
-use crate::rspace::errors::RootError;
+use crate::rspace::errors::{RadixTreeError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::roots_store::{RootsStore, RootsStoreInstances};
@@ -61,10 +61,15 @@ impl RSpaceExporter for RSpaceExporterImpl {
 }
 
 impl TrieExporter for RSpaceExporterImpl {
-    fn get_nodes(&self, start_path: NodePath, skip: i32, take: i32) -> Vec<TrieNode<KeyHash>> {
+    fn get_nodes(
+        &self,
+        start_path: NodePath,
+        skip: i32,
+        take: i32,
+    ) -> Result<Vec<TrieNode<KeyHash>>, RadixTreeError> {
         let source_trie_store = RadixHistory::create_store(self.source_history_store.clone());
 
-        RSpaceExporterInstance::traverse_history(
+        RSpaceExporterInstance::try_traverse_history(
             start_path,
             skip,
             take,
@@ -83,17 +88,28 @@ impl TrieExporter for RSpaceExporterImpl {
         &self,
         keys: Vec<Blake2b256Hash>,
     ) -> Result<Vec<(KeyHash, Value)>, KvStoreError> {
+        // Imported leaves live under the raw hash bytes, and leaves written by a
+        // checkpoint under the bincode-serialized hash. Read both, in the order
+        // `RSpaceHistoryReaderImpl` uses.
+        let raw_keys: Vec<_> = keys.iter().map(|key| key.bytes()).collect();
+        let raw = self.source_value_store.get(&raw_keys)?;
+
         let serialized_keys: Vec<_> = keys
             .iter()
-            .map(|key| bincode::serialize(&key).unwrap())
+            .zip(raw.iter())
+            .filter(|(_, value_option)| value_option.is_none())
+            .map(|(key, _)| bincode::serialize(&key).unwrap())
             .collect();
-
-        let loaded = self.source_value_store.get(&serialized_keys)?;
+        let mut serialized = self.source_value_store.get(&serialized_keys)?.into_iter();
 
         Ok(keys
             .into_iter()
-            .zip(loaded.into_iter())
-            .filter_map(|(key, value_option)| value_option.map(|value| (key, value)))
+            .zip(raw)
+            .filter_map(|(key, value_option)| {
+                value_option
+                    .or_else(|| serialized.next().flatten())
+                    .map(|value| (key, value))
+            })
             .collect())
     }
 }

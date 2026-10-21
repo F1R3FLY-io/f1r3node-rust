@@ -72,7 +72,8 @@ async fn export_and_import_of_one_page_should_works_correctly() {
         init_start_path.clone(),
         start_skip,
         page_size,
-    );
+    )
+    .unwrap();
     let history_items = export_data.0.items;
     let data_items = export_data.1.items;
 
@@ -80,13 +81,14 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 
     // Validate exporting page
     RSpaceImporterInstance::validate_state_items(
-        history_items.clone(),
-        data_items.clone(),
+        &history_items,
+        &data_items,
         init_start_path,
         page_size,
         start_skip,
         importer1,
-    );
+    )
+    .unwrap();
 
     // Import page to space2
     importer2.set_history_items(history_items);
@@ -143,7 +145,8 @@ async fn multipage_export_should_work_correctly() {
             start_path.clone(),
             start_skip,
             page_size,
-        );
+        )
+        .unwrap();
 
         let history_items_page = export_data.0.items;
         let data_items_page = export_data.1.items;
@@ -151,13 +154,14 @@ async fn multipage_export_should_work_correctly() {
 
         // Validate exporting page
         RSpaceImporterInstance::validate_state_items(
-            history_items_page.clone(),
-            data_items_page.clone(),
+            &history_items_page,
+            &data_items_page,
             start_path,
             page_size,
             start_skip,
             importer1,
-        );
+        )
+        .unwrap();
 
         let r = (
             [history_items, history_items_page.clone()].concat(),
@@ -260,20 +264,22 @@ async fn multipage_export_with_skip_should_work_correctly() {
             start_path.clone(),
             skip,
             page_size,
-        );
+        )
+        .unwrap();
 
         let history_items_page = export_data.0.items;
         let data_items_page = export_data.1.items;
 
         // Validate exporting page
         RSpaceImporterInstance::validate_state_items(
-            history_items_page.clone(),
-            data_items_page.clone(),
+            &history_items_page,
+            &data_items_page,
             start_path.clone(),
             page_size,
             skip,
             importer1,
-        );
+        )
+        .unwrap();
 
         let r = (
             [history_items, history_items_page.clone()].concat(),
@@ -344,6 +350,99 @@ async fn multipage_export_with_skip_should_work_correctly() {
     }
     let end_point = space2.create_checkpoint().await.unwrap();
     assert_eq!(end_point.root, RadixHistory::empty_root_node_hash())
+}
+
+#[tokio::test]
+async fn export_with_an_unknown_or_malformed_start_path_returns_an_error() {
+    let (space1, exporter1, _, _, _, _) = test_setup().await;
+    for i in 0..10 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let filled = |b: u8| Blake2b256Hash::from_bytes(vec![b; 32]);
+
+    let honest = RSpaceExporterItems::get_history_and_data(
+        exporter1.clone(),
+        vec![(root.clone(), None)],
+        0,
+        750,
+    )
+    .expect("an honest root request must export");
+    assert!(!honest.1.items.is_empty());
+
+    let mut prefix_size = vec![32u8];
+    prefix_size.extend(vec![0u8; 31]);
+    let malformed = [
+        vec![],
+        vec![(filled(0x42), None)],
+        vec![(root.clone(), None), (filled(1), None), (filled(2), None)],
+        vec![
+            (root.clone(), None),
+            (Blake2b256Hash::from_bytes(prefix_size), None),
+            (filled(0xFF), None),
+            (filled(0), None),
+            (filled(0), None),
+            (filled(0), None),
+        ],
+        vec![(Blake2b256Hash::from_bytes(vec![1, 2, 3]), None)],
+        vec![
+            (root.clone(), None),
+            (Blake2b256Hash::from_bytes(vec![]), None),
+            (filled(0), None),
+            (filled(0), None),
+            (filled(0), None),
+            (filled(0), None),
+        ],
+    ];
+    for start_path in malformed {
+        let len = start_path.len();
+        let result =
+            RSpaceExporterItems::get_history_and_data(exporter1.clone(), start_path, 0, 750);
+        assert!(
+            result.is_err(),
+            "a {len}-element bad start path must be an error, not a panic or an export"
+        );
+    }
+}
+
+// Issue #787: a node that restored its state through state sync must serve
+// that state whole. The importer writes data items under the raw hash, and
+// a checkpoint writes them under the bincode-serialized hash.
+#[tokio::test]
+async fn imported_state_exports_its_data_items() {
+    let (space1, exporter1, _, _, exporter2, importer2) = test_setup().await;
+
+    for i in 0..10 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let start_path: Vec<(Blake2b256Hash, Option<Byte>)> = vec![(root.clone(), None)];
+
+    let (history, data) =
+        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 1000).unwrap();
+    assert!(!data.items.is_empty(), "the source state has data items");
+    importer2.set_history_items(history.items.clone());
+    importer2.set_data_items(data.items.clone());
+    importer2.set_root(&root);
+
+    let (reexported_history, reexported_data) =
+        RSpaceExporterItems::get_history_and_data(exporter2, start_path, 0, 1000).unwrap();
+    let sorted = |mut items: Vec<(Blake2b256Hash, ByteVector)>| {
+        items.sort_by_key(|item| item.0.bytes());
+        items
+    };
+    assert_eq!(sorted(reexported_history.items), sorted(history.items));
+    assert_eq!(
+        sorted(reexported_data.items),
+        sorted(data.items),
+        "the imported state exports without the data items it was imported with"
+    );
 }
 
 async fn test_setup() -> (

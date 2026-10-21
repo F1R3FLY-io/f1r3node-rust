@@ -609,6 +609,7 @@ dependencies = [
 name = "block-storage"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "crypto",
  "dashmap",
  "hex",
@@ -616,6 +617,7 @@ dependencies = [
  "loom 0.7.2",
  "lz4_flex",
  "metrics 0.23.1",
+ "metrics-util 0.17.0",
  "models",
  "once_cell",
  "parking_lot",
@@ -784,6 +786,7 @@ dependencies = [
 name = "casper"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-stream",
  "async-trait",
  "bincode",
@@ -797,6 +800,7 @@ dependencies = [
  "eyre",
  "futures",
  "graphz",
+ "heed",
  "hex",
  "humantime",
  "imbl",
@@ -809,6 +813,7 @@ dependencies = [
  "metrics 0.23.1",
  "metrics-util 0.17.0",
  "models",
+ "num-bigint",
  "parking_lot",
  "proptest",
  "prost 0.14.4",
@@ -1970,6 +1975,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
+name = "file-read-service"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.9",
+ "clap",
+ "eyre",
+ "hocon",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fileio-test-fixtures"
 version = "0.1.0"
 dependencies = [
@@ -2664,7 +2686,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
@@ -3480,6 +3502,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
+ "thiserror 2.0.19",
  "tonic 0.14.6",
  "tonic-prost",
  "tonic-prost-build",
@@ -3641,6 +3664,7 @@ dependencies = [
  "metrics 0.23.1",
  "metrics-exporter-influx",
  "metrics-exporter-prometheus",
+ "metrics-util 0.17.0",
  "models",
  "num-bigint",
  "parking_lot",
@@ -3658,6 +3682,7 @@ dependencies = [
  "serial_test",
  "shared",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-stream",
@@ -3728,6 +3753,7 @@ checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -4972,7 +4998,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
@@ -5017,6 +5043,7 @@ dependencies = [
  "console",
  "crypto",
  "dotenv",
+ "fileio-test-fixtures",
  "futures",
  "hex",
  "indexmap 2.14.0",
@@ -5186,6 +5213,8 @@ dependencies = [
  "metrics-util 0.17.0",
  "monadic",
  "multiset",
+ "num-bigint",
+ "num-traits",
  "once_cell",
  "proptest",
  "proptest-derive",
@@ -5387,9 +5416,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -5443,9 +5472,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -6149,7 +6178,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -6520,7 +6549,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
@@ -7218,14 +7247,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]

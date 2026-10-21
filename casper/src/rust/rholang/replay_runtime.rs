@@ -115,6 +115,21 @@ impl ReplayRuntimeOps {
             .set_invalid_blocks(invalid_blocks)
             .await;
 
+        // Slice 31: toggle the replay reducer's fs-native URN filter
+        // off for genesis replay (is_genesis = true) so joining /
+        // replaying validators can bind the raw fs_* primitives into
+        // FsGenesis's new-scope.  Non-genesis replay leaves the
+        // default-true filter in force.  See
+        // `casper::rholang::runtime::FsNativeFilterGuard` for the
+        // RAII shape — Drop restores on every return path.
+        let _guard = if is_genesis {
+            Some(super::runtime::FsNativeFilterGuard::disable(
+                &self.runtime_ops.runtime.reducer,
+            ))
+        } else {
+            None
+        };
+
         self.replay_deploys(start_hash, terms, system_deploys, !is_genesis, block_data)
             .await
     }
@@ -413,6 +428,9 @@ impl ReplayRuntimeOps {
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
         let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
+        self.runtime_ops
+            .reject_bitmask_clears(&fallback, &mut user_eval_result)
+            .await;
         let discard_start = Instant::now();
         self.discard_event_log("user-deploy", false).await;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "user-deploy")

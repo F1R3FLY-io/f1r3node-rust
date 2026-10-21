@@ -81,6 +81,7 @@ fn create_deploy(
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
+        parameters: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
@@ -165,9 +166,11 @@ async fn run_block_creator_create_memory_profile() {
             .expect("Failed to create deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("Failed to create rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("Failed to create rejected deploy buffer"),
     ));
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -221,6 +224,8 @@ async fn run_block_creator_create_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
     let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
@@ -468,6 +473,8 @@ async fn run_block_creator_phase_split_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
     let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await

@@ -19,9 +19,10 @@
 // # Clone semantics
 //
 // All five fields are cheap-to-clone (Arc-backed internally).
-// `FsProcesses: Clone` so the yet-to-land `dispatch_via_trait_owned`
-// adapter (slice 4.10+) can accept an owned copy as its first
-// arg — matching the `fn(FsProcesses, ...)` shape that the
+// `FsProcesses: Clone` so the
+// [`dispatch_via_trait_owned`](super::dispatch::dispatch_via_trait_owned)
+// adapter (slice 4.10) can accept an owned copy as its first arg
+// — matching the `fn(FsProcesses, ...)` shape that the
 // `FsHandlerEntry.dispatch` fn-pointer declares.
 //
 // # Why not an `Arc<FsProcesses>`?
@@ -36,10 +37,11 @@
 // # `is_contract_call()` method
 //
 // Returns a per-call `ContractCall` instance (shape:
-// `{ space, dispatcher }`) that the yet-to-land dispatcher calls
-// `.unapply(contract_args)` on at step 1.  Centralized here so the
-// dispatcher doesn't reach into `FsProcesses` field-wise — matches
-// fileio's `FsProcesses::is_contract_call` discipline.
+// `{ space, dispatcher }`) that the dispatcher calls
+// `.unapply(contract_args)` on at step 1 (slice 4.10's
+// `dispatch_via_trait_owned`).  Centralized here so the dispatcher
+// doesn't reach into `FsProcesses` field-wise — matches fileio's
+// `FsProcesses::is_contract_call` discipline.
 
 use std::sync::Arc;
 
@@ -67,7 +69,7 @@ pub struct FsProcesses {
 impl FsProcesses {
     /// Construct the dispatch surface from the five pieces of
     /// per-runtime state.  Called at runtime assembly in
-    /// `rho_runtime.rs` (yet-to-land wiring — slice 4.10+).
+    /// `rho_runtime::fs_handlers_to_definitions` (slice 5.31).
     pub fn new(
         dispatcher: RhoDispatch,
         space: RhoISpace,
@@ -99,10 +101,10 @@ impl FsProcesses {
 
 impl SyscallCtx<'_> {
     /// Convenience constructor from an `&FsProcesses` + ack
-    /// channel.  The yet-to-land dispatcher (slice 4.10+) uses
-    /// this to build the `SyscallCtx` it threads into every
-    /// handler method call — matches fileio's
-    /// `SyscallCtx::new(fs, ack)` entry point.
+    /// channel.  The dispatcher (slice 4.10's
+    /// `dispatch_via_trait_owned`) uses this to build the
+    /// `SyscallCtx` it threads into every handler method call —
+    /// matches fileio's `SyscallCtx::new(fs, ack)` entry point.
     ///
     /// Named `from_fs_processes` (not `new`) so the existing
     /// positional `SyscallCtx::new(dispatcher, space, handles,
@@ -121,7 +123,7 @@ impl SyscallCtx<'_> {
 }
 
 // Compile-time witness that `FsProcesses` is `Clone`.  The
-// yet-to-land `dispatch_via_trait_owned<H>` adapter needs an owned
+// `dispatch_via_trait_owned<H>` adapter (slice 4.10) needs an owned
 // `FsProcesses` as its first arg; losing `Clone` here would break
 // every `FS_HANDLERS` registration site at once.
 const _FS_PROCESSES_IS_CLONE: fn() = || {
@@ -130,10 +132,11 @@ const _FS_PROCESSES_IS_CLONE: fn() = || {
 };
 
 // Compile-time witness that `FsProcesses: Send + Sync` — the
-// dispatcher moves `FsProcesses` across tokio tasks (via
-// `dispatch_via_trait_owned`'s owned arg).  A regression that broke
-// Send + Sync (e.g., adding a `Rc<...>` field) would trip here
-// before the dispatcher slice (4.10+) started failing.
+// dispatcher (slice 4.10's `dispatch_via_trait_owned`) moves
+// `FsProcesses` across tokio tasks via its owned arg.  A
+// regression that broke Send + Sync (e.g., adding a `Rc<...>`
+// field) would trip here before the dispatcher started failing at
+// runtime.
 const _FS_PROCESSES_IS_SEND_SYNC: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<FsProcesses>();
@@ -185,10 +188,10 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::noop::NoopMetering;
 
-    /// LOAD-BEARING: `FsProcesses: Clone` — the yet-to-land
-    /// `dispatch_via_trait_owned<H>` adapter accepts an owned
-    /// `FsProcesses` as its first arg.  Losing `Clone` would break
-    /// every `FS_HANDLERS` registration site.
+    /// LOAD-BEARING: `FsProcesses: Clone` — the
+    /// `dispatch_via_trait_owned<H>` adapter (slice 4.10) accepts
+    /// an owned `FsProcesses` as its first arg.  Losing `Clone`
+    /// would break every `FS_HANDLERS` registration site.
     #[test]
     fn fs_processes_is_clone_bounds() {
         fn require_clone<T: Clone>() {}
