@@ -322,8 +322,8 @@ impl RootIdentityRegistry {
                                  expected_root_id=None would silently disable \
                                  safe_descend's identity check.  Fix: register the cap's \
                                  canonRoot at boot (see \
-                                 fs_genesis::register_consensus_bundle_roots), or use \
-                                 Oracular mode for unregistered paths."
+                                 node::rust::runtime::setup::register_consensus_bundle_roots), \
+                                 or use Oracular mode for unregistered paths."
                             ),
                         ))
                     }

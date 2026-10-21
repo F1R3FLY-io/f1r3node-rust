@@ -177,7 +177,9 @@ expect_failure 'hook with the committed denied list' \
 CI="$ROOT/.github/workflows/ci.yml"
 grep -q 'PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}' "$CI" ||
 	{ printf 'CI must read the pull request author account type\n' >&2; exit 1; }
-grep -q '\[ "$PR_AUTHOR_TYPE" = User \]' "$CI" ||
+grep -q 'bash "$exemptions" > "$exempt"' "$CI" ||
+	{ printf 'CI must take the exempt commits from commit-policy-exemptions.sh\n' >&2; exit 1; }
+grep -q 'if \[ "${PR_AUTHOR_TYPE:-}" = User \]; then' "$ROOT/.github/scripts/commit-policy-exemptions.sh" ||
 	{ printf 'CI must exempt only a User account, never a bot or app\n' >&2; exit 1; }
 grep -q -- '--denied "$denied"' "$CI" ||
 	{ printf 'CI must pass the denied list\n' >&2; exit 1; }
