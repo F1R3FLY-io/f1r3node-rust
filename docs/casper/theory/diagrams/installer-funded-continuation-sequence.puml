@@ -1,12 +1,14 @@
-' Cross-deploy funding by the installer of a signed continuation (DR-68, decision D5).
+' Cross-deploy funding by the owner of a stored continuation (DR-68, implemented by DR-135).
 ' Under P1 uniform signing and Rule 4, an installer's unsigned trigger carries the
-' installer's region. A later deploy that fires the trigger pays only its own
-' work; the COMM in the installer's region draws on the installer's located purse,
-' authorized by the stored signed term and bounded by the purse balance at R0.
+' installer's region. A later deploy that fires the trigger pays its own side of the
+' COMM. The installer, the owner of the stored continuation, pays its side of the COMM
+' and the work of the fired body, at the price that its stored region recorded, from
+' its owner purse and within its owner budget. An interaction that the owner cannot
+' pay does not fire, and the run records the refusal for replay.
 '
-' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-68);
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-68, DR-135);
 '                  publications/cost-accounting/cost-accounted-rho.tex
-'                  (sec:rewrites Rules 1-5, def:sugar-uniform, def:funding-proof).
+'                  (sec:rewrites Rules 1-5, def:sugar-uniform, def:sugar-lollipop, def:funding-proof).
 ' Palette:  clients = supply blue · runtime = process lilac · funding = gate teal
 '           installer purse = pool green · gateway purse = capability indigo
 '           debit = red arrows · authorization = blue arrows
@@ -22,57 +24,70 @@ skinparam sequence {
   ParticipantBorderColor #333333
   BoxBorderColor #999999
 }
-title Installer-signed continuation funded by the installer's purse (DR-68)
+title Stored continuation funded by its owner's purse (DR-68, DR-135)
 
-actor "Installer" as Installer $ca_supply
+actor "Installer\n(owner)" as Installer $ca_supply
 actor "Gateway client" as Gateway $ca_supply
 participant "Proposer and\nvalidators" as Node $ca_gate
-participant "Reducer and\nnative meter" as Reducer $ca_process
-participant "Funding family\nselection" as Family $ca_gate
-participant "Installer\nlocated purse" as InstallerPurse $ca_pool
+participant "Reducer and RSpace\nwith the owner binding" as Reducer $ca_process
+participant "Installer\nowner purse" as InstallerPurse $ca_pool
 participant "Gateway\nsigned sources" as GatewayPurse $ca_capability
 
 == Installation (earlier block) ==
-Installer -> Node : offered deploy signed by the installer
+Installer -> Node : offered deploy signed by the installer,\nat the installer's signed price
 Node -> Reducer : execute the installer's term
-Reducer -> Reducer : store trigger continuation\nwith the installer's region (stored signed term)
+Reducer -> Reducer : store the trigger continuation with the installer's\nregion, which records the installer's price
 
-== Trigger (later block) ==
+== Trigger (later block, batch member i) ==
 Gateway -> Node : offered deploy signed by the gateway
-Node -> Reducer : execute the gateway's term
-Reducer -> Reducer : send matches the stored trigger
-Reducer -> Family : obligations of this candidate\n(COMM in the installer region,\nbody work in the gateway region)
-Family -[$ca_instantiate]-> InstallerPurse : eligible for installer-region obligations\nauthorized by the stored signed term
-Family -[$ca_instantiate]-> GatewayPurse : eligible for gateway-region obligations\nauthorized by the gateway envelope
-alt installer lane budget covers the COMM\n(balance at <latex>R_0</latex> minus earlier group holds)
-  Family -> Node : feasible assignment
-  Node -[$ca_debit]-> InstallerPurse : debit the installer-region COMM
-  Node -[$ca_debit]-> GatewayPurse : debit the gateway's own work and fee
+Node -[$ca_instantiate]-> InstallerPurse : read the balance at <latex>R_{i-1}</latex> for the owner table:\nbudget = cap(balance, later holds) minus own hold
+Node -> Reducer : execute the gateway's term with the owner table
+Reducer -> Reducer : the gateway's send matches the stored trigger
+Reducer -> Reducer : owner share = usage times the installer's recorded price
+alt the installer's remaining budget covers its share
+  Reducer -> Reducer : the COMM fires, and the body runs for its owner,\nthe installer (or for the transferee of a lollipop or slot)
+  Node -[$ca_debit]-> InstallerPurse : owner row: the installer's share of the COMM\nand of its body, at the installer's price
+  Node -[$ca_debit]-> GatewayPurse : client row: the gateway's own work and the fee
   Node -> Gateway : receipt (one row per debited purse)
-else installer lane budget exhausted
-  Reducer -> Reducer : the interaction does not fire\n(failure matrix: missing local capability)
+else the installer cannot pay
+  Reducer -> Reducer : the interaction does not fire,\nboth items stay stored, and the run continues
   note right of Reducer $ca_note_amber
     No charge for an unfired
-    communication. P1 Rule 4
-    token gating.
+    communication (P1 Rule 4 token
+    gating). The journal records the
+    refusal, and replay checks its
+    shortfall.
   end note
+  Node -[$ca_debit]-> GatewayPurse : client row: the gateway's own work and the fee
 end
+
+note over Node $ca_note_grey
+  Validators replay the block: they read every
+  listed owner purse at <latex>R_{i-1}</latex> again, check the
+  owner table, and check each refusal.
+end note
 
 note over InstallerPurse $ca_note_grey
   Genesis continuations carry the Unit
   signature, which maps to no purse,
   so blessed system signers are never charged.
+  A signature that anyone can spell
+  has no purse and budget 0.
 end note
 
 legend bottom
   |= colour |= meaning |
   |<$ca_supply>| signing clients |
-  |<$ca_gate>| proposer, validators, and funding selection |
-  |<$ca_process>| reducer and native meter |
-  |<$ca_pool>| installer's located purse (wallet keying, DR-28) |
-  |<$ca_capability>| gateway's signed sources |
+  |<$ca_gate>| proposer and validators |
+  |<$ca_process>| reducer, native meter and RSpace owner checks |
+  |<$ca_pool>| the installer's owner purse (wallet keying, DR-28) |
+  |<$ca_capability>| the gateway's signed sources |
   |<$ca_debit>| debit at settlement |
-  |<$ca_instantiate>| funding eligibility and authorization |
+  |<$ca_instantiate>| owner budget read at <latex>R_{i-1}</latex> |
+  |= name |= meaning |
+  | <latex>R_{i-1}</latex> | the state root before batch member i (DR-65) |
+  | cap | the G2 capacity: the balance minus the later holds of the block |
+  | owner table | the owner purses that the run consults, each with its budget |
 endlegend
 
 @enduml

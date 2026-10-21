@@ -12,6 +12,10 @@
 // (monotone layering; no upward references).
 //
 // Source of truth for Figure 1.7 in cost-accounted-rho-verification.md §1.7.
+//
+// Changed on 2026-10-20 (DR-135): TokenConservation also imports two leaf modules
+// outside the 32, AuthorityPresentation and RotatingMonetaryAllocation. Both
+// import only the standard library. They have dashed borders and dashed edges.
 // Tier fills follow a cool-to-warm 7-stop ramp; consensus-critical modules
 // never import the leaf tier (WeakBarbedEquiv / Replication).
 //
@@ -55,6 +59,11 @@ digraph module_dependency_graph {
   Confluence             [fillcolor="#E8F5E9"];
   StepDeterminism        [fillcolor="#E8F5E9"];
 
+  // ── Outside the 32 modules (dashed): leaf modules that TokenConservation
+  //    imports since DR-135. They import only the standard library. ──────
+  AuthorityPresentation      [fillcolor="#FFFFFF", style="rounded,filled,dashed"];
+  RotatingMonetaryAllocation [fillcolor="#FFFFFF", style="rounded,filled,dashed"];
+
   // ── Tier 4 — Faithfulness & Bisimulation (#FFF8E1) ───────────────────────
   TranslationFaithfulness [fillcolor="#FFF8E1"];
   FuelGateSafety          [fillcolor="#FFF8E1"];
@@ -79,6 +88,7 @@ digraph module_dependency_graph {
 
   // ── Edges: actual Require Import dependencies (dependency -> dependent) ───
   RhoSyntax -> StructEquivInversion;
+  AuthorityPresentation -> TokenConservation [style=dashed]; RotatingMonetaryAllocation -> TokenConservation [style=dashed];
   RhoSyntax -> StructEquivHeads;            StructEquivInversion -> StructEquivHeads;
   RhoSyntax -> RhoReduction;                StructEquivInversion -> RhoReduction;
   RhoSyntax -> CostAccountedSyntax;
@@ -120,5 +130,6 @@ digraph module_dependency_graph {
       <tr><td bgcolor="#FFF3E0">T5 Settlement, Minting &amp; Economic</td></tr>
       <tr><td bgcolor="#FCE4EC">T6 Weak Barbs &amp; Replication (leaf)</td></tr>
       <tr><td bgcolor="#F3E5F5">T7 Runtime Budget &amp; Use-Case Adequacy</td></tr>
+      <tr><td bgcolor="#FFFFFF">Dashed: outside the 32, imported by TokenConservation since DR-135</td></tr>
     </table>>];
 }

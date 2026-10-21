@@ -48,12 +48,17 @@ All selected witnesses must satisfy the [threshold contract](threshold-and-payer
 A signer with no monetary contribution can still supply required authority and applicable price restrictions.
 Physical alias resolution must aggregate capacity without removing any applicable consent.
 
+**Owners of stored processes (DR-135).** An owner purse pays the owner's share of a later firing at the price that the owner's stored region recorded.
+That price is the checked actual price of the deployment that created the region.
+So the owner consented to it, and the owner ceilings of that deployment applied when it was created.
+The price of the current deployment does not apply to owner shares, and an owner share does not need the current deployment's ceilings.
+
 ## Independent signed limits
 
 | Term | Required meaning |
 | --- | --- |
 | Execution scope | Identifies the process execution that can use the permission. It is not an unlimited lifetime contract budget. |
-| `phloLimit` | Bounds weighted resource use in that execution, excluding the separately disclosed fee. |
+| `phloLimit` | Bounds the weighted resource use that the deployment pays in that execution, excluding the separately disclosed fee. Owner work at a price of 1 or more counts against its owner's budget instead (DR-135 item 13). |
 | `phloPrice` | Specifies the offered price that the selected schedule must charge. |
 | Owner price ceiling | Bounds that price for each required owner independently. |
 | Retained debit cap | Bounds the final amount retained from a source in its specified asset. |
@@ -72,6 +77,8 @@ For the [scalar projection](price-schedules-and-denominations.md#resource-valuat
 Both terms in that sum use the current native settlement denomination.
 The actual schedule and sound resource bound can give a tighter charge bound.
 Additional per-source caps still apply, and source exposure can require a separate larger bound.
+This bound covers the deployment's own sources.
+Owner shares (DR-135) are charged at each owner's recorded price, so the total REV of a receipt can exceed $`LP+F`$ by the owners' REV.
 
 For example, exclusive branches can each require one unit from different wallets.
 The maximum retained charge is one unit, but each wallet must permit its one-unit temporary hold.

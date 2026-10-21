@@ -90,13 +90,16 @@ wraps it. Three things decide whether it works:
 1. **Submit the bond deploy to a bonded validator.** The joiner cannot include
    its own bond, and a node that cannot propose accepts the deploy and strands
    it: deploy queues are node-local.
-2. **Fund the joiner's vault first.** A deploy pays `phlo-limit × phlo-price`
-   from the deployer's vault, and a bond also moves its stake. An under-funded
-   vault does not reject the deploy — the deploy is included in a block and
-   fails there with
-   `systemDeployError: "Deploy payment failed: Insufficient funds"`. On a
-   running shard, fund it by transfer from an already-funded key; editing
-   `wallets.txt` only affects a fresh genesis.
+2. **Fund the joiner's vault first.** The bond deploy is an offered deploy
+   (protocol 6). Its REV ceiling is
+   $`\text{phloLimit} \times \text{phloPrice} + 1`$ atomic REV, and the bond
+   also moves its stake from the vault. The proposer compares the linear cost
+   estimate of the offer with the vault balance before execution. It leaves an
+   under-funded offer out of the block, and that offer has no effect and no
+   charge. If the vault covers the cost but not the stake, the bond runs and
+   fails as a user failure, which pays its cost. On a running shard, fund the
+   vault by transfer from an already-funded key; editing `wallets.txt` only
+   affects a fresh genesis.
 3. **Wait for the epoch boundary.** Bonds, withdrawals and payouts apply only
    at a boundary, set by `casper.genesis-block-data.epoch-length`. Between
    boundaries a bond is recorded but not active, and `GET /api/bond-status/{pk}`

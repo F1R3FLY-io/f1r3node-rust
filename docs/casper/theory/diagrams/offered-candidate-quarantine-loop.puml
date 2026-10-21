@@ -5,6 +5,12 @@
 ' types. With no alternate left, the proposal behaves exactly as with no user
 ' deploys.
 '
+' Changed by DR-134 (DR-65, gap G2): a block holds one canonical batch of offers,
+' with no alternates. A rejection names a member, or the members of a rejected
+' funding group. The proposer quarantines every named member and plays the rest
+' of the batch again from R0 (DR-63). With no member left, the proposal behaves
+' exactly as with no user deploys.
+'
 ' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-72);
 '                  casper/src/rust/blocks/proposer/block_creator.rs (selection and
 '                  checkpoint loop); casper/src/rust/rholang/runtime.rs
@@ -32,16 +38,16 @@ if (envelope format active?) then (no)
   :quarantine at selection\nstatus entry without a root; <<$ca_delta>>
 else (yes)
 endif
-:select the first eligible offer\nkeep at most ordinary_cap - 1 alternates; <<$ca_process>>
+:select one canonical batch within the block caps\n(up to 32 recovered envelopes, then stored offers)\nno alternates; <<$ca_process>>
 repeat
   :checkpoint the attempt\n(fresh offered runtime); <<$ca_pool>>
   if (result) then (Created)
     :publish the block; <<$ca_note_green>>
     stop
-  elseif (OfferedCandidateRejected\nwith the attempted identity) then (yes)
-    :quarantine: remove from pending storage\nrecord {identity, <latex>R_0</latex>, block, reason}\n(at most 4096 entries, 1024 reason bytes); <<$ca_delta>>
-    if (alternate left?) then (yes)
-      :attempt := next alternate; <<$ca_process>>
+  elseif (OfferedCandidateRejected naming members\nof the attempted batch) then (yes)
+    :quarantine every named member:\nremove from pending storage\nrecord {identity, <latex>R_0</latex>, block, reason}\n(at most 4096 entries, 1024 reason bytes); <<$ca_delta>>
+    if (members left in the batch?) then (yes)
+      :attempt := the rest of the batch,\nplayed again from <latex>R_0</latex> (DR-63); <<$ca_process>>
     elseif (empty-block, slashing, or\nrecovered-slash work?) then (yes)
       :attempt := no user deploys; <<$ca_process>>
     else (no)

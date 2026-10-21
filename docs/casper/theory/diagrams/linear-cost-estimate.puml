@@ -83,7 +83,7 @@ partition "5 · Execution in a fresh offered runtime" {
   elseif (signed limit exhausted\n(incomplete estimate)) then
     :classified user failure (DR-113): roll back,\ncharge the billable work and the fee; <<$ca_note_amber>>
     stop
-  elseif (total use above <latex>B</latex>\n(complete estimate)) then
+  elseif (the caller's use above <latex>B</latex>\n(complete estimate)) then
     :certificate failure: an analyzer defect\nreject, no charge; <<$ca_rejectfill>>
     stop
   else (host-work limit)
@@ -96,9 +96,10 @@ partition "6 · Settlement and the guard" {
   floating note right $ca_note_indigo
     **Several offers per block (G2):** the capacity cap applies
     on the success path and on the rollback path.
-    **Installer purses (G3):** a short installer purse follows
-    the interim rule B5, which rejects the triggering deploy
-    with no charge.
+    **Owner purses (G3, DR-135):** an owner pays its share at its
+    own recorded price, within its owner budget. An interaction
+    that the owner cannot pay does not fire and is recorded
+    (this replaced the interim rule B5).
   end note
   if (guard of DR-65 item 5 for every purse p that member i debits\nor that carries a later hold:\n<latex>\mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \geq \sum_{j>i} \mathrm{hold}_j(p)</latex> ?) then (yes)
     :settle: charge the measured use plus the fee\nhold = debit · refund implicit · no settlement floor; <<$ca_note_green>>
@@ -123,10 +124,10 @@ legend bottom
 
   |= name |= meaning |
   | P1 | the paper "Cost-Accounted Rho Calculus" by L. G. Meredith, publications revision 0bf7817 |
-  | DR-n | decision record n: DR-64 (the funding check before execution), DR-65 (same-block offers that share a purse), DR-113 (exhaustion of the signed limit), DR-121 (names that a receive body creates), DR-124 (the live check of the client's demand) |
+  | DR-n | decision record n: DR-64 (the funding check before execution), DR-65 (same-block offers that share a purse), DR-113 (exhaustion of the signed limit), DR-121 (names that a receive body creates), DR-124 (the live check of the client's demand), DR-135 (owners fund their stored processes) |
   | client lane, foreign lane | a lane that a source of the envelope is located at or permits for at least one class, and any other lane |
   | G2, G3 | several offered deploys in one block, and installer funding of a stored continuation |
-  | B5 | the interim rule of 2026-10-10 for an installer purse that cannot pay |
+  | B5 | the interim rule of 2026-10-10 for an installer purse that cannot pay, replaced by DR-135 |
   | X1 to X8 | the completeness rules of the analysis |
   | COMM | the event in which a receive meets one datum for each of its binds |
   | URN | a uniform resource name that a new binds to a system channel |

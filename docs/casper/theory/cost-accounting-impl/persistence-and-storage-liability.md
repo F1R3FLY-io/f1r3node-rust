@@ -52,10 +52,23 @@ Canonical aliases must preserve both logical multiplicity and shared physical ba
 ## Installation and repeated execution
 
 Installing a persistent process pays its applicable introduction charge under authenticated sponsorship.
+The installer owns the stored process (DR-135).
+The installer's owner purse pays the owner's share of each later firing, at the price that the installer signed.
+The draw for one batch member is limited by the owner budget: the purse balance before the member, capped for the later holds, minus the owner's own hold.
+A firing that the owner cannot pay does not fire and has no charge, and the run records the refusal.
+An activation can move the cost of its body to another party through a funded slot or the lollipop (P1 `def:funding-slot`, `def:sugar-lollipop`).
+It cannot substitute the current deployer's purse for the owner's share.
+
+<details>
+<summary>Text before DR-135</summary>
+
+Installing a persistent process pays its applicable introduction charge under authenticated sponsorship.
 The installer does not thereby authorize unlimited future draws from that purse.
 Later activations must identify their own execution scopes, matching resources, available backing, and applicable grant terms.
 An activation can use a funded slot or an authorized persistent allowance.
 It cannot silently substitute the current deployer's purse for missing continuation authority.
+
+</details>
 
 Each distinct completed firing incurs its applicable interaction, delivery, and trace obligations.
 Repeated observation of one persistent introduction does not multiply its introduction charge within that accounting scope.

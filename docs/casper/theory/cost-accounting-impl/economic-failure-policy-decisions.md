@@ -94,6 +94,12 @@ The formal refinement must derive the retained economic effect from authenticate
 The matrix does not introduce a relaxed underfunded mode for certified atomic financial operations.
 Signed limits that cannot cover required certified demand cause rejection before acceptance.
 Persistent processes require the correct activation and allowance boundary for each funded execution scope.
+Under DR-135 that boundary is the owner budget of each batch member, and no standing allowance exists.
+
+**Owners of stored processes (DR-135).** The row "Missing local capability" covers an owner that cannot pay its share.
+The interaction does not fire and has no charge, and the run records the refusal for replay.
+An introduction on an owner lane that its owner cannot pay stores nothing.
+A user failure inside an owner body fails the caller's run, as the row "Accepted deterministic user-code failure" states.
 
 Failed user execution must not both restore a consumed prepaid right and retain credit for its consumption.
 Conversely, rollback must not destroy unused rights or redirect refunds.
