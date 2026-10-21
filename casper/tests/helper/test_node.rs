@@ -1194,14 +1194,24 @@ impl TestNode {
             ..CasperShardConf::new()
         };
 
-        let casper_impl = MultiParentCasperImpl {
-            observer: std::sync::OnceLock::new(),
+        let finalization = casper::rust::engine::multi_parent_casper::FinalizationContext {
+            observer: std::sync::Arc::new(std::sync::OnceLock::new()),
+            block_dag_storage: block_dag_storage.clone(),
+            block_store: block_store.clone(),
+            runtime_manager: Arc::new(runtime_manager.clone()),
+            event_publisher: event_publisher.clone(),
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),
+            deploy_storage: deploy_storage.clone(),
+            shard_conf,
+        };
+        let casper_impl = MultiParentCasperImpl {
+            observer: finalization.observer.clone(),
+            divergence_monitor: finalization.divergence_monitor.clone(),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
-            runtime_manager: Arc::new(runtime_manager.clone()),
+            runtime_manager: finalization.runtime_manager.clone(),
             estimator: estimator.clone(),
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
@@ -1209,13 +1219,9 @@ impl TestNode {
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
-            casper_shard_conf: shard_conf,
+            casper_shard_conf: finalization.shard_conf.clone(),
             approved_block: genesis.clone(),
-            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            finalizer_cycle: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalizer: casper::rust::engine::multi_parent_casper::Finalizer::start(finalization),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(

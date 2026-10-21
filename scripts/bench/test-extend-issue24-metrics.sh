@@ -41,9 +41,10 @@ for metric in \
     compute_parents_post_state_floor_distance \
     deploy_store_read_all_decoded \
     deploy_lifecycle_release_failures \
+    deploy_lifecycle_settle_row_failures \
     proposer_create_time \
     proposer_effect_time \
-    deploy_lifecycle_observe_time \
+    deploy_lifecycle_settle_time \
     deploy_lifecycle_carrier_prune_time \
     block_creator_deploy_admission_cap_source_soft_stalled \
     block_creator_deploy_admission_cap_source_hard \

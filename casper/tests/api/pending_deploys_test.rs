@@ -17,7 +17,6 @@ use casper::rust::api::pending_deploys::{PendingDeploysSnapshot, PENDING_DEPLOYS
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
 
@@ -49,31 +48,7 @@ impl TestContext {
 }
 
 async fn create_engine_cell(node: &TestNode) -> EngineCell {
-    let casper_for_engine = Arc::new(MultiParentCasperImpl {
-        observer: std::sync::OnceLock::new(),
-        block_retriever: node.casper.block_retriever.clone(),
-        event_publisher: node.casper.event_publisher.clone(),
-        runtime_manager: node.casper.runtime_manager.clone(),
-        estimator: node.casper.estimator.clone(),
-        block_store: node.casper.block_store.clone(),
-        block_dag_storage: node.casper.block_dag_storage.clone(),
-        deploy_storage: node.casper.deploy_storage.clone(),
-        rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
-        casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
-        validator_id: node.casper.validator_id.clone(),
-        casper_shard_conf: node.casper.casper_shard_conf.clone(),
-        approved_block: node.casper.approved_block.clone(),
-        divergence_monitor: node.casper.divergence_monitor.clone(),
-        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_cycle: node.casper.finalizer_cycle.clone(),
-        finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
-        active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )),
-    });
-    let engine = EngineWithCasper::new(casper_for_engine);
+    let engine = EngineWithCasper::new(node.casper.clone());
     let engine_cell = EngineCell::init();
     engine_cell.set(Arc::new(engine)).await;
     engine_cell

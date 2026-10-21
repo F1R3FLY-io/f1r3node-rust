@@ -253,9 +253,15 @@ impl KeyValueDagRepresentation {
         self.lifecycle.read().open_rows()
     }
 
-    /// Lifecycle: drop an open row that can never reach a terminal verdict.
-    pub fn discard_lifecycle_events(&self, sig: &[u8]) -> Result<(), KvStoreError> {
-        self.lifecycle.write().discard_events(sig)
+    /// Lifecycle: drop an open row if `discardable` still holds for its
+    /// contents under the write lock, so an event appended since the caller
+    /// read the row is never deleted with it.
+    pub fn discard_lifecycle_events_if(
+        &self,
+        sig: &[u8],
+        discardable: impl Fn(&LifecycleEvents) -> bool,
+    ) -> Result<bool, KvStoreError> {
+        self.lifecycle.write().discard_events_if(sig, discardable)
     }
 
     /// Repeat-deploy carrier index: the height since which every insert
