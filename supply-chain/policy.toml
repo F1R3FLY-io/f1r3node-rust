@@ -87,6 +87,12 @@ versions = ["0.6.6", "3.0.0"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-15
 
+[exceptions.RUSTSEC-2026-0381]
+package = "webpki-roots"
+versions = ["0.26.11"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-15
+
 [yanked."zip@3.0.0"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-15

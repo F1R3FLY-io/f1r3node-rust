@@ -711,6 +711,23 @@ proptest! {
   }
 
   #[test]
+  fn get_data_at_should_read_the_snapshot_and_fall_back_to_history(channel in  any::<String>(), history_data in vec(any::<Data>(), 0..=SIZE_RANGE),
+    data1 in any::<Data>(), data2 in any::<Data>()) {
+      let (history, hot_store) = fixture();
+
+      history.put_data(channel.clone(), history_data.clone());
+      let before_any_write = hot_store.snapshot();
+      hot_store.put_datum(&channel, data1.clone());
+      let after_first_write = hot_store.snapshot();
+      hot_store.put_datum(&channel, data2.clone());
+
+      assert_eq!(hot_store.get_data_at(&before_any_write, &channel), history_data);
+      let mut expected = history_data.clone();
+      expected.insert(0, data1);
+      assert_eq!(hot_store.get_data_at(&after_first_write, &channel), expected);
+  }
+
+  #[test]
   fn snapshot_should_be_unaffected_by_later_put_join(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
       prop_assume!(join1 != join2);
       let (_, hot_store) = fixture();
