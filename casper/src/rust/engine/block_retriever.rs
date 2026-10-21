@@ -1545,6 +1545,24 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         self.cleanup_hash_tracking(hash)
     }
 
+    pub fn forget_received_hash_tracking(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        let removed = {
+            let mut state = self.requested_blocks.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
+            })?;
+            if state.get(hash).is_some_and(|request| request.received) {
+                state.remove(hash);
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.cleanup_aux_tracking_for_hash(hash)?;
+        }
+        Ok(())
+    }
+
     pub async fn is_received(&self, hash: BlockHash) -> Result<bool, CasperError> {
         let state = self.requested_blocks.lock().map_err(|_| {
             CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())

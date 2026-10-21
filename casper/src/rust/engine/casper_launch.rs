@@ -526,9 +526,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // subscriber via `.clone()` — the two-layer indirection
             // means Clone shares the outer slot, so any post-spawn
             // `register(logical, root)` on the manager is visible
-            // through this handle.  Empty today pending node::setup
-            // wiring that populates the registry from the operator's
-            // fs bundle; empty falls through to pre-Shape-A behavior.
+            // through this handle.  Registry and `allowed_roots`
+            // are populated at boot by
+            // `node::rust::runtime::setup::register_consensus_bundle_roots`
+            // from the operator's merged static-provisioning entries.
             let registry = self.runtime_manager.root_registry.clone();
             let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             let _subscriber_handle =
