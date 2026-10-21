@@ -223,6 +223,8 @@ On 2026-10-21, PR #811 changed the owner scan of `scripts/casper-soak/src/host_c
 
 On 2026-10-21 the maintainer accepted this change, the narrower guarantee, and its limitation (PR #811, comment 6324960804) at revision `32798242d`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-01/report.json).
 
+Later on 2026-10-21 the maintainer accepted a fixture fix (PR #811, comment 6326106207) at revision `c3a9a0a28`. Three assertions of `scripts/bench/test-run-merge-recovery-soak.sh` could not fail under `set -e`, and they now fail with a message. The [second acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-02/report.json) binds the fixture to its [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-02/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.

@@ -22,7 +22,7 @@ The maintainer accepted the PR #811 owner scan change of this file, its narrower
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "6488e5e5eb570f61998281cb2221e63fe6bbe6b0a4b8bde8dc22d80090886c7e"
+    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
   },
   "adapter": "embedded",
   "status": "discharged",
