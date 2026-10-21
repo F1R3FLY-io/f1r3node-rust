@@ -8,12 +8,12 @@ pub type QueryStream<T> = Pin<Box<dyn Stream<Item = Result<T, tonic::Status>> + 
 pub(super) fn query_stream<T: Send + 'static>(
     query: impl Future<Output = Result<Vec<T>, tonic::Status>> + Send + 'static,
 ) -> QueryStream<T> {
-    Box::pin(futures::stream::once(query).flat_map(|result| {
-        futures::stream::iter(match result {
-            Ok(items) => items.into_iter().map(Ok).collect(),
-            Err(error) => vec![Err(error)],
-        })
-    }))
+    Box::pin(
+        futures::stream::once(query).flat_map(|result| match result {
+            Ok(items) => futures::stream::iter(items.into_iter().map(Ok)).left_stream(),
+            Err(error) => futures::stream::once(std::future::ready(Err(error))).right_stream(),
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -49,5 +49,24 @@ mod tests {
         ));
         drop(stream);
         assert!(released.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn empty_query_ends_without_an_item() {
+        let mut stream = query_stream::<u8>(async { Ok(Vec::new()) });
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn dropping_a_partially_read_stream_releases_remaining_items() {
+        struct Item(tokio::sync::oneshot::Sender<()>);
+        let (first, first_rx) = tokio::sync::oneshot::channel();
+        let (second, second_rx) = tokio::sync::oneshot::channel();
+        let mut stream = query_stream(async { Ok(vec![Item(first), Item(second)]) });
+        let item = stream.next().await.unwrap().unwrap();
+        item.0.send(()).unwrap();
+        first_rx.await.unwrap();
+        drop(stream);
+        assert!(second_rx.await.is_err());
     }
 }
