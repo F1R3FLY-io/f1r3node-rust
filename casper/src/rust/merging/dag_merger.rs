@@ -2027,6 +2027,7 @@ pub fn merge(
     let new_state = conflict_set_merger::compute_merged_state(
         &resolved,
         &state_changes_fn,
+        &|chain: &DeployChainIndex| chain.source_block_hash.clone(),
         &mergeable_channels_fn,
         &compute_trie_actions_fn,
         &apply_trie_actions_fn,
