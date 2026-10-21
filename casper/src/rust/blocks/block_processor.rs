@@ -35,6 +35,7 @@ use tokio::sync::mpsc;
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
+use crate::rust::engine::multi_parent_casper::buffer_resolver::dependencies_are_ready;
 use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -249,11 +250,12 @@ pub const ANNOUNCE_MAX_IN_FLIGHT: usize = 128;
 const CASPER_BUFFER_PRUNE_INTERVAL_MS: u64 = 5_000;
 /// Must exceed the dependency re-request clock, or pruning fights recovery.
 const CASPER_BUFFER_STALE_TTL_MS: u64 = 180_000;
-const CASPER_BUFFER_MAX_APPROX_NODES: usize = 16_384;
+const CASPER_BUFFER_MAX_BLOCKS: usize = 16_384;
 const CASPER_BUFFER_MAX_PRUNE_BATCH: usize = 512;
 const CASPER_BUFFER_STALE_PRUNED_METRIC: &str = "casper.buffer.stale-pruned";
 const CASPER_BUFFER_OVERFLOW_PRUNED_METRIC: &str = "casper.buffer.overflow-pruned";
 const CASPER_BUFFER_APPROX_NODES_METRIC: &str = "casper.buffer.approx-nodes";
+const CASPER_BUFFER_BLOCKS_METRIC: &str = "casper.buffer.blocks";
 const CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC: &str = "casper.buffer.dependency-loop-pruned";
 const MISSING_DEPENDENCY_ATTEMPTS_MAX: u32 = 32;
 /// Hard-error attempt cap per buffered block. Public so tests exercise the
@@ -266,9 +268,6 @@ const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
 /// Admission cap on the shared in-flight block set. Must not exceed the
 /// node's block-processor queue capacity.
 pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
-/// Pipeline width: blocks the block processor validates at the same time.
-pub const MAX_PARALLEL_BLOCKS: usize = 2;
-
 /// The node warns when its oldest in-flight marker is older than this. The
 /// marker is kept: an old marker means a block that is still queued or still
 /// processing, for example a long replay (#407).
@@ -1035,14 +1034,84 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         self.casper_buffer_last_prune_ms
             .store(now_ms, Ordering::Relaxed);
 
-        let (stale_pruned, overflow_pruned) = self.casper_buffer.enforce_limits(
-            CASPER_BUFFER_MAX_APPROX_NODES,
-            CASPER_BUFFER_STALE_TTL_MS,
-            CASPER_BUFFER_MAX_PRUNE_BATCH,
-            prune_interval_ms,
-        )?;
-        let approx_nodes = self.casper_buffer.approx_node_count();
+        self.enforce_casper_buffer_limit(CASPER_BUFFER_MAX_BLOCKS)
+    }
 
+    fn enforce_casper_buffer_limit(&self, max_blocks: usize) -> Result<(), CasperError> {
+        let mut failed_reads = 0usize;
+        let mut first_error = None;
+        for hash in self.casper_buffer.uncached_block_hashes() {
+            match self.block_store.get(&hash.0) {
+                Ok(Some(block)) => self
+                    .casper_buffer
+                    .cache_block_dependencies(hash, proto_util::dependencies_hashes_of(&block)),
+                Ok(None) => {}
+                Err(error) => {
+                    failed_reads += 1;
+                    first_error.get_or_insert((hash, error));
+                }
+            }
+        }
+        if let Some((hash, error)) = first_error {
+            tracing::warn!(
+                failed_reads,
+                hash = ?hash,
+                %error,
+                "Could not load dependencies for buffered blocks"
+            );
+        }
+        let (stale_hashes, overflow_hashes) =
+            self.block_dag_storage
+                .access_equivocations_tracker(|tracker| {
+                    let dag = self.block_dag_storage.get_representation_internal()?;
+                    let invalid: HashSet<BlockHash> =
+                        dag.invalid_blocks_map()?.into_keys().collect();
+                    let equivocations: HashSet<BlockHash> = tracker
+                        .data()?
+                        .iter()
+                        .flat_map(|record| record.equivocation_detected_block_hashes.iter())
+                        .cloned()
+                        .collect();
+                    let is_ready = |hash: &BlockHashSerde| match self
+                        .casper_buffer
+                        .cached_block_dependencies(hash)
+                    {
+                        Some(dependencies) => dependencies_are_ready(
+                            &dependencies,
+                            |dependency| dag.contains(dependency),
+                            &equivocations,
+                            &invalid,
+                        ),
+                        None => match self.block_store.contains_key(&hash.0) {
+                            Ok(stored) => stored,
+                            Err(error) => {
+                                tracing::warn!(
+                                    hash = ?hash,
+                                    %error,
+                                    "Preserved CasperBuffer hash after block read failure"
+                                );
+                                true
+                            }
+                        },
+                    };
+                    self.casper_buffer.enforce_limits_with_readiness(
+                        max_blocks,
+                        CASPER_BUFFER_STALE_TTL_MS,
+                        CASPER_BUFFER_MAX_PRUNE_BATCH,
+                        CASPER_BUFFER_PRUNE_INTERVAL_MS,
+                        is_ready,
+                    )
+                })?;
+        let (stale_pruned, overflow_pruned) = (stale_hashes.len(), overflow_hashes.len());
+        for hash in stale_hashes.iter().chain(overflow_hashes.iter()) {
+            self.block_retriever
+                .forget_received_hash_tracking(&hash.0)?;
+        }
+        let approx_nodes = self.casper_buffer.approx_node_count();
+        let blocks = self.casper_buffer.block_count();
+
+        metrics::gauge!(CASPER_BUFFER_BLOCKS_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+            .set(blocks as f64);
         metrics::gauge!(CASPER_BUFFER_APPROX_NODES_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .set(approx_nodes as f64);
         if stale_pruned > 0 {
@@ -1055,9 +1124,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         }
         if stale_pruned > 0 || overflow_pruned > 0 {
             tracing::warn!(
-                "Pruned CasperBuffer entries: stale={}, overflow={}, approx_nodes={}",
+                "Pruned CasperBuffer entries: stale={}, overflow={}, blocks={}, approx_nodes={}",
                 stale_pruned,
                 overflow_pruned,
+                blocks,
                 approx_nodes
             );
         }
@@ -1253,6 +1323,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 )?;
             }
         }
+
+        self.casper_buffer.cache_block_dependencies(
+            BlockHashSerde(block.block_hash.clone()),
+            proto_util::dependencies_hashes_of(block),
+        );
 
         Ok(())
     }
@@ -1856,6 +1931,10 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync + 'static>(
 
     BlockProcessor::new(dependencies)
 }
+
+#[cfg(test)]
+#[path = "block_processor_pruning_tests.rs"]
+mod pruning_tests;
 
 #[cfg(test)]
 mod tests {
