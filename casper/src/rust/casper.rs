@@ -27,7 +27,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
-use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
+use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -178,6 +178,17 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
+
+    fn is_local_validator_bonded(
+        &self,
+        dag: &KeyValueDagRepresentation,
+    ) -> Result<bool, CasperError> {
+        let metadata = dag.lookup_unsafe(&dag.last_finalized_block())?;
+        Ok(self
+            .get_validator()
+            .map(|id| metadata.weight_map.contains_key(&id.public_key.bytes))
+            .unwrap_or(false))
+    }
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
@@ -366,6 +377,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         }
     }
 
+    let finalized_bond_cache =
+        FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+
     Ok(MultiParentCasperImpl {
         observer: std::sync::OnceLock::new(),
         divergence_monitor: std::sync::Arc::new(
@@ -384,6 +398,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         ),
         casper_buffer_storage,
         validator_id,
+        finalized_bond_cache,
         casper_shard_conf,
         approved_block,
         finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
