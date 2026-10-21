@@ -491,17 +491,17 @@ where
 {
     fn log_comm(
         &self,
-        data_candidates: &Vec<ConsumeCandidate<C, A>>,
-        channels: &Vec<C>,
-        wk: WaitingContinuation<P, K>,
-        comm: COMM,
+        data_candidates: &[ConsumeCandidate<C, A>],
+        channels: &[C],
+        wk: &WaitingContinuation<P, K>,
+        _comm: &COMM,
         _label: &str,
-    ) -> COMM {
+    ) {
         let reporting_consume = ReportingConsume {
-            channels: channels.clone(),
-            patterns: wk.patterns,
-            continuation: wk.continuation,
-            peeks: wk.peeks.into_iter().collect(),
+            channels: channels.to_vec(),
+            patterns: wk.patterns.clone(),
+            continuation: wk.continuation.clone(),
+            peeks: wk.peeks.iter().copied().collect(),
         };
 
         let reporting_produces = data_candidates
@@ -520,8 +520,6 @@ where
         if let Ok(mut soft_report_guard) = self.soft_report.lock() {
             soft_report_guard.push(reporting_comm);
         }
-
-        comm
     }
 
     fn log_consume(

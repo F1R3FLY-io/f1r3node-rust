@@ -628,10 +628,10 @@ where
         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, persist, "replay.consume ENTER");
 
         let wk = WaitingContinuation {
-            patterns: patterns.clone(),
+            patterns,
             continuation,
             persist,
-            peeks: peeks.clone(),
+            peeks,
             source: consume_ref.clone(),
         };
 
@@ -709,11 +709,12 @@ where
                 Ok(self.store_waiting_continuation(channels, wk))
             }
             Some(comms_list) => {
-                match self.get_comm_and_consume_candidates(
-                    channels.clone(),
-                    patterns,
-                    comms_list.clone(),
-                ) {
+                let channel_patterns: Vec<(C, P)> = channels
+                    .iter()
+                    .cloned()
+                    .zip(wk.patterns.iter().cloned())
+                    .collect();
+                match self.get_comm_and_consume_candidates(&channel_patterns, &comms_list) {
                     None => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, n_recorded_comms = comms_list.len(), "replay.consume STALL-B: recorded COMM exists but matching produce data not present (produce diverged / missing in merged pre-state)");
                         Ok(self.store_waiting_continuation(channels, wk))
@@ -725,17 +726,11 @@ where
                         let comm_ref = COMM::new(
                             &data_candidates,
                             consume_ref.clone(),
-                            peeks.clone(),
+                            wk.peeks.clone(),
                             produce_counters_closure,
                         );
 
-                        self.log_comm(
-                            &data_candidates,
-                            &channels,
-                            wk.clone(),
-                            comm_ref.clone(),
-                            "comm.consume",
-                        );
+                        self.log_comm(&data_candidates, &channels, &wk, &comm_ref, "comm.consume");
 
                         assert!(
                             comms_list.contains(&comm_ref),
@@ -749,7 +744,7 @@ where
                         self.store_persistent_data(&data_candidates);
                         self.remove_bindings_for(comm_ref);
                         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume OK: COMM reproduced");
-                        Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
+                        Ok(self.wrap_result(channels, wk, data_candidates))
                     }
                 }
             }
@@ -779,45 +774,40 @@ where
         map
     }
 
-    fn get_comm_and_consume_candidates(
+    fn get_comm_and_consume_candidates<'c>(
         &self,
-        channels: Vec<C>,
-        patterns: Vec<P>,
-        comms: Vec<COMM>,
-    ) -> Option<(COMM, Vec<ConsumeCandidate<C, A>>)> {
-        let run_matcher = |comm: COMM| -> Option<Vec<ConsumeCandidate<C, A>>> {
-            self.run_matcher_consume(channels.clone(), patterns.clone(), comm)
-        };
-
-        self.get_comm_or_candidate(comms, run_matcher)
+        channel_patterns: &[(C, P)],
+        comms: &'c [COMM],
+    ) -> Option<(&'c COMM, Vec<ConsumeCandidate<C, A>>)> {
+        self.get_comm_or_candidate(comms, |comm| self.run_matcher_consume(channel_patterns, comm))
     }
 
     fn run_matcher_consume(
         &self,
-        channels: Vec<C>,
-        patterns: Vec<P>,
-        comm: COMM,
+        channel_patterns: &[(C, P)],
+        comm: &COMM,
     ) -> Option<Vec<ConsumeCandidate<C, A>>> {
-        let mut channel_to_indexed_data_list: Vec<(C, Vec<(Datum<A>, i32)>)> = Vec::new();
+        let mut channel_to_indexed_data_map: HashMap<C, Vec<(Datum<A>, i32)>> = channel_patterns
+            .iter()
+            .map(|(c, _)| {
+                let filtered_data = self
+                    .get_store()
+                    .get_data(c)
+                    .into_iter()
+                    .zip(0..)
+                    .filter(|(d, _)| self.matches(comm, &d.source, d.persist))
+                    .collect();
+                (c.clone(), filtered_data)
+            })
+            .collect();
 
-        for c in &channels {
-            let data = self.get_store().get_data(c);
-            let filtered_data: Vec<(Datum<A>, i32)> = data
-                .into_iter()
-                .zip(0..)
-                .filter(|(d, i)| self.matches(comm.clone(), (d.clone(), *i)))
-                .collect();
-            channel_to_indexed_data_list.push((c.clone(), filtered_data));
-        }
-
-        let mut channel_to_indexed_data_map: HashMap<C, Vec<(Datum<A>, i32)>> =
-            channel_to_indexed_data_list.into_iter().collect();
-
-        let pairs: Vec<(C, P)> = channels.into_iter().zip(patterns.into_iter()).collect();
-
-        self.extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
+        self.extract_data_candidates(
+            &self.matcher,
+            channel_patterns,
+            &mut channel_to_indexed_data_map,
+        )
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
     }
 
     fn locked_produce(
@@ -860,22 +850,24 @@ where
             }
             Some(comms) => {
                 match self.get_comm_or_produce_candidate(
-                    channel.clone(),
-                    data.clone(),
+                    &channel,
+                    &data,
                     persist,
-                    comms.clone(),
-                    produce_ref.clone(),
-                    grouped_channels,
+                    &comms,
+                    &produce_ref,
+                    &grouped_channels,
                 ) {
                     Some((comm, pc)) => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce OK: matched a recorded COMM (fired a waiting consume)");
-                        Ok(self.handle_match(pc, comms).map(|consume_result| {
-                            let p = comm
-                                .produces
-                                .into_iter()
-                                .find(|p| p.hash == produce_ref.hash);
-                            (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
-                        }))
+                        let produce = comm
+                            .produces
+                            .iter()
+                            .find(|p| p.hash == produce_ref.hash)
+                            .cloned()
+                            .unwrap_or(produce_ref);
+                        Ok(self
+                            .handle_match(pc, &comms)
+                            .map(|consume_result| (consume_result.0, consume_result.1, produce)))
                     }
                     None => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (recorded COMM exists but no matching consume waiting yet)");
@@ -886,37 +878,28 @@ where
         }
     }
 
-    fn get_comm_or_produce_candidate(
+    fn get_comm_or_produce_candidate<'c>(
         &self,
-        channel: C,
-        data: A,
+        channel: &C,
+        data: &A,
         persist: bool,
-        comms: Vec<COMM>,
-        produce_ref: Produce,
-        grouped_channels: Vec<Vec<C>>,
-    ) -> Option<(COMM, ProduceCandidate<C, P, A, K>)> {
-        let run_matcher = |comm: COMM| -> Option<ProduceCandidate<C, P, A, K>> {
-            self.run_matcher_produce(
-                channel.clone(),
-                data.clone(),
-                persist,
-                comm,
-                produce_ref.clone(),
-                grouped_channels.clone(),
-            )
-        };
-
-        self.get_comm_or_candidate(comms, run_matcher)
+        comms: &'c [COMM],
+        produce_ref: &Produce,
+        grouped_channels: &[Vec<C>],
+    ) -> Option<(&'c COMM, ProduceCandidate<C, P, A, K>)> {
+        self.get_comm_or_candidate(comms, |comm| {
+            self.run_matcher_produce(channel, data, persist, comm, produce_ref, grouped_channels)
+        })
     }
 
     fn run_matcher_produce(
         &self,
-        channel: C,
-        data: A,
+        channel: &C,
+        data: &A,
         persist: bool,
-        comm: COMM,
-        produce_ref: Produce,
-        grouped_channels: Vec<Vec<C>>,
+        comm: &COMM,
+        produce_ref: &Produce,
+        grouped_channels: &[Vec<C>],
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         self.run_matcher_for_channels(
             grouped_channels,
@@ -930,60 +913,42 @@ where
                     .collect::<Vec<_>>()
             },
             |c| {
-                let store_data = self.get_store().get_data(&c);
-                let datum_tuples = store_data
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, d)| (d, i as i32))
-                    .collect::<Vec<_>>();
-
-                let mut result = datum_tuples;
-                if c == channel {
-                    result.insert(
-                        0,
-                        (
-                            Datum {
-                                a: data.clone(),
-                                persist,
-                                source: produce_ref.clone(),
-                            },
-                            -1,
-                        ),
-                    );
+                let mut candidates = Vec::new();
+                if &c == channel && self.matches(comm, produce_ref, persist) {
+                    candidates.push((
+                        Datum {
+                            a: data.clone(),
+                            persist,
+                            source: produce_ref.clone(),
+                        },
+                        -1,
+                    ));
                 }
-
-                (
-                    c.clone(),
-                    result
+                candidates.extend(
+                    self.get_store()
+                        .get_data(&c)
                         .into_iter()
-                        .filter(|(datum, i)| self.matches(comm.clone(), (datum.clone(), *i)))
-                        .collect(),
-                )
+                        .zip(0..)
+                        .filter(|(datum, _)| self.matches(comm, &datum.source, datum.persist)),
+                );
+                (c, candidates)
             },
         )
     }
 
-    fn matches(&self, comm: COMM, datum_with_index: (Datum<A>, i32)) -> bool {
-        let datum = datum_with_index.0;
-        let x = comm.produces.contains(&datum.source);
-
-        x && self.was_repeated_enough_times(comm, datum)
+    /// Whether a datum produced by `source` takes part in `comm`.
+    fn matches(&self, comm: &COMM, source: &Produce, persist: bool) -> bool {
+        comm.produces.contains(source) && self.was_repeated_enough_times(comm, source, persist)
     }
 
-    fn was_repeated_enough_times(&self, comm: COMM, datum: Datum<A>) -> bool {
-        if !datum.persist {
-            let x = *comm.times_repeated.get(&datum.source).unwrap_or(&0) ==
-                self.get_produce_count(&datum.source);
-            x
-        } else {
-            true
-        }
+    fn was_repeated_enough_times(&self, comm: &COMM, source: &Produce, persist: bool) -> bool {
+        persist || *comm.times_repeated.get(source).unwrap_or(&0) == self.get_produce_count(source)
     }
 
     fn handle_match(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
-        comms: Vec<COMM>,
+        comms: &[COMM],
     ) -> MaybeConsumeResult<C, P, A, K> {
         let ProduceCandidate {
             channels,
@@ -1008,13 +973,7 @@ where
             produce_counters_closure,
         );
 
-        self.log_comm(
-            &data_candidates,
-            &channels,
-            continuation.clone(),
-            comm_ref.clone(),
-            "comm.produce",
-        );
+        self.log_comm(&data_candidates, &channels, &continuation, &comm_ref, "comm.produce");
 
         assert!(
             comms.contains(&comm_ref),
@@ -1033,7 +992,7 @@ where
 
         self.remove_matched_datum_and_join(&channels, &data_candidates);
         self.remove_bindings_for(comm_ref);
-        self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
+        self.wrap_result(channels, continuation, data_candidates)
     }
 
     fn remove_bindings_for(&self, comm_ref: COMM) {
@@ -1068,10 +1027,10 @@ where
 
     pub fn log_comm(
         &self,
-        data_candidates: &Vec<ConsumeCandidate<C, A>>,
-        channels: &Vec<C>,
-        wk: WaitingContinuation<P, K>,
-        comm: COMM,
+        data_candidates: &[ConsumeCandidate<C, A>],
+        channels: &[C],
+        wk: &WaitingContinuation<P, K>,
+        comm: &COMM,
         label: &str,
     ) {
         // Record metrics using constants to avoid memory leaks
@@ -1123,34 +1082,17 @@ where
         }
     }
 
-    fn get_comm_or_candidate<Candidate>(
+    /// The first recorded COMM, in trace order, the matcher reproduces, with
+    /// what the matcher found for it.
+    fn get_comm_or_candidate<'c, Candidate>(
         &self,
-        comms: Vec<COMM>,
-        run_matcher: impl Fn(COMM) -> Option<Candidate>,
-    ) -> Option<(COMM, Candidate)> {
-        let go = |cs: Vec<COMM>| match cs.as_slice() {
-            [] => {
-                let msg = "List comms must not be empty";
-                panic!("{}", msg);
-            }
-            [comm_ref] => match run_matcher(comm_ref.clone()) {
-                Some(data_candidates) => Ok(Ok((comm_ref.clone(), data_candidates))),
-                None => Ok(Err(comm_ref.clone())),
-            },
-            [comm_ref, rem @ ..] => match run_matcher(comm_ref.clone()) {
-                Some(data_candidates) => Ok(Ok((comm_ref.clone(), data_candidates))),
-                None => Err(rem.to_vec()),
-            },
-        };
-
-        let mut cs = comms;
-        loop {
-            match go(cs.clone()) {
-                Ok(Ok(comm_or_candidate)) => return Some(comm_or_candidate),
-                Ok(Err(_)) => return None,
-                Err(new_cs) => cs = new_cs,
-            }
-        }
+        comms: &'c [COMM],
+        run_matcher: impl Fn(&COMM) -> Option<Candidate>,
+    ) -> Option<(&'c COMM, Candidate)> {
+        assert!(!comms.is_empty(), "List comms must not be empty");
+        comms
+            .iter()
+            .find_map(|comm| run_matcher(comm).map(|candidate| (comm, candidate)))
     }
 
     // This function may need to clear 'replay_data'
@@ -1295,7 +1237,6 @@ where
         &self,
         channels: Vec<C>,
         wk: WaitingContinuation<P, K>,
-        _consume_ref: Consume,
         data_candidates: Vec<ConsumeCandidate<C, A>>,
     ) -> MaybeConsumeResult<C, P, A, K> {
         let cont_result = ContResult {
@@ -1343,41 +1284,27 @@ where
 
     fn run_matcher_for_channels(
         &self,
-        grouped_channels: Vec<Vec<C>>,
+        grouped_channels: &[Vec<C>],
         fetch_matching_continuations: impl Fn(
             Vec<C>,
         )
             -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
-        let mut remaining = grouped_channels;
+        grouped_channels.iter().find_map(|channels| {
+            let match_candidates = fetch_matching_continuations(channels.clone());
+            let channel_to_indexed_data: HashMap<C, Vec<(Datum<A>, i32)>> = channels
+                .iter()
+                .map(|c| fetch_matching_data(c.clone()))
+                .collect();
 
-        loop {
-            match remaining.split_first() {
-                Some((channels, rest)) => {
-                    let match_candidates = fetch_matching_continuations(channels.to_vec());
-                    let channel_to_indexed_data: HashMap<C, Vec<(Datum<A>, i32)>> = channels
-                        .iter()
-                        .map(|c| fetch_matching_data(c.clone()))
-                        .collect();
-
-                    let first_match = self.extract_first_match(
-                        &self.matcher,
-                        channels.to_vec(),
-                        match_candidates,
-                        channel_to_indexed_data,
-                    );
-
-                    match first_match {
-                        Some(produce_candidate) => return Some(produce_candidate),
-                        None => remaining = rest.to_vec(),
-                    }
-                }
-                None => {
-                    return None;
-                }
-            }
-        }
+            self.extract_first_match(
+                &self.matcher,
+                channels.clone(),
+                match_candidates,
+                channel_to_indexed_data,
+            )
+        })
     }
 }
 
