@@ -205,36 +205,6 @@ DRIVER_PID=""
 test -s "$TMP/system-integration/integration-tests/log-archive/session/validator1.log"
 
 test "$(find "$TMP/output" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 1
-# Diagnostic for a hosted failure of the failure count below: print the run
-# records and every process that still carries an owner marker.
-if ! jq -e '.failures == 1' "$TMP/output/summary.json" >/dev/null; then
-	{
-		printf '== summary.json failures: %s\n' "$(jq -c .failures "$TMP/output/summary.json")"
-		for record in summary.txt early-exit.txt protection-breach.txt writer-stop-failure.txt .soak-state; do
-			[ -e "$TMP/output/$record" ] || continue
-			printf '== %s\n' "$record"
-			cat "$TMP/output/$record"
-		done
-		printf '== processes with an owner marker\n'
-		for environ in /proc/[0-9]*/environ; do
-			pid="${environ#/proc/}"
-			pid="${pid%/environ}"
-			marker="$(tr '\0' '\n' <"$environ" 2>/dev/null | grep '^SOAK_PROCESS_OWNER=' || true)"
-			[ -n "$marker" ] || continue
-			printf '%s %s state=%s ppid=%s cmd=%s\n' "$pid" "$marker" \
-				"$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" \
-				"$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)" \
-				"$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
-		done
-		# A zombie has an empty environ, so list the zombies separately.
-		printf '== zombie processes\n'
-		for stat in /proc/[0-9]*/stat; do
-			awk '$3 == "Z" {print "pid=" $1, "comm=" $2, "ppid=" $4}' "$stat" 2>/dev/null || true
-		done
-		printf '== driver.log\n'
-		cat "$TMP/driver.log"
-	} >&2
-fi
 grep -q '^host_protection_breach:' "$TMP/output/early-exit.txt"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output/summary.txt"
 jq -e '
