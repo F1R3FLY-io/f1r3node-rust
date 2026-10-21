@@ -221,6 +221,8 @@ On 2026-10-21, PR #811 changed the owner scan of `scripts/casper-soak/src/host_c
 - **Limitation:** an owned process with an unreadable environment escapes cleanup. `stop-owned` does not kill it, and `prefer-oom` does not change its OOM score. A writer has an unreadable environment only when it is not dumpable, for example after a set-user-ID execution or a `PR_SET_DUMPABLE` change. The soak node, pytest, and the Docker CLI do not do this.
 - The unit tests `stop_skips_a_process_whose_environment_is_unreadable` and `oom_preference_skips_a_process_whose_environment_is_unreadable` run as UID 65534 in the binding container. Each requires an unreadable unrelated process, kills or marks the readable owned writer, and leaves the unrelated process unchanged.
 
+On 2026-10-21 the maintainer accepted this change, the narrower guarantee, and its limitation (PR #811, comment 6324960804) at revision `32798242d`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-01/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
