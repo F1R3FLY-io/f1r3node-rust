@@ -214,6 +214,13 @@ Only the workflow-copy line differs among the 39 accepted artifacts. Fresh isola
 
 The renewal preserves the previous ledgers and unsuccessful inventory controls. It restores this bounded pre-merge discharge without authorizing node execution.
 
+On 2026-10-21, PR #811 changed the owner scan of `scripts/casper-soak/src/host_control.rs`. The change narrows the ownership guarantee, and it needs a fresh acceptance.
+
+- Before the change, one same-user process with an unreadable environment failed every `stop-owned` and `prefer-oom` call. A non-root runner has such processes, so every stop failed even when no owned writer remained (hosted run 39639227494).
+- After the change, the scan skips a same-user process when the environment read fails with EACCES or EPERM. Every other scan error still fails the call. A writer that does not stop still fails `stop-owned`.
+- **Limitation:** an owned process with an unreadable environment escapes cleanup. `stop-owned` does not kill it, and `prefer-oom` does not change its OOM score. A writer has an unreadable environment only when it is not dumpable, for example after a set-user-ID execution or a `PR_SET_DUMPABLE` change. The soak node, pytest, and the Docker CLI do not do this.
+- The unit tests `stop_skips_a_process_whose_environment_is_unreadable` and `oom_preference_skips_a_process_whose_environment_is_unreadable` run as UID 65534 in the binding container. Each requires an unreadable unrelated process, kills or marks the readable owned writer, and leaves the unrelated process unchanged.
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
