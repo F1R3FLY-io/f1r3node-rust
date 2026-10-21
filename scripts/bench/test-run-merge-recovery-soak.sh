@@ -481,14 +481,17 @@ grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output3/summary.txt" 
 test ! -e "$TMP/fake-poetry-3.pid"
 
 # The writer stop at the end of a segment fails. The soak must fail closed: a
-# failure marker, one more failure in the saved state, and a nonzero exit.
-# writer_stop_failure_case NAME DURATION FLOOR_MB: runs one segment with a
-# failing stop-owned and sets status.
+# failure marker, at least one saved failure, and a nonzero exit. A failed stop
+# raises a count of 0 to 1 and keeps a higher count.
+# writer_stop_failure_case NAME DURATION FLOOR_MB [PATH_PREFIX [NAME=VALUE...]]:
+# runs one segment with a failing stop-owned and sets status.
 writer_stop_failure_case() {
-	local name="$1" duration="$2" floor="$3"
+	local name="$1" duration="$2" floor="$3" prefix="${4:-}"
+	shift 3
+	[ "$#" -eq 0 ] || shift
 	mkdir -p "$TMP/si-$name"
 	status=0
-	timeout --signal=TERM --kill-after=2 60 env PATH="$TMP/bin3:$TMP/bin:$PATH" \
+	timeout --signal=TERM --kill-after=2 90 env PATH="$prefix$TMP/bin3:$TMP/bin:$PATH" "$@" \
 		SOAK_HARNESS_BIN="$TMP/harness/casper-soak" \
 		FAKE_STOP_OWNED_FAIL=1 \
 		FAKE_DF_AVAIL_FILE="$TMP/fake-df-avail" \
@@ -519,25 +522,72 @@ grep -q '^FAILURES=1$' "$TMP/output-stop-fail/.soak-state"
 grep -q '^failures=1$' "$TMP/output-stop-fail/summary.txt"
 grep -q '^early_exit_reason=writer_stop_failed$' "$TMP/output-stop-fail/summary.txt"
 
-# After a disk floor stop, the failed stop adds a failure and keeps the reason.
+# After a disk floor stop, the failed stop writes its marker. The soak has
+# already failed for the same unconfirmed termination, so the count stays 1
+# and the reason stays.
 writer_stop_failure_case breach-stop-fail 120 4096
 [ "$status" -ne 0 ] || { cat "$TMP/driver-breach-stop-fail.log" >&2; echo 'a failed writer stop passed the soak' >&2; exit 1; }
 test -s "$TMP/output-breach-stop-fail/writer-stop-failure.txt"
 grep -q '^host_protection_breach: disk floor' "$TMP/output-breach-stop-fail/early-exit.txt"
-grep -q '^FAILURES=2$' "$TMP/output-breach-stop-fail/.soak-state"
+grep -q '^FAILURES=1$' "$TMP/output-breach-stop-fail/.soak-state"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output-breach-stop-fail/summary.txt"
 
 # A later segment of that soak does no work, and its writer stop also fails.
-# The failure counts, but the reason of the earlier stop stays.
+# It writes its marker, and the count and the reason of the earlier stop stay.
 rm -f "$TMP/output-breach-stop-fail/writer-stop-failure.txt"
 writer_stop_failure_case breach-stop-fail 120 4096
 [ "$status" -ne 0 ] || { cat "$TMP/driver-breach-stop-fail.log" >&2; echo 'a failed writer stop passed the soak' >&2; exit 1; }
 grep -q '^soak already ended (host_protection_breach: disk floor' "$TMP/driver-breach-stop-fail.log"
 test -s "$TMP/output-breach-stop-fail/writer-stop-failure.txt"
 grep -q '^host_protection_breach: disk floor' "$TMP/output-breach-stop-fail/early-exit.txt"
-grep -q '^FAILURES=3$' "$TMP/output-breach-stop-fail/.soak-state"
+grep -q '^FAILURES=1$' "$TMP/output-breach-stop-fail/.soak-state"
 grep -q '^segments=2$' "$TMP/output-breach-stop-fail/summary.txt"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output-breach-stop-fail/summary.txt"
+
+# A successful early exit leaves the count at 0. The failed stop after it makes
+# the soak fail with a count of 1, and the reason of the early exit stays.
+mkdir -p "$TMP/bin-pass"
+cat >"$TMP/bin-pass/poetry" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
+printf 'fake pytest passed\n'
+exit 0
+SH
+chmod +x "$TMP/bin-pass/poetry"
+git init -q --bare "$TMP/target-origin.git"
+git init -q "$TMP/target-node"
+git -C "$TMP/target-node" -c user.name=fixture -c user.email=fixture@example.com commit -q --allow-empty -m first
+first_sha="$(git -C "$TMP/target-node" rev-parse HEAD)"
+git -C "$TMP/target-node" -c user.name=fixture -c user.email=fixture@example.com commit -q --allow-empty -m second
+git -C "$TMP/target-node" remote add origin "$TMP/target-origin.git"
+git -C "$TMP/target-node" push -q origin HEAD:refs/heads/fixture
+writer_stop_failure_case advanced-stop-fail 60 0 "$TMP/bin-pass:" \
+	SOAK_TARGET_REF=fixture SOAK_TARGET_SHA="$first_sha" \
+	SOAK_NODE_REPO_DIR="$TMP/target-node" SOAK_MERGE_EXIT_MIN_SECONDS=1
+[ "$status" -ne 0 ] || { cat "$TMP/driver-advanced-stop-fail.log" >&2; echo 'a failed writer stop passed the soak' >&2; exit 1; }
+test -s "$TMP/output-advanced-stop-fail/writer-stop-failure.txt"
+grep -q "^fixture advanced past $first_sha" "$TMP/output-advanced-stop-fail/early-exit.txt"
+test -z "$(find "$TMP/output-advanced-stop-fail" -name exit-code.txt)"
+grep -q '^FAILURES=1$' "$TMP/output-advanced-stop-fail/.soak-state"
+grep -q '^early_exit_reason=target_advanced$' "$TMP/output-advanced-stop-fail/summary.txt"
+
+# Several failed iterations come before the failed stop. The stop keeps their
+# count.
+mkdir -p "$TMP/bin-fail"
+cat >"$TMP/bin-fail/poetry" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
+printf 'fake pytest failed\n'
+exit 1
+SH
+chmod +x "$TMP/bin-fail/poetry"
+writer_stop_failure_case failed-stop-fail 40 0 "$TMP/bin-fail:"
+[ "$status" -ne 0 ] || { cat "$TMP/driver-failed-stop-fail.log" >&2; echo 'a failed writer stop passed the soak' >&2; exit 1; }
+failed_iterations="$(find "$TMP/output-failed-stop-fail" -name exit-code.txt | wc -l | tr -d ' ')"
+[ "$failed_iterations" -ge 2 ] || { cat "$TMP/driver-failed-stop-fail.log" >&2; echo 'the scenario ran fewer than two failed iterations' >&2; exit 1; }
+test -s "$TMP/output-failed-stop-fail/writer-stop-failure.txt"
+grep -q "^FAILURES=$failed_iterations\$" "$TMP/output-failed-stop-fail/.soak-state"
+grep -q '^early_exit_reason=writer_stop_failed$' "$TMP/output-failed-stop-fail/summary.txt"
 
 # Scenario 4: two failed iterations. Each fake session writes its own archive
 # directory and exits 1. The second iteration's failure evidence must hold only

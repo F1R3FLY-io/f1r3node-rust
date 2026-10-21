@@ -2348,14 +2348,18 @@ fi
 # its teardown, and the detached subprocess nodes of that session keep writing
 # (most likely the disk growth of runs 39194089405 and 39369559337). Kill every
 # owned writer while this segment still owns it. Kill keeps the containers, so
-# their logs remain for the evidence that a deadline stop does not copy.
+# their logs remain for the evidence that a deadline stop does not copy. A
+# failed stop makes the soak fail, but it does not raise an existing count:
+# every later segment of the soak repeats the same unconfirmed stop.
 if [ "$CASPER_RUNTIME" -eq 0 ] && ! stop_node_writers -q kill >/dev/null 2>&1; then
 	printf 'Writer termination is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
 	if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
 		EARLY_EXIT_REASON="writer_stop_failed"
 		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
 	fi
-	FAILURES="$((FAILURES + 1))"
+	if [ "$FAILURES" -eq 0 ]; then
+		FAILURES=1
+	fi
 fi
 
 if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
