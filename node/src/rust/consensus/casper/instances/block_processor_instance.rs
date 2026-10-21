@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
-    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING, MAX_PARALLEL_BLOCKS,
+    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -24,6 +24,30 @@ use super::release_queue::{run_scheduler, ReleaseQueue};
 
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
 const RELEASED_BLOCKS_BEFORE_GOSSIP_TURN: usize = 4;
+const MIN_PARALLEL_BLOCKS: usize = 3;
+
+fn derive_pipeline_width(cpu_cores: usize) -> usize {
+    cpu_cores
+        .saturating_sub(2)
+        .clamp(MIN_PARALLEL_BLOCKS, tokio::sync::Semaphore::MAX_PERMITS - 2)
+}
+
+pub(crate) fn resolve_pipeline_width() -> usize {
+    let cpu_cores = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "Could not determine CPU capacity; using the pipeline floor");
+            1
+        });
+    let width = derive_pipeline_width(cpu_cores);
+    tracing::info!(
+        pipeline_width = width,
+        replay_permits = width + 2,
+        cpu_cores,
+        "Block processing concurrency resolved"
+    );
+    width
+}
 
 struct ActiveBlockProcessingGuard;
 
@@ -57,6 +81,7 @@ pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
     pub block_processor: Arc<BlockProcessor<T>>,
 
     pub blocks_in_processing: Arc<InFlightBlocks>,
+    max_parallel_blocks: usize,
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
@@ -67,12 +92,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         ),
         block_processor: Arc<BlockProcessor<T>>,
         blocks_in_processing: Arc<InFlightBlocks>,
+        max_parallel_blocks: usize,
     ) -> Self {
+        assert!((1..=tokio::sync::Semaphore::MAX_PERMITS - 2).contains(&max_parallel_blocks));
         Self {
             blocks_queue_rx,
             block_queue_tx,
             block_processor,
             blocks_in_processing,
+            max_parallel_blocks,
         }
     }
 
@@ -91,20 +119,20 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 block_queue_tx,
                 block_processor,
                 blocks_in_processing,
+                max_parallel_blocks: width,
             } = self;
             drop(block_queue_tx);
-
             tracing::info!(
-                max_parallel_blocks = MAX_PARALLEL_BLOCKS,
+                max_parallel_blocks = width,
                 "Starting bounded block processing"
             );
             metrics::gauge!(
                 BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
-            .set(MAX_PARALLEL_BLOCKS as f64);
+            .set(width as f64);
             let release_processor = block_processor.clone();
-            run_block_tasks(blocks_queue_rx, shutdown, move |(casper, block, in_flight_guard): BlockQueueItem| {
+            run_block_tasks(blocks_queue_rx, shutdown, width, move |(casper, block, in_flight_guard): BlockQueueItem| {
                 let block_processor = block_processor.clone();
                 let result_tx = result_tx.clone();
 
@@ -269,6 +297,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 async fn run_block_tasks<Item, Context, Process, Task, Release, Scan>(
     mut input: mpsc::Receiver<Item>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    width: usize,
     process: Process,
     release: Release,
 ) -> Result<(), CasperError>
@@ -280,10 +309,7 @@ where
     Release: Fn(Context) -> Scan + Send + Sync + 'static,
     Scan: Future<Output = Vec<Item>> + Send + 'static,
 {
-    let queue = Arc::new(ReleaseQueue::new(
-        RELEASED_BLOCKS_BEFORE_GOSSIP_TURN,
-        MAX_PARALLEL_BLOCKS,
-    ));
+    let queue = Arc::new(ReleaseQueue::new(RELEASED_BLOCKS_BEFORE_GOSSIP_TURN, width));
     let gossip_queue = queue.clone();
     let forward = async move {
         let mut stopping = false;
@@ -313,11 +339,8 @@ where
         gossip_queue.close();
         Ok(())
     };
-    tokio::try_join!(
-        forward,
-        run_scheduler(queue, MAX_PARALLEL_BLOCKS, process, release),
-    )
-    .map_err(block_task_error)?;
+    tokio::try_join!(forward, run_scheduler(queue, width, process, release),)
+        .map_err(block_task_error)?;
     Ok(())
 }
 
@@ -509,7 +532,367 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     Ok(BlockProcessOutcome::Processed(block, validation_result))
 }
 
-const _: () = assert!(
-    MAX_PARALLEL_BLOCKS >= 1 && MAX_PARALLEL_BLOCKS <= tokio::sync::Semaphore::MAX_PERMITS,
-    "parallel width must be a valid semaphore permit count"
-);
+#[cfg(test)]
+mod startup_tests {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
+    };
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+    use casper::rust::blocks::block_processor::{
+        mark_in_flight, BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+        InFlightMark,
+    };
+    use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
+    use casper::rust::casper::{
+        Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
+    };
+    use casper::rust::engine::block_retriever::BlockRetriever;
+    use casper::rust::errors::CasperError;
+    use casper::rust::genesis::genesis::Genesis;
+    use casper::rust::util::rholang::runtime_manager::{
+        ExploratoryDeployConfig, ReplayLock, RuntimeManager,
+    };
+    use casper::rust::validator_identity::ValidatorIdentity;
+    use comm::rust::peer_node::{NodeIdentifier, PeerNode};
+    use comm::rust::rp::connect::ConnectionsCell;
+    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::block_hash::BlockHash;
+    use models::rust::block_implicits::get_random_block_default;
+    use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+    use models::rust::validator::Validator;
+    use prost::bytes::Bytes;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+    use rspace_plus_plus::rspace::history::Either;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use tokio::sync::mpsc;
+
+    use super::{derive_pipeline_width, BlockProcessorInstance};
+
+    struct StartupCasper {
+        snapshot: CasperSnapshot,
+        approved: BlockMessage,
+        block_store: KeyValueBlockStore,
+        runtime_manager: Arc<RuntimeManager>,
+        dag_reads: AtomicUsize,
+        processed: Mutex<Vec<BlockHash>>,
+    }
+
+    #[async_trait]
+    impl Casper for StartupCasper {
+        async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
+            Ok(self.snapshot.clone())
+        }
+
+        fn contains(&self, _hash: &BlockHash) -> bool { panic!("Unexpected contains call") }
+
+        fn dag_contains(&self, hash: &BlockHash) -> bool {
+            self.processed.lock().unwrap().push(hash.clone());
+            true
+        }
+
+        fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
+
+        fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved) }
+
+        fn deploy(
+            &self,
+            _deploy: Signed<DeployData>,
+        ) -> Result<Either<DeployError, DeployId>, CasperError> {
+            panic!("Unexpected deploy call")
+        }
+
+        async fn estimator(
+            &self,
+            _dag: &mut KeyValueDagRepresentation,
+        ) -> Result<Vec<BlockHash>, CasperError> {
+            panic!("Unexpected estimator call")
+        }
+
+        fn get_version(&self) -> i64 { self.approved.header.version }
+
+        async fn validate(
+            &self,
+            _block: &BlockMessage,
+            _snapshot: &mut CasperSnapshot,
+        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+            panic!("Already processed blocks must not be validated again")
+        }
+
+        async fn validate_self_created(
+            &self,
+            _block: &BlockMessage,
+            _snapshot: &mut CasperSnapshot,
+            _pre_state_hash: Bytes,
+            _post_state_hash: Bytes,
+        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+            panic!("Unexpected self-created block")
+        }
+
+        async fn handle_valid_block(
+            &self,
+            _block: &BlockMessage,
+        ) -> Result<KeyValueDagRepresentation, CasperError> {
+            panic!("Unexpected valid block")
+        }
+
+        fn handle_invalid_block(
+            &self,
+            _block: &BlockMessage,
+            _status: &InvalidBlock,
+            _dag: &KeyValueDagRepresentation,
+        ) -> Result<KeyValueDagRepresentation, CasperError> {
+            panic!("Unexpected invalid block")
+        }
+
+        fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
+            Ok(Vec::new())
+        }
+
+        fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
+    }
+
+    #[async_trait]
+    impl MultiParentCasper for StartupCasper {
+        async fn fetch_dependencies(&self) -> Result<(), CasperError> {
+            panic!("Unexpected dependency fetch")
+        }
+
+        fn normalized_initial_fault(
+            &self,
+            _weights: HashMap<Validator, u64>,
+        ) -> Result<f32, CasperError> {
+            panic!("Unexpected fault calculation")
+        }
+
+        async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
+            panic!("Startup must read the stored LFB without computing finalization")
+        }
+
+        async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError> {
+            self.dag_reads.fetch_add(1, Ordering::SeqCst);
+            Err(CasperError::Other(
+                "Block processing setup must not read the DAG".to_string(),
+            ))
+        }
+
+        fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+
+        fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
+
+        fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
+
+        fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+
+        async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
+            panic!("Unexpected history export")
+        }
+
+        async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> { Ok(false) }
+    }
+
+    struct StartupFixture {
+        casper: Arc<StartupCasper>,
+        processor: Arc<BlockProcessor<TransportLayerStub>>,
+        in_flight: Arc<InFlightBlocks>,
+    }
+
+    impl StartupFixture {
+        async fn new() -> Self {
+            let mut stores = InMemoryStoreManager::new();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut stores)
+                .await
+                .unwrap();
+            let (runtime_manager, _) = RuntimeManager::create_with_history_config(
+                stores.r_space_stores().await.unwrap(),
+                RuntimeManager::mergeable_store(&mut stores).await.unwrap(),
+                Genesis::default_mergeable_tags_arc(),
+                ExternalServices::noop(),
+                ExploratoryDeployConfig::for_tests(),
+                Arc::new(ReplayLock::with_permits(5)),
+            );
+            let runtime_manager = Arc::new(runtime_manager);
+            let approved = get_random_block_default();
+            let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+
+            let transport = Arc::new(TransportLayerStub::new());
+            let connections = ConnectionsCell::new();
+            let peer = PeerNode::new(
+                NodeIdentifier {
+                    key: vec![1; 20].into(),
+                },
+                "localhost".to_string(),
+                40400,
+                40400,
+            );
+            let conf = create_rp_conf_ask(peer, None, None);
+            let retriever = BlockRetriever::new(
+                Arc::new(Mutex::new(HashMap::new())),
+                transport.clone(),
+                connections.clone(),
+                conf.clone(),
+            );
+            let buffer = CasperBufferKeyValueStorage::new_from_kv_store(
+                KeyValueTypedStoreImpl::new(stores.store("parents-map".to_string()).await.unwrap()),
+            )
+            .await
+            .unwrap();
+            let dag = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
+            let dependencies = BlockProcessorDependencies::new(
+                block_store.clone(),
+                buffer,
+                dag,
+                retriever,
+                transport,
+                connections,
+                conf,
+                None,
+            );
+            Self {
+                casper: Arc::new(StartupCasper {
+                    snapshot,
+                    approved,
+                    block_store,
+                    runtime_manager,
+                    dag_reads: AtomicUsize::new(0),
+                    processed: Mutex::new(Vec::new()),
+                }),
+                processor: Arc::new(BlockProcessor::new(dependencies)),
+                in_flight: Arc::new(InFlightBlocks::new()),
+            }
+        }
+
+        fn instance(
+            &self,
+        ) -> (
+            mpsc::Sender<BlockQueueItem>,
+            BlockProcessorInstance<TransportLayerStub>,
+        ) {
+            let (tx, rx) = mpsc::channel(4);
+            let instance = BlockProcessorInstance::new(
+                (rx, tx.clone()),
+                self.processor.clone(),
+                self.in_flight.clone(),
+                3,
+            );
+            (tx, instance)
+        }
+
+        fn item(&self, byte: u8) -> BlockQueueItem {
+            let mut block = self.casper.approved.clone();
+            block.block_hash = vec![byte; 32].into();
+            let InFlightMark::Marked(guard) =
+                mark_in_flight(&self.in_flight, block.block_hash.clone())
+            else {
+                panic!("Test block must acquire an in-flight marker")
+            };
+            (self.casper.clone(), block, guard)
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_wait_for_a_block() {
+        let fixture = StartupFixture::new().await;
+        let (tx, instance) = fixture.instance();
+        let (_stop, shutdown) = tokio::sync::watch::channel(false);
+        let (mut results, processing) = instance.supervised(shutdown);
+        let processing = tokio::spawn(processing);
+        assert!(matches!(
+            results.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
+        drop(tx);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), results.recv())
+                .await
+                .expect("The closed queue must finish processing")
+                .is_none()
+        );
+        processing.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_processes_the_first_and_following_blocks_once() {
+        let fixture = StartupFixture::new().await;
+        let (tx, instance) = fixture.instance();
+        let (_stop, shutdown) = tokio::sync::watch::channel(false);
+        let (mut results, processing) = instance.supervised(shutdown);
+        let processing = tokio::spawn(processing);
+        for byte in 21..=23 {
+            assert!(tx.send(fixture.item(byte)).await.is_ok());
+        }
+        drop(tx);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), results.recv())
+                .await
+                .expect("All queued blocks must finish processing")
+                .is_none()
+        );
+        processing.await.unwrap().unwrap();
+        let mut processed = fixture.casper.processed.lock().unwrap().clone();
+        processed.sort();
+        let expected: Vec<BlockHash> = (21..=23).map(|byte| vec![byte; 32].into()).collect();
+        assert_eq!(processed, expected);
+        assert!(fixture.in_flight.is_empty());
+        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
+        assert!(fixture
+            .casper
+            .runtime_manager
+            .active_validators_cache_order
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_with_a_closed_empty_queue_finishes_without_reading_casper() {
+        let fixture = StartupFixture::new().await;
+        let (tx, instance) = fixture.instance();
+        drop(tx);
+        let (_stop, shutdown) = tokio::sync::watch::channel(false);
+        let (mut results, processing) = instance.supervised(shutdown);
+        let processing = tokio::spawn(processing);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), results.recv())
+                .await
+                .expect("An empty closed queue must finish processing")
+                .is_none()
+        );
+        processing.await.unwrap().unwrap();
+        assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
+        assert!(fixture.in_flight.is_empty());
+    }
+
+    #[test]
+    fn pipeline_width_uses_the_cpu_capacity() {
+        for (cores, width) in [(6, 4), (8, 6), (16, 14), (32, 30)] {
+            assert_eq!(derive_pipeline_width(cores), width);
+        }
+    }
+
+    #[test]
+    fn small_cpu_limits_keep_the_pipeline_floor() {
+        for cores in 0..=5 {
+            assert_eq!(derive_pipeline_width(cores), 3);
+        }
+    }
+
+    #[test]
+    fn the_replay_reserve_fits_the_semaphore_at_extreme_inputs() {
+        let width = derive_pipeline_width(usize::MAX);
+        assert_eq!(width, tokio::sync::Semaphore::MAX_PERMITS - 2);
+        assert!(width.checked_add(2).is_some());
+    }
+}

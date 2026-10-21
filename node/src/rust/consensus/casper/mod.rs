@@ -68,6 +68,7 @@ pub(crate) struct CasperConsensusAdapter<T: TransportLayer + Send + Sync + 'stat
     proposer_capacity: usize,
     proposer_state: Option<Arc<RwLock<ProposerState>>>,
     block_processor: BlockProcessor<T>,
+    pipeline_width: usize,
     block_state: Arc<InFlightBlocks>,
     block_tx: mpsc::Sender<BlockQueueItem>,
     block_rx: mpsc::Receiver<BlockQueueItem>,
@@ -130,6 +131,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
             proposer_capacity,
             proposer_state,
             block_processor,
+            pipeline_width,
             block_state,
             block_tx,
             block_rx,
@@ -194,6 +196,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
             (block_rx, block_tx),
             Arc::new(block_processor),
             block_state,
+            pipeline_width,
         )
         .supervised(worker_shutdown.clone());
         workers.spawn("block processor", async move {

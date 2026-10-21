@@ -413,6 +413,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
+        | BitmaskBitsCleared { .. }
         | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }

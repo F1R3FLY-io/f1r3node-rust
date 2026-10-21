@@ -28,6 +28,7 @@ async fn panic_stops_admission_and_releases_active_and_queued_blocks() {
         let processor = tokio::spawn(run_block_tasks(
             rx,
             shutdown_rx,
+            2,
             move |(id, guard)| {
                 let started_tx = started_tx.clone();
                 let gate = gate.clone();
@@ -76,6 +77,7 @@ async fn panic_while_draining_is_reported() {
         let mut processor = Box::pin(run_block_tasks(
             rx,
             shutdown_rx,
+            2,
             move |(_, guard)| {
                 let gate = gate.clone();
                 async move {
@@ -111,6 +113,7 @@ async fn shutdown_drains_accepted_blocks_with_bounded_parallelism() {
         let mut processor = Box::pin(run_block_tasks(
             rx,
             shutdown_rx,
+            2,
             move |(id, guard)| {
                 let gate = task_gate.clone();
                 let started_tx = started_tx.clone();
@@ -154,6 +157,7 @@ async fn panic_during_release_scan_is_reported_and_releases_guards() {
         let error = run_block_tasks(
             rx,
             shutdown_rx,
+            2,
             std::future::ready,
             |(_, guard)| async move {
                 let _guard = guard;
@@ -188,6 +192,7 @@ async fn closed_input_drains_blocks_released_by_an_active_scan() {
         let processor = tokio::spawn(run_block_tasks(
             rx,
             shutdown_rx,
+            2,
             move |(id, guard)| {
                 started_tx.send(id).unwrap();
                 drop(guard);
