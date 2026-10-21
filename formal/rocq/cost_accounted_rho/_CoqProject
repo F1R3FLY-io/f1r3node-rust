@@ -27,7 +27,10 @@
 #   Translation                 → RhoSyntax, StructEquivInversion, StructEquivHeads,
 #                                 RhoReduction, CostAccountedSyntax
 #   ChannelSeparation           → RhoSyntax, CostAccountedSyntax, Translation
-#   TokenConservation           → CostAccountedSyntax, CostAccountedReduction
+#   TokenConservation           → CostAccountedSyntax, CostAccountedReduction,
+#                                 AuthorityPresentation and
+#                                 RotatingMonetaryAllocation (G3, DR-135:
+#                                 the owner sections 8 and 9)
 #   Settlement                  → TokenConservation
 #   SlashingComposition         → Settlement
 #   MergeableChannelAccounting  → Settlement
@@ -524,6 +527,7 @@ theories/ClosedDemandBound.v
 theories/BoundKindSoundness.v
 theories/PlanComputeDominates.v
 theories/HeldCapacityGuard.v
+theories/SameBlockFundingGroups.v
 theories/PrepaidOccurrenceSelection.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v

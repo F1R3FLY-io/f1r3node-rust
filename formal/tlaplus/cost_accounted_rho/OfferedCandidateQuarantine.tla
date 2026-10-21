@@ -12,14 +12,21 @@
 (* client may admit a candidate again; admission clears its status entry.  *)
 (*                                                                         *)
 (* Rust correspondence:                                                    *)
-(*   window, attempt, alternates  block_creator.rs selection loop          *)
-(*                                (offered_alternates, ordinary_cap)       *)
+(*   window, batch                block_creator.rs selection loop          *)
+(*                                (ordinary_cap; DR-134: no alternates)    *)
 (*   Checkpoint                   create_inner checkpoint loop             *)
 (*   quarantine, log              KeyValueDeployStorage::quarantine_envelope*)
 (*                                and EnvelopeRejectionLog                 *)
 (*   Admit                        add_envelope_if_absent (clears entry)    *)
 (*   InfraError                   runtime.rs offered_candidate_rejection   *)
 (*                                (infrastructure classes pass through)    *)
+(*                                                                         *)
+(* DR-134 (DR-65, O-6): a proposal attempts its whole window as one batch.  *)
+(* A failing member is quarantined and the rest of the batch runs again    *)
+(* (DR-63); with no member left the proposal builds an empty block when    *)
+(* other work exists, and otherwise ends with NoNewDeploys. There are no    *)
+(* alternates. A finished proposal includes exactly the fundable members of *)
+(* its window (FundableWindowIncluded, which replaces FirstFundableIncluded).*)
 (*                                                                         *)
 (* Mutation selects one negative control. Each control must violate the    *)
 (* named invariant in its *Unsafe.cfg:                                     *)
@@ -31,7 +38,7 @@
 (*                 -> AttemptsBounded                                      *)
 (*   "noevict"     the status log never evicts -> LogBounded               *)
 (*   "skiphead"    selection skips the canonical head                      *)
-(*                 -> FirstFundableIncluded                                *)
+(*                 -> FundableWindowIncluded                               *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -62,15 +69,21 @@ VARIABLES
   history,      \* every quarantine decision in order (auxiliary)
   included,     \* candidates included in some created block (auxiliary)
   window,       \* canonical window of the current proposal (auxiliary)
-  chosen,       \* candidate included by the current proposal, or None
-  attempt,      \* current attempt: a candidate, Empty, or None
-  alternates,   \* remaining alternates of the current proposal
+  \* DR-134 (DR-65): the proposal includes a batch, and a batch has no
+  \* alternates.
+  \* chosen,       \* candidate included by the current proposal, or None
+  \* attempt,      \* current attempt: a candidate, Empty, or None
+  \* alternates,   \* remaining alternates of the current proposal
+  chosen,       \* members included by the current proposal (a set)
+  attempt,      \* current attempt: "batch", "empty", or "none"
+  batch,        \* members of the current batch attempt, in canonical order
   attempts,     \* checkpoint executions in the current proposal
   outcome,      \* result of the current or last proposal
   proposals     \* proposals started so far
 
+\* DR-134 (DR-65): `batch` replaces `alternates`.
 vars == <<fundable, cap, logCapacity, otherWork, pending, log, history,
-          included, window, chosen, attempt, alternates, attempts, outcome,
+          included, window, chosen, attempt, batch, attempts, outcome,
           proposals>>
 
 Min(a, b) == IF a <= b THEN a ELSE b
@@ -85,6 +98,13 @@ FirstFundable(s) ==
   s[CHOOSE i \in 1..Len(s) :
       /\ s[i] \in fundable
       /\ \A j \in 1..(i - 1) : s[j] \notin fundable]
+
+\* DR-134 (DR-65): the first member of a batch that fails alone; the
+\* decision pass stops there.
+FirstUnfundable(s) ==
+  s[CHOOSE i \in 1..Len(s) :
+      /\ s[i] \notin fundable
+      /\ \A j \in 1..(i - 1) : s[j] \in fundable]
 
 LogAppend(entry) ==
   LET appended == Append(log, entry)
@@ -104,9 +124,9 @@ Init ==
   /\ history = <<>>
   /\ included = {}
   /\ window = <<>>
-  /\ chosen = None
-  /\ attempt = None
-  /\ alternates = <<>>
+  /\ chosen = {}
+  /\ attempt = "none"
+  /\ batch = <<>>
   /\ attempts = 0
   /\ outcome = "idle"
   /\ proposals = 0
@@ -118,8 +138,88 @@ Admit(c) ==
   /\ pending' = pending \cup {c}
   /\ log' = LogWithout(c)
   /\ UNCHANGED <<fundable, cap, logCapacity, otherWork, history, included,
-                 window, chosen, attempt, alternates, attempts, outcome,
+                 window, chosen, attempt, batch, attempts, outcome,
                  proposals>>
+
+\* DR-134 (DR-65, O-6): the former single-candidate actions, kept for
+\* reference.
+\* StartProposal ==
+\*   /\ outcome # "running"
+\*   /\ outcome # "candidate_error"
+\*   /\ proposals < MaxProposals
+\*   /\ \E work \in BOOLEAN :
+\*        LET ordered == PendingOrder
+\*            w == SubSeq(ordered, 1, Min(cap, Len(ordered)))
+\*            sequence == CASE Mutation = "unbounded" -> ordered
+\*                          [] Mutation = "skiphead" /\ Len(w) >= 2 -> Tail(w)
+\*                          [] OTHER -> w
+\*        IN /\ otherWork' = work
+\*           /\ window' = w
+\*           /\ chosen' = None
+\*           /\ attempts' = 0
+\*           /\ proposals' = proposals + 1
+\*           /\ IF sequence # <<>>
+\*                THEN /\ attempt' = Head(sequence)
+\*                     /\ alternates' = Tail(sequence)
+\*                     /\ outcome' = "running"
+\*                ELSE IF work
+\*                       THEN /\ attempt' = Empty
+\*                            /\ alternates' = <<>>
+\*                            /\ outcome' = "running"
+\*                       ELSE /\ attempt' = None
+\*                            /\ alternates' = <<>>
+\*                            /\ outcome' = "nonew"
+\*   /\ UNCHANGED <<fundable, cap, logCapacity, pending, log, history, included>>
+\*
+\* Quarantine ==
+\*   /\ pending' = IF Mutation = "overremove" THEN {} ELSE pending \ {attempt}
+\*   /\ log' = LogAppend(attempt)
+\*   /\ history' = Append(history, attempt)
+\*   /\ UNCHANGED <<included, chosen>>
+\*   /\ IF alternates # <<>>
+\*        THEN /\ attempt' = Head(alternates)
+\*             /\ alternates' = Tail(alternates)
+\*             /\ outcome' = "running"
+\*        ELSE IF otherWork
+\*               THEN /\ attempt' = Empty
+\*                    /\ alternates' = <<>>
+\*                    /\ outcome' = "running"
+\*               ELSE /\ attempt' = None
+\*                    /\ alternates' = <<>>
+\*                    /\ outcome' = "nonew"
+\*
+\* Checkpoint ==
+\*   /\ outcome = "running"
+\*   /\ attempts' = attempts + 1
+\*   /\ CASE attempt = Empty ->
+\*             /\ outcome' = "created"
+\*             /\ attempt' = None
+\*             /\ UNCHANGED <<pending, log, history, included, chosen, alternates>>
+\*        [] attempt \in fundable ->
+\*             /\ outcome' = "created"
+\*             /\ included' = included \cup {attempt}
+\*             /\ chosen' = attempt
+\*             /\ pending' = pending \ {attempt}
+\*             /\ attempt' = None
+\*             /\ alternates' = <<>>
+\*             /\ UNCHANGED <<log, history>>
+\*        [] OTHER ->
+\*             IF Mutation = "escape"
+\*               THEN /\ outcome' = "candidate_error"
+\*                    /\ attempt' = None
+\*                    /\ alternates' = <<>>
+\*                    /\ UNCHANGED <<pending, log, history, included, chosen>>
+\*               ELSE Quarantine
+\*   /\ UNCHANGED <<fundable, cap, logCapacity, otherWork, window, proposals>>
+\*
+\* InfraError ==
+\*   /\ outcome = "running"
+\*   /\ outcome' = "infra"
+\*   /\ attempt' = None
+\*   /\ alternates' = <<>>
+\*   /\ UNCHANGED <<fundable, cap, logCapacity, otherWork, pending, log, history,
+\*                  included, window, chosen, attempts, proposals>>
+\*
 
 StartProposal ==
   /\ outcome # "running"
@@ -133,59 +233,62 @@ StartProposal ==
                          [] OTHER -> w
        IN /\ otherWork' = work
           /\ window' = w
-          /\ chosen' = None
+          /\ chosen' = {}
           /\ attempts' = 0
           /\ proposals' = proposals + 1
           /\ IF sequence # <<>>
-               THEN /\ attempt' = Head(sequence)
-                    /\ alternates' = Tail(sequence)
+               THEN /\ attempt' = "batch"
+                    /\ batch' = sequence
                     /\ outcome' = "running"
                ELSE IF work
-                      THEN /\ attempt' = Empty
-                           /\ alternates' = <<>>
+                      THEN /\ attempt' = "empty"
+                           /\ batch' = <<>>
                            /\ outcome' = "running"
-                      ELSE /\ attempt' = None
-                           /\ alternates' = <<>>
+                      ELSE /\ attempt' = "none"
+                           /\ batch' = <<>>
                            /\ outcome' = "nonew"
   /\ UNCHANGED <<fundable, cap, logCapacity, pending, log, history, included>>
 
+\* A failing member is quarantined, and the rest of the batch runs again.
 Quarantine ==
-  /\ pending' = IF Mutation = "overremove" THEN {} ELSE pending \ {attempt}
-  /\ log' = LogAppend(attempt)
-  /\ history' = Append(history, attempt)
-  /\ UNCHANGED <<included, chosen>>
-  /\ IF alternates # <<>>
-       THEN /\ attempt' = Head(alternates)
-            /\ alternates' = Tail(alternates)
-            /\ outcome' = "running"
-       ELSE IF otherWork
-              THEN /\ attempt' = Empty
-                   /\ alternates' = <<>>
-                   /\ outcome' = "running"
-              ELSE /\ attempt' = None
-                   /\ alternates' = <<>>
-                   /\ outcome' = "nonew"
+  LET failed == FirstUnfundable(batch)
+      rest == SelectSeq(batch, LAMBDA x : x # failed)
+  IN /\ pending' = IF Mutation = "overremove" THEN {} ELSE pending \ {failed}
+     /\ log' = LogAppend(failed)
+     /\ history' = Append(history, failed)
+     /\ UNCHANGED <<included, chosen>>
+     /\ IF rest # <<>>
+          THEN /\ attempt' = "batch"
+               /\ batch' = rest
+               /\ outcome' = "running"
+          ELSE IF otherWork
+                 THEN /\ attempt' = "empty"
+                      /\ batch' = <<>>
+                      /\ outcome' = "running"
+                 ELSE /\ attempt' = "none"
+                      /\ batch' = <<>>
+                      /\ outcome' = "nonew"
 
 Checkpoint ==
   /\ outcome = "running"
   /\ attempts' = attempts + 1
-  /\ CASE attempt = Empty ->
+  /\ CASE attempt = "empty" ->
             /\ outcome' = "created"
-            /\ attempt' = None
-            /\ UNCHANGED <<pending, log, history, included, chosen, alternates>>
-       [] attempt \in fundable ->
+            /\ attempt' = "none"
+            /\ UNCHANGED <<pending, log, history, included, chosen, batch>>
+       [] attempt = "batch" /\ SeqRange(batch) \subseteq fundable ->
             /\ outcome' = "created"
-            /\ included' = included \cup {attempt}
-            /\ chosen' = attempt
-            /\ pending' = pending \ {attempt}
-            /\ attempt' = None
-            /\ alternates' = <<>>
+            /\ included' = included \cup SeqRange(batch)
+            /\ chosen' = SeqRange(batch)
+            /\ pending' = pending \ SeqRange(batch)
+            /\ attempt' = "none"
+            /\ batch' = <<>>
             /\ UNCHANGED <<log, history>>
        [] OTHER ->
             IF Mutation = "escape"
               THEN /\ outcome' = "candidate_error"
-                   /\ attempt' = None
-                   /\ alternates' = <<>>
+                   /\ attempt' = "none"
+                   /\ batch' = <<>>
                    /\ UNCHANGED <<pending, log, history, included, chosen>>
               ELSE Quarantine
   /\ UNCHANGED <<fundable, cap, logCapacity, otherWork, window, proposals>>
@@ -193,8 +296,8 @@ Checkpoint ==
 InfraError ==
   /\ outcome = "running"
   /\ outcome' = "infra"
-  /\ attempt' = None
-  /\ alternates' = <<>>
+  /\ attempt' = "none"
+  /\ batch' = <<>>
   /\ UNCHANGED <<fundable, cap, logCapacity, otherWork, pending, log, history,
                  included, window, chosen, attempts, proposals>>
 
@@ -218,9 +321,13 @@ TypeOK ==
   /\ history \in Seq(Candidates)
   /\ included \subseteq Candidates
   /\ window \in Seq(Candidates)
-  /\ chosen \in Candidates \cup {None}
-  /\ attempt \in Candidates \cup {Empty, None}
-  /\ alternates \in Seq(Candidates)
+  \* DR-134 (DR-65): a set of included members and a batch attempt.
+  \* /\ chosen \in Candidates \cup {None}
+  \* /\ attempt \in Candidates \cup {Empty, None}
+  \* /\ alternates \in Seq(Candidates)
+  /\ chosen \subseteq Candidates
+  /\ attempt \in {"batch", "empty", "none"}
+  /\ batch \in Seq(Candidates)
   /\ attempts \in Nat
   /\ outcome \in Outcomes
   /\ proposals \in 0..MaxProposals
@@ -260,11 +367,22 @@ LogOrderFollowsHistory ==
 \* A finished proposal includes the first fundable candidate of its window.
 \* With no fundable candidate it includes nothing, and it builds an empty
 \* block exactly when other work exists.
-FirstFundableIncluded ==
+\* DR-134 (DR-65): replaced by FundableWindowIncluded, kept for reference.
+\* FirstFundableIncluded ==
+\*   outcome \in {"created", "nonew"} =>
+\*     IF \E i \in 1..Len(window) : window[i] \in fundable
+\*       THEN chosen = FirstFundable(window)
+\*       ELSE /\ chosen = None
+\*            /\ (outcome = "created") = otherWork
+
+\* DR-134 (DR-65): a finished proposal includes exactly the fundable members
+\* of its window. With no fundable member it includes nothing, and it builds
+\* an empty block exactly when other work exists.
+FundableWindowIncluded ==
   outcome \in {"created", "nonew"} =>
     IF \E i \in 1..Len(window) : window[i] \in fundable
-      THEN chosen = FirstFundable(window)
-      ELSE /\ chosen = None
+      THEN chosen = SeqRange(window) \cap fundable
+      ELSE /\ chosen = {}
            /\ (outcome = "created") = otherWork
 
 \* A quarantine appends its identity and evicts only the oldest entry.

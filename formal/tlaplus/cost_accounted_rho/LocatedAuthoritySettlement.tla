@@ -1,4 +1,48 @@
 ---------------------- MODULE LocatedAuthoritySettlement ----------------------
+(***************************************************************************)
+(* G3 (DR-135, design v2 rules R2 to R4 and R10; DR-68 items 1 to 3):      *)
+(* owner purses.                                                           *)
+(*                                                                         *)
+(* An owner purse pays for the stored process of its owner when another    *)
+(* deployment fires it (P1 Rules 1 to 5, decision a). No deployment        *)
+(* reserves an owner purse (ASSUME below), so the reservation bound        *)
+(* RealizedBackedByReservation covers the client purses only. An owner     *)
+(* purse is gated by its owner budget instead (v2 R3: the balance at       *)
+(* R_{i-1} minus the later holds and the own holds). An event whose owner  *)
+(* share does not fit the remaining budget does not fire and has no charge *)
+(* (Option 2): RejectEvent changes nothing, and the run goes on.           *)
+(*                                                                         *)
+(* G3 invariants:                                                          *)
+(*   OwnerRealizedWithinBudget   the draws on an owner purse stay within   *)
+(*                               its owner budget.                         *)
+(*   RejectedEventDebitsNothing  the realized draws count exactly the      *)
+(*                               committed events and a pending partial    *)
+(*                               commit, so a rejected event debits        *)
+(*                               nothing.                                  *)
+(* G3 controls (each holds only its named invariant):                      *)
+(*   AllowUngatedOwnerDraw   Fire skips the budget gate of an owner purse  *)
+(*                           -> OwnerRealizedWithinBudget                  *)
+(*   AllowUnsealedOwnerDraw  a trigger whose regions carry no stored seal  *)
+(*                           of the owner draws the owner purse            *)
+(*                           -> NoAmbientAuthority                         *)
+(* The second control is the TLA+ obligation of DR-68: "a trigger with no  *)
+(* stored signature cannot draw an installer purse".                       *)
+(*                                                                         *)
+(* The owner scenario is MCLocatedAuthoritySettlementOwner.tla. The first  *)
+(* scenario, MCLocatedAuthoritySettlement.tla, has no owner purse, so its  *)
+(* configs keep their state space.                                         *)
+(*                                                                         *)
+(* G3 step S11 (DR-135 item 13): the signed limit and the hold of a caller *)
+(* cover only the work that the caller pays. This model agrees and needs   *)
+(* no change. A deployment reserves DeployBound only on its client purses, *)
+(* because DeployBound is 0 on every owner purse (ASSUME below).           *)
+(* RealizedBackedByReservation bounds only the client purses, and an owner *)
+(* draw counts only against its owner budget. Every draw of this model is  *)
+(* 1 unit, so every owner here has a price of 1 or more. Owner work at     *)
+(* price 0 costs 0 and counts against the limit of the caller (S11         *)
+(* decision 2). LocatedAuthoritySettlement.v checks this rule in its       *)
+(* caller-run section.                                                     *)
+(***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
 CONSTANTS
@@ -40,7 +84,26 @@ CONSTANTS
     AllowRewrappedContinuation,
     AllowNonAtomicDebit,
     ReplayOmitsAuthority,
-    ReplayLosesSlotIdentity
+    ReplayLosesSlotIdentity,
+    \* Added by G3 (DR-135).
+    OwnerPurses,
+    OwnerBudget,
+    UnsealedTriggerEvent,
+    OwnerPurse,
+    AllowUngatedOwnerDraw,
+    AllowUnsealedOwnerDraw
+
+\* Added by G3 (DR-135): no deployment reserves an owner purse, and an owner
+\* budget never exceeds the balance.
+ASSUME /\ OwnerPurses \subseteq Purses
+       /\ OwnerBudget \in [Purses -> Nat]
+       /\ \A purse \in OwnerPurses : OwnerBudget[purse] <= InitialBalance[purse]
+       /\ \A deployment \in Deployments, purse \in OwnerPurses :
+            DeployBound[deployment][purse] = 0
+       /\ UnsealedTriggerEvent \in Events
+       /\ OwnerPurse \in Purses
+       /\ AllowUngatedOwnerDraw \in BOOLEAN
+       /\ AllowUnsealedOwnerDraw \in BOOLEAN
 
 ASSUME /\ Actors # {}
        /\ Signatures # {}
@@ -137,6 +200,16 @@ StaticPlanExact(event) ==
 StaticPlanLocated(event) ==
     \A region \in EventRegions[event] : Near[region][FundingPurse[event][region]]
 
+\* Changed by G3 (DR-135): control AllowUnsealedOwnerDraw lets a trigger
+\* whose regions carry no stored seal of the owner draw the owner purse.
+\* RuntimePurse(event, region) ==
+\*     IF EraseAuthorityMetadata
+\*     THEN EnvelopePurse
+\*     ELSE IF AllowAmbientPurse /\ event = ContinuationEvent
+\*          THEN AmbientPurse
+\*          ELSE IF AllowRewrappedContinuation /\ event = ContinuationEvent
+\*               THEN OuterPurse
+\*               ELSE FundingPurse[event][region]
 RuntimePurse(event, region) ==
     IF EraseAuthorityMetadata
     THEN EnvelopePurse
@@ -144,7 +217,9 @@ RuntimePurse(event, region) ==
          THEN AmbientPurse
          ELSE IF AllowRewrappedContinuation /\ event = ContinuationEvent
               THEN OuterPurse
-              ELSE FundingPurse[event][region]
+              ELSE IF AllowUnsealedOwnerDraw /\ event = UnsealedTriggerEvent
+                   THEN OwnerPurse
+                   ELSE FundingPurse[event][region]
 
 RuntimePurses(event) ==
     {RuntimePurse(event, region) : region \in EventRegions[event]}
@@ -160,8 +235,14 @@ RuntimePlanExact(event) ==
 RuntimePlanLocated(event) ==
     \A region \in EventRegions[event] : Near[region][RuntimePurse(event, region)]
 
+\* Changed by G3 (DR-135): the unsealed owner draw also bypasses validation.
+\* AuthorityValidationBypassed ==
+\*     EraseAuthorityMetadata \/ AllowAmbientPurse \/ AllowRewrappedContinuation
 AuthorityValidationBypassed ==
-    EraseAuthorityMetadata \/ AllowAmbientPurse \/ AllowRewrappedContinuation
+    \/ EraseAuthorityMetadata
+    \/ AllowAmbientPurse
+    \/ AllowRewrappedContinuation
+    \/ AllowUnsealedOwnerDraw
 
 RuntimeAuthorityAccepted(event) ==
     /\ RuntimePurses(event) # {}
@@ -193,8 +274,15 @@ CanReserve(deployment) ==
     \A purse \in Purses :
       reserved[purse] + DeployBound[deployment][purse] <= balance[purse]
 
+\* Changed by G3 (DR-135): an owner purse is gated by its owner budget, and
+\* control AllowUngatedOwnerDraw removes that gate.
+\* CanDebit(event) ==
+\*     \A purse \in RuntimePurses(event) : realized[purse] < balance[purse]
 CanDebit(event) ==
-    \A purse \in RuntimePurses(event) : realized[purse] < balance[purse]
+    \A purse \in RuntimePurses(event) :
+      IF purse \in OwnerPurses
+      THEN AllowUngatedOwnerDraw \/ realized[purse] < OwnerBudget[purse]
+      ELSE realized[purse] < balance[purse]
 
 Ready(event) ==
     /\ phase = "Execution"
@@ -430,10 +518,31 @@ TypeOK ==
 ReservationsNeverExceedSupply ==
     \A purse \in Purses : reserved[purse] <= InitialBalance[purse]
 
+\* Changed by G3 (DR-135): only a client purse is backed by a deployment
+\* reservation. An owner purse is backed by its owner budget
+\* (OwnerRealizedWithinBudget).
+\* RealizedBackedByReservation ==
+\*     \A deployment \in Deployments :
+\*       \A purse \in Purses :
+\*         realizedByDeployment[deployment][purse] <= DeployBound[deployment][purse]
 RealizedBackedByReservation ==
     \A deployment \in Deployments :
-      \A purse \in Purses :
+      \A purse \in Purses \ OwnerPurses :
         realizedByDeployment[deployment][purse] <= DeployBound[deployment][purse]
+
+\* Added by G3 (DR-135): the draws on an owner purse stay within its budget.
+OwnerRealizedWithinBudget ==
+    \A purse \in OwnerPurses : realized[purse] <= OwnerBudget[purse]
+
+\* Added by G3 (DR-135): the realized draws count exactly the committed
+\* events and a pending partial commit, so a rejected event debits nothing.
+RejectedEventDebitsNothing ==
+    /\ rejectedEvents \cap committed = {}
+    /\ pendingEvent \notin rejectedEvents
+    /\ \A purse \in Purses :
+         realized[purse]
+           = Cardinality({event \in committed : purse \in RuntimePurses(event)})
+             + (IF purse \in pendingPurses THEN 1 ELSE 0)
 
 RealizedDecomposesByDeployment ==
     \A purse \in Purses :

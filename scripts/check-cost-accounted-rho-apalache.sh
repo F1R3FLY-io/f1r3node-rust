@@ -284,6 +284,80 @@ run_expected_violation checkpoint-nondecreasing-retry-unsafe \
   "a retry that does not reduce its user window is independently refuted" \
   RetryLimitsStrictlyDecrease \
   --config=CheckpointAdmissionRecertificationNonDecreasingRetryUnsafeApalache.cfg --length=2 CheckpointAdmissionRecertification.tla || overall=1
+run_check same-block-funding-groups \
+  "three-member DR-65 batches: groups all or none, no overdraft, later holds kept, and truncated batches replay equal through length 11" \
+  --config=SameBlockFundingGroupsApalache.cfg --length=11 SameBlockFundingGroups.tla || overall=1
+run_expected_violation same-block-prefix-admission-unsafe \
+  "prefix admission that splits a funding group is independently refuted" \
+  GroupAllOrNone \
+  --config=SameBlockFundingGroupsPrefixAdmissionUnsafeApalache.cfg --length=3 SameBlockFundingGroups.tla || overall=1
+run_expected_violation same-block-independent-capacity-unsafe \
+  "independent full capacity that overdraws a shared purse is independently refuted" \
+  NoOverdraft \
+  --config=SameBlockFundingGroupsIndependentCapacityUnsafeApalache.cfg --length=5 SameBlockFundingGroups.tla || overall=1
+run_expected_violation same-block-no-held-guard-unsafe \
+  "a guard without the later holds is independently refuted" \
+  HeldCapacityGuard \
+  --config=SameBlockFundingGroupsNoHeldGuardUnsafeApalache.cfg --length=4 SameBlockFundingGroups.tla || overall=1
+run_expected_violation same-block-keep-truncated-results-unsafe \
+  "shipping a truncated prefix without its re-run is independently refuted" \
+  TruncationConsistency \
+  --config=SameBlockFundingGroupsKeepTruncatedResultsUnsafeApalache.cfg --length=6 SameBlockFundingGroups.tla || overall=1
+# G3 (DR-135): owner draws in a batch.
+run_check same-block-owner-draws \
+  "two-member G3 batches: owner budgets, owner-aware selection, and truncation condition (c) through length 8" \
+  --config=SameBlockFundingGroupsOwnerApalache.cfg --length=8 SameBlockFundingGroups.tla || overall=1
+run_expected_violation same-block-owner-straddle-ignored-unsafe \
+  "a truncation that ignores a dropped hold on a shipped owner table is independently refuted" \
+  TruncationConsistency \
+  --config=SameBlockFundingGroupsOwnerStraddleIgnoredUnsafeApalache.cfg --length=6 SameBlockFundingGroups.tla || overall=1
+run_expected_violation same-block-owner-blind-selection-unsafe \
+  "a settlement selection that ignores the member's owner debits is independently refuted" \
+  NoOverdraft \
+  --config=SameBlockFundingGroupsOwnerBlindSelectionUnsafeApalache.cfg --length=4 SameBlockFundingGroups.tla || overall=1
+# G3 (DR-135): owner refusals in native play and native replay.
+# Changed on 2026-10-20: Apalache does not check the safe configuration or
+# the late-budget-start control. Neither finished in the gate timeout of
+# 1200 s on this host. The measurements of 2026-10-20 follow.
+#   - The safe configuration stopped at step 9 of 12 (8 GB heap).
+#   - Each of its four parts, one for each room and growth, stopped at step
+#     10 of 12 (default heap).
+#   - The late-budget-start control needs step 10. It stopped at step 10 with
+#     all constants (8 GB heap) and with the constants of its TLC
+#     counterexample (default heap).
+# TLC checks the same constants exhaustively. NativeOwnerRefusal.cfg passes
+# with 5,677,543 distinct states, a complete state graph of depth 12. TLC
+# refutes the late-budget-start control with the same configuration file by
+# StoredClaimIsHonest. The five other controls below refuted at step 9 in
+# 105 s to 311 s (8 GB heap).
+# run_check native-owner-refusal \
+#   "racing owner refusals: honest records replay, and accepted Stored claims and refusals are honest through length 12" \
+#   --config=NativeOwnerRefusalApalache.cfg --length=12 NativeOwnerRefusal.tla || overall=1
+run_expected_violation native-owner-refusal-unrecorded-unsafe \
+  "a refusal that play does not record is independently refuted" \
+  HonestStoredReplays \
+  --config=NativeOwnerRefusalUnrecordedRefusalUnsafe.cfg --length=12 NativeOwnerRefusal.tla || overall=1
+run_expected_violation native-owner-refusal-live-ledger-item-test-unsafe \
+  "an item test on the live ledger instead of the snapshot is independently refuted" \
+  PlayReplayAgree \
+  --config=NativeOwnerRefusalLiveLedgerItemTestUnsafe.cfg --length=12 NativeOwnerRefusal.tla || overall=1
+run_expected_violation native-owner-refusal-unverified-unsafe \
+  "a refusal that replay accepts without its shortfall is independently refuted" \
+  RefusalNeedsShortfall \
+  --config=NativeOwnerRefusalUnverifiedRefusalUnsafe.cfg --length=12 NativeOwnerRefusal.tla || overall=1
+run_expected_violation native-owner-refusal-pessimistic-unlisted-unsafe \
+  "budget 0 for an unlisted purse of a table that is not full is independently refuted" \
+  StoredClaimIsHonest \
+  --config=NativeOwnerRefusalPessimisticUnlistedUnsafe.cfg --length=12 NativeOwnerRefusal.tla || overall=1
+# Changed on 2026-10-20: TLC only (see the note at native-owner-refusal).
+# run_expected_violation native-owner-refusal-late-budget-start-unsafe \
+#   "a budget_start after the first attempt of its row is independently refuted" \
+#   StoredClaimIsHonest \
+#   --config=NativeOwnerRefusalLateBudgetStartUnsafe.cfg --length=12 NativeOwnerRefusal.tla || overall=1
+run_expected_violation native-owner-refusal-unpickable-unsafe \
+  "a refusal of a tuple whose item fails the item test is independently refuted" \
+  StoredClaimIsHonest \
+  --config=NativeOwnerRefusalUnpickableRefusalUnsafe.cfg --length=12 NativeOwnerRefusal.tla || overall=1
 run_check parallel-stack-materialization \
   "same-configuration declaration barrier, nested causality, conservation, and replay agreement" \
   --config=ParallelStackMaterialization.cfg --length=8 ParallelStackMaterialization.tla || overall=1
@@ -646,6 +720,23 @@ run_expected_violation funding-slot-bootstrap-rejected-target-creation-unsafe \
   "creating an empty target vault during rejected funding is independently refuted" \
   RejectedFundingIsEffectFree \
   --config=FundingSlotBootstrapRejectedTargetCreationUnsafe.cfg --length=2 MCFundingSlotBootstrap.tla || overall=1
+# G3 (DR-135): the installer's share at activation.
+run_check funding-slot-bootstrap-installer-refusal \
+  "an installer share that the installer purse cannot pay refuses the activation with no charge through length 4" \
+  --config=FundingSlotBootstrapInstallerRefusalApalache.cfg --length=4 MCFundingSlotBootstrap.tla || overall=1
+run_expected_violation funding-slot-bootstrap-ignore-installer-share-unsafe \
+  "an activation that neither gates nor charges the installer share is independently refuted" \
+  ActivationChargesTheInstallerShare \
+  --config=FundingSlotBootstrapIgnoreInstallerShareUnsafe.cfg --length=3 MCFundingSlotBootstrap.tla || overall=1
+# G3 step S11 (DR-135 item 13): the caller reserves only its own work.
+run_expected_violation funding-slot-bootstrap-caller-limit-covers-whole-run-unsafe \
+  "a caller limit that also counts the priced owner work is independently refuted" \
+  SponsoredActivationNeedsOnlyCallerWork \
+  --config=FundingSlotBootstrapCallerLimitCoversWholeRunUnsafe.cfg --length=3 MCFundingSlotBootstrap.tla || overall=1
+run_expected_violation funding-slot-bootstrap-caller-pays-owner-shares-unsafe \
+  "a caller that also pays the priced owner work is independently refuted" \
+  CallerPaysOnlyItsOwnWork \
+  --config=FundingSlotBootstrapCallerPaysOwnerSharesUnsafe.cfg --length=3 MCFundingSlotBootstrap.tla || overall=1
 run_check pos-vault-authority \
   "PoS human control is bound to the authenticated genesis deployer and preserves vault custody" \
   --config=PoSVaultAuthorityApalache.cfg --length=4 PoSVaultAuthority.tla || overall=1

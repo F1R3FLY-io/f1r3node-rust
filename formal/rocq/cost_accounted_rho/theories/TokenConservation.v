@@ -35,6 +35,44 @@
 
    Dependencies: Rocq 9.1.1 stdlib, CostAccountedSyntax,
                  CostAccountedReduction (this project)
+
+   ─────────────────────────────────────────────────────────────────────────
+   G3 (DR-135) additions: owners fund their stored processes
+   ─────────────────────────────────────────────────────────────────────────
+   Rocq Theorem                           │ Design property (design v2)
+   ───────────────────────────────────────┼──────────────────────────────────
+   owner_compound_share_exact             │ R4 and A3: Rule 3, else Rule 2,
+                                          │   else no draw (P1 Rules 2, 3)
+   single_signature_lane_never_draws_     │ a lane of one atom cannot present
+     compound_vault                       │   the compound vault's cell
+   rule2_partial_atom_draw_is_no_cover    │ Rule 2 draws every atom purse
+   nc_max_min_share_breaks_rule2          │ control: capped max-min moves a
+                                          │   short atom's share
+   owner_debit_is_usage_times_owner_price │ R4: usage times the owner's price
+   owner_debit_independent_of_client_price│ S2 (F5): the caller's price does
+                                          │   not change an owner's debit
+   nc_client_price_scales_owner_debit     │ control: the caller's price on an
+                                          │   owner region scales the debit
+   The two G3 sections import AuthorityPresentation (for
+   compound_cell_cannot_be_weakened) and RotatingMonetaryAllocation (for the
+   capped max-min split of the control).
+
+   Formulations rejected before any proof attempt (reasoned):
+   - A Rule 2 share of charge / n with a remainder: the meter counts the
+     share of a compound region in leaf units, one per atom, so the share is
+     n * b for a per-atom share b, and the split has no remainder.
+   - A control that reuses DefaultApportionment: it debits each component
+     the whole remaining amount (resource_logic.rs), which no G3 rule uses.
+     The control refutes the capped max-min split instead, the split that a
+     reuse of the monetary allocation would bring.
+
+   Proof steps that failed in this development (attempted):
+   - Nat.leb_le, Nat.leb_gt and Nat.mul_add_distr_r are not in scope with
+     Lia and Lists.List alone. The G3 section imports Arith.PeanoNat.
+   - In owner_debit_is_usage_times_owner_price, destruct (owns owner region)
+     eqn:owned also rewrites the hypothesis of the Forall to
+     true = true -> ... . Applying it to owned then fails, and applying it
+     to eq_refl succeeds.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import Lia Lists.List.
@@ -523,4 +561,331 @@ Proof.
   split.
   - apply multi_settlement_conserves; exact Hwithin.
   - unfold ps, settlement_draw_sum, compound_tokens_drawn. cbn. lia.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 8: G3 (DR-135) — the owner share of a compound owner
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Design v2 R4 and amendment A3 (P1 sec:rewrites, Rules 2 and 3): a
+   compound owner s_1 ⊗ ... ⊗ s_n pays its share of a COMM in one of two
+   ways, and never in part.
+     Rule 3: the compound vault pays the whole share if it fits.
+     Rule 2: else each atom purse pays share / n, if every atom purse fits.
+     Else the charge does not fit, and nothing is drawn (Option 2 of G3).
+   The meter counts the share of a compound region in leaf units, one per
+   atom (native_phlo_rules/execution.rs), so the share is n * b for a
+   per-atom share b, and Rule 2 draws exactly b from each atom purse.
+
+   Literate form of the draw (owner_compound_draw):
+     ⟨draw of a compound owner⟩ ≡
+       charge ← n * b
+       if charge ≤ vault:                    -- Rule 3, the combined token
+         draw charge from the vault
+       else if every atom purse holds b:     -- Rule 2, the split tokens
+         draw b from each atom purse
+       else:
+         draw nothing                        -- the interaction does not fire
+
+   The authority side reuses compound_cell_cannot_be_weakened
+   (AuthorityPresentation): a lane of one atom cannot present the cell of a
+   compound vault, and a Rule 2 draw from fewer atom purses than the
+   compound has atoms is no exact cover of the compound. *)
+
+(* Added by G3 (DR-135). *)
+From Stdlib Require Import Arith.PeanoNat.
+From CostAccountedRho Require Import AuthorityPresentation.
+From CostAccountedRho Require Import RotatingMonetaryAllocation.
+
+(* The share of a compound owner: one per-atom share for each atom. *)
+Definition owner_charge (atoms : list nat) (per_atom : nat) : nat :=
+  length atoms * per_atom.
+
+Inductive owner_draw : Type :=
+| VaultPays (vault_draw : nat)
+| AtomsPay (atom_draws : list nat)
+| DoesNotFit.
+
+Definition owner_compound_draw
+  (vault : nat) (atoms : list nat) (per_atom : nat) : owner_draw :=
+  if Nat.leb (owner_charge atoms per_atom) vault
+  then VaultPays (owner_charge atoms per_atom)
+  else if forallb (fun balance => Nat.leb per_atom balance) atoms
+       then AtomsPay (map (fun _ => per_atom) atoms)
+       else DoesNotFit.
+
+Lemma equal_shares_sum :
+  forall (atoms : list nat) per_atom,
+    admitted_demand_sum (map (fun _ => per_atom) atoms)
+      = owner_charge atoms per_atom.
+Proof.
+  intros atoms per_atom.
+  unfold owner_charge.
+  induction atoms as [| atom rest IH]; simpl; [reflexivity |].
+  rewrite IH.
+  lia.
+Qed.
+
+Lemma forallb_le_iff :
+  forall (atoms : list nat) per_atom,
+    forallb (fun balance => Nat.leb per_atom balance) atoms = true <->
+    Forall (fun balance => per_atom <= balance) atoms.
+Proof.
+  intros atoms per_atom.
+  rewrite forallb_forall, Forall_forall.
+  split; intros fits balance member; specialize (fits balance member).
+  - now apply Nat.leb_le.
+  - now apply Nat.leb_le.
+Qed.
+
+Lemma equal_shares_never_overdraw :
+  forall (atoms : list nat) per_atom,
+    Forall (fun balance => per_atom <= balance) atoms ->
+    Forall2 Nat.le (map (fun _ => per_atom) atoms) atoms.
+Proof.
+  intros atoms per_atom fits.
+  induction fits as [| atom rest fits_atom fits_rest IH]; simpl.
+  - constructor.
+  - constructor; assumption.
+Qed.
+
+(* owner_compound_share_exact: the draw of a compound owner is Rule 3 when
+   the vault holds the whole share. Otherwise it is Rule 2 when every atom
+   purse holds its per-atom share: the atom draws are equal, sum to the
+   share, and never overdraw. Otherwise nothing is drawn. *)
+Theorem owner_compound_share_exact :
+  forall vault atoms per_atom,
+    (owner_charge atoms per_atom <= vault ->
+       owner_compound_draw vault atoms per_atom
+         = VaultPays (owner_charge atoms per_atom)) /\
+    (vault < owner_charge atoms per_atom ->
+       Forall (fun balance => per_atom <= balance) atoms ->
+       owner_compound_draw vault atoms per_atom
+         = AtomsPay (map (fun _ => per_atom) atoms) /\
+       admitted_demand_sum (map (fun _ => per_atom) atoms)
+         = owner_charge atoms per_atom /\
+       Forall2 Nat.le (map (fun _ => per_atom) atoms) atoms) /\
+    (vault < owner_charge atoms per_atom ->
+       (exists balance, In balance atoms /\ balance < per_atom) ->
+       owner_compound_draw vault atoms per_atom = DoesNotFit).
+Proof.
+  intros vault atoms per_atom.
+  split; [| split].
+  - intros fits.
+    unfold owner_compound_draw.
+    apply Nat.leb_le in fits.
+    now rewrite fits.
+  - intros short all_fit.
+    unfold owner_compound_draw.
+    assert (vault_check : Nat.leb (owner_charge atoms per_atom) vault = false)
+      by (apply Nat.leb_gt; exact short).
+    assert (atoms_check :
+      forallb (fun balance => Nat.leb per_atom balance) atoms = true)
+      by (apply forallb_le_iff; exact all_fit).
+    rewrite vault_check, atoms_check.
+    split; [reflexivity |].
+    split; [apply equal_shares_sum |].
+    apply equal_shares_never_overdraw.
+    exact all_fit.
+  - intros short [balance [member low]].
+    unfold owner_compound_draw.
+    assert (vault_check : Nat.leb (owner_charge atoms per_atom) vault = false)
+      by (apply Nat.leb_gt; exact short).
+    assert (atoms_check :
+      forallb (fun balance => Nat.leb per_atom balance) atoms = false).
+    { destruct (forallb (fun balance => Nat.leb per_atom balance) atoms)
+        eqn:all_fit; [| reflexivity].
+      apply forallb_le_iff in all_fit.
+      rewrite Forall_forall in all_fit.
+      specialize (all_fit balance member).
+      lia. }
+    rewrite vault_check, atoms_check.
+    reflexivity.
+Qed.
+
+Lemma singleton_cells_atoms :
+  forall {atom : Type} (signers : list atom),
+    presentation_atoms (map (fun signer => [signer]) signers) = signers.
+Proof.
+  intros atom signers.
+  unfold presentation_atoms.
+  induction signers as [| signer rest IH]; simpl; [reflexivity |].
+  now rewrite IH.
+Qed.
+
+(* A lane of one atom presents one atom. The cell of a compound vault needs
+   all of its atoms, so the lane cannot present it
+   (compound_cell_cannot_be_weakened). *)
+Theorem single_signature_lane_never_draws_compound_vault :
+  forall {atom : Type} (signers : list atom) (lane : atom),
+    2 <= length signers ->
+    ~ exact_cover signers [[lane]].
+Proof.
+  intros atom signers lane compound covered.
+  apply (compound_cell_cannot_be_weakened signers [[lane]] covered).
+  unfold presentation_atoms.
+  simpl.
+  lia.
+Qed.
+
+(* A Rule 2 draw from fewer atom purses than the compound has atoms is no
+   exact cover of the compound (compound_cell_cannot_be_weakened), so Rule 2
+   draws every atom purse or none. *)
+Theorem rule2_partial_atom_draw_is_no_cover :
+  forall {atom : Type} (signers drawing : list atom),
+    length drawing < length signers ->
+    ~ exact_cover signers (map (fun signer => [signer]) drawing).
+Proof.
+  intros atom signers drawing fewer covered.
+  apply (compound_cell_cannot_be_weakened signers _ covered).
+  rewrite singleton_cells_atoms.
+  exact fewer.
+Qed.
+
+(* The control: the capped max-min split of RotatingMonetaryAllocation moves
+   the share of a short atom to another atom. Two atom purses hold 0 and 10,
+   the per-atom share is 2, and the vault is empty. Rule 2 does not fit,
+   because the first atom purse cannot pay 2. The max-min split at water
+   level 4 still funds the whole share 4 within the capacities
+   (funded_residual_plan_pays_exact_obligation), and the second atom pays 4
+   instead of 2. *)
+Theorem nc_max_min_share_breaks_rule2 :
+  let atoms := [0; 10] in
+  let draws := residual_debits atoms 4 0 in
+  owner_compound_draw 0 atoms 2 = DoesNotFit /\
+  monetary_sum draws = owner_charge atoms 2 /\
+  Forall2 Nat.le draws atoms /\
+  draws = [0; 4] /\
+  nth 1 draws 0 <> 2.
+Proof.
+  cbv zeta.
+  pose proof (funded_residual_plan_pays_exact_obligation
+                [0; 10] 4 0 4 (Nat.le_0_l _) eq_refl) as [pays within].
+  split; [reflexivity |].
+  split; [exact pays |].
+  split; [exact within |].
+  split; [reflexivity |].
+  simpl.
+  discriminate.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 9: G3 (DR-135) — owners pay at their own price
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Design v2 R4 and step S2 (formal item F5), and the user's rule of
+   2026-10-19: owners are charged at their own signed price. Each region of
+   a COMM observation carries the price of the context that created it
+   (CostRegion.price): the deploy's signed price for a client lane, the
+   owner's price inside an owner body. The owner's share of the region is
+   its usage times that price. So the debit of an owner is its usage times
+   its own price, and the price of the caller cannot change it. A rule that
+   prices an owner region at the caller's price would let the caller scale
+   the owner's debit (nc_client_price_scales_owner_debit). *)
+
+Record priced_region : Type := {
+  (* the owner purse of an owner region; None for a client lane *)
+  region_owner : option nat;
+  (* the usage of the region, from the meter's per-region loop *)
+  region_usage : nat;
+  (* the price that the region carries from its creating context *)
+  region_price : nat
+}.
+
+Definition region_share (region : priced_region) : nat :=
+  region_usage region * region_price region.
+
+Definition owns (owner : nat) (region : priced_region) : bool :=
+  match region_owner region with
+  | Some holder => Nat.eqb holder owner
+  | None => false
+  end.
+
+Fixpoint owner_debit (owner : nat) (regions : list priced_region) : nat :=
+  match regions with
+  | [] => 0
+  | region :: rest =>
+      (if owns owner region then region_share region else 0)
+        + owner_debit owner rest
+  end.
+
+Fixpoint owner_usage (owner : nat) (regions : list priced_region) : nat :=
+  match regions with
+  | [] => 0
+  | region :: rest =>
+      (if owns owner region then region_usage region else 0)
+        + owner_usage owner rest
+  end.
+
+(* The caller sets the price of the client lanes only. *)
+Definition reprice_client (client_price : nat) (regions : list priced_region)
+  : list priced_region :=
+  map (fun region =>
+         match region_owner region with
+         | None => {| region_owner := None;
+                      region_usage := region_usage region;
+                      region_price := client_price |}
+         | Some _ => region
+         end)
+      regions.
+
+Theorem owner_debit_is_usage_times_owner_price :
+  forall owner owner_price regions,
+    Forall (fun region => owns owner region = true ->
+                          region_price region = owner_price) regions ->
+    owner_debit owner regions = owner_usage owner regions * owner_price.
+Proof.
+  intros owner owner_price regions priced.
+  induction priced as [| region rest region_priced rest_priced IH]; simpl.
+  - reflexivity.
+  - rewrite IH.
+    destruct (owns owner region) eqn:owned.
+    + unfold region_share.
+      rewrite (region_priced eq_refl).
+      rewrite Nat.mul_add_distr_r.
+      reflexivity.
+    + simpl.
+      reflexivity.
+Qed.
+
+Theorem owner_debit_independent_of_client_price :
+  forall owner regions client_price client_price',
+    owner_debit owner (reprice_client client_price regions)
+      = owner_debit owner (reprice_client client_price' regions).
+Proof.
+  intros owner regions client_price client_price'.
+  unfold reprice_client.
+  induction regions as [| region rest IH]; simpl; [reflexivity |].
+  rewrite IH.
+  destruct (region_owner region) as [holder |] eqn:held; simpl.
+  - reflexivity.
+  - unfold owns.
+    simpl.
+    reflexivity.
+Qed.
+
+(* The control: an owner region priced at the caller's price. *)
+Definition ambient_owner_debit
+  (client_price owner : nat) (regions : list priced_region) : nat :=
+  owner_debit owner
+    (map (fun region => {| region_owner := region_owner region;
+                           region_usage := region_usage region;
+                           region_price := client_price |})
+         regions).
+
+(* An owner region of usage 3 at the owner's price 5, and a client lane.
+   Under the ambient rule the owner's debit is 3 at the caller's price 1 and
+   6 at the caller's price 2, so the caller scales it. Under price
+   provenance it is 15 at both caller prices. *)
+Theorem nc_client_price_scales_owner_debit :
+  let regions :=
+    [ {| region_owner := Some 0; region_usage := 3; region_price := 5 |};
+      {| region_owner := None; region_usage := 2; region_price := 1 |} ] in
+  ambient_owner_debit 1 0 regions = 3 /\
+  ambient_owner_debit 2 0 regions = 6 /\
+  owner_debit 0 (reprice_client 1 regions) = 15 /\
+  owner_debit 0 (reprice_client 2 regions) = 15.
+Proof.
+  cbv zeta.
+  repeat split; reflexivity.
 Qed.
