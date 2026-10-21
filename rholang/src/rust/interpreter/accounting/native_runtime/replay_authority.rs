@@ -62,7 +62,19 @@ impl ReplayAuthorityBinding {
             .map_err(|error| recording_error(&error.to_string()))
     }
 
+    #[cfg(test)]
     pub(super) fn new(budget: RuntimeBudget, session: [u8; 32]) -> Result<Self, InterpreterError> {
+        Self::with_transfers(budget, session, Arc::from([]))
+    }
+
+    pub(super) fn with_transfers(
+        budget: RuntimeBudget,
+        session: [u8; 32],
+        transfers: ReplayStackTransfers,
+    ) -> Result<Self, InterpreterError> {
+        if transfers.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(invalid());
+        }
         let mut state = budget.authority_state.lock().expect("authority state");
         let native = state.native.as_ref().ok_or_else(invalid)?;
         if native.replay_bound
@@ -80,11 +92,9 @@ impl ReplayAuthorityBinding {
             return Err(invalid());
         }
         let generation = Arc::clone(&native.generation);
-        state
-            .native
-            .as_mut()
-            .expect("checked native configuration")
-            .replay_bound = true;
+        let native = state.native.as_mut().expect("checked native configuration");
+        native.replay_bound = true;
+        native.replay_transfers = transfers;
         drop(state);
         Ok(Self { budget, generation })
     }
@@ -160,14 +170,8 @@ impl ReplayAuthorityBinding {
             }
         }
         if let Some((_, event)) = &event {
-            sparse_ledger::validate_add(
-                &state.reserved.0,
-                &event.debit.0,
-                state.enforce_allocation.then_some(&state.allocation.0),
-            )
-            .map_err(|_| invalid())?;
-        } else if state.enforce_allocation && !state.allocation.dominates(&state.reserved) {
-            return Err(invalid());
+            sparse_ledger::validate_add(&state.reserved.0, &event.debit.0, None)
+                .map_err(|_| invalid())?;
         }
         let count = rows.iter().flatten().count();
         let pending_rows = state

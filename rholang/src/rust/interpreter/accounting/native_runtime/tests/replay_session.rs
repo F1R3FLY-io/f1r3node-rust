@@ -16,6 +16,7 @@ fn empty_trace() -> CheckedNativeOperationTrace {
         session: [0; 32],
         attempts: Arc::from([]),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
     };

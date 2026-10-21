@@ -26,6 +26,7 @@ pub trait NativeOperationTicket<C, P, A: Clone, K>: Send {
     type Publication: NativeOperationPublication;
 
     fn outcome(&self) -> NativeReplayOutcome;
+    fn denial(&self) -> Option<RSpaceError> { None }
     fn candidate_identity(&self) -> Option<&dyn NativeCandidateIdentity>;
     fn authenticate_footprint(
         &mut self,

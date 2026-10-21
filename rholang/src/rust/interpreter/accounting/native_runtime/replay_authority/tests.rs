@@ -114,26 +114,31 @@ fn replay_authority_retries_require_a_published_identical_owner() {
 }
 
 #[test]
-fn replay_authority_cannot_overdraw_pending_stack_capacity() {
+fn replay_authority_follows_checked_decisions_while_a_stack_transfer_is_pending() {
     let budget = budget();
     let demand = authority::authority_demand(&authority(2)).unwrap();
     budget.install_authority_allocation(demand.clone());
-    let binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id()).unwrap();
+    let recorded =
+        crate::rust::interpreter::accounting::canonical_observation_authority(&authority(2))
+            .unwrap();
+    let binding = ReplayAuthorityBinding::with_transfers(
+        budget.clone(),
+        budget.deploy_id(),
+        Arc::from([([42; 32], recorded, 1, true)]),
+    )
+    .unwrap();
     let _scope = budget.enter_comm_accounting_scope();
     let cells = vec![authority(1).regions[0].signature.clone().unwrap()];
     let stack = budget
         .prepare_authority_stack_transfer([42; 32], cells, &authority(2))
         .unwrap();
-    assert!(binding
-        .prepare([None, Some(row(1, 2, true, false))])
-        .is_err());
-    assert_eq!(budget.authority_state.lock().unwrap().reserved, demand);
-    drop(stack);
     binding
         .prepare([None, Some(row(1, 2, true, false))])
         .unwrap()
         .publish();
     assert_eq!(budget.authority_realized(), demand);
+    drop(stack);
+    assert_eq!(budget.authority_state.lock().unwrap().reserved, demand);
 }
 
 #[test]

@@ -1145,7 +1145,30 @@ impl RuntimeBudget {
             .reserved
             .checked_add(&aggregate_demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        if state.enforce_allocation && !state.allocation.dominates(&next_reserved) {
+        let cell_count = u64::try_from(events.len()).map_err(|_| {
+            InterpreterError::ReduceError("cost-stack transfer index overflow".to_string())
+        })?;
+        let replayed = state
+            .native
+            .as_ref()
+            .and_then(|native| native.replayed_stack_transfer(&produce_hash));
+        let granted = match replayed {
+            Some(Some((recorded, cells, granted)))
+                if recorded == canonical_authority && cells == cell_count =>
+            {
+                granted
+            }
+            Some(_) => {
+                return Err(InterpreterError::ReduceError(
+                    "native replay stack transfer differs from the checked trace".to_string(),
+                ))
+            }
+            None => !state.enforce_allocation || state.allocation.dominates(&next_reserved),
+        };
+        if let Some(native) = state.native.as_mut() {
+            native.record_stack_transfer(produce_hash, &canonical_authority, cell_count, granted);
+        }
+        if !granted {
             for identity in events.keys() {
                 state
                     .frontier
@@ -1200,6 +1223,9 @@ impl RuntimeBudget {
             .reserved
             .checked_sub(&pending.debit)
             .expect("pending authority debit is reserved");
+        if let Some(native) = state.native.as_mut() {
+            native.record_stack_release(produce_hash);
+        }
     }
 
     pub fn rollback_authority_stack_transfers(&self) -> Result<(), InterpreterError> {
@@ -1357,6 +1383,7 @@ impl RuntimeBudget {
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
         if state.enforce_allocation && !state.allocation.dominates(&next_reserved) {
             state.frontier.insert(identity, canonical_authority);
+            self.record_native_allocation_denial(&mut state, prepared.as_ref())?;
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
         let next_realized = state

@@ -1,11 +1,15 @@
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use models::rhoapi::CostAuthority;
 
 use super::index::{NativeIndex, OccurrenceKey, PreparedInsert};
 use super::*;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
+    NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence, NativeDenialCause,
+    NativeStackTransferEvent, NativeStackTransferKind,
 };
 
 #[derive(Clone, Debug)]
@@ -21,6 +25,7 @@ pub struct NativeBudgetRecording {
     pub session: [u8; 32],
     pub attempts: Arc<[NativeBudgetAttempt]>,
     pub retries: Arc<[NativeBudgetRetry]>,
+    pub transfers: Arc<[NativeStackTransferEvent]>,
     pub used: u64,
     /// The causal paths of the attempts, the retries and the operation
     /// journal rows, interned once each (C7b, DR-86). Occurrences and journal
@@ -43,6 +48,7 @@ pub(super) struct RecordedAttempt {
     pub(super) occurrence: RecordedOccurrence,
     pub(super) observation: Arc<ByteObservation>,
     pub(super) granted: bool,
+    pub(super) cause: NativeDenialCause,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +72,8 @@ pub(super) struct NativeBudgetRecorder {
     // occurrences: NativeIndex<NativeBudgetOccurrence, ()>,
     occurrences: NativeIndex<OccurrenceKey, ()>,
     accepted: NativeIndex<(NativeAttemptStage, [u8; 32]), usize>,
+    pub(super) transfers: Vec<NativeStackTransferEvent>,
+    transfer_reserves: BTreeMap<[u8; 32], usize>,
     pub(super) invalid: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
 }
@@ -233,6 +241,7 @@ impl NativeRuntimeConfig {
             occurrence,
             observation: Arc::clone(&prepared.observation),
             granted: decision.is_ok(),
+            cause: NativeDenialCause::Budget,
         });
         if decision.is_ok() {
             self.recording.accepted.commit(accepted);
@@ -247,6 +256,113 @@ impl NativeRuntimeConfig {
         // Changed by DR-113: exhaustion takes the class of the bound source.
         // decision.map_err(native_error)
         decision.map_err(|error| native_error(error, source))
+    }
+
+    pub(super) fn record_allocation_denial(
+        &mut self,
+        prepared: &NativeObservationPreparation,
+    ) -> Result<(), InterpreterError> {
+        prepared
+            .ticket
+            .reject_unpublished_failure(self.try_record_allocation_denial(prepared))
+    }
+
+    fn try_record_allocation_denial(
+        &mut self,
+        prepared: &NativeObservationPreparation,
+    ) -> Result<(), InterpreterError> {
+        if prepared.occurrence.stage != NativeAttemptStage::Comm {
+            return Err(recording_error(
+                "native allocation denial belongs to a COMM",
+            ));
+        }
+        let (key, occurrence) = self.reserve_record(prepared)?;
+        let slot = self.operation_stage_slot(&prepared.occurrence)?;
+        let index = self.recording.attempts.len();
+        self.recording.occurrences.commit(key);
+        self.recording.attempts.push(RecordedAttempt {
+            occurrence,
+            observation: Arc::clone(&prepared.observation),
+            granted: false,
+            cause: NativeDenialCause::Allocation,
+        });
+        self.publish_operation_link(
+            slot,
+            prepared.occurrence.stage,
+            NativeObservationLink::Attempt(index),
+            false,
+        );
+        prepared.ticket.published.set(true);
+        Ok(())
+    }
+
+    pub(in crate::rust::interpreter::accounting) fn record_stack_transfer(
+        &mut self,
+        produce_hash: [u8; 32],
+        authority: &CostAuthority,
+        cells: u64,
+        granted: bool,
+    ) {
+        if self.replay_bound {
+            return;
+        }
+        let index = self.recording.transfers.len();
+        if index >= self.limits.attempts
+            || self
+                .recording
+                .transfer_reserves
+                .insert(produce_hash, index)
+                .is_some()
+        {
+            self.recording.invalid.store(true, Ordering::Release);
+            return;
+        }
+        self.recording.transfers.push(NativeStackTransferEvent {
+            kind: NativeStackTransferKind::Reserve {
+                produce_hash,
+                authority: authority.clone(),
+                cells,
+                granted,
+            },
+            fresh_before: self.recording.attempts.len(),
+        });
+    }
+
+    pub(in crate::rust::interpreter::accounting) fn record_stack_release(
+        &mut self,
+        produce_hash: [u8; 32],
+    ) {
+        if self.replay_bound {
+            return;
+        }
+        let reserve = self.recording.transfer_reserves.get(&produce_hash).copied();
+        match reserve {
+            Some(reserve) if self.recording.transfers.len() < self.limits.attempts => {
+                self.recording.transfers.push(NativeStackTransferEvent {
+                    kind: NativeStackTransferKind::Release { reserve },
+                    fresh_before: self.recording.attempts.len(),
+                });
+            }
+            _ => self.recording.invalid.store(true, Ordering::Release),
+        }
+    }
+
+    pub(in crate::rust::interpreter::accounting) fn replayed_stack_transfer(
+        &self,
+        produce_hash: &[u8; 32],
+    ) -> Option<Option<(CostAuthority, u64, bool)>> {
+        if !self.replay_bound {
+            return None;
+        }
+        Some(
+            self.replay_transfers
+                .binary_search_by(|row| row.0.cmp(produce_hash))
+                .ok()
+                .map(|position| {
+                    let row = &self.replay_transfers[position];
+                    (row.1.clone(), row.2, row.3)
+                }),
+        )
     }
 
     pub(super) fn record_retry(
@@ -340,6 +456,7 @@ impl NativeRuntimeConfig {
                 },
                 observation: Arc::clone(&row.observation),
                 granted: row.granted,
+                cause: row.cause,
             });
         }
         let mut retries = Vec::with_capacity(self.recording.retries.len());
@@ -359,6 +476,7 @@ impl NativeRuntimeConfig {
             session: self.session,
             attempts: attempts.into(),
             retries: retries.into(),
+            transfers: self.recording.transfers.clone().into(),
             used: self.reservation.used(),
             paths: Arc::new(paths.trie),
         })

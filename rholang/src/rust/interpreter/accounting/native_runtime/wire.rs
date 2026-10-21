@@ -16,11 +16,13 @@ use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use crate::rust::interpreter::accounting::byte_accounting::ByteCharge;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence, NativeBudgetTraceLimits,
+    NativeDenialCause, NativeStackTransferEvent, NativeStackTransferKind,
 };
 
 const BUDGET_DOMAIN: &[u8] = b"f1r3node:native-budget-recording:v1";
 const JOURNAL_DOMAIN: &[u8] = b"f1r3node:native-operation-journal:v1";
 const BUDGET_DOMAIN_V2: &[u8] = b"f1r3node:native-budget-recording:v2";
+const BUDGET_DOMAIN_V3: &[u8] = b"f1r3node:native-budget-recording:v3";
 const JOURNAL_DOMAIN_V2: &[u8] = b"f1r3node:native-operation-journal:v2";
 
 #[derive(Clone, Copy, Debug)]
@@ -404,19 +406,29 @@ pub fn encode_native_budget_recording(
     recording: &NativeBudgetRecording,
     limits: NativeRecordingWireLimits,
 ) -> Result<Vec<u8>, InterpreterError> {
-    if recording
-        .attempts
-        .len()
-        .checked_add(recording.retries.len())
-        .filter(|n| *n <= limits.budget.attempts)
-        .is_none()
+    if recording.transfers.len() > limits.budget.attempts
+        || recording
+            .attempts
+            .len()
+            .checked_add(recording.retries.len())
+            .filter(|n| *n <= limits.budget.attempts)
+            .is_none()
     {
         return Err(malformed());
     }
     let mut wire = Writer {
         wire: PhloWireEncoder::new(limits.wire),
     };
-    wire.bytes(BUDGET_DOMAIN_V2)?;
+    let extended = !recording.transfers.is_empty()
+        || recording
+            .attempts
+            .iter()
+            .any(|attempt| attempt.cause != NativeDenialCause::Budget);
+    wire.bytes(if extended {
+        BUDGET_DOMAIN_V3
+    } else {
+        BUDGET_DOMAIN_V2
+    })?;
     wire.bytes(&recording.session)?;
     wire.u64(recording.used)?;
     wire.u64(length(recording.attempts.len())?)?;
@@ -437,7 +449,7 @@ pub fn encode_native_budget_recording(
             return Err(malformed());
         }
         write_observation(&mut wire, &attempt.observation)?;
-        wire.u8(u8::from(attempt.granted))?;
+        wire.u8(attempt_tag(attempt)?)?;
     }
     wire.u64(length(recording.retries.len())?)?;
     for retry in recording.retries.iter() {
@@ -452,6 +464,9 @@ pub fn encode_native_budget_recording(
         wire.u64(length(retry.accepted_attempt)?)?;
         wire.u64(length(retry.fresh_before)?)?;
     }
+    if extended {
+        write_transfers(&mut wire, recording)?;
+    }
     Ok(wire.finish())
 }
 
@@ -460,9 +475,10 @@ pub fn decode_native_budget_recording(
     limits: NativeRecordingWireLimits,
 ) -> Result<NativeBudgetRecording, InterpreterError> {
     let mut wire = Reader::new(input, limits.wire)?;
-    let delta = match wire.bytes()? {
-        BUDGET_DOMAIN => false,
-        BUDGET_DOMAIN_V2 => true,
+    let (delta, extended) = match wire.bytes()? {
+        BUDGET_DOMAIN => (false, false),
+        BUDGET_DOMAIN_V2 => (true, false),
+        BUDGET_DOMAIN_V3 => (true, true),
         _ => return Err(malformed()),
     };
     let session = wire.fixed32()?;
@@ -480,9 +496,10 @@ pub fn decode_native_budget_recording(
             read_occurrence(&mut wire, &mut paths, limits)?
         };
         let observation = read_observation(&mut wire)?;
-        let granted = match wire.u8()? {
-            0 => false,
-            1 => true,
+        let (granted, cause) = match (wire.u8()?, extended) {
+            (0, _) => (false, NativeDenialCause::Budget),
+            (1, _) => (true, NativeDenialCause::Budget),
+            (2, true) => (false, NativeDenialCause::Allocation),
             _ => return Err(malformed()),
         };
         if occurrence.session != session || occurrence.stage != observation.kind.into() {
@@ -492,6 +509,7 @@ pub fn decode_native_budget_recording(
             occurrence,
             observation,
             granted,
+            cause,
         });
     }
     let retries_count = bounded_count(wire.u64()?, limits.budget.attempts - attempts_count)?;
@@ -523,14 +541,115 @@ pub fn decode_native_budget_recording(
             fresh_before,
         });
     }
+    let transfers = if extended {
+        read_transfers(&mut wire, attempts.len(), limits)?
+    } else {
+        Vec::new()
+    };
+    if extended
+        && transfers.is_empty()
+        && attempts
+            .iter()
+            .all(|row| row.cause == NativeDenialCause::Budget)
+    {
+        return Err(malformed());
+    }
     wire.finish()?;
     Ok(NativeBudgetRecording {
         session,
         attempts: attempts.into(),
         retries: retries.into(),
         used,
+        transfers: transfers.into(),
         paths: Arc::new(paths),
     })
+}
+
+fn attempt_tag(attempt: &NativeBudgetAttempt) -> Result<u8, InterpreterError> {
+    match (attempt.granted, attempt.cause) {
+        (false, NativeDenialCause::Budget) => Ok(0),
+        (true, NativeDenialCause::Budget) => Ok(1),
+        (false, NativeDenialCause::Allocation) => Ok(2),
+        (true, NativeDenialCause::Allocation) => Err(malformed()),
+    }
+}
+
+fn write_transfers(
+    wire: &mut Writer,
+    recording: &NativeBudgetRecording,
+) -> Result<(), InterpreterError> {
+    wire.u64(length(recording.transfers.len())?)?;
+    let mut previous = 0;
+    for (index, event) in recording.transfers.iter().enumerate() {
+        if event.fresh_before < previous || event.fresh_before > recording.attempts.len() {
+            return Err(malformed());
+        }
+        previous = event.fresh_before;
+        match &event.kind {
+            NativeStackTransferKind::Reserve {
+                produce_hash,
+                authority,
+                cells,
+                granted,
+            } => {
+                wire.u8(u8::from(*granted))?;
+                wire.bytes(produce_hash)?;
+                wire.bytes(&authority.encode_to_vec())?;
+                wire.u64(*cells)?;
+            }
+            NativeStackTransferKind::Release { reserve } => {
+                if *reserve >= index {
+                    return Err(malformed());
+                }
+                wire.u8(2)?;
+                wire.u64(length(*reserve)?)?;
+            }
+        }
+        wire.u64(length(event.fresh_before)?)?;
+    }
+    Ok(())
+}
+
+fn read_transfers(
+    wire: &mut Reader<'_>,
+    attempts: usize,
+    limits: NativeRecordingWireLimits,
+) -> Result<Vec<NativeStackTransferEvent>, InterpreterError> {
+    let count = bounded_count(wire.u64()?, limits.budget.attempts)?;
+    let mut transfers = Vec::with_capacity(count);
+    let mut previous = 0;
+    for index in 0..count {
+        let kind = match wire.u8()? {
+            tag @ (0 | 1) => {
+                let produce_hash = wire.fixed32()?;
+                let authority_bytes = wire.bytes()?;
+                let authority = CostAuthority::decode(authority_bytes).map_err(|_| malformed())?;
+                if authority.encode_to_vec() != authority_bytes {
+                    return Err(malformed());
+                }
+                NativeStackTransferKind::Reserve {
+                    produce_hash,
+                    authority,
+                    cells: wire.u64()?,
+                    granted: tag == 1,
+                }
+            }
+            2 => NativeStackTransferKind::Release {
+                reserve: bounded_count(wire.u64()?, index.saturating_sub(1))?,
+            },
+            _ => return Err(malformed()),
+        };
+        if matches!(kind, NativeStackTransferKind::Release { .. }) && index == 0 {
+            return Err(malformed());
+        }
+        let fresh_before = bounded_count(wire.u64()?, attempts)?;
+        if fresh_before < previous {
+            return Err(malformed());
+        }
+        previous = fresh_before;
+        transfers.push(NativeStackTransferEvent { kind, fresh_before });
+    }
+    Ok(transfers)
 }
 
 fn add_count(total: &mut usize, extra: usize, limit: usize) -> Result<(), InterpreterError> {
@@ -961,6 +1080,7 @@ mod tests {
                 },
                 observation: Arc::clone(&observation),
                 granted: true,
+                cause: NativeDenialCause::Budget,
             }]
             .into(),
             retries: vec![NativeBudgetRetry {
@@ -974,6 +1094,7 @@ mod tests {
                 fresh_before: 1,
             }]
             .into(),
+            transfers: Arc::from([]),
             used: 12,
             paths: Arc::new(paths),
         }

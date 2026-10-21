@@ -25,6 +25,7 @@ fn replay_fixture() -> NativeOperationReplay {
                 if index == 2 { 101 } else { index + 1 },
             ),
             granted: index != 2,
+            cause: NativeDenialCause::Budget,
         });
         let mut row = operation(
             index,
@@ -55,6 +56,7 @@ fn replay_fixture() -> NativeOperationReplay {
                     if index == 3 { 101 } else { 2 },
                 ),
                 granted: index == 1,
+                cause: NativeDenialCause::Budget,
             });
             row.budget_end += 1;
         }
@@ -69,6 +71,7 @@ fn replay_fixture() -> NativeOperationReplay {
         session: [0; 32],
         attempts: attempts.into(),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: 9,
         paths: fixture_paths(),
     };
@@ -207,8 +210,10 @@ fn single_footprint_fixture(footprint: Vec<Arc<[u8]>>) -> NativeOperationReplay 
             occurrence: occurrence(0, NativeAttemptStage::ProduceIntroduction),
             observation: observation(0, AuthorityByteEventKind::ProduceIntroduction, 1),
             granted: true,
+            cause: NativeDenialCause::Budget,
         }]),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: 1,
         paths: fixture_paths(),
     };
@@ -597,6 +602,7 @@ fn empty_replay_is_complete_and_supports_root_checkpoint() {
         session: [0; 32],
         attempts: Arc::from([]),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
     };
@@ -819,6 +825,7 @@ fn source_chain_fixture(sources: &[u8]) -> (NativeOperationReplay, NativeBudgetR
             occurrence: occurrence(id as u64, NativeAttemptStage::ProduceIntroduction),
             observation: observation(id as u8, AuthorityByteEventKind::ProduceIntroduction, 1),
             granted: true,
+            cause: NativeDenialCause::Budget,
         })
         .collect();
     let mut latest = [None; P2_SOURCES as usize];
@@ -842,6 +849,7 @@ fn source_chain_fixture(sources: &[u8]) -> (NativeOperationReplay, NativeBudgetR
         session: [0; 32],
         attempts: attempts.into(),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: sources.len() as u64,
         paths: fixture_paths(),
     };

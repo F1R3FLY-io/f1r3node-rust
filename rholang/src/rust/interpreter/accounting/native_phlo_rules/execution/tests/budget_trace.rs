@@ -35,6 +35,7 @@ fn attempt(id: u64, charge: u64, granted: bool) -> NativeBudgetAttempt {
         },
         observation: row(1, 1, false, [charge, 0, 0]),
         granted,
+        cause: NativeDenialCause::Budget,
     }
 }
 

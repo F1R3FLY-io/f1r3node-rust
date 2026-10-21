@@ -8,7 +8,7 @@ use super::{
     NativePhloMeasurementError, NativePhloRegionError, NativePhloRegionLimits, NativePhloRuleError,
     NativePhloRules,
 };
-use crate::rust::interpreter::accounting::authority::AuthorityError;
+use crate::rust::interpreter::accounting::authority::{AuthorityError, ResourceMultiset};
 use crate::rust::interpreter::accounting::byte_receipts::{
     ByteObservation, ByteObservationSnapshot,
 };
@@ -21,7 +21,8 @@ mod budget_trace;
 pub(in crate::rust::interpreter::accounting) use budget_trace::CheckedNativeBudgetEvidence;
 pub use budget_trace::{
     CheckedNativeBudgetTrace, NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
-    NativeBudgetReplayDecision, NativeBudgetTraceError, NativeBudgetTraceLimits,
+    NativeBudgetReplayDecision, NativeBudgetTraceError, NativeBudgetTraceLimits, NativeDenialCause,
+    NativeStackTransferEvent, NativeStackTransferKind,
 };
 
 #[derive(Debug, Error)]
@@ -64,6 +65,7 @@ pub enum NativeBoundSource {
 pub struct NativePhloExecutionContract<'a> {
     controls: CheckedPhloControls<'a>,
     policy: Arc<NativePhloExecutionPolicy>,
+    allocation: Option<Arc<ResourceMultiset<[u8; 32]>>>,
 }
 
 #[derive(Debug)]
@@ -129,7 +131,17 @@ impl<'a> NativePhloExecutionContract<'a> {
                 bound: controls.resource_bound(),
                 bound_source,
             }),
+            allocation: None,
         })
+    }
+
+    pub fn with_authority_allocation(mut self, allocation: ResourceMultiset<[u8; 32]>) -> Self {
+        self.allocation = Some(Arc::new(allocation));
+        self
+    }
+
+    pub fn authority_allocation(&self) -> Option<&ResourceMultiset<[u8; 32]>> {
+        self.allocation.as_deref()
     }
 
     pub fn controls(&self) -> CheckedPhloControls<'a> { self.controls }

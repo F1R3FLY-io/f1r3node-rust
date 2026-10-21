@@ -7,6 +7,9 @@ use super::*;
 #[path = "replay_ledger.rs"]
 mod replay;
 
+#[path = "allocation_orders.rs"]
+mod allocation_orders;
+
 #[path = "replay_session.rs"]
 mod session;
 
@@ -506,6 +509,7 @@ proptest! {
                 occurrence: NativeBudgetOccurrence { session: [0; 32], path, stage: NativeAttemptStage::ProduceIntroduction },
                 observation: intro,
                 granted: outcome != 2,
+                cause: NativeDenialCause::Budget,
             });
             let mut row = operation(index as u64, start, start + 1, NativeObservationLink::Attempt(start));
             row.occurrence.path = path;
@@ -518,7 +522,7 @@ proptest! {
                 row.comm = Some(NativeCommRecord { source: Arc::new(comm), observation: NativeObservationLink::Attempt(attempts.len()) });
                 attempts.push(NativeBudgetAttempt {
                     occurrence: NativeBudgetOccurrence { session: [0; 32], path, stage: NativeAttemptStage::Comm },
-                    observation: observation(index as u8, AuthorityByteEventKind::Comm, if outcome == 3 { 101 } else { 0 }), granted: outcome == 1,
+                    observation: observation(index as u8, AuthorityByteEventKind::Comm, if outcome == 3 { 101 } else { 0 }), granted: outcome == 1, cause: NativeDenialCause::Budget,
                 });
                 row.budget_end += 1;
                 row.completion = if outcome == 3 { RSpaceOperationCompletion::Rejected } else { RSpaceOperationCompletion::Matched };
@@ -528,7 +532,7 @@ proptest! {
             }
             rows.push(row);
         }
-        let recording = NativeBudgetRecording { session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), used: 0, paths: Arc::new(trie) };
+        let recording = NativeBudgetRecording { session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), transfers: Arc::from([]), used: 0, paths: Arc::new(trie) };
         let log = events_in(&recording.paths, &rows);
         let trace = bind(&recording, rows.into(), log.clone()).unwrap();
         let projected: Vec<_> = (0..trace.operation_count()).flat_map(|slot| trace.events(slot).unwrap().iter().cloned()).collect();

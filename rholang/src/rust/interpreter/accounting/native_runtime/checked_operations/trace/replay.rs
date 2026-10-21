@@ -143,6 +143,7 @@ pub struct NativeReplayReservation {
     active: bool,
     stage: ObservationStage,
     usage: u64,
+    allocation_denied: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -344,9 +345,15 @@ impl NativeOperationReplay {
         self.inner.trace.journal().bound_source()
     }
 
-    fn bind_runtime(mut self, budget: RuntimeBudget) -> Result<Self, NativeReplayError> {
-        let binding =
-            ReplayAuthorityBinding::new(budget, self.inner.trace.journal.recording.session)?;
+    pub(in crate::rust::interpreter::accounting) fn bind_runtime(
+        mut self,
+        budget: RuntimeBudget,
+    ) -> Result<Self, NativeReplayError> {
+        let binding = ReplayAuthorityBinding::with_transfers(
+            budget,
+            self.inner.trace.journal.recording.session,
+            self.inner.trace.journal.budget.replay_transfers(),
+        )?;
         Arc::get_mut(&mut self.inner)
             .ok_or(NativeReplayError::Busy)?
             .authority = Some(binding);
@@ -380,6 +387,7 @@ impl NativeOperationReplay {
             active: true,
             stage: ObservationStage::Footprint,
             usage: 0,
+            allocation_denied: false,
         }
     }
 
@@ -779,9 +787,10 @@ impl NativeReplayReservation {
             (NativeBudgetReplayDecision::Accepted { .. }, true) => {
                 NativeBudgetReplayDecision::Accepted { usage: 0 }
             }
-            (NativeBudgetReplayDecision::Denied, true) => {
-                return Err(NativeBudgetTraceError::Decision.into())
-            }
+            (
+                NativeBudgetReplayDecision::Denied | NativeBudgetReplayDecision::DeniedAllocation,
+                true,
+            ) => return Err(NativeBudgetTraceError::Decision.into()),
             (decision, false) => decision,
         };
         if self.replay.inner.authority.is_some() {
@@ -799,6 +808,10 @@ impl NativeReplayReservation {
         let usage = match decision {
             NativeBudgetReplayDecision::Accepted { usage } => usage,
             NativeBudgetReplayDecision::Denied => 0,
+            NativeBudgetReplayDecision::DeniedAllocation => {
+                self.allocation_denied = true;
+                0
+            }
         };
         self.usage = self
             .usage
@@ -818,6 +831,8 @@ impl NativeReplayReservation {
             .operation(self.slot)
             .expect("reserved native replay slot")
     }
+
+    pub fn allocation_denied(&self) -> bool { self.allocation_denied }
 
     pub fn expected_outcome(&self) -> NativeReplayOutcome {
         let row = self.operation();

@@ -378,8 +378,12 @@ impl NativePhloExecutionContract<'_> {
         limits: NativeOperationJournalLimits,
     ) -> Result<CheckedNativeOperationJournal, NativeOperationJournalError> {
         let publication_count = check_sizes(&session, recording, &operations, limits)?;
-        let budget =
-            self.check_budget_evidence(session, Arc::clone(&recording.attempts), limits.budget)?;
+        let budget = self.check_budget_evidence(
+            session,
+            Arc::clone(&recording.attempts),
+            Arc::clone(&recording.transfers),
+            limits.budget,
+        )?;
         if recording.used != budget.total() {
             return Err(NativeOperationJournalError::Usage);
         }

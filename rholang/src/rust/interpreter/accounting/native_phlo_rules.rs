@@ -17,8 +17,9 @@ pub(crate) use execution::{signature_leaf_units, SignatureUnitsMeter};
 pub use execution::{
     CheckedNativeBudgetTrace, NativeAttemptStage, NativeBoundSource, NativeBudgetAttempt,
     NativeBudgetOccurrence, NativeBudgetReplayDecision, NativeBudgetTraceError,
-    NativeBudgetTraceLimits, NativePhloChargePreparer, NativePhloExecutionContract,
-    NativePhloExecutionError, NativePhloReservation, PreparedNativePhloCharge,
+    NativeBudgetTraceLimits, NativeDenialCause, NativePhloChargePreparer,
+    NativePhloExecutionContract, NativePhloExecutionError, NativePhloReservation,
+    NativeStackTransferEvent, NativeStackTransferKind, PreparedNativePhloCharge,
 };
 pub use measurements::{
     NativePhloLocatedDemand, NativePhloLocatedDemands, NativePhloMeasurement,

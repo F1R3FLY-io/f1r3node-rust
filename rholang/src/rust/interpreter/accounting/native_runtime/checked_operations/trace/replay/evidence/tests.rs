@@ -4,7 +4,7 @@ use super::*;
 use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use crate::rust::interpreter::accounting::byte_accounting::ByteCharge;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
+    NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence, NativeDenialCause,
 };
 use crate::rust::interpreter::accounting::native_runtime::{
     NativeBudgetRetry, NativePathTrie, PathId,
@@ -39,6 +39,7 @@ fn recording(decisions: &[bool]) -> NativeBudgetRecording {
                 legacy_amount: None,
             }),
             granted: *granted,
+            cause: NativeDenialCause::Budget,
         })
         .collect();
     let retries: Vec<_> = attempts
@@ -60,6 +61,7 @@ fn recording(decisions: &[bool]) -> NativeBudgetRecording {
         session: [9; 32],
         attempts: attempts.into(),
         retries: retries.into(),
+        transfers: Arc::from([]),
         used: 0,
         paths: Arc::new(paths),
     }

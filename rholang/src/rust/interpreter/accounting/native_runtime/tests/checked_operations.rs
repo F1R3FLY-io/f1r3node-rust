@@ -8,7 +8,7 @@ use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use crate::rust::interpreter::accounting::byte_accounting::ByteCharge;
 use crate::rust::interpreter::accounting::byte_receipts::ByteObservation;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeBudgetAttempt, NativeBudgetOccurrence,
+    NativeBudgetAttempt, NativeBudgetOccurrence, NativeDenialCause,
 };
 use crate::rust::interpreter::accounting::native_runtime::tests::{
     authority, fixture_path, fixture_paths, journal_limits, with_contract,
@@ -77,16 +77,19 @@ fn fixture() -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
             occurrence: occurrence(0, NativeAttemptStage::ProduceIntroduction),
             observation: first.clone(),
             granted: true,
+            cause: NativeDenialCause::Budget,
         },
         NativeBudgetAttempt {
             occurrence: occurrence(1, NativeAttemptStage::ProduceIntroduction),
             observation: observation(1, AuthorityByteEventKind::ProduceIntroduction, 1),
             granted: true,
+            cause: NativeDenialCause::Budget,
         },
         NativeBudgetAttempt {
             occurrence: occurrence(1, NativeAttemptStage::Comm),
             observation: observation(2, AuthorityByteEventKind::Comm, 1),
             granted: true,
+            cause: NativeDenialCause::Budget,
         },
     ];
     let retries = vec![NativeBudgetRetry {
@@ -121,6 +124,7 @@ fn fixture() -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
             session: [0; 32],
             attempts: attempts.into(),
             retries: retries.into(),
+            transfers: Arc::from([]),
             used: 3,
             paths: fixture_paths(),
         },
@@ -138,9 +142,11 @@ fn consume_fixture(
             occurrence: occurrence(0, NativeAttemptStage::ConsumeIntroduction),
             observation: observation(0, AuthorityByteEventKind::ConsumeIntroduction, 1),
             granted: true,
+            cause: NativeDenialCause::Budget,
         }]
         .into(),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: 1,
         paths: fixture_paths(),
     };
@@ -214,6 +220,7 @@ fn journal_accepts_complete_evidence_and_empty_execution() {
         session: [0; 32],
         attempts: Arc::from([]),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
     };
@@ -357,11 +364,13 @@ fn stage_fixture(
             occurrence: occurrence(0, NativeAttemptStage::ProduceIntroduction),
             observation: observation(0, AuthorityByteEventKind::ProduceIntroduction, 0),
             granted: true,
+            cause: NativeDenialCause::Budget,
         },
         NativeBudgetAttempt {
             occurrence: occurrence(0, NativeAttemptStage::Comm),
             observation: observation(1, AuthorityByteEventKind::Comm, 0),
             granted: true,
+            cause: NativeDenialCause::Budget,
         },
     ];
     let mut retries = Vec::new();
@@ -384,6 +393,7 @@ fn stage_fixture(
                 occurrence,
                 observation,
                 granted: true,
+                cause: NativeDenialCause::Budget,
             });
         }
     }
@@ -406,6 +416,7 @@ fn stage_fixture(
         occurrence: occurrence(2, NativeAttemptStage::ProduceIntroduction),
         observation: observation(2, AuthorityByteEventKind::ProduceIntroduction, 0),
         granted: true,
+        cause: NativeDenialCause::Budget,
     });
     rows.push(operation(
         2,
@@ -418,6 +429,7 @@ fn stage_fixture(
             session: [0; 32],
             attempts: attempts.into(),
             retries: retries.into(),
+            transfers: Arc::from([]),
             used: 0,
             paths: fixture_paths(),
         },
@@ -480,6 +492,7 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                         u64::from(!intro),
                     ),
                     granted: intro,
+                    cause: NativeDenialCause::Budget,
                 }];
                 let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
                 row.completion = completion;
@@ -492,6 +505,7 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                             u64::from(!granted),
                         ),
                         granted,
+                        cause: NativeDenialCause::Budget,
                     });
                     row.budget_end = 2;
                     row.comm = Some(NativeCommRecord {
@@ -503,6 +517,7 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                     session: [0; 32],
                     attempts: attempts.into(),
                     retries: Arc::from([]),
+                    transfers: Arc::from([]),
                     used: 0,
                     paths: fixture_paths(),
                 };
@@ -545,8 +560,10 @@ fn journal_preserves_overflow_denial_and_rejects_retry_of_denied_attempt() {
             occurrence: occurrence(0, NativeAttemptStage::ProduceIntroduction),
             observation: observation(0, AuthorityByteEventKind::ProduceIntroduction, u64::MAX),
             granted: false,
+            cause: NativeDenialCause::Budget,
         }]),
         retries: Arc::from([]),
+        transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
     };
@@ -623,9 +640,10 @@ proptest! {
             occurrence: occurrence(index as u64, NativeAttemptStage::ProduceIntroduction),
             observation: observation(index as u8, AuthorityByteEventKind::ProduceIntroduction, 0),
             granted: true,
+            cause: NativeDenialCause::Budget,
         }).collect::<Vec<_>>();
         let recording = NativeBudgetRecording {
-            session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), used: 0, paths: fixture_paths(),
+            session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), transfers: Arc::from([]), used: 0, paths: fixture_paths(),
         };
         let rows = links.iter().map(|index| operation(*index as u64, 0, total, NativeObservationLink::Attempt(*index)))
             .collect::<Vec<_>>();

@@ -751,6 +751,9 @@ proptest! {
 #[path = "tests/recording.rs"]
 mod recording_tests;
 
+#[path = "tests/allocation_denial.rs"]
+mod allocation_denial_tests;
+
 #[path = "tests/operations.rs"]
 mod operation_tests;
 

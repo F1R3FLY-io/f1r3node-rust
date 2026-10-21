@@ -78,6 +78,7 @@ where
         ticket: E::Ticket,
         outcome: NativeReplayOutcome,
     ) -> Result<(), RSpaceError> {
+        let denial = ticket.denial();
         let mut completion = ticket.prepare(outcome)?;
         let publication =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
@@ -85,7 +86,7 @@ where
         publication.complete();
         // Changed by DR-113: the epoch names the error of its denial.
         // Err(RSpaceError::OutOfPhlogistons)
-        Err(self.epoch.denial())
+        Err(denial.unwrap_or_else(|| self.epoch.denial()))
     }
 
     pub async fn consume(

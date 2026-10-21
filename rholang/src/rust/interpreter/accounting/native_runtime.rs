@@ -56,7 +56,11 @@ pub struct NativeRuntimeConfig {
     record_room: u64,
     /// Added by DR-114: the reply bytes recorded so far.
     record_used: u64,
+    replay_transfers: ReplayStackTransfers,
 }
+
+pub(in crate::rust::interpreter::accounting) type ReplayStackTransfers =
+    Arc<[([u8; 32], models::rhoapi::CostAuthority, u64, bool)]>;
 
 impl NativeRuntimeConfig {
     pub fn new(contract: NativePhloExecutionContract<'_>, limits: NativeBudgetTraceLimits) -> Self {
@@ -70,6 +74,7 @@ impl NativeRuntimeConfig {
             operations: operations::NativeOperationRecorder::default(),
             record_room: 0,
             record_used: 0,
+            replay_transfers: Arc::from([]),
         }
     }
 
@@ -243,6 +248,20 @@ impl RuntimeBudget {
             }
             _ => Err(InterpreterError::ReduceError(
                 "native measurement context changed before acceptance".to_owned(),
+            )),
+        }
+    }
+
+    pub(super) fn record_native_allocation_denial(
+        &self,
+        state: &mut AuthorityRuntimeState,
+        prepared: Option<&NativeObservationPreparation>,
+    ) -> Result<(), InterpreterError> {
+        match (state.native.as_mut(), prepared) {
+            (Some(native), Some(prepared)) => native.record_allocation_denial(prepared),
+            (None, None) => Ok(()),
+            _ => Err(recording_error(
+                "native allocation context changed before acceptance",
             )),
         }
     }

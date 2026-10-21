@@ -18,7 +18,9 @@ fn decision(
     result
         .map(|result| match result {
             NativeBudgetReplayDecision::Accepted { .. } => NativeReplayDecision::Granted,
-            NativeBudgetReplayDecision::Denied => NativeReplayDecision::Denied,
+            NativeBudgetReplayDecision::Denied | NativeBudgetReplayDecision::DeniedAllocation => {
+                NativeReplayDecision::Denied
+            }
         })
         .map_err(error)
 }
@@ -55,6 +57,11 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
     type Publication = NativeReplayPublication;
 
     fn outcome(&self) -> NativeReplayOutcome { self.expected_outcome() }
+
+    fn denial(&self) -> Option<RSpaceError> {
+        self.allocation_denied()
+            .then(|| RSpaceError::from(InterpreterError::OutOfPhlogistonsError))
+    }
 
     fn candidate_identity(&self) -> Option<&dyn NativeCandidateIdentity> {
         self.operation()
