@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+# Many assertions are plain test and grep commands. Name the one that fails.
+trap '[[ $- == *e* ]] && printf "FAIL: line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
@@ -20,7 +22,7 @@ live_pid() {
 	[ -n "$state" ] && [ "$state" != Z ]
 }
 # The harness wrapper fails host-control stop-owned when FAKE_STOP_OWNED_FAIL=1.
-REAL_SOAK_HARNESS_BIN="$ROOT/target/debug/casper-soak"
+REAL_SOAK_HARNESS_BIN="${SOAK_HARNESS_BIN:-$ROOT/target/debug/casper-soak}"
 mkdir -p "$TMP/harness"
 cat >"$TMP/harness/casper-soak" <<SH
 #!/usr/bin/env bash
@@ -493,6 +495,18 @@ writer_stop_failure_case breach-stop-fail 120 4096
 test -s "$TMP/output-breach-stop-fail/writer-stop-failure.txt"
 grep -q '^host_protection_breach: disk floor' "$TMP/output-breach-stop-fail/early-exit.txt"
 grep -q '^FAILURES=2$' "$TMP/output-breach-stop-fail/.soak-state"
+grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output-breach-stop-fail/summary.txt"
+
+# A later segment of that soak does no work, and its writer stop also fails.
+# The failure counts, but the reason of the earlier stop stays.
+rm -f "$TMP/output-breach-stop-fail/writer-stop-failure.txt"
+writer_stop_failure_case breach-stop-fail 120 4096
+[ "$status" -ne 0 ] || { cat "$TMP/driver-breach-stop-fail.log" >&2; echo 'a failed writer stop passed the soak' >&2; exit 1; }
+grep -q '^soak already ended (host_protection_breach: disk floor' "$TMP/driver-breach-stop-fail.log"
+test -s "$TMP/output-breach-stop-fail/writer-stop-failure.txt"
+grep -q '^host_protection_breach: disk floor' "$TMP/output-breach-stop-fail/early-exit.txt"
+grep -q '^FAILURES=3$' "$TMP/output-breach-stop-fail/.soak-state"
+grep -q '^segments=2$' "$TMP/output-breach-stop-fail/summary.txt"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output-breach-stop-fail/summary.txt"
 
 # Scenario 4: two failed iterations. Each fake session writes its own archive

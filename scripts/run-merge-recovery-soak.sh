@@ -2351,7 +2351,7 @@ fi
 # their logs remain for the evidence that a deadline stop does not copy.
 if [ "$CASPER_RUNTIME" -eq 0 ] && ! stop_node_writers -q kill >/dev/null 2>&1; then
 	printf 'Writer termination is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
-	if [ -z "$EARLY_EXIT_REASON" ]; then
+	if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
 		EARLY_EXIT_REASON="writer_stop_failed"
 		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
 	fi
