@@ -382,7 +382,7 @@ pub(crate) struct DerivedLfb {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ALinPolicy {
+pub enum ALinPolicy {
     Halt,
     Alarm,
 }
@@ -591,7 +591,7 @@ async fn interpret_derivation(
     })
 }
 
-pub(crate) fn validate_commit(
+pub fn validate_commit(
     dag_now: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
     block_store: &block_storage::rust::key_value_block_store::KeyValueBlockStore,
     derived_against: &crate::rust::finality::floor::Floor,

@@ -34,6 +34,20 @@ impl IndexedBlockDagStorage {
         self.underlying.get_representation_internal()
     }
 
+    pub fn commit_lfb<V>(
+        &self,
+        directly: BlockHash,
+        ft_value: f32,
+        validate: V,
+    ) -> Result<crate::rust::dag::finalization_commit::CommitOutcome, KvStoreError>
+    where
+        V: FnOnce(
+            &KeyValueDagRepresentation,
+        ) -> Result<(), crate::rust::dag::finalization_commit::CommitRefusal>,
+    {
+        self.underlying.commit_lfb(directly, ft_value, validate)
+    }
+
     pub fn insert(
         &mut self,
         block: &BlockMessage,
