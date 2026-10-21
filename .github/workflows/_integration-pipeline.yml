@@ -33,6 +33,11 @@ on:
         type: boolean
         required: false
         default: false
+      oci_tests:
+        description: "When false, no OCI runners launch and the integration and UCC tests skip. The image build and the smoke tests still run."
+        type: boolean
+        required: false
+        default: true
 env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
@@ -221,6 +226,7 @@ jobs:
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
     needs: [await_approval, build_docker_image]
+    if: inputs.oci_tests
     runs-on: ubuntu-latest
     environment: oci-credentials
     # Serializes real OCI VM creation across every heavy run in the repository:
