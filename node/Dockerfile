@@ -79,6 +79,8 @@ ARG PROFILING_BUILD=0
 RUN xx-cargo --setup-target-triple && \
     cargo fetch --locked --target "$(xx-cargo --print-target-triple)"
 
+ARG VERSION
+
 RUN --network=none \
     TARGET_TRIPLE="$(xx-cargo --print-target-triple)" && \
     export TARGET_TRIPLE && \
@@ -91,7 +93,7 @@ RUN --network=none \
         *) export RUSTFLAGS="-C target-feature=+aes,+sse2" ;; \
     esac && \
     if [ "${PROFILING_BUILD}" = "1" ]; then export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"; fi && \
-    xx-cargo build --frozen --release -p node --target-dir ./build && \
+    F1R3NODE_BUILD_ID="${VERSION}" xx-cargo build --frozen --release -p node --target-dir ./build && \
     xx-verify "./build/${TARGET_TRIPLE}/release/node" && \
     cp "./build/${TARGET_TRIPLE}/release/node" /build/node_binary && \
     chmod +x /build/node_binary

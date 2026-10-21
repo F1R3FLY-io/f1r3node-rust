@@ -587,6 +587,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-image-publish-tags.sh
 
+      - name: Verify build identity workflow
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-build-identity-workflow.sh
+
       - name: Verify release train tag
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-tag-ca-release.sh
@@ -1209,6 +1213,7 @@ jobs:
     with:
       gated: false
       checkout_ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+      build_id: ${{ needs.build_base.outputs.VERSION }}
       oci_tests: ${{ needs.build_base.outputs.OCI_TESTS != 'false' }}
     secrets: inherit
 
