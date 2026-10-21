@@ -394,6 +394,9 @@ mod tests {
         use super::super::response::{
             err_eos, ok_bare, ok_bool, ok_bytes, ok_int, ok_list, ok_string,
         };
+        let _legacy = models::rust::record_encoding::scoped_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Legacy,
+        );
         // Case 1: ok_par(Par::default()) — the empty-payload
         // success reply.  Every non-verifying handler that returns
         // `[true]` uses this shape; every verifying handler that

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::de::Deserializer;
@@ -12,6 +13,24 @@ pub enum RecordEncoding {
 
 static ENCODING: AtomicU8 = AtomicU8::new(0);
 
+thread_local! {
+    static THREAD_ENCODING: Cell<Option<RecordEncoding>> = const { Cell::new(None) };
+}
+
+pub struct RecordEncodingScope {
+    previous: Option<RecordEncoding>,
+}
+
+impl Drop for RecordEncodingScope {
+    fn drop(&mut self) { THREAD_ENCODING.with(|cell| cell.set(self.previous)); }
+}
+
+pub fn scoped_record_encoding(encoding: RecordEncoding) -> RecordEncodingScope {
+    RecordEncodingScope {
+        previous: THREAD_ENCODING.with(|cell| cell.replace(Some(encoding))),
+    }
+}
+
 pub fn set_record_encoding(encoding: RecordEncoding) {
     let value = match encoding {
         RecordEncoding::Legacy => 0,
@@ -21,6 +40,9 @@ pub fn set_record_encoding(encoding: RecordEncoding) {
 }
 
 pub fn record_encoding() -> RecordEncoding {
+    if let Some(encoding) = THREAD_ENCODING.with(Cell::get) {
+        return encoding;
+    }
     match ENCODING.load(Ordering::Relaxed) {
         0 => RecordEncoding::Legacy,
         _ => RecordEncoding::Cost,
