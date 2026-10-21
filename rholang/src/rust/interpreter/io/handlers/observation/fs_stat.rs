@@ -27,11 +27,13 @@
 // whether the file is present + readable, so missing / permission
 // errors go through the normal FSERR channel.
 //
-// # Shape-A gated resolver deferred
+// # Shape-A root gating
 //
-// Same as fs_exists — uses the ungated `resolve_or_identity`
-// from slice 4.12.  Shape-A `resolve_or_identity_gated_for_consensus`
-// lands later.
+// Same posture as fs_exists: Consensus-mode calls on unregistered
+// `/@bundle/<X>` roots refuse upfront via
+// `resolve_or_identity_gated_for_consensus`.  Oracular calls pass
+// through to identity.  See fs_exists module header for the
+// HandlerReply-ok wrapping rationale.
 //
 // # WAL state-read journaling (Wave 6 scope)
 //
@@ -138,11 +140,19 @@ impl FsHandler for FsStatHandler {
                     raw
                 }
             };
-            // Ungated resolver — Shape-A gated variant deferred
-            // (see module header).
+            // Shape-A gating: Consensus-mode call on an unregistered
+            // `/@bundle/<X>` short-circuits with FSERR_UNSUPPORTED.
+            // Wrapped in HandlerReply::ok to match this handler's
+            // "always ok, Par carries error semantics" discipline.
             let logical = PathBuf::from(&args.root);
-            let (on_disk_root, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (on_disk_root, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::ok(err(c, m)),
+            };
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {
