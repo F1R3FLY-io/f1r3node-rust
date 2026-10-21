@@ -75,7 +75,7 @@ impl GenesisCeremonyMasterSpec {
                     .set(Arc::new(genesis_ceremony_master))
                     .await;
 
-                // с1
+                // c1
                 let abp_for_run = abp_arc.clone();
                 tokio::task::spawn_local(async move {
                     if let Err(e) = abp_for_run.run().await {
@@ -83,7 +83,7 @@ impl GenesisCeremonyMasterSpec {
                     }
                 });
 
-                // с2
+                // c2
                 let engine_cell_for_loop = engine_cell.clone();
                 let transport_layer = fixture.transport_layer.clone();
                 let rp_conf_ask = fixture.rp_conf_ask.clone();

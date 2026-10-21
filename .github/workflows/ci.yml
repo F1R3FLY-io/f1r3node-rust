@@ -22,6 +22,8 @@ on:
       - master
       - staging
       - trying
+      - ca-canary
+      - ca-release
     tags:
       - "**"
   # `labeled` carries the ci-heavy opt-in. `edited` stays: a stacked pull
@@ -75,7 +77,7 @@ jobs:
       MERGE_BASE_SHA: ${{ steps.target.outputs.merge_base_sha }}
       RUN_HEAVY: ${{ steps.target.outputs.run_heavy }}
       OCI_TESTS: ${{ steps.target.outputs.oci_tests }}
-      REUSED_MERGE_GROUP_RUN: ${{ steps.target.outputs.reused_merge_group_run }}
+      REUSED_HEAVY_RUN: ${{ steps.target.outputs.reused_heavy_run }}
     steps:
       - name: Resolve source target
         id: target
@@ -191,13 +193,39 @@ jobs:
             printf '%s\n' "$run_id"
           }
 
+          # Mergify merges a pull request into dev only when the pull request
+          # contains the dev head, with a merge commit whose second parent is
+          # the pull request head. The merge commit then has the tree of that
+          # head, which the queue tested with the heavy pipeline. When the
+          # newest ci.yml pull_request run for that head passed both
+          # Integration aggregator jobs, the push run reuses that result. Any
+          # other result, including an API error, runs the OCI tests.
+          queued_pull_request_result_reusable() {
+            local parents first second extra relationship push_tree head_tree run_id
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            parents="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '[.parents[].sha] | join(" ")')" || return 1
+            read -r first second extra <<<"$parents"
+            [[ "$first" =~ ^[0-9a-f]{40}$ && "$second" =~ ^[0-9a-f]{40}$ && -z "${extra:-}" ]] || return 1
+            relationship="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${first}...${second}" --jq '.status')" || return 1
+            [ "$relationship" = ahead ] || [ "$relationship" = identical ] || return 1
+            push_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${GITHUB_SHA}" --jq '.tree.sha')" || return 1
+            head_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${second}" --jq '.tree.sha')" || return 1
+            [[ "$push_tree" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [ "$push_tree" = "$head_tree" ] || return 1
+            run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${second}&event=pull_request&per_page=100" \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")] | max_by(.id) | .id // empty')" || return 1
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            integration_gates_passed "$run_id" || return 1
+            printf '%s %s\n' "$second" "$run_id"
+          }
+
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
           # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
           # GitHub-hosted checks only and reaches the heavy pipeline through the
           # queue, so a green Integration context on a PR means "not run here".
           run_heavy=false
           oci_tests=true
-          reused_merge_group_run=""
+          reused_heavy_run=""
           if [ "$EVENT_NAME" = merge_group ]; then
             run_heavy=true
             if reused="$(heavy_result_reusable)"; then
@@ -211,21 +239,31 @@ jobs:
           elif [ "$EVENT_NAME" = push ] && {
             [ "$EVENT_REF" = refs/heads/dev ] ||
             [ "$EVENT_REF" = refs/heads/master ] ||
-            [[ "$EVENT_REF" == refs/tags/v* ]];
+            [ "$EVENT_REF" = refs/heads/ca-canary ] ||
+            [ "$EVENT_REF" = refs/heads/ca-release ] ||
+            [[ "$EVENT_REF" == refs/tags/v* ]] ||
+            [[ "$EVENT_REF" == refs/tags/ca-v* ]];
           }; then
             run_heavy=true
-            if [ "$EVENT_REF" = refs/heads/dev ] && reused_merge_group_run="$(merge_group_result_reusable)"; then
+            if [ "$EVENT_REF" = refs/heads/dev ] && reused_heavy_run="$(merge_group_result_reusable)"; then
               oci_tests=false
-              echo "::notice::Merge group run ${reused_merge_group_run} passed both Integration gates on ${GITHUB_SHA}. The OCI integration tests are skipped. The images are built, smoke-tested, and published."
-              echo "OCI integration tests reused from merge group run ${reused_merge_group_run}." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              echo "::notice::Merge group run ${reused_heavy_run} passed both Integration gates on ${GITHUB_SHA}. The OCI integration tests are skipped. The images are built, smoke-tested, and published."
+              echo "OCI integration tests reused from merge group run ${reused_heavy_run}." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            elif [ "$EVENT_REF" = refs/heads/dev ] && reused="$(queued_pull_request_result_reusable)"; then
+              read -r reused_head reused_heavy_run <<<"$reused"
+              oci_tests=false
+              echo "::notice::Pull request head ${reused_head} has the tree of ${GITHUB_SHA}, and its run ${reused_heavy_run} passed both Integration gates. The OCI integration tests are skipped. The images are built, smoke-tested, and published."
+              echo "OCI integration tests reused from pull request run ${reused_heavy_run} at ${reused_head}." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             else
-              reused_merge_group_run=""
+              reused_heavy_run=""
             fi
           elif [ "$EVENT_NAME" = pull_request ] \
             && [ "$PR_HAS_HEAVY_LABEL" = true ] \
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
-            && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ]; } \
-            && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ]; then
+            && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ] \
+              || [ "$PR_BASE_REF" = ca-canary ] || [ "$PR_BASE_REF" = ca-release ]; } \
+            && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ] \
+            && [ "$PR_HEAD_REF" != ca-canary ] && [ "$PR_HEAD_REF" != ca-release ]; then
             run_heavy=true
           fi
           {
@@ -236,7 +274,7 @@ jobs:
             echo "merge_base_sha=$merge_base"
             echo "run_heavy=$run_heavy"
             echo "oci_tests=$oci_tests"
-            echo "reused_merge_group_run=$reused_merge_group_run"
+            echo "reused_heavy_run=$reused_heavy_run"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout
@@ -257,7 +295,10 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
           # Derive BRANCH for image tag suffix logic downstream
-          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/ca-v* ]]; then
+            # Release train tag: never the master release path, so never :latest
+            BRANCH="ca-release"
+          elif [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
             # Tag push: treat as master release path
             BRANCH="master"
           else
@@ -382,7 +423,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/scripts
 
-      - name: Reject a pull request with head master or dev
+      - name: Reject a pull request with a protected head
         shell: bash -euo pipefail {0}
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -436,16 +477,16 @@ jobs:
           if [ "$count" -gt 250 ]; then
             echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
           fi
-          # Only a human account (type User) exempts its own commits. A bot or
-          # app account that opens a pull request gets no exemption.
+          # commit-policy-exemptions.sh lists the commits of a human pull
+          # request author and the commits of an imported fork pull request.
+          # The base commit's copy runs, so a pull request cannot widen its own
+          # exemption. Before the script reaches the base branch, the pull
+          # request's copy runs.
           exempt="$RUNNER_TEMP/exempt-authors.txt"
-          : > "$exempt"
-          if [ "$PR_AUTHOR_TYPE" = User ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" --paginate \
-              --jq '.[] | select(.author.login == env.PR_AUTHOR) | .sha' > "$exempt"
-          else
-            echo "Pull request author ${PR_AUTHOR} is a ${PR_AUTHOR_TYPE} account; no author exemption."
-          fi
+          exemptions="$RUNNER_TEMP/commit-policy-exemptions.sh"
+          git show "${BASE_SHA}:.github/scripts/commit-policy-exemptions.sh" > "$exemptions" 2>/dev/null ||
+            cp .github/scripts/commit-policy-exemptions.sh "$exemptions"
+          bash "$exemptions" > "$exempt"
           # The base commit's denied list applies, so a pull request cannot
           # remove its own block. Before the list reaches the base branch,
           # the pull request's copy applies.
@@ -485,6 +526,10 @@ jobs:
       - name: Verify workflow security invariants
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
+
+      - name: Verify Dockerfile workspace copies
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/check-dockerfile-workspace.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -538,6 +583,22 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ci-stack-gate.sh
 
+      - name: Verify image publish tags
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-image-publish-tags.sh
+
+      - name: Verify release train tag
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-tag-ca-release.sh
+
+      - name: Verify release train soak gate
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-soak-gate.sh
+
+      - name: Verify release train soak dispatch
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ca-soak-dispatch.sh
+
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-soak-schedule-routing.sh
@@ -589,6 +650,22 @@ jobs:
       - name: Verify Promotion Source check
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-promotion-source.sh
+
+      - name: Verify daily back-merge provenance
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-check-ca-daily-provenance.sh
+
+      - name: Verify Dockerfile workspace check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-check-dockerfile-workspace.sh
+
+      - name: Verify Mergify queues
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-mergify-config.sh
+
+      - name: Verify Commit Policy exemptions
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-commit-policy-exemptions.sh
 
       - name: Verify release promotion
         shell: bash -euo pipefail {0}
@@ -1155,20 +1232,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OCI_TESTS: ${{ needs.build_base.outputs.OCI_TESTS }}
-          REUSED_MERGE_GROUP_RUN: ${{ needs.build_base.outputs.REUSED_MERGE_GROUP_RUN }}
+          REUSED_HEAVY_RUN: ${{ needs.build_base.outputs.REUSED_HEAVY_RUN }}
           PIPELINE_RESULT: ${{ needs.pipeline.result }}
         shell: bash -e {0}
         run: |
           if [ "$OCI_TESTS" = false ]; then
-            if ! [[ "$REUSED_MERGE_GROUP_RUN" =~ ^[1-9][0-9]*$ ]]; then
-              echo "The OCI integration tests were skipped, but no reused merge group run is named."
+            if ! [[ "$REUSED_HEAVY_RUN" =~ ^[1-9][0-9]*$ ]]; then
+              echo "The OCI integration tests were skipped, but no reused heavy run is named."
               exit 1
             fi
             if [ "$PIPELINE_RESULT" != success ]; then
               echo "The OCI integration tests were reused, but the image build or a smoke test of this run ended $PIPELINE_RESULT."
               exit 1
             fi
-            echo "The amd64 OCI integration tests were skipped. Merge group run ${REUSED_MERGE_GROUP_RUN} passed them on this commit."
+            echo "The amd64 OCI integration tests were skipped. Run ${REUSED_HEAVY_RUN} passed them on the tree of this commit."
             exit 0
           fi
           slots=$(gh api \
@@ -1202,20 +1279,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OCI_TESTS: ${{ needs.build_base.outputs.OCI_TESTS }}
-          REUSED_MERGE_GROUP_RUN: ${{ needs.build_base.outputs.REUSED_MERGE_GROUP_RUN }}
+          REUSED_HEAVY_RUN: ${{ needs.build_base.outputs.REUSED_HEAVY_RUN }}
           PIPELINE_RESULT: ${{ needs.pipeline.result }}
         shell: bash -e {0}
         run: |
           if [ "$OCI_TESTS" = false ]; then
-            if ! [[ "$REUSED_MERGE_GROUP_RUN" =~ ^[1-9][0-9]*$ ]]; then
-              echo "The OCI integration tests were skipped, but no reused merge group run is named."
+            if ! [[ "$REUSED_HEAVY_RUN" =~ ^[1-9][0-9]*$ ]]; then
+              echo "The OCI integration tests were skipped, but no reused heavy run is named."
               exit 1
             fi
             if [ "$PIPELINE_RESULT" != success ]; then
               echo "The OCI integration tests were reused, but the image build or a smoke test of this run ended $PIPELINE_RESULT."
               exit 1
             fi
-            echo "The arm64 OCI integration tests were skipped. Merge group run ${REUSED_MERGE_GROUP_RUN} passed them on this commit."
+            echo "The arm64 OCI integration tests were skipped. Run ${REUSED_HEAVY_RUN} passed them on the tree of this commit."
             exit 0
           fi
           slots=$(gh api \
@@ -1290,7 +1367,8 @@ jobs:
           done
 
   # Publish Docker image to Docker Hub + OCIR.
-  # Runs on release tag pushes and on push to dev/master (with suffix).
+  # Runs on release tag pushes (v* and ca-v*) and on push to dev, master, and
+  # ca-release (with suffix). ca-canary does not publish.
   release_docker_image:
     name: Release Docker Image
     timeout-minutes: 15
@@ -1310,8 +1388,10 @@ jobs:
     if: >-
       github.event_name == 'push' && (
         startsWith(github.ref, 'refs/tags/v') ||
+        startsWith(github.ref, 'refs/tags/ca-v') ||
         github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/dev'
+        github.ref == 'refs/heads/dev' ||
+        github.ref == 'refs/heads/ca-release'
       )
     runs-on: ubuntu-latest
     environment: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') && 'protected-branch-image-publish' || 'ephemeral-launch' }}
@@ -1433,6 +1513,8 @@ jobs:
           #   dev     → version tag prefixed `dev-${VERSION}`, channel pointer :dev
           #   staging → version tag prefixed `staging-${VERSION}`, channel pointer :staging
           #   master  → plain :${VERSION}, channel pointer :latest only on tag push
+          #   ca-release → version tag prefixed `ca-release-${VERSION}`, channel pointer :ca-release
+          #   ca-v* tag  → plain :${VERSION}, channel pointer :ca-latest, never :latest
           if [[ "$BRANCH" == "trying" ]]; then
             SUFFIX="-trying"
             CI_RUN="-ci-${GITHUB_RUN_NUMBER}"
@@ -1440,6 +1522,8 @@ jobs:
             TAG_PREFIX="dev-"
           elif [[ "$BRANCH" == "staging" ]]; then
             TAG_PREFIX="staging-"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="ca-release-"
           fi
 
           IMAGE_NAME="${DOCKER_IMAGE_NAME}${SUFFIX}"
@@ -1451,6 +1535,10 @@ jobs:
             IMG_LATEST="${IMAGE_NAME}:dev"
           elif [[ "$BRANCH" == "staging" ]]; then
             IMG_LATEST="${IMAGE_NAME}:staging"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:ca-release"
+          elif [[ "$BRANCH" == "ca-release" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:ca-latest"
           else
             IMG_LATEST="${IMAGE_NAME}:latest"
           fi
@@ -1510,6 +1598,8 @@ jobs:
             TAG_PREFIX="dev-"
           elif [[ "$BRANCH" == "staging" ]]; then
             TAG_PREFIX="staging-"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="ca-release-"
           fi
 
           OCIR_IMAGE="${OCIR_BASE}${SUFFIX}"
@@ -1520,6 +1610,10 @@ jobs:
             IMG_LATEST="${OCIR_IMAGE}:dev"
           elif [[ "$BRANCH" == "staging" ]]; then
             IMG_LATEST="${OCIR_IMAGE}:staging"
+          elif [[ "$BRANCH" == "ca-release" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:ca-release"
+          elif [[ "$BRANCH" == "ca-release" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:ca-latest"
           else
             IMG_LATEST="${OCIR_IMAGE}:latest"
           fi
