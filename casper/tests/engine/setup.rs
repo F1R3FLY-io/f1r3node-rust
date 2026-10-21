@@ -287,12 +287,20 @@ impl TestFixture {
         let deploy_storage_store = Arc::new(MockKeyValueStore::with_shared_data(
             kvm_deploystorage.clone(),
         ));
-        let deploy_storage = KeyValueDeployStorage::from_store(deploy_storage_store);
+        let deploy_storage = KeyValueDeployStorage::from_stores(
+            deploy_storage_store,
+            Arc::new(MockKeyValueStore::new()),
+        )
+        .unwrap();
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
         let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
         let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
-            KeyValueRejectedDeployBuffer::from_store(rejected_buffer_store),
+            KeyValueRejectedDeployBuffer::from_stores(
+                rejected_buffer_store,
+                Arc::new(MockKeyValueStore::new()),
+            )
+            .unwrap(),
         ));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)

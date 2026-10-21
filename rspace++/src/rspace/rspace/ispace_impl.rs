@@ -105,6 +105,15 @@ where
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
 
+    async fn get_data_at(
+        &self,
+        checkpoint: &SoftCheckpoint<C, P, A, K>,
+        channel: &C,
+    ) -> Vec<Datum<A>> {
+        self.get_store()
+            .get_data_at(&checkpoint.cache_snapshot, channel)
+    }
+
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)
     }

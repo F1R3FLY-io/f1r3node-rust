@@ -2096,6 +2096,13 @@ jobs:
             --tag "$DOCKER_IMAGE_NAME:latest" \
             --load \
             .
+          # The loaded image is all the soak needs. The build cache stays
+          # unused on the disk for the whole run (6.6 GB reclaimable at the
+          # disk floor stop of soak 38995239992), so free it here. The prune only
+          # saves space, so a failure is a warning and the soak still starts.
+          docker system df || true
+          docker builder prune --all --force || echo "::warning::docker builder prune failed; the soak starts with the build cache in place"
+          docker system df || true
 
       - name: Resolve candidate image by digest
         if: needs.schedule_gate.outputs.candidate_tag != ''
@@ -2319,12 +2326,11 @@ jobs:
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
           slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          # Daily: after 8h, stop once the branch under test advances — the run
-          # is pinned to one image, so past that point it is testing history.
-          # The 8h floor keeps an early merge from reducing a night to a token
-          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
-          # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          # 0 (disabled) for both kinds. A run that stops when the branch
+          # under test moves starts no replacement, so the exit only discarded
+          # sessions on the pinned SHA, and the issue #24 gate needs every
+          # session of the window. The next night soaks the new tip.
+          merge_exit_min_seconds: '0'
           kind: ${{ needs.schedule_gate.outputs.kind }}
           retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
           window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
@@ -2345,12 +2351,11 @@ jobs:
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
           slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          # Daily: after 8h, stop once the branch under test advances — the run
-          # is pinned to one image, so past that point it is testing history.
-          # The 8h floor keeps an early merge from reducing a night to a token
-          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
-          # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          # 0 (disabled) for both kinds. A run that stops when the branch
+          # under test moves starts no replacement, so the exit only discarded
+          # sessions on the pinned SHA, and the issue #24 gate needs every
+          # session of the window. The next night soaks the new tip.
+          merge_exit_min_seconds: '0'
           kind: ${{ needs.schedule_gate.outputs.kind }}
           retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
           window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
@@ -2371,12 +2376,11 @@ jobs:
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
           slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          # Daily: after 8h, stop once the branch under test advances — the run
-          # is pinned to one image, so past that point it is testing history.
-          # The 8h floor keeps an early merge from reducing a night to a token
-          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
-          # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          # 0 (disabled) for both kinds. A run that stops when the branch
+          # under test moves starts no replacement, so the exit only discarded
+          # sessions on the pinned SHA, and the issue #24 gate needs every
+          # session of the window. The next night soaks the new tip.
+          merge_exit_min_seconds: '0'
           kind: ${{ needs.schedule_gate.outputs.kind }}
           retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
           window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
@@ -2397,12 +2401,11 @@ jobs:
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
           slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          # Daily: after 8h, stop once the branch under test advances — the run
-          # is pinned to one image, so past that point it is testing history.
-          # The 8h floor keeps an early merge from reducing a night to a token
-          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
-          # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          # 0 (disabled) for both kinds. A run that stops when the branch
+          # under test moves starts no replacement, so the exit only discarded
+          # sessions on the pinned SHA, and the issue #24 gate needs every
+          # session of the window. The next night soaks the new tip.
+          merge_exit_min_seconds: '0'
           kind: ${{ needs.schedule_gate.outputs.kind }}
           retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
           window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
@@ -2423,12 +2426,11 @@ jobs:
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
           slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          # Daily: after 8h, stop once the branch under test advances — the run
-          # is pinned to one image, so past that point it is testing history.
-          # The 8h floor keeps an early merge from reducing a night to a token
-          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
-          # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          # 0 (disabled) for both kinds. A run that stops when the branch
+          # under test moves starts no replacement, so the exit only discarded
+          # sessions on the pinned SHA, and the issue #24 gate needs every
+          # session of the window. The next night soaks the new tip.
+          merge_exit_min_seconds: '0'
           kind: ${{ needs.schedule_gate.outputs.kind }}
           retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
           window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
@@ -2461,12 +2463,11 @@ jobs:
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
           slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          # Daily: after 8h, stop once the branch under test advances — the run
-          # is pinned to one image, so past that point it is testing history.
-          # The 8h floor keeps an early merge from reducing a night to a token
-          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
-          # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          # 0 (disabled) for both kinds. A run that stops when the branch
+          # under test moves starts no replacement, so the exit only discarded
+          # sessions on the pinned SHA, and the issue #24 gate needs every
+          # session of the window. The next night soaks the new tip.
+          merge_exit_min_seconds: '0'
           kind: ${{ needs.schedule_gate.outputs.kind }}
           retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
           window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}

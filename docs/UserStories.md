@@ -21,6 +21,27 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+## Active Stories
+
+#### US-013: Trusted daily back-merges
+
+> As a **release engineer**, I want **verified daily back-merges** so that **the release train accepts only release code and verified base merges**.
+
+**Implemented in:** EPIC-029
+
+**Value Stream:** Release Assurance
+
+**Status:** In progress
+
+**Acceptance Criteria:**
+- [ ] The validator accepts clean base merges without a new release source.
+- [ ] Pull request code cannot change the trusted validator.
+- [ ] The daily queue requires a successful status on the current head commit.
+
+**Design:** [Daily back-merge provenance](plans/ca-daily-provenance.md).
+
+---
+
 ## Completed Stories
 
 ---
@@ -30,6 +51,8 @@ This document captures user stories that drive feature development. User stories
 > As a **release engineer validating consensus changes**, I want **capture benchmark metrics from the 60-hour merge-recovery soak (per-iteration throughput, failure rate, and node resource/finalization measurements) with a machine-readable summary artifact** so that **sustained-load performance and stability are measurable and comparable across releases instead of pass/fail only**.
 
 **Implemented in:** EPIC-010
+
+**Value Stream:** Release Assurance
 
 **Status:** Planned
 
@@ -47,6 +70,9 @@ This document captures user stories that drive feature development. User stories
 > As a **release engineer**, I want **to verify source-bound Casper harness behavior** so that **I can reject incomplete or misleading experiment evidence**.
 
 **Implemented in:** EPIC-017
+
+**Value Stream:** Consensus Correctness
+
 **User Flow:** FLOW-001
 
 **Status:** In Progress
@@ -65,6 +91,8 @@ This document captures user stories that drive feature development. User stories
 > As a **node operator**, I want **bounded retries and log storage** so that **resource faults do not fill deployment disks**.
 
 **Implemented in:** EPIC-020
+
+**Value Stream:** Node Operations
 
 **User Flow:** FLOW-002
 
@@ -99,6 +127,8 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 
 **Implemented in:** EPIC-015
 
+**Value Stream:** Consensus Correctness
+
 **Status:** Planned
 
 **Acceptance Criteria:**
@@ -114,6 +144,8 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 > As a **platform operator**, I want **f1r3node-rust's Docker configuration to be directly compatible with the system-integration orchestration tooling** so that **the migration from dual Scala/Rust support to Rust-only can proceed without manual fixups**.
 
 **Implemented in:** EPIC-001, EPIC-002
+
+**Value Stream:** Ecosystem Integration
 
 **Acceptance Criteria:**
 - [x] Genesis wallets.txt identical between repos (20 wallets, correct balances)
@@ -132,6 +164,8 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 > As a **F1R3FLY developer**, I want **the Rust blockchain node to live in a standalone repository (f1r3node-rust) with clean Cargo-only tooling** so that **we can iterate faster without Nix/SBT/Scala build complexity and contributors only need standard Rust tooling**.
 
 **Implemented in:** EPIC-003 through EPIC-008
+
+**Value Stream:** Ecosystem Integration
 
 **Acceptance Criteria:**
 - [ ] All critical PRs (Reified RSpaces #328-#338) merged in f1r3node before cutover
@@ -152,6 +186,8 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 > As a **platform engineer**, I want **to deploy a single F1R3FLY shard across two isolated OCI VPSes and run repeatable latency benchmarks against it** so that **we can measure network-latency-bound consensus performance and detect regressions as the node evolves**.
 
 **Implemented in:** EPIC-009
+
+**Value Stream:** Release Assurance
 
 **Status:** In Progress
 
@@ -174,10 +210,14 @@ User stories capture the **why** (user need and benefit). Epics capture the **wh
 
 | Artifact | Purpose | Location |
 |----------|---------|----------|
+| Value Stream | End-to-end flow of one kind of value | `**Value Stream:**` line of each story |
 | User Story | Business/user need | `docs/UserStories.md` |
 | Epic | Implementation scope | `docs/ToDos.md` |
 | Task | Technical work item | Nested in epic YAML |
-| Acceptance Criteria | Definition of done | In user story |
+| Acceptance Criteria | Business definition of done | In user story |
+| Task acceptance | Measurable technical evidence | `acceptance` list of each task |
+
+The [task tracking guide](task-tracking.md) lists the value streams and the claim rules.
 
 **Workflow:**
 1. Identify user need -> Create user story
@@ -203,6 +243,8 @@ Use this template when adding new user stories:
 > As a **[persona]**, I want **[capability]** so that **[benefit]**.
 
 **Implemented in:** [EPIC-ID or "Planned"]
+
+**Value Stream:** [Value stream name, see docs/task-tracking.md]
 
 **Acceptance Criteria:**
 - [ ] Criterion 1
