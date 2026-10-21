@@ -23,6 +23,7 @@ impl ConsensusAdapter for Recorder {
             tokio::select! {
                 _ = context.control.cancelled() => return Ok(()),
                 Some(request) = context.packets.recv() => {
+                    let (request, _budget) = request.into_parts();
                     self.0.lock().await.push(request.packet);
                     let _ = request.reply.send(Ok(()));
                 },
@@ -47,6 +48,7 @@ async fn ingress_preserves_native_bytes_and_uses_runtime_admission() {
             request_timeout: Duration::from_secs(1),
             drain_timeout: Duration::from_secs(1),
             cleanup_timeout: Duration::from_secs(1),
+            ..RuntimeConfig::default()
         },
     )
     .unwrap();

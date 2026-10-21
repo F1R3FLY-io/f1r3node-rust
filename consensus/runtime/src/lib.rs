@@ -1,14 +1,15 @@
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 use std::time::Duration;
 
 use consensus_api::{
-    AdapterContext, Capabilities, CleanupTask, ConsensusAdapter, ConsensusCommand, ConsensusError,
-    ConsensusStatus, NetworkPacket, ObjectId, PacketRequest, Phase, ProtocolDescriptor,
-    RuntimeControl,
+    AdapterContext, AdmittedRequest, Capabilities, CleanupTask, ConsensusAdapter, ConsensusCommand,
+    ConsensusError, ConsensusStatus, NetworkPacket, ObjectId, PacketRequest, Phase,
+    ProtocolDescriptor, RuntimeControl,
 };
 use futures::FutureExt;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 
@@ -17,6 +18,8 @@ pub struct RuntimeConfig {
     pub command_capacity: usize,
     pub packet_capacity: usize,
     pub max_payload_bytes: usize,
+    pub command_byte_capacity: usize,
+    pub packet_byte_capacity: usize,
     pub request_timeout: Duration,
     pub drain_timeout: Duration,
     pub cleanup_timeout: Duration,
@@ -28,6 +31,8 @@ impl Default for RuntimeConfig {
             command_capacity: 128,
             packet_capacity: 256,
             max_payload_bytes: 16 * 1024 * 1024,
+            command_byte_capacity: 64 * 1024 * 1024,
+            packet_byte_capacity: 256 * 1024 * 1024,
             request_timeout: Duration::from_secs(300),
             drain_timeout: Duration::from_secs(30),
             cleanup_timeout: Duration::from_secs(30),
@@ -37,11 +42,13 @@ impl Default for RuntimeConfig {
 
 #[derive(Clone)]
 pub struct ConsensusHandle {
-    commands: mpsc::Sender<ConsensusCommand>,
-    packets: mpsc::Sender<PacketRequest>,
+    commands: mpsc::Sender<AdmittedRequest<ConsensusCommand>>,
+    packets: mpsc::Sender<AdmittedRequest<PacketRequest>>,
     status: watch::Receiver<ConsensusStatus>,
     shutdown: watch::Sender<bool>,
     config: RuntimeConfig,
+    command_bytes: Arc<Semaphore>,
+    packet_bytes: Arc<Semaphore>,
 }
 
 impl ConsensusHandle {
@@ -100,12 +107,17 @@ impl ConsensusHandle {
         self.check_payload(&payload)?;
         let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
+        let bytes = payload.capacity();
         self.commands
-            .try_send(ConsensusCommand::Submit {
-                payload,
-                deadline,
-                reply,
-            })
+            .try_send(admit(
+                &self.command_bytes,
+                bytes,
+                ConsensusCommand::Submit {
+                    payload,
+                    deadline,
+                    reply,
+                },
+            )?)
             .map_err(queue_error)?;
         self.response(deadline, rx).await
     }
@@ -115,11 +127,11 @@ impl ConsensusHandle {
         let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
         self.commands
-            .try_send(ConsensusCommand::Propose {
+            .try_send(admit(&self.command_bytes, 0, ConsensusCommand::Propose {
                 is_async,
                 deadline,
                 reply,
-            })
+            })?)
             .map_err(queue_error)?;
         self.response(deadline, rx).await
     }
@@ -132,7 +144,11 @@ impl ConsensusHandle {
         let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
         self.commands
-            .try_send(ConsensusCommand::Finalized { deadline, reply })
+            .try_send(admit(
+                &self.command_bytes,
+                0,
+                ConsensusCommand::Finalized { deadline, reply },
+            )?)
             .map_err(queue_error)?;
         self.response(deadline, rx).await
     }
@@ -147,12 +163,19 @@ impl ConsensusHandle {
         }
         let deadline = Instant::now() + self.config.request_timeout;
         let (reply, rx) = oneshot::channel();
+        let bytes = packet
+            .payload
+            .capacity()
+            .checked_add(packet.peer.id.capacity())
+            .and_then(|bytes| bytes.checked_add(packet.peer.host.capacity()))
+            .and_then(|bytes| bytes.checked_add(packet.kind.capacity()))
+            .ok_or(ConsensusError::QueueFull)?;
         self.packets
-            .try_send(PacketRequest {
+            .try_send(admit(&self.packet_bytes, bytes, PacketRequest {
                 packet,
                 deadline,
                 reply,
-            })
+            })?)
             .map_err(queue_error)?;
         self.response(deadline, rx).await
     }
@@ -177,6 +200,19 @@ impl ConsensusHandle {
         .await
         .map_err(|_| ConsensusError::DeadlineExceeded)?
     }
+}
+
+fn admit<T>(
+    budget: &Arc<Semaphore>,
+    bytes: usize,
+    request: T,
+) -> Result<AdmittedRequest<T>, ConsensusError> {
+    let bytes = u32::try_from(bytes).map_err(|_| ConsensusError::QueueFull)?;
+    let permit = budget
+        .clone()
+        .try_acquire_many_owned(bytes)
+        .map_err(|_| ConsensusError::QueueFull)?;
+    Ok(AdmittedRequest::new(request, permit))
 }
 
 fn queue_error<T>(error: mpsc::error::TrySendError<T>) -> ConsensusError {
@@ -209,6 +245,19 @@ impl RuntimeBuilder {
                 "runtime limits must be positive".into(),
             ));
         }
+        for capacity in [config.command_byte_capacity, config.packet_byte_capacity] {
+            if capacity < config.max_payload_bytes
+                || capacity > Semaphore::MAX_PERMITS
+                || u32::try_from(capacity).is_err()
+            {
+                return Err(ConsensusError::InvalidInput(
+                    "request byte budgets must fit the semaphore and hold the maximum payload"
+                        .into(),
+                ));
+            }
+        }
+        let command_bytes = Arc::new(Semaphore::new(config.command_byte_capacity));
+        let packet_bytes = Arc::new(Semaphore::new(config.packet_byte_capacity));
         let (commands, command_rx) = mpsc::channel(config.command_capacity);
         let (packets, packet_rx) = mpsc::channel(config.packet_capacity);
         let (status, status_rx) = watch::channel(ConsensusStatus {
@@ -231,6 +280,8 @@ impl RuntimeBuilder {
                 status: status_rx,
                 shutdown,
                 config,
+                command_bytes,
+                packet_bytes,
             },
             context,
             status,
@@ -534,5 +585,48 @@ impl TaskScope {
         state.closed = true;
         state.tasks.abort_all();
         self.changed.notify_waiters();
+    }
+}
+
+#[cfg(test)]
+mod byte_budget_tests {
+    use super::*;
+
+    struct Queued;
+
+    #[async_trait::async_trait]
+    impl ConsensusAdapter for Queued {
+        async fn run(self: Box<Self>, mut context: AdapterContext) -> Result<(), ConsensusError> {
+            context.control.ready();
+            context.control.cancelled().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_releases_queued_request_bytes() {
+        let runtime = RuntimeBuilder::new(
+            ProtocolDescriptor {
+                id: "queued".into(),
+                version: 1,
+                capabilities: Capabilities::SUBMIT,
+            },
+            RuntimeConfig {
+                max_payload_bytes: 8,
+                command_byte_capacity: 8,
+                ..RuntimeConfig::default()
+            },
+        )
+        .unwrap()
+        .build(Box::new(Queued))
+        .start();
+        let handle = runtime.handle();
+        handle.wait_ready().await.unwrap();
+        let mut call = Box::pin(handle.submit(vec![0; 8]));
+        assert!(futures::poll!(&mut call).is_pending());
+        assert_eq!(handle.command_bytes.available_permits(), 0);
+        runtime.shutdown().await.unwrap();
+        assert_eq!(handle.command_bytes.available_permits(), 8);
+        assert_eq!(call.await, Err(ConsensusError::Stopped));
     }
 }

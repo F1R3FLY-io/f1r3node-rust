@@ -218,11 +218,26 @@ impl RuntimeControl {
     pub fn is_cancelled(&self) -> bool { *self.shutdown.borrow() }
 }
 
+pub struct AdmittedRequest<T> {
+    request: T,
+    permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl<T> AdmittedRequest<T> {
+    pub fn new(request: T, permit: tokio::sync::OwnedSemaphorePermit) -> Self {
+        Self { request, permit }
+    }
+
+    pub fn into_parts(self) -> (T, tokio::sync::OwnedSemaphorePermit) {
+        (self.request, self.permit)
+    }
+}
+
 pub type CleanupTask = Pin<Box<dyn Future<Output = Result<(), ConsensusError>> + Send + 'static>>;
 
 pub struct AdapterContext {
-    pub commands: mpsc::Receiver<ConsensusCommand>,
-    pub packets: mpsc::Receiver<PacketRequest>,
+    pub commands: mpsc::Receiver<AdmittedRequest<ConsensusCommand>>,
+    pub packets: mpsc::Receiver<AdmittedRequest<PacketRequest>>,
     pub control: RuntimeControl,
     pub cleanup: oneshot::Sender<CleanupTask>,
 }

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use consensus_api::{
-    AdapterContext, Capabilities, ConsensusAdapter, ConsensusCommand, ConsensusError, Phase,
-    ProtocolDescriptor,
+    AdapterContext, AdmittedRequest, Capabilities, ConsensusAdapter, ConsensusCommand,
+    ConsensusError, Phase, ProtocolDescriptor,
 };
 use consensus_runtime::{RuntimeBuilder, RuntimeConfig};
 use tokio::sync::{mpsc, oneshot};
@@ -28,7 +28,7 @@ fn builder() -> RuntimeBuilder {
     .unwrap()
 }
 
-struct HoldCommands(mpsc::UnboundedSender<ConsensusCommand>);
+struct HoldCommands(mpsc::UnboundedSender<AdmittedRequest<ConsensusCommand>>);
 
 #[async_trait::async_trait]
 impl ConsensusAdapter for HoldCommands {
@@ -63,7 +63,8 @@ async fn all_commands_expire_even_before_the_caller_observes_its_timeout() {
         rx.recv().await.unwrap(),
     ];
     advance(REQUEST_TIMEOUT).await;
-    for command in commands {
+    for admitted in commands {
+        let (command, _budget) = admitted.into_parts();
         let (deadline, closed) = match &command {
             ConsensusCommand::Submit {
                 deadline, reply, ..
@@ -105,7 +106,8 @@ async fn abandoned_commands_are_skipped_before_the_deadline() {
     ];
     drop((submit, propose, finalized));
     assert_eq!(Instant::now(), started_at);
-    for command in commands {
+    for admitted in commands {
+        let (command, _budget) = admitted.into_parts();
         assert!(command.try_start().is_none());
     }
     assert_eq!(handle.status().phase, Phase::Ready);
@@ -155,7 +157,8 @@ impl ConsensusAdapter for StartedWrite {
             completed,
         } = *self;
         context.control.ready();
-        let command = context.commands.recv().await.unwrap().try_start().unwrap();
+        let (command, _budget) = context.commands.recv().await.unwrap().into_parts();
+        let command = command.try_start().unwrap();
         started.send(()).unwrap();
         release.await.unwrap();
         let reply = match command {

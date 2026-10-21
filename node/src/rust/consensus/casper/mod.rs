@@ -317,6 +317,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                 Some(request) = context.packets.recv(), if packet_requests.len() < 32 => {
                     let handler = packet_handler.clone();
                     if let Err(error) = packet_requests.spawn("packet", async move {
+                        let (request, _budget) = request.into_parts();
                         let Some(request) = request.try_start() else { return Ok(()); };
                         let packet = request.packet;
                         let peer = PeerNode { id: NodeIdentifier { key: packet.peer.id.into() }, endpoint: Endpoint::new(packet.peer.host, packet.peer.tcp_port, packet.peer.udp_port) };
@@ -333,6 +334,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                     let task_spawner = task_spawner.clone();
                     if let Err(error) = command_requests.spawn("command", async move {
                         use casper::rust::api::block_api::BlockAPI;
+                        let (command, _budget) = command.into_parts();
                         let Some(command) = command.try_start() else { return Ok(()); };
                         match command {
                             ConsensusCommand::Submit { payload, reply, .. } => {

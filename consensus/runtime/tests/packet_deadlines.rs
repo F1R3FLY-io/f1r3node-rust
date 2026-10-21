@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use consensus_api::{
-    AdapterContext, Capabilities, ConsensusAdapter, ConsensusError, NetworkPacket, PacketRequest,
-    Peer, Phase, ProtocolDescriptor,
+    AdapterContext, AdmittedRequest, Capabilities, ConsensusAdapter, ConsensusError, NetworkPacket,
+    PacketRequest, Peer, Phase, ProtocolDescriptor,
 };
 use consensus_runtime::{RuntimeBuilder, RuntimeConfig};
 use tokio::sync::{mpsc, oneshot};
@@ -38,7 +38,7 @@ fn builder() -> RuntimeBuilder {
     .unwrap()
 }
 
-struct HoldPackets(mpsc::UnboundedSender<PacketRequest>);
+struct HoldPackets(mpsc::UnboundedSender<AdmittedRequest<PacketRequest>>);
 
 #[async_trait::async_trait]
 impl ConsensusAdapter for HoldPackets {
@@ -63,7 +63,7 @@ async fn packet_expiry_is_checked_before_the_caller_observes_timeout() {
     let expected = Instant::now() + TIMEOUT;
     let mut call = Box::pin(handle.handle_packet(packet()));
     assert!(futures::poll!(&mut call).is_pending());
-    let request = rx.recv().await.unwrap();
+    let (request, _budget) = rx.recv().await.unwrap().into_parts();
     assert_eq!(request.deadline, expected);
     advance(TIMEOUT).await;
     assert!(!request.reply.is_closed());
@@ -82,19 +82,13 @@ async fn abandoned_packet_is_skipped_and_live_packet_completes() {
     handle.wait_ready().await.unwrap();
     let mut abandoned = Box::pin(handle.handle_packet(packet()));
     assert!(futures::poll!(&mut abandoned).is_pending());
-    let request = rx.recv().await.unwrap();
+    let (request, _budget) = rx.recv().await.unwrap().into_parts();
     drop(abandoned);
     assert!(request.try_start().is_none());
     let mut live = Box::pin(handle.handle_packet(packet()));
     assert!(futures::poll!(&mut live).is_pending());
-    rx.recv()
-        .await
-        .unwrap()
-        .try_start()
-        .unwrap()
-        .reply
-        .send(Ok(()))
-        .unwrap();
+    let (request, _live_budget) = rx.recv().await.unwrap().into_parts();
+    request.try_start().unwrap().reply.send(Ok(())).unwrap();
     assert_eq!(live.await, Ok(()));
     runtime.shutdown().await.unwrap();
 }
@@ -109,7 +103,8 @@ struct StartedPacket {
 impl ConsensusAdapter for StartedPacket {
     async fn run(self: Box<Self>, mut context: AdapterContext) -> Result<(), ConsensusError> {
         context.control.ready();
-        let request = context.packets.recv().await.unwrap().try_start().unwrap();
+        let (request, _budget) = context.packets.recv().await.unwrap().into_parts();
+        let request = request.try_start().unwrap();
         self.started.send(()).unwrap();
         self.release.await.unwrap();
         self.finished

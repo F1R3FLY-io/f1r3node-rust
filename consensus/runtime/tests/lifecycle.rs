@@ -22,6 +22,7 @@ fn builder(capabilities: Capabilities) -> RuntimeBuilder {
             request_timeout: Duration::from_millis(100),
             drain_timeout: Duration::from_millis(100),
             cleanup_timeout: Duration::from_millis(100),
+            ..RuntimeConfig::default()
         },
     )
     .unwrap()
@@ -36,13 +37,16 @@ impl ConsensusAdapter for Echo {
         loop {
             tokio::select! {
                 _ = context.control.cancelled() => return Ok(()),
-                Some(command) = context.commands.recv() => match command.try_start() {
+                Some(command) = context.commands.recv() => {
+                    let (command, _budget) = command.into_parts();
+                    match command.try_start() {
                     Some(ConsensusCommand::Submit { payload, reply, .. }) => { let _ = reply.send(Ok(String::from_utf8(payload).unwrap())); }
                     Some(ConsensusCommand::Propose { reply, .. }) => { let _ = reply.send(Ok("proposal".into())); }
                     Some(ConsensusCommand::Finalized { reply, .. }) => { let _ = reply.send(Ok(consensus_api::ObjectId(vec![1]))); }
                     None => {}
+                    }
                 },
-                Some(request) = context.packets.recv() => { let _ = request.reply.send(Ok(())); }
+                Some(request) = context.packets.recv() => { let (request, _budget) = request.into_parts(); let _ = request.reply.send(Ok(())); }
             }
         }
     }
@@ -144,7 +148,7 @@ struct BootstrapFromPacket;
 #[async_trait::async_trait]
 impl ConsensusAdapter for BootstrapFromPacket {
     async fn run(self: Box<Self>, mut context: AdapterContext) -> Result<(), ConsensusError> {
-        let request = context.packets.recv().await.unwrap();
+        let (request, _budget) = context.packets.recv().await.unwrap().into_parts();
         context.control.ready();
         let _ = request.reply.send(Ok(()));
         context.control.cancelled().await;
