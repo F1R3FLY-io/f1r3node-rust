@@ -1085,16 +1085,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     }
 
     fn validate_block(&self, block: &BlockMessage) -> bool {
-        let block_number = proto_util::block_number(block);
-        if block_number == 0 {
-            // TODO: validate genesis (zero) block correctly - OLD
-            true
-        } else {
-            match Validate::block_hash(block) {
-                Either::Right(ValidBlock::Valid) => true,
-                _ => false,
-            }
-        }
+        matches!(
+            Validate::block_hash(block),
+            Either::Right(ValidBlock::Valid)
+        )
     }
 
     /// Receive finality for the restored window instead of re-deriving it.
