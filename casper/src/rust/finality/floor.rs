@@ -3762,4 +3762,69 @@ mod frontier_determinism_tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn a_shared_oracle_cache_persists_work_between_runs() {
+        use models::rust::casper::protocol::casper_message::Justification;
+
+        use crate::rust::safety::clique_oracle::{CliqueOracle, OracleCacheMeter};
+
+        let validators = [h(100), h(101), h(102)];
+        let weights: Vec<(Bytes, i64)> = validators.iter().map(|v| (v.clone(), 1)).collect();
+        let mut latest: BTreeMap<Bytes, Bytes> = BTreeMap::new();
+        let mut blocks = vec![md_wm(h(0), vec![], 0, &validators[0], weights.clone())];
+        let mut history: Vec<BTreeMap<Bytes, Bytes>> = vec![latest.clone()];
+        for i in 1..=9u8 {
+            let sender = validators[(i as usize) % 3].clone();
+            let mut block = md_wm(h(i), vec![h(i - 1)], i as i64, &sender, weights.clone());
+            block.justifications = latest
+                .iter()
+                .map(|(validator, hash)| Justification {
+                    validator: validator.clone(),
+                    latest_block_hash: hash.clone(),
+                })
+                .collect();
+            blocks.push(block);
+            latest.insert(sender, h(i));
+            history.push(latest.clone());
+        }
+        let dag = build_dag(blocks);
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let shared_cache = CliqueOracle::new_shared_cache();
+        let meter = OracleCacheMeter::new(shared_cache.clone());
+
+        // Run 1: a partial sweep (the "pre-timeout" run). We touch only a
+        // slice of the workload so the second run has strictly new work left
+        // to do beyond what run 1 cached.
+        for snapshot in &history[3..6] {
+            for parent in 1..=4u8 {
+                let _ = cold_parent_frontier_metered(&meter, &dag, &h(parent), snapshot, thr).await;
+            }
+        }
+        let (sj_after_run_1, anc_after_run_1) = {
+            let guard = shared_cache.lock().await;
+            guard.entry_counts()
+        };
+        assert!(
+            sj_after_run_1 > 0 || anc_after_run_1 > 0,
+            "run 1 must record at least one cache entry; got ({sj_after_run_1}, {anc_after_run_1})"
+        );
+
+        // Run 2: the resume. Same shared cache, broader workload. The cache
+        // must not shrink — entries from run 1 are still available to run 2.
+        for snapshot in &history[3..] {
+            for parent in 1..=9u8 {
+                let _ = cold_parent_frontier_metered(&meter, &dag, &h(parent), snapshot, thr).await;
+            }
+        }
+        let (sj_after_run_2, anc_after_run_2) = {
+            let guard = shared_cache.lock().await;
+            guard.entry_counts()
+        };
+        assert!(
+            sj_after_run_2 >= sj_after_run_1 && anc_after_run_2 >= anc_after_run_1,
+            "run 2 must not drop run 1's cached work; before=({sj_after_run_1}, {anc_after_run_1}) \
+             after=({sj_after_run_2}, {anc_after_run_2})"
+        );
+    }
 }
