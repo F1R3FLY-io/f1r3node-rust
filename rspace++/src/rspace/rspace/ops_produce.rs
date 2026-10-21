@@ -47,11 +47,12 @@ where
         self.log_produce(produce_ref, persist);
 
         let t1 = Instant::now();
-        let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
-            a: data.clone(),
+        let datum = Datum {
+            a: data,
             persist,
             source: produce_ref.clone(),
-        });
+        };
+        let extracted = self.extract_produce_candidate(grouped_channels, &channel, &datum);
         metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
 
@@ -71,7 +72,7 @@ where
             }
             None => {
                 let t2 = Instant::now();
-                let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
+                let result = Ok(self.store_data(&channel, datum));
                 metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
@@ -90,8 +91,8 @@ where
     fn extract_produce_candidate(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        bat_channel: C,
-        data: Datum<A>,
+        bat_channel: &C,
+        data: &Datum<A>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let fetch_matching_continuations =
             |channels: Vec<C>| -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)> {
@@ -115,7 +116,7 @@ where
         let fetch_matching_data = |channel| -> (C, Vec<(Datum<A>, i32)>) {
             let data_vec = self.get_store().get_data(&channel);
             let mut shuffled_data = self.shuffle_with_index(data_vec);
-            if channel == bat_channel {
+            if &channel == bat_channel {
                 shuffled_data.insert(0, (data.clone(), -1));
             }
             (channel, shuffled_data)
@@ -168,19 +169,8 @@ where
         self.wrap_result(&channels, &continuation, &data_candidates)
     }
 
-    fn store_data(
-        &self,
-        channel: C,
-        data: A,
-        persist: bool,
-        produce_ref: Produce,
-    ) -> MaybeProduceResult<C, P, A, K> {
-        self.get_store().put_datum(&channel, Datum {
-            a: data,
-            persist,
-            source: produce_ref,
-        });
-
+    fn store_data(&self, channel: &C, datum: Datum<A>) -> MaybeProduceResult<C, P, A, K> {
+        self.get_store().put_datum(channel, datum);
         None
     }
 

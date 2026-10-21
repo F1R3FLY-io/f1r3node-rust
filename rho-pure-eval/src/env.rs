@@ -28,15 +28,10 @@ impl<A: Clone> Env<A> {
         }
     }
 
-    pub fn put(&mut self, a: A) -> Env<A> {
-        Env {
-            env_map: {
-                self.env_map.insert(self.level, a);
-                self.env_map.clone()
-            },
-            level: self.level + 1,
-            shift: self.shift,
-        }
+    pub fn put(mut self, a: A) -> Env<A> {
+        self.env_map.insert(self.level, a);
+        self.level += 1;
+        self
     }
 
     pub fn get(&self, k: &i32) -> Option<A> {

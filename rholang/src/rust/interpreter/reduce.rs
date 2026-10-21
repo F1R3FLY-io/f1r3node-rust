@@ -558,10 +558,8 @@ impl DebruijnInterpreter {
         persistent: bool,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
-        let produce_result = self
-            .space
-            .produce(chan.clone(), data.clone(), persistent)
-            .await?;
+        let retry = persistent.then(|| (chan.clone(), data.clone()));
+        let produce_result = self.space.produce(chan, data, persistent).await?;
         let is_replay = self.space.is_replay().await;
 
         match produce_result {
@@ -569,9 +567,7 @@ impl DebruijnInterpreter {
                 let dispatch_type = self
                     .continue_produce_process(
                         unpack_option_with_peek(Some((c, s))),
-                        chan,
-                        data,
-                        persistent,
+                        retry,
                         is_replay,
                         produce_event.clone().output_value,
                         produce_event.failed,
@@ -635,51 +631,50 @@ impl DebruijnInterpreter {
         peek: bool,
         guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
-        let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
+        let retry = persistent.then(|| (binds.clone(), body.clone(), guard.clone()));
+        let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.into_iter().unzip();
 
         // Update mergeable channels
         for source in &sources {
             self.update_mergeable_channels(source).await;
         }
 
+        let peeks = if peek {
+            BTreeSet::from_iter(0..sources.len() as i32)
+        } else {
+            BTreeSet::new()
+        };
         let consume_result = self
             .space
             .consume(
-                sources.clone(),
-                patterns.clone(),
+                sources,
+                patterns,
                 TaggedContinuation {
-                    tagged_cont: Some(TaggedCont::ParBody(body.clone())),
-                    guard: guard.clone(),
+                    tagged_cont: Some(TaggedCont::ParBody(body)),
+                    guard,
                 },
                 persistent,
-                if peek {
-                    BTreeSet::from_iter((0..sources.len() as i32).collect::<Vec<i32>>())
-                } else {
-                    BTreeSet::new()
-                },
+                peeks,
             )
             .await?;
         let is_replay = self.space.is_replay().await;
 
         self.continue_consume_process(
             unpack_option_with_peek(consume_result),
-            binds,
-            body,
-            persistent,
+            retry,
             peek,
             is_replay,
             Vec::new(),
-            guard,
         )
         .await
     }
 
+    /// `retry` holds the channel and data of a persistent produce, which is
+    /// issued again after its COMM fires; it is `None` for a linear produce.
     async fn continue_produce_process(
         &self,
         res: Application,
-        chan: Par,
-        data: ListParWithRandom,
-        persistent: bool,
+        retry: Option<(Par, ListParWithRandom)>,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
@@ -700,17 +695,11 @@ impl DebruijnInterpreter {
         match res {
             Some((continuation, data_list, peek)) => {
                 self.register_bitmask_channels(&data_list).await;
-                if persistent {
+                if let Some((chan, data)) = retry {
                     // dispatchAndRun
                     let self_clone1 = self.clone();
                     let self_clone2 = self.clone();
-                    let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-                    let chan_clone = chan.clone();
-                    let data_clone = data.clone();
-                    let persistent_flag = persistent;
-                    let is_replay_flag = is_replay;
 
                     let mut futures: Vec<
                         Pin<
@@ -721,32 +710,30 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![];
 
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
+                            continuation,
                             data_list_clone,
-                            is_replay_flag,
-                            previous_output_clone,
+                            is_replay,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone1
                                 .dispatch(
-                                    continuation_clone,
+                                    continuation,
                                     data_list_clone,
-                                    is_replay_flag,
-                                    previous_output_clone,
+                                    is_replay,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
                     }
 
-                    futures.push(Box::pin(async move {
-                        self_clone2
-                            .produce(chan_clone, data_clone, persistent_flag)
-                            .await
-                    })
+                    futures.push(Box::pin(
+                        async move { self_clone2.produce(chan, data, true).await },
+                    )
                         as Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
@@ -780,9 +767,7 @@ impl DebruijnInterpreter {
                 } else if peek {
                     // dispatchAndRun
                     let self_clone = self.clone();
-                    let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -792,22 +777,22 @@ impl DebruijnInterpreter {
                             >,
                         >,
                     > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
+                            continuation,
                             data_list_clone,
                             is_replay,
-                            previous_output_clone,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone
                                 .dispatch(
-                                    continuation_clone,
+                                    continuation,
                                     data_list_clone,
                                     is_replay,
-                                    previous_output_clone,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
@@ -844,16 +829,15 @@ impl DebruijnInterpreter {
         }
     }
 
+    /// `retry` holds the binds, body and guard of a persistent consume, which
+    /// is issued again after its COMM fires; it is `None` for a linear consume.
     async fn continue_consume_process(
         &self,
         res: Application,
-        binds: Vec<(BindPattern, Par)>,
-        body: ParWithRandom,
-        persistent: bool,
+        retry: Option<(Vec<(BindPattern, Par)>, ParWithRandom, Option<Par>)>,
         peek: bool,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
-        guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -864,19 +848,10 @@ impl DebruijnInterpreter {
 
         match res {
             Some((continuation, data_list, _peek)) => {
-                if persistent {
+                if let Some((binds, body, guard)) = retry {
                     // dispatchAndRun
                     let self_clone1 = self.clone();
                     let self_clone2 = self.clone();
-                    let continuation_clone = continuation.clone();
-                    let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-                    let binds_clone = binds.clone();
-                    let body_clone = body.clone();
-                    let persistent_flag = persistent;
-                    let peek_flag = peek;
-                    let is_replay_flag = is_replay;
-                    let guard_clone = guard.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -887,37 +862,29 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![];
 
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
-                            data_list_clone,
-                            is_replay_flag,
-                            previous_output_clone,
+                            continuation,
+                            data_list,
+                            is_replay,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone1
                                 .dispatch(
-                                    continuation_clone,
-                                    data_list_clone,
-                                    is_replay_flag,
-                                    previous_output_clone,
+                                    continuation,
+                                    data_list,
+                                    is_replay,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
                     }
 
                     futures.push(Box::pin(async move {
-                        self_clone2
-                            .consume(
-                                binds_clone,
-                                body_clone,
-                                persistent_flag,
-                                peek_flag,
-                                guard_clone,
-                            )
-                            .await
+                        self_clone2.consume(binds, body, true, peek, guard).await
                     })
                         as Pin<
                             Box<
@@ -945,9 +912,7 @@ impl DebruijnInterpreter {
                 } else if _peek {
                     // dispatchAndRun
                     let self_clone = self.clone();
-                    let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -957,22 +922,22 @@ impl DebruijnInterpreter {
                             >,
                         >,
                     > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
+                            continuation,
                             data_list_clone,
                             is_replay,
-                            previous_output_clone,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone
                                 .dispatch(
-                                    continuation_clone,
+                                    continuation,
                                     data_list_clone,
                                     is_replay,
-                                    previous_output_clone,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
@@ -1421,7 +1386,7 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
-            (0..free_count).fold(env.clone(), |mut acc, e| {
+            (0..free_count).fold(env.clone(), |acc, e| {
                 let value = free_map.get(&e).unwrap_or(&Par::default()).clone();
                 acc.put(value)
             })
@@ -1598,7 +1563,7 @@ impl DebruijnInterpreter {
             let simple_news =
                 (0..(count - urns.len()))
                     .into_iter()
-                    .fold(env.clone(), |mut _env: Env<Par>, _| {
+                    .fold(env.clone(), |_env: Env<Par>, _| {
                         let addr: Par = Par::default().with_unforgeables(vec![GUnforgeable {
                             unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                                 id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
@@ -1607,7 +1572,7 @@ impl DebruijnInterpreter {
                         _env.put(addr)
                     });
 
-            let add_urn = |new_env: &mut Env<Par>, urn: String| {
+            let add_urn = |new_env: Env<Par>, urn: String| {
                 if !self.urn_map.contains_key(&urn) {
                     match new.injections.get(&urn) {
                         Some(p) => {
@@ -1675,9 +1640,8 @@ impl DebruijnInterpreter {
                 }
             };
 
-            urns.iter().try_fold(simple_news, |mut acc, urn| {
-                add_urn(&mut acc, urn.to_string())
-            })
+            urns.iter()
+                .try_fold(simple_news, |acc, urn| add_urn(acc, urn.to_string()))
         };
 
         self.cost.charge(new_bindings_cost(new.bind_count as i64))?;

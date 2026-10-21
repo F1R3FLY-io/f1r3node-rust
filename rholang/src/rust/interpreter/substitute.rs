@@ -1340,10 +1340,7 @@ mod tests {
 
     fn bound(index: i32) -> Par { new_boundvar_par(index, Vec::new(), false) }
 
-    fn env_with(value: Par) -> Env<Par> {
-        let mut env = Env::new();
-        env.put(value)
-    }
+    fn env_with(value: Par) -> Env<Par> { Env::new().put(value) }
 
     type BinOp = fn(Par, Par) -> ExprInstance;
 
