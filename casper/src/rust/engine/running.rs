@@ -269,7 +269,17 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     let block_hash = b.block_hash.clone();
                     let b = match ReceiptVerifier::shared().verify(&peer.id.key, b).await {
                         Ok(verified) => verified,
-                        Err(_) => {
+                        Err(ReceiptRefusal::Overloaded) => {
+                            self.block_retriever
+                                .note_local_backpressure_drop(&block_hash, "running-verification");
+                            tracing::debug!(
+                                "Dropping BlockMessage {} from {}: block verification is at capacity",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                peer.endpoint.host
+                            );
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::Invalid(_)) => {
                             tracing::debug!(
                                 "Dropping BlockMessage {} from {}: it does not match its hash or signature",
                                 PrettyPrinter::build_string_bytes(&block_hash),
@@ -486,7 +496,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, ReceiptVerifier,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, ReceiptRefusal, ReceiptVerifier,
     MAX_BLOCKS_IN_PROCESSING,
 };
 

@@ -257,6 +257,7 @@ const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
 /// node's block-processor queue capacity.
 pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
 pub const MAX_PARALLEL_RECEIPT_VERIFICATIONS: usize = 2;
+pub const MAX_PENDING_RECEIPT_VERIFICATIONS_PER_PEER: usize = 16;
 /// The node warns when its oldest in-flight marker is older than this. The
 /// marker is kept: an old marker means a block that is still queued or still
 /// processing, for example a long replay (#407).
@@ -349,17 +350,32 @@ impl std::ops::Deref for VerifiedBlock {
     fn deref(&self) -> &BlockMessage { &self.0 }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReceiptRefusal {
+    Invalid(InvalidBlock),
+    Overloaded,
+}
+
+struct PeerVerificationSlots {
+    pending: Arc<tokio::sync::Semaphore>,
+    running: Arc<tokio::sync::Semaphore>,
+}
+
 pub struct ReceiptVerifier {
-    global: Arc<tokio::sync::Semaphore>,
-    per_peer: dashmap::DashMap<prost::bytes::Bytes, Arc<tokio::sync::Semaphore>>,
+    pending: Arc<tokio::sync::Semaphore>,
+    running: Arc<tokio::sync::Semaphore>,
+    max_pending_per_peer: usize,
+    per_peer: dashmap::DashMap<prost::bytes::Bytes, Arc<PeerVerificationSlots>>,
     active: AtomicUsize,
     peak_active: AtomicUsize,
 }
 
 impl ReceiptVerifier {
-    pub fn new(max_parallel: usize) -> Self {
+    pub fn new(max_parallel: usize, max_pending: usize, max_pending_per_peer: usize) -> Self {
         Self {
-            global: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
+            pending: Arc::new(tokio::sync::Semaphore::new(max_pending)),
+            running: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
+            max_pending_per_peer,
             per_peer: dashmap::DashMap::new(),
             active: AtomicUsize::new(0),
             peak_active: AtomicUsize::new(0),
@@ -367,8 +383,13 @@ impl ReceiptVerifier {
     }
 
     pub fn shared() -> &'static ReceiptVerifier {
-        static VERIFIER: std::sync::LazyLock<ReceiptVerifier> =
-            std::sync::LazyLock::new(|| ReceiptVerifier::new(MAX_PARALLEL_RECEIPT_VERIFICATIONS));
+        static VERIFIER: std::sync::LazyLock<ReceiptVerifier> = std::sync::LazyLock::new(|| {
+            ReceiptVerifier::new(
+                MAX_PARALLEL_RECEIPT_VERIFICATIONS,
+                MAX_BLOCKS_IN_PROCESSING,
+                MAX_PENDING_RECEIPT_VERIFICATIONS_PER_PEER,
+            )
+        });
         &VERIFIER
     }
 
@@ -376,30 +397,48 @@ impl ReceiptVerifier {
         &self,
         peer: &prost::bytes::Bytes,
         block: BlockMessage,
-    ) -> Result<VerifiedBlock, InvalidBlock> {
-        let peer_slot = self
+    ) -> Result<VerifiedBlock, ReceiptRefusal> {
+        let Ok(pending) = self.pending.clone().try_acquire_owned() else {
+            return Err(ReceiptRefusal::Overloaded);
+        };
+        let slots = self
             .per_peer
             .entry(peer.clone())
-            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .or_insert_with(|| {
+                Arc::new(PeerVerificationSlots {
+                    pending: Arc::new(tokio::sync::Semaphore::new(self.max_pending_per_peer)),
+                    running: Arc::new(tokio::sync::Semaphore::new(1)),
+                })
+            })
             .clone();
-        let peer_permit = peer_slot.clone().acquire_owned().await;
-        let global_permit = self.global.clone().acquire_owned().await;
 
-        let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
-        self.peak_active.fetch_max(active, Ordering::AcqRel);
-        let result = tokio::task::spawn_blocking(move || VerifiedBlock::verify(block))
-            .await
-            .unwrap_or_else(|join_error| {
-                tracing::error!(error = %join_error, "block verification task failed");
-                Err(InvalidBlock::InvalidFormat)
-            });
-        self.active.fetch_sub(1, Ordering::AcqRel);
+        let result = match slots.pending.clone().try_acquire_owned() {
+            Ok(peer_pending) => {
+                let peer_running = slots.running.clone().acquire_owned().await;
+                let running = self.running.clone().acquire_owned().await;
 
-        drop(global_permit);
-        drop(peer_permit);
-        drop(peer_slot);
+                let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+                self.peak_active.fetch_max(active, Ordering::AcqRel);
+                let result = tokio::task::spawn_blocking(move || VerifiedBlock::verify(block))
+                    .await
+                    .unwrap_or_else(|join_error| {
+                        tracing::error!(error = %join_error, "block verification task failed");
+                        Err(InvalidBlock::InvalidFormat)
+                    });
+                self.active.fetch_sub(1, Ordering::AcqRel);
+
+                drop(running);
+                drop(peer_running);
+                drop(peer_pending);
+                result.map_err(ReceiptRefusal::Invalid)
+            }
+            Err(_) => Err(ReceiptRefusal::Overloaded),
+        };
+
+        drop(pending);
+        drop(slots);
         self.per_peer
-            .remove_if(peer, |_, slot| Arc::strong_count(slot) == 1);
+            .remove_if(peer, |_, slots| Arc::strong_count(slots) == 1);
         result
     }
 
@@ -2148,7 +2187,7 @@ mod tests {
     async fn flood(
         verifier: Arc<ReceiptVerifier>,
         peers: Vec<(prost::bytes::Bytes, BlockMessage)>,
-    ) -> Vec<Result<VerifiedBlock, InvalidBlock>> {
+    ) -> Vec<Result<VerifiedBlock, ReceiptRefusal>> {
         let tasks: Vec<_> = peers
             .into_iter()
             .map(|(peer, block)| {
@@ -2163,6 +2202,13 @@ mod tests {
         results
     }
 
+    fn count(results: &[Result<VerifiedBlock, ReceiptRefusal>], refusal: ReceiptRefusal) -> usize {
+        results
+            .iter()
+            .filter(|result| result.as_ref().err() == Some(&refusal))
+            .count()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn receipt_verification_stays_bounded_under_a_flood_of_invalid_blocks() {
         use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -2171,24 +2217,46 @@ mod tests {
 
         use crate::rust::validator_identity::ValidatorIdentity;
 
+        let mut large = get_random_block_default();
+        large.extra_bytes = vec![0u8; 4 * 1024 * 1024].into();
         let attacker = prost::bytes::Bytes::from_static(b"attacker");
-        let invalid = || (attacker.clone(), get_random_block_default());
+        let invalid_hash = ReceiptRefusal::Invalid(InvalidBlock::InvalidBlockHash);
 
-        let single_peer = Arc::new(ReceiptVerifier::new(2));
-        let results = flood(single_peer.clone(), (0..200).map(|_| invalid()).collect()).await;
-        assert!(results
-            .iter()
-            .all(|result| matches!(result, Err(InvalidBlock::InvalidBlockHash))));
+        let single_peer = Arc::new(ReceiptVerifier::new(2, 512, 16));
+        let results = flood(
+            single_peer.clone(),
+            (0..200)
+                .map(|_| (attacker.clone(), large.clone()))
+                .collect(),
+        )
+        .await;
+        let overloaded = count(&results, ReceiptRefusal::Overloaded);
+        assert!(overloaded > 0);
+        assert_eq!(overloaded + count(&results, invalid_hash.clone()), 200);
         assert_eq!(single_peer.peak_active(), 1);
         assert_eq!(single_peer.tracked_peers(), 0);
 
+        let small_global = Arc::new(ReceiptVerifier::new(2, 8, 16));
+        let results = flood(
+            small_global.clone(),
+            (0..50u8)
+                .map(|i| (prost::bytes::Bytes::from(vec![i; 20]), large.clone()))
+                .collect(),
+        )
+        .await;
+        assert!(count(&results, ReceiptRefusal::Overloaded) > 0);
+        assert!(small_global.peak_active() <= 2);
+        assert_eq!(small_global.tracked_peers(), 0);
+
         let (secret_key, _) = Secp256k1.new_key_pair();
         let honest = ValidatorIdentity::new(&secret_key).sign_block(&get_random_block_default());
-        let mut submissions: Vec<_> = (0..200).map(|_| invalid()).collect();
+        let mut submissions: Vec<_> = (0..200)
+            .map(|_| (attacker.clone(), large.clone()))
+            .collect();
         submissions
             .extend((0..8u8).map(|i| (prost::bytes::Bytes::from(vec![i; 20]), honest.clone())));
 
-        let mixed = Arc::new(ReceiptVerifier::new(2));
+        let mixed = Arc::new(ReceiptVerifier::new(2, 512, 16));
         let results = flood(mixed.clone(), submissions).await;
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 8);
         assert!(mixed.peak_active() <= 2);
