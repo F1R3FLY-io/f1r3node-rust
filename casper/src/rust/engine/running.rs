@@ -267,7 +267,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     );
                 } else {
                     let block_hash = b.block_hash.clone();
-                    let b = match VerifiedBlock::verify(b) {
+                    let b = match ReceiptVerifier::shared().verify(&peer.id.key, b).await {
                         Ok(verified) => verified,
                         Err(_) => {
                             tracing::debug!(
@@ -486,7 +486,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, VerifiedBlock,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, ReceiptVerifier,
     MAX_BLOCKS_IN_PROCESSING,
 };
 

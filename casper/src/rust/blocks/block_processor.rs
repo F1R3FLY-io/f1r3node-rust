@@ -10,7 +10,7 @@
  */
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -347,6 +347,65 @@ impl std::ops::Deref for VerifiedBlock {
     type Target = BlockMessage;
 
     fn deref(&self) -> &BlockMessage { &self.0 }
+}
+
+pub struct ReceiptVerifier {
+    global: Arc<tokio::sync::Semaphore>,
+    per_peer: dashmap::DashMap<prost::bytes::Bytes, Arc<tokio::sync::Semaphore>>,
+    active: AtomicUsize,
+    peak_active: AtomicUsize,
+}
+
+impl ReceiptVerifier {
+    pub fn new(max_parallel: usize) -> Self {
+        Self {
+            global: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
+            per_peer: dashmap::DashMap::new(),
+            active: AtomicUsize::new(0),
+            peak_active: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn shared() -> &'static ReceiptVerifier {
+        static VERIFIER: std::sync::LazyLock<ReceiptVerifier> =
+            std::sync::LazyLock::new(|| ReceiptVerifier::new(MAX_PARALLEL_BLOCKS));
+        &VERIFIER
+    }
+
+    pub async fn verify(
+        &self,
+        peer: &prost::bytes::Bytes,
+        block: BlockMessage,
+    ) -> Result<VerifiedBlock, InvalidBlock> {
+        let peer_slot = self
+            .per_peer
+            .entry(peer.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone();
+        let peer_permit = peer_slot.clone().acquire_owned().await;
+        let global_permit = self.global.clone().acquire_owned().await;
+
+        let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+        self.peak_active.fetch_max(active, Ordering::AcqRel);
+        let result = tokio::task::spawn_blocking(move || VerifiedBlock::verify(block))
+            .await
+            .unwrap_or_else(|join_error| {
+                tracing::error!(error = %join_error, "block verification task failed");
+                Err(InvalidBlock::InvalidFormat)
+            });
+        self.active.fetch_sub(1, Ordering::AcqRel);
+
+        drop(global_permit);
+        drop(peer_permit);
+        drop(peer_slot);
+        self.per_peer
+            .remove_if(peer, |_, slot| Arc::strong_count(slot) == 1);
+        result
+    }
+
+    pub fn peak_active(&self) -> usize { self.peak_active.load(Ordering::Acquire) }
+
+    pub fn tracked_peers(&self) -> usize { self.per_peer.len() }
 }
 
 /// An item of the block processing queue. The guard keeps the block's
@@ -2004,5 +2063,55 @@ mod tests {
                 "{status:?} is a verdict and must be settled, not retried"
             );
         }
+    }
+
+    async fn flood(
+        verifier: Arc<ReceiptVerifier>,
+        peers: Vec<(prost::bytes::Bytes, BlockMessage)>,
+    ) -> Vec<Result<VerifiedBlock, InvalidBlock>> {
+        let tasks: Vec<_> = peers
+            .into_iter()
+            .map(|(peer, block)| {
+                let verifier = verifier.clone();
+                tokio::spawn(async move { verifier.verify(&peer, block).await })
+            })
+            .collect();
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("verification task"));
+        }
+        results
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn receipt_verification_stays_bounded_under_a_flood_of_invalid_blocks() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use models::rust::block_implicits::get_random_block_default;
+
+        use crate::rust::validator_identity::ValidatorIdentity;
+
+        let attacker = prost::bytes::Bytes::from_static(b"attacker");
+        let invalid = || (attacker.clone(), get_random_block_default());
+
+        let single_peer = Arc::new(ReceiptVerifier::new(2));
+        let results = flood(single_peer.clone(), (0..200).map(|_| invalid()).collect()).await;
+        assert!(results
+            .iter()
+            .all(|result| matches!(result, Err(InvalidBlock::InvalidBlockHash))));
+        assert_eq!(single_peer.peak_active(), 1);
+        assert_eq!(single_peer.tracked_peers(), 0);
+
+        let (secret_key, _) = Secp256k1.new_key_pair();
+        let honest = ValidatorIdentity::new(&secret_key).sign_block(&get_random_block_default());
+        let mut submissions: Vec<_> = (0..200).map(|_| invalid()).collect();
+        submissions
+            .extend((0..8u8).map(|i| (prost::bytes::Bytes::from(vec![i; 20]), honest.clone())));
+
+        let mixed = Arc::new(ReceiptVerifier::new(2));
+        let results = flood(mixed.clone(), submissions).await;
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 8);
+        assert!(mixed.peak_active() <= 2);
+        assert_eq!(mixed.tracked_peers(), 0);
     }
 }
