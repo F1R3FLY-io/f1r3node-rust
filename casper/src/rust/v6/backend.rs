@@ -285,3 +285,189 @@ impl ExecutionBackend for ConcurrentBackend {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use models::rust::casper::protocol::casper_message::{
+        Body, F1r3flyState, Header, ProcessedDeploy,
+    };
+
+    use super::*;
+    use crate::rust::util::construct_deploy;
+
+    fn empty_block(timestamp: i64, block_number: i64, seq_num: i32) -> BlockMessage {
+        BlockMessage {
+            block_hash: Bytes::new(),
+            header: Header {
+                parents_hash_list: vec![],
+                timestamp,
+                version: 1,
+                extra_bytes: Bytes::new(),
+            },
+            body: Body {
+                state: F1r3flyState {
+                    pre_state_hash: Bytes::new(),
+                    post_state_hash: Bytes::new(),
+                    bonds: vec![],
+                    block_number,
+                },
+                deploys: vec![],
+                rejected_deploys: vec![],
+                system_deploys: vec![],
+                extra_bytes: Bytes::new(),
+                applied_from_scope: vec![],
+                merge_base: Bytes::new(),
+            },
+            justifications: vec![],
+            sender: vec![0xAAu8; 33].into(),
+            seq_num,
+            sig: Bytes::new(),
+            sig_algorithm: String::new(),
+            shard_id: String::new(),
+            extra_bytes: Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn exhausts_recognizes_out_of_phlogistons() {
+        assert!(exhausts(&InterpreterError::OutOfPhlogistonsError));
+    }
+
+    #[test]
+    fn exhausts_recurses_through_aggregate_errors() {
+        let aggregate = InterpreterError::AggregateError {
+            interpreter_errors: vec![
+                InterpreterError::ReduceError("unrelated".to_string()),
+                InterpreterError::OutOfPhlogistonsError,
+            ],
+        };
+        assert!(
+            exhausts(&aggregate),
+            "an aggregate carrying a phlo exhaustion must still be flagged as exhausted",
+        );
+    }
+
+    #[test]
+    fn exhausts_returns_false_for_other_errors() {
+        assert!(!exhausts(&InterpreterError::ReduceError(
+            "boom".to_string()
+        )));
+        let aggregate = InterpreterError::AggregateError {
+            interpreter_errors: vec![InterpreterError::ReduceError("boom".to_string())],
+        };
+        assert!(
+            !exhausts(&aggregate),
+            "an aggregate without a phlo exhaustion must not be flagged",
+        );
+    }
+
+    #[test]
+    fn prepare_marks_an_unparseable_deploy_as_failed() {
+        let bad = construct_deploy::source_deploy(
+            "not valid rholang garbage".to_string(),
+            0,
+            Some(1000),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sign the unparseable deploy");
+        let good =
+            construct_deploy::basic_deploy_data(42, None, None).expect("sign the valid deploy");
+        let mut block = empty_block(0, 0, 1);
+        block.body.deploys = vec![
+            ProcessedDeploy {
+                deploy: bad,
+                cost: models::rhoapi::PCost { cost: 0 },
+                deploy_log: vec![],
+                is_failed: false,
+                system_deploy_error: None,
+            },
+            ProcessedDeploy {
+                deploy: good,
+                cost: models::rhoapi::PCost { cost: 0 },
+                deploy_log: vec![],
+                is_failed: false,
+                system_deploy_error: None,
+            },
+        ];
+
+        let prepared = prepare(&block);
+        assert_eq!(prepared.failed.len(), 2);
+        assert!(
+            prepared.failed[0],
+            "the unparseable deploy must be marked failed"
+        );
+        assert!(
+            !prepared.failed[1],
+            "the valid deploy must not be marked failed"
+        );
+        assert_eq!(
+            prepared.terms.len(),
+            1,
+            "only the parseable deploy contributes a term",
+        );
+        assert_eq!(
+            prepared.terms[0].0, 1,
+            "the surviving term keeps its original index",
+        );
+    }
+
+    #[test]
+    fn prepare_sums_the_phlo_budget_across_deploys() {
+        let one = construct_deploy::source_deploy(
+            "@1!(1)".to_string(),
+            0,
+            Some(50),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sign deploy one");
+        let two = construct_deploy::source_deploy(
+            "@2!(2)".to_string(),
+            1,
+            Some(70),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sign deploy two");
+        let mut block = empty_block(0, 0, 1);
+        block.body.deploys = vec![
+            ProcessedDeploy {
+                deploy: one,
+                cost: models::rhoapi::PCost { cost: 0 },
+                deploy_log: vec![],
+                is_failed: false,
+                system_deploy_error: None,
+            },
+            ProcessedDeploy {
+                deploy: two,
+                cost: models::rhoapi::PCost { cost: 0 },
+                deploy_log: vec![],
+                is_failed: false,
+                system_deploy_error: None,
+            },
+        ];
+
+        let prepared = prepare(&block);
+        assert_eq!(
+            prepared.budget, 120,
+            "budget is the sum of each deploy's phlo limit (50 + 70)",
+        );
+    }
+
+    #[test]
+    fn block_data_mirrors_the_block_header_and_sender() {
+        let block = empty_block(1_700_000_000, 42, 7);
+        let data = block_data(&block);
+        assert_eq!(data.time_stamp, 1_700_000_000);
+        assert_eq!(data.block_number, 42);
+        assert_eq!(data.seq_num, 7);
+        assert_eq!(data.sender.bytes.as_ref(), block.sender.as_ref());
+    }
+}

@@ -214,4 +214,59 @@ mod tests {
         b.body.extra_bytes = Bytes::new();
         assert!(check_structure(&b, &Limits::default(), &known).is_err());
     }
+
+    fn fresh_envelope() -> models::rust::casper::protocol::casper_message::ProcessedDeploy {
+        crate::rust::util::construct_deploy::basic_processed_deploy(1, None)
+            .expect("basic envelope")
+    }
+
+    #[test]
+    fn an_envelope_with_nonzero_cost_is_rejected() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        let mut pd = fresh_envelope();
+        pd.cost.cost = 1;
+        b.body.deploys = vec![pd];
+        let err = check_structure(&b, &Limits::default(), &known)
+            .expect_err("a priced envelope must be rejected");
+        assert!(
+            err.contains("unexecuted"),
+            "unexpected error wording: {err}",
+        );
+    }
+
+    #[test]
+    fn an_envelope_with_a_log_is_rejected() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        let mut pd = fresh_envelope();
+        pd.deploy_log.push(
+            models::rust::casper::protocol::casper_message::Event::Consume(
+                models::rust::casper::protocol::casper_message::ConsumeEvent {
+                    channels_hashes: vec![],
+                    hash: Bytes::new(),
+                    persistent: false,
+                },
+            ),
+        );
+        b.body.deploys = vec![pd];
+        let err = check_structure(&b, &Limits::default(), &known)
+            .expect_err("an envelope carrying log entries must be rejected");
+        assert!(
+            err.contains("unexecuted"),
+            "unexpected error wording: {err}",
+        );
+    }
+
+    #[test]
+    fn an_envelope_marked_failed_is_rejected() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        let mut pd = fresh_envelope();
+        pd.is_failed = true;
+        b.body.deploys = vec![pd];
+        let err = check_structure(&b, &Limits::default(), &known)
+            .expect_err("a failed envelope must be rejected");
+        assert!(
+            err.contains("unexecuted"),
+            "unexpected error wording: {err}",
+        );
+    }
 }
