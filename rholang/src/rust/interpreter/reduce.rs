@@ -15,8 +15,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
-    New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, New, Par,
+    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -62,8 +62,8 @@ use super::metrics_constants::{
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
-use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
+use super::{unwrap_option_ref, unwrap_option_safe};
 use crate::rust::interpreter::accounting::costs::{
     add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
     interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
@@ -375,15 +375,19 @@ impl DebruijnInterpreter {
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
                 .increment(term_count as u64);
 
-            if let [term] = terms.as_slice() {
-                let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
-                if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
-                    self.yielded_single_term_evaluations
-                        .fetch_add(1, Ordering::Relaxed);
-                    tokio::task::yield_now().await;
+            let terms = match <[GeneratedMessage; 1]>::try_from(terms) {
+                Ok([term]) => {
+                    let evaluation =
+                        self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                    if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
+                        self.yielded_single_term_evaluations
+                            .fetch_add(1, Ordering::Relaxed);
+                        tokio::task::yield_now().await;
+                    }
+                    return self.generated_message_eval(term, env, rand).await;
                 }
-                return self.generated_message_eval(term, env, rand).await;
-            }
+                Err(terms) => terms,
+            };
 
             // Collect errors from all parallel execution paths (pars)
             // parTraverseSafe
@@ -403,7 +407,7 @@ impl DebruijnInterpreter {
                     let rand_split = split(index.try_into().unwrap(), term_count, rand.clone());
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(&term, &env_clone, rand_split)
+                            .generated_message_eval(term, &env_clone, rand_split)
                             .await
                     })
                         as Pin<
@@ -1151,7 +1155,7 @@ impl DebruijnInterpreter {
 
     async fn generated_message_eval(
         &self,
-        term: &GeneratedMessage,
+        term: GeneratedMessage,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1202,7 +1206,7 @@ impl DebruijnInterpreter {
                         self.eval(res, env, rand).await
                     }
                     ExprInstance::EMethodBody(_) => {
-                        let res = self.eval_expr_to_par(term, env)?;
+                        let res = self.eval_expr_to_par(&term, env)?;
                         self.eval(res, env, rand).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
@@ -1231,13 +1235,13 @@ impl DebruijnInterpreter {
      */
     async fn eval_send(
         &self,
-        send: &Send,
+        send: Send,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(send_eval_cost())?;
-        let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
-        let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
+        let eval_chan = self.eval_expr(unwrap_option_ref(&send.chan)?, env)?;
+        let sub_chan = self.substitute.substitute_and_charge(eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
@@ -1256,7 +1260,7 @@ impl DebruijnInterpreter {
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
-                self.substitute.substitute_and_charge(&evaluated, 0, env)
+                self.substitute.substitute_and_charge(evaluated, 0, env)
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
@@ -1274,7 +1278,7 @@ impl DebruijnInterpreter {
 
     async fn eval_receive(
         &self,
-        receive: &Receive,
+        receive: Receive,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1286,8 +1290,8 @@ impl DebruijnInterpreter {
         // stay as free vars for the matcher to fill in. Stored once on
         // the TaggedContinuation so it sees every bound variable across
         // every bind. Plan §7.12.
-        let subst_guard = match receive.condition.as_ref() {
-            Some(c) if c != &Par::default() => {
+        let subst_guard = match receive.condition {
+            Some(c) if c != Par::default() => {
                 Some(self.substitute.substitute_and_charge(c, 1, env)?)
             }
             _ => None,
@@ -1295,14 +1299,13 @@ impl DebruijnInterpreter {
 
         let binds = receive
             .binds
-            .clone()
             .into_iter()
             .map(|rb| {
                 let q = self.unbundle_receive(&rb, env)?;
                 let subst_patterns = rb
                     .patterns
                     .into_iter()
-                    .map(|pattern| self.substitute.substitute_and_charge(&pattern, 1, env))
+                    .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                 Ok((
@@ -1318,7 +1321,9 @@ impl DebruijnInterpreter {
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         let subst_body = self.substitute.substitute_no_sort_and_charge(
-            receive.body.as_ref().unwrap(),
+            receive
+                .body
+                .expect("Receive.body: normalizer post-condition"),
             0,
             &env.shift(receive.bind_count),
         )?;
@@ -1372,7 +1377,7 @@ impl DebruijnInterpreter {
     // TODO: review 'loop' matches 'tailRecM'
     async fn eval_match(
         &self,
-        mat: &Match,
+        mat: Match,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1383,78 +1388,6 @@ impl DebruijnInterpreter {
             })
         }
 
-        let first_match = Box::new(
-            |target: Par, cases: Vec<MatchCase>, rand: Blake2b512Random| async {
-                let mut state = (target, cases);
-
-                loop {
-                    let (_target, _cases) = state;
-
-                    match _cases.as_slice() {
-                        [] => return Ok(()),
-
-                        [single_case, case_rem @ ..] => {
-                            let pattern = self.substitute.substitute_and_charge(
-                                &unwrap_option_safe(single_case.pattern.clone())?,
-                                1,
-                                env,
-                            )?;
-
-                            let mut spatial_matcher = SpatialMatcherContext::new();
-                            let match_result =
-                                spatial_matcher.spatial_match_result(_target.clone(), pattern);
-
-                            match match_result {
-                                None => {
-                                    state = (_target, case_rem.to_vec());
-                                }
-
-                                Some(free_map) => {
-                                    let case_env =
-                                        add_to_env(env, free_map.clone(), single_case.free_count);
-
-                                    // Optional `where` guard. Fire the case
-                                    // body iff the guard evaluates to
-                                    // GBool(true). Anything else (false,
-                                    // non-bool, eval-error) falls through to
-                                    // the next case — matching the plan §3.4
-                                    // fall-through rule. `Some(empty Par)` is
-                                    // treated as "no guard" so we agree with
-                                    // eval_receive and Matcher::check_commit.
-                                    let guard_passes = match &single_case.guard {
-                                        Some(g) if g != &Par::default() => {
-                                            match rho_pure_eval::eval(g, &case_env) {
-                                                Ok(result) => extract_bool(&result) == Some(true),
-                                                Err(_) => false,
-                                            }
-                                        }
-                                        _ => true,
-                                    };
-
-                                    if !guard_passes {
-                                        state = (_target, case_rem.to_vec());
-                                        continue;
-                                    }
-
-                                    self.eval(
-                                        single_case
-                                            .source
-                                            .clone()
-                                            .expect("MatchCase.source: protobuf no_box invariant"),
-                                        &case_env,
-                                        rand,
-                                    )
-                                    .await?;
-
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-        );
-
         self.cost.charge(match_eval_cost())?;
         let evaled_target = self.eval_expr(
             mat.target
@@ -1462,16 +1395,51 @@ impl DebruijnInterpreter {
                 .expect("Match.target: normalizer post-condition"),
             env,
         )?;
-        let subst_target = self
+        let target = self
             .substitute
-            .substitute_and_charge(&evaled_target, 0, env)?;
+            .substitute_and_charge(evaled_target, 0, env)?;
 
-        first_match(subst_target, mat.cases.clone(), rand).await
+        for case in mat.cases {
+            let pattern =
+                self.substitute
+                    .substitute_and_charge(unwrap_option_safe(case.pattern)?, 1, env)?;
+            let Some(free_map) =
+                SpatialMatcherContext::new().into_match_result(target.clone(), pattern)
+            else {
+                continue;
+            };
+            let case_env = add_to_env(env, free_map, case.free_count);
+
+            // Optional `where` guard: the case fires only when the guard
+            // evaluates to GBool(true); anything else falls through to the
+            // next case. `Some(empty Par)` means no guard, as in eval_receive
+            // and Matcher::check_commit.
+            let guard_passes = match &case.guard {
+                Some(g) if g != &Par::default() => match rho_pure_eval::eval(g, &case_env) {
+                    Ok(result) => extract_bool(&result) == Some(true),
+                    Err(_) => false,
+                },
+                _ => true,
+            };
+            if !guard_passes {
+                continue;
+            }
+
+            return self
+                .eval(
+                    case.source
+                        .expect("MatchCase.source: protobuf no_box invariant"),
+                    &case_env,
+                    rand,
+                )
+                .await;
+        }
+        Ok(())
     }
 
     async fn eval_if(
         &self,
-        conditional: &If,
+        conditional: If,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1483,16 +1451,13 @@ impl DebruijnInterpreter {
                 .expect("If.condition: normalizer post-condition"),
             env,
         )?;
-        let subst_cond = self
-            .substitute
-            .substitute_and_charge(&evaled_cond, 0, env)?;
+        let subst_cond = self.substitute.substitute_and_charge(evaled_cond, 0, env)?;
 
         match extract_bool(&subst_cond) {
             Some(true) => {
                 self.eval(
                     conditional
                         .if_true
-                        .clone()
                         .expect("If.if_true: normalizer post-condition"),
                     env,
                     rand,
@@ -1503,7 +1468,6 @@ impl DebruijnInterpreter {
                 self.eval(
                     conditional
                         .if_false
-                        .clone()
                         .expect("If.if_false: normalizer post-condition"),
                     env,
                     rand,
@@ -1523,7 +1487,7 @@ impl DebruijnInterpreter {
     // TODO: Eliminate variable shadowing - OLD
     async fn eval_new(
         &self,
-        new: &New,
+        new: New,
         env: Env<Par>,
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1637,17 +1601,14 @@ impl DebruijnInterpreter {
 
         self.cost.charge(new_bindings_cost(new.bind_count as i64))?;
         match alloc(new.bind_count as usize, new.uri.clone()) {
-            Ok(env) => {
-                self.eval(unwrap_option_safe(new.p.clone())?, &env, rand)
-                    .await
-            }
+            Ok(env) => self.eval(unwrap_option_safe(new.p)?, &env, rand).await,
             Err(e) => Err(e),
         }
     }
 
     fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        let eval_src = self.eval_expr(&unwrap_option_safe(rb.source.clone())?, env)?;
-        let subst = self.substitute.substitute_and_charge(&eval_src, 0, env)?;
+        let eval_src = self.eval_expr(unwrap_option_ref(&rb.source)?, env)?;
+        let subst = self.substitute.substitute_and_charge(eval_src, 0, env)?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
@@ -1667,25 +1628,23 @@ impl DebruijnInterpreter {
 
     async fn eval_bundle(
         &self,
-        bundle: &Bundle,
+        bundle: Bundle,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.eval(unwrap_option_safe(bundle.body.clone())?, env, rand)
-            .await
+        self.eval(unwrap_option_safe(bundle.body)?, env, rand).await
     }
 
     // Public here for testing purposes
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        match unwrap_option_safe(expr.expr_instance.clone())? {
+        match unwrap_option_ref(&expr.expr_instance)? {
             ExprInstance::EVarBody(evar) => {
-                let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
-                let evaled_p = self.eval_expr(&p, env)?;
-                Ok(evaled_p)
+                let p = self.eval_var(unwrap_option_ref(&evar.v)?, env)?;
+                self.eval_expr(&p, env)
             }
             ExprInstance::EMethodBody(emethod) => {
                 self.cost.charge(method_call_cost())?;
-                let evaled_target = self.eval_expr(&unwrap_option_safe(emethod.target)?, env)?;
+                let evaled_target = self.eval_expr(unwrap_option_ref(&emethod.target)?, env)?;
                 let evaled_args: Vec<Par> = emethod
                     .arguments
                     .iter()
@@ -1990,8 +1949,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMultBody(EMult { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2080,8 +2039,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EDivBody(EDiv { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2185,8 +2144,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EModBody(EMod { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2292,8 +2251,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2404,8 +2363,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2538,43 +2497,43 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| !b1 & b2,
                     |i1: i64, i2: i64| i1 < i2,
                     |s1: String, s2: String| s1 < s2,
                 ),
 
                 ExprInstance::ELteBody(ELte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 <= b2,
                     |i1: i64, i2: i64| i1 <= i2,
                     |s1: String, s2: String| s1 <= s2,
                 ),
 
                 ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 & !b2,
                     |i1: i64, i2: i64| i1 > i2,
                     |s1: String, s2: String| s1 > s2,
                 ),
 
                 ExprInstance::EGteBody(EGte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 >= b2,
                     |i1: i64, i2: i64| i1 >= i2,
                     |s1: String, s2: String| s1 >= s2,
                 ),
 
                 ExprInstance::EEqBody(EEq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
                     // TODO: build an equality operator that takes in an environment. - OLD
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+                    let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+                    let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
                     self.cost.charge(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
@@ -2588,10 +2547,10 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
+                    let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+                    let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
                     self.cost.charge(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
@@ -2605,8 +2564,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EAndBody(EAnd { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.cost.charge(boolean_and_cost())?;
 
                     Ok(Expr {
@@ -2615,8 +2574,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EOrBody(EOr { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.cost.charge(boolean_or_cost())?;
 
                     Ok(Expr {
@@ -2625,20 +2584,20 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
-                    let evaled_target = self.eval_expr(&target.clone().unwrap(), env)?;
+                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
                     let subst_target =
                         self.substitute
-                            .substitute_and_charge(&evaled_target, 0, env)?;
+                            .substitute_and_charge(evaled_target, 0, env)?;
                     let subst_pattern =
                         self.substitute
-                            .substitute_and_charge(&pattern.clone().unwrap(), 1, env)?;
+                            .substitute_and_charge(pattern.clone().unwrap(), 1, env)?;
 
-                    let mut spatial_matcher = SpatialMatcherContext::new();
-                    let match_result =
-                        spatial_matcher.spatial_match_result(subst_target, subst_pattern);
+                    let matched = SpatialMatcherContext::new()
+                        .into_match_result(subst_target, subst_pattern)
+                        .is_some();
 
                     Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(match_result.is_some())),
+                        expr_instance: Some(ExprInstance::GBool(matched)),
                     })
                 }
 
@@ -2712,8 +2671,8 @@ impl DebruijnInterpreter {
                     }
 
                     self.cost.charge(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
@@ -2765,8 +2724,8 @@ impl DebruijnInterpreter {
 
                 ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
                     self.cost.charge(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
@@ -2867,8 +2826,8 @@ impl DebruijnInterpreter {
 
                 ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
                     self.cost.charge(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
@@ -2901,7 +2860,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EVarBody(EVar { v }) => {
-                    let p = self.eval_var(&v.clone().unwrap(), env)?;
+                    let p = self.eval_var(v.as_ref().unwrap(), env)?;
                     let expr_val = self.eval_single_expr(&p, env)?;
                     Ok(expr_val)
                 }
@@ -3156,7 +3115,7 @@ impl DebruijnInterpreter {
                 let expr_subst =
                     self.outer
                         .substitute
-                        .substitute_and_charge(&expr_evaled, 0, env)?;
+                        .substitute_and_charge(expr_evaled, 0, env)?;
 
                 self.outer.cost.charge(to_byte_array_cost(&expr_subst))?;
                 let ba = self.serialize(&expr_subst)?;
@@ -7737,18 +7696,11 @@ impl DebruijnInterpreter {
             .map(|expr| self.eval_expr_to_par(expr, env))
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-        // Note: the locallyFree cache in par could now be invalid, but given
-        // that locallyFree is for use in the matcher, and the matcher uses
-        // substitution, it will resolve in that case. AlwaysEqual makes sure
-        // that this isn't an issue in the rest of cases.
-        let result = evaled_exprs
+        // The locally_free cache carried over from `par` may now be stale;
+        // the matcher substitutes before it relies on it.
+        Ok(evaled_exprs
             .into_iter()
-            .fold(par.with_exprs(Vec::new()), |acc, expr| {
-                // acc.exprs.iter().chain(expr.exprs.iter()).cloned().collect()
-                concatenate_pars(acc, expr)
-            });
-
-        Ok(result)
+            .fold(par.clone_with_exprs(Vec::new()), concatenate_pars))
     }
 
     pub fn new(
