@@ -25,12 +25,14 @@
 //     `finalize_failure_journal_via_table` (same shape as fs_truncate
 //     / fs_chmod).
 //
-// # Shape-A root gating (deferred)
+// # Shape-A root gating
 //
-// Uses the ungated `resolve_or_identity` for BOTH endpoints —
-// same deferral as fs_chmod / fs_exists / fs_stat.  BACKLOG:
-// migrate all four handlers together when
-// `resolve_or_identity_gated_for_consensus` lands on dev.
+// Both endpoints route through
+// `resolve_or_identity_gated_for_consensus` with the single
+// caller-supplied `cmode`.  A Consensus-mode rename against an
+// unregistered `/@bundle/<X>` on either endpoint short-circuits
+// with `FSERR_UNSUPPORTED` before any `renameat` runs.  Oracular
+// renames pass through to identity on both endpoints.
 //
 // # No telemetry hazard
 //
@@ -196,16 +198,31 @@ impl FsHandler for FsRenameHandler {
         args: FsRenameArgs,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
-            // BACKLOG: migrate to resolve_or_identity_gated_for_consensus
-            // once path/identity ports the Shape-A gating.  Both
-            // endpoints must gate together — see module header on
-            // Shape-A deferral.
+            // Shape-A gating: BOTH endpoints route through
+            // `resolve_or_identity_gated_for_consensus` with the
+            // single caller-supplied `cmode`.  A Consensus-mode
+            // rename against an unregistered `/@bundle/<X>` on
+            // either endpoint short-circuits with
+            // `FSERR_UNSUPPORTED` before any `renameat` runs,
+            // matching fs_chmod's gating discipline.
             let from_logical = PathBuf::from(&args.from_root);
-            let (from_root_pb, from_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&from_logical);
+            let (from_root_pb, from_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&from_logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let to_logical = PathBuf::from(&args.to_root);
-            let (to_root_pb, to_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&to_logical);
+            let (to_root_pb, to_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&to_logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let from_rel = args.from_rel;
             let to_rel = args.to_rel;
             // Direct `spawn_blocking` with `Result<Par, Par>` —

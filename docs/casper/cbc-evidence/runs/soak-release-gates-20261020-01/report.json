@@ -1,0 +1,148 @@
+{
+  "acceptance": null,
+  "change": {
+    "task": "PR #793 (issue #791 work item 6): soak gates of the cost-accounting release train",
+    "commit": "257253ad6088393f2ef7c22df393ce7a3f76d334",
+    "origin": "Issue #791 requires that a ca/ pull request merges into ca-canary only after its 22-hour soak, and that ca-release passes the 60-hour soak before it gets a ca-v tag. PR #792 added the Mergify ca-item queue, which requires the ca-soaked label, and just ca-tag, which requires a successful Soak Gate (60h) status. This change adds the soak runs and the statuses and the label that those two gates read.",
+    "commits": [
+      {
+        "commit": "257253ad6",
+        "files": [
+          "report-soak-gate.sh",
+          "ca-soak-dispatch.sh",
+          "ca-soak-dispatch.yml",
+          "merge-recovery-soak.yml",
+          "test-soak-gate.sh",
+          "test-ca-soak-dispatch.sh",
+          "ci.yml",
+          "claim",
+          "ledgers",
+          ".gitattributes",
+          "docs/ci.md"
+        ],
+        "change": "merge-recovery-soak.yml gets the inputs gate and gate_pr. A gate run soaks an exact SHA for 22 hours (ca-item) or 60 hours (ca-release), has its own concurrency group and runner label, publishes no checkpoint or series, and restarts once with a full window. Two jobs post the Soak Gate status. report-soak-gate.sh decides the result and the ca-soaked label. ca-soak-dispatch.yml and ca-soak-dispatch.sh start and invalidate the soaks."
+      }
+    ],
+    "unchanged": "The daily and weekend soaks keep their schedule, concurrency groups, runner label, checkpoints, dashboard series, and window restart. test-soak-schedule-routing.sh and check-workflow-invariants.sh pass without change."
+  },
+  "review": {
+    "cbc_review": "Pending.",
+    "pr_review": "Pending.",
+    "disposition": null
+  },
+  "claim_digests": {
+    "docs/claims/soak-release-gates.md": "78b2a444a81f236732e7ddde43c14d07d1caf337631ccbbf57cc4edeb83b9ba6"
+  },
+  "claim_discharge": "pending",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001"
+  ],
+  "related_claims": {
+    "CLAIM-CASPER-CAMPAIGN-003": "pending. The ledger record of merge-recovery-soak.yml belongs to this claim and stays pending. This package does not accept the workflow under that claim."
+  },
+  "source_digests": {
+    ".github/scripts/report-soak-gate.sh": "ac4f650e16e4f49a058fbf85ca6605916eb3b926abbe8ecc756bfc3fbfc2d07b",
+    ".github/scripts/ca-soak-dispatch.sh": "11ffe89ada64c3793ba93efdee353718925cdea2bb32ab4b8129da1590105fbd",
+    ".github/workflows/ca-soak-dispatch.yml": "e0ac1c25a83f358d21b265e1637cbe1c24b5f1435ddd78aa38c50df6ba6016bc"
+  },
+  "test_digests": {
+    ".github/scripts/test-soak-gate.sh": "c5d962b3c4d945bc9d7d9b96c6a4eb04e1e445607aced91957e60f98b526f346",
+    ".github/scripts/test-ca-soak-dispatch.sh": "41d886b9f26bde0cab174eb69a9c4b1f955f44d667498d4095ec5b731ecc103d"
+  },
+  "related_source_digests": {
+    ".github/workflows/merge-recovery-soak.yml": {
+      "before": "2adf336eee8d8dd8c929260cfab2d858e1e6aff0f237b4ea631ecbe071a24246",
+      "after": "8eec5a1a1410d39ff620fc5a266d868fd2602cdfa8629889c7c7d7cf6fc29820",
+      "note": "The gate parts are artifacts of CLAIM-SOAK-GATE-001. The rest of the file belongs to CLAIM-CASPER-CAMPAIGN-003, which stays pending."
+    }
+  },
+  "verification": {
+    "local": {
+      "tree": "257253ad6",
+      "commands": {
+        "bash .github/scripts/test-soak-gate.sh": "exit 0",
+        "bash .github/scripts/test-ca-soak-dispatch.sh": "exit 0",
+        "bash .github/scripts/test-soak-schedule-routing.sh": "exit 0",
+        "bash .github/scripts/check-workflow-invariants.sh": "exit 0"
+      },
+      "shells": "GNU bash 5 and macOS /bin/bash 3.2",
+      "actionlint": "rhysd/actionlint 1.7.7 on merge-recovery-soak.yml, ca-soak-dispatch.yml, and ci.yml reports no new finding. The only changed line is the existing workflow_dispatch input count (13 to 15). actionlint 1.7.7 uses the old limit of 10, and GitHub allows 25."
+    },
+    "regression_controls": {
+      "method": "Each control applies one exact source change to a fresh copy of .github and runs the matching test. Every control must make the test fail.",
+      "controls": [
+        "no verdict check",
+        "no preflight check",
+        "no completion check",
+        "no head check",
+        "no newer-run check",
+        "cancel posts failure",
+        "shared concurrency group",
+        "shared runner label",
+        "gate publishes series",
+        "gate keeps checkpoints",
+        "branch target accepted",
+        "gate mode mix accepted",
+        "gate restart uses remainder",
+        "no Mergify exemption",
+        "push keeps ca-soak",
+        "no cancel on push",
+        "fork accepted",
+        "label keeps ca-soaked",
+        "workflow checks out a PR ref"
+      ],
+      "caught": 19,
+      "total": 19,
+      "gaps_closed": "Three controls first passed: gate keeps checkpoints, gate restart uses remainder, and push keeps ca-soak. The tests now give a run without a gate a checkpoint, run the restart step with a fake gh, and match the ca-soak label removal exactly."
+    },
+    "local_incident": "An earlier control harness restored files from a backup that zsh noclobber had not refreshed, and it overwrote ca-soak-dispatch.sh and merge-recovery-soak.yml in the working tree before the commit. Both files were restored. The digests of the three ledger artifacts match the digests recorded before the incident, and the workflow came from a copy saved after the last edit. The controls above ran on scratch copies only."
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "257253ad6088393f2ef7c22df393ce7a3f76d334",
+    "ci": {
+      "run_id": 39467308632,
+      "conclusion": "success",
+      "script_tests_job": 118782765441,
+      "steps": {
+        "Verify release train soak gate": "success",
+        "Verify release train soak dispatch": "success",
+        "Verify soak schedule routing": "success"
+      },
+      "static_checks_job": 118782765358,
+      "static_steps": {
+        "Verify workflow security invariants": "success"
+      }
+    },
+    "slashing_test_suite": {
+      "run_id": 39465007685,
+      "conclusion": "success"
+    },
+    "campaign_controls": {
+      "run_id": 39465007595,
+      "conclusion": "success"
+    },
+    "superseded_runs": "Runs 39465008254, 39465094687, 39465095313, 39465096633, and 39465901909 were cancelled by pull request edits. Their cancelled matrix jobs are not failures."
+  },
+  "soak_observation": {
+    "status": "not run. The dispatcher runs the soak from master, so the first gate soak can start only after this change reaches master. The first ca-release gate soak also needs the ca-canary and ca-release branches."
+  },
+  "expected_gate_state": "check-casper-claims audits only CLAIM-CASPER-SOAK-001 to 008, so this claim does not change its result. The three ledger records stay pending until a maintainer accepts this package.",
+  "node_execution": false,
+  "schema_version": 1,
+  "scope": "release-train-soak-gate",
+  "soak": "pending",
+  "status": "change-verified-pending-acceptance",
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verified_at": "2026-10-20",
+  "waiver": null,
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #793 comment",
+    "scope": "One acceptance covers report-soak-gate.sh, ca-soak-dispatch.sh, ca-soak-dispatch.yml, and the gate parts of merge-recovery-soak.yml at 257253ad6."
+  }
+}

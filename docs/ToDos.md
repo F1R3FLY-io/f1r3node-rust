@@ -73,6 +73,34 @@ mr_status:
 
 ---
 
+### EPIC-029: Trusted Daily Back-merges
+
+```yaml
+epic_id: EPIC-029
+title: "Trusted Daily Back-merges"
+status: in_progress
+priority: p1
+user_story: US-013
+branch: ci/ca-release-train
+tasks:
+  - id: TASK-029-1
+    title: "Validate daily back-merges with trusted code and permit clean base merges"
+    status: in_progress
+    claimed_by: pi-session
+    claimed_at: 2026-10-20T19:05:51Z
+    review_requested_at: 2026-10-20
+    review_type: human
+    progress: "Local provenance, protected-head, tag, routing, and workflow invariant tests pass. ShellCheck passes. Hosted validation remains pending."
+    notes: "Review follow-up for issues #791 and PR #792. Preserve the accepted ca-soaked label risk."
+    acceptance:
+      - "Tests accept the release source and repeated clean base merges."
+      - "Tests reject foreign sources, edited merge trees, single-parent additions, forks, and invalid metadata."
+      - "A pull_request_target workflow runs only base code and posts CA Daily Provenance on the event head SHA."
+      - "The ca-daily queue requires CA Daily Provenance, and the existing workflow invariant checks pass."
+```
+
+---
+
 ### EPIC-024: Spike: Tokio and LMDB Disk Access, and Detection of Delayed Writes
 
 ```yaml
@@ -473,7 +501,7 @@ tasks:
     decision: "2026-10-16: the user chose the CI check and a local command first. The change of the human bypass actors of masterProtect and devProtect from always to pull_request is still open."
     acceptance:
       - "just backmerge creates backmerge/<UTC timestamp> at the origin/master commit and opens the pull request to dev. test-open-backmerge-pr.sh covers the nothing-to-back-merge cases, the created branch and pull request, and the branch delete after a failed pull request."
-      - "check-promotion-source.sh rejects a pull request from this repository with head master or dev, for every base, and accepts a fork pull request from the fork's master or dev. The Promotion Source job in ci.yml runs it with a read-only token. protected-head-guard.yml runs it from the base branch under pull_request_target and closes the pull request with the remedy and the reason. test-check-promotion-source.sh covers both events, the close, and a failed close."
+      - "check-promotion-source.sh rejects a pull request from this repository with head master or dev, for every base, and accepts a fork pull request from the fork's master or dev. Since issue #791 it also rejects head ca-canary and ca-release, the release train branches. The Promotion Source job in ci.yml runs it with a read-only token. protected-head-guard.yml runs it from the base branch under pull_request_target and closes the pull request with the remedy and the reason. test-check-promotion-source.sh covers both events, the close, and a failed close."
       - "just backmerge names an open backmerge/* pull request to dev and creates nothing. The branch name backmerge/master-<sha> makes a second run for the same master commit fail at branch creation."
       - "docs/ci.md and CLAUDE.md name just backmerge and the reason."
   - id: TASK-023-14
