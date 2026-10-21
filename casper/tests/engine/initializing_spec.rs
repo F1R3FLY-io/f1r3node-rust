@@ -33,6 +33,8 @@ use tokio::sync::mpsc;
 
 use crate::engine::setup::TestFixture;
 
+mod offered_restore;
+
 struct InitializingSpec;
 
 impl InitializingSpec {

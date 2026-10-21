@@ -54,6 +54,7 @@ use crate::rust::metrics_constants::{
     INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC, INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC,
 };
 use crate::rust::util::proto_util;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 use crate::rust::validator_identity::ValidatorIdentity;
@@ -1050,28 +1051,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             }
         }
 
-        // Replay blocks to populate the mergeable channel cache. Needed for
-        // multi-parent block validation: any block whose mergeable-channel
-        // metadata predates this node's LFS sync must be replayed against the
-        // stored post-state so `RuntimeManager::load_mergeable_channels`
-        // succeeds during validation.
-        //
-        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
-        // routes `MergeableEntryResponse` messages through
-        // `mergeable_message_rx` to populate the cache during sync, which
-        // covers most of the same ground. This explicit replay is the
-        // defensive companion path — it catches any block whose mergeable
-        // entry was missed by the streaming response (e.g. a peer that
-        // didn't ship one), and is a no-op when the cache is already warm.
-        // Bounded by the state floor, not the block floor: the replay executes
-        // blocks, so it must not walk below the history the horizon sync just
-        // imported, and a block below the parent reach is never merged on.
-        self.replay_blocks_for_mergeable_channels(approved_block, min_state_block_number)
-            .await?;
-
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
-        self.create_casper_and_transition_to_running(approved_block)
+        self.create_casper_and_transition_to_running(approved_block, min_state_block_number)
             .await?;
         tracing::info!("request_approved_state: transition_to_running completed");
 
@@ -1351,7 +1333,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// work to genuinely missing entries instead of full chain depth.
     async fn replay_blocks_for_mergeable_channels(
         &self,
-        approved_block: &ApprovedBlock,
+        adopted: Option<&AdoptedResourcePolicy>,
         min_block_number: i64,
     ) -> Result<(), CasperError> {
         // Bounds the replay so a stuck cold-start produces an explicit error
@@ -1362,7 +1344,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         match tokio::time::timeout(
             MERGEABLE_CHANNEL_REPLAY_DEADLINE,
-            self.replay_blocks_for_mergeable_channels_inner(approved_block, min_block_number),
+            self.replay_blocks_for_mergeable_channels_inner(adopted, min_block_number),
         )
         .await
         {
@@ -1376,7 +1358,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
     async fn replay_blocks_for_mergeable_channels_inner(
         &self,
-        _approved_block: &ApprovedBlock,
+        adopted: Option<&AdoptedResourcePolicy>,
         min_block_number: i64,
     ) -> Result<(), CasperError> {
         tracing::info!("Replaying blocks to populate mergeable channel cache...");
@@ -1422,7 +1404,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 // Genesis block - replay from empty state
                 self.replay_genesis_block(&block).await?;
             } else {
-                self.replay_single_block(&block).await?;
+                self.replay_single_block(&block, adopted).await?;
             }
             replayed += 1;
         }
@@ -1492,7 +1474,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     }
 
     /// Replay a single block to populate its mergeable channel cache entry.
-    async fn replay_single_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+    async fn replay_single_block(
+        &self,
+        block: &BlockMessage,
+        adopted: Option<&AdoptedResourcePolicy>,
+    ) -> Result<(), CasperError> {
         let block_hash = &block.block_hash;
         let block_number = proto_util::block_number(block);
         let parents = &block.header.parents_hash_list;
@@ -1536,13 +1522,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // outer Mutex / lock acquisition is required.
         let result = self
             .runtime_manager
-            .replay_compute_state_envelopes(
+            .replay_compute_state_envelopes_with_policy(
                 &pre_state_hash,
                 deploys,
                 system_deploys,
                 &block_data,
                 Some(invalid_blocks_map),
                 is_genesis,
+                adopted,
+                Some(&block.body.state.post_state_hash),
             )
             .await;
 
@@ -1573,6 +1561,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     async fn create_casper_and_transition_to_running(
         &self,
         approved_block: &ApprovedBlock,
+        min_state_block_number: i64,
     ) -> Result<(), CasperError> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
@@ -1584,7 +1573,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .estimator
             .lock()
             .unwrap()
-            .take()
+            .clone()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
         // The on-chain fault-tolerance threshold is read and adopted by
@@ -1615,6 +1604,29 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         tracing::info!(
             "create_casper_and_transition_to_running: MultiParentCasper instance created"
         );
+
+        // Replay blocks to populate the mergeable channel cache. Needed for
+        // multi-parent block validation: any block whose mergeable-channel
+        // metadata predates this node's LFS sync must be replayed against the
+        // stored post-state so `RuntimeManager::load_mergeable_channels`
+        // succeeds during validation.
+        //
+        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
+        // routes `MergeableEntryResponse` messages through
+        // `mergeable_message_rx` to populate the cache during sync, which
+        // covers most of the same ground. This explicit replay is the
+        // defensive companion path — it catches any block whose mergeable
+        // entry was missed by the streaming response (e.g. a peer that
+        // didn't ship one), and is a no-op when the cache is already warm.
+        // Bounded by the state floor, not the block floor: the replay executes
+        // blocks, so it must not walk below the history the horizon sync just
+        // imported, and a block below the parent reach is never merged on.
+        self.replay_blocks_for_mergeable_channels(
+            casper.adopted_resource_policy.as_ref(),
+            min_state_block_number,
+        )
+        .await?;
+        let _ = self.estimator.lock().unwrap().take();
 
         // **Scala equivalent**: `transitionToRunning[F](...)`
         tracing::info!("create_casper_and_transition_to_running: calling transition_to_running");
