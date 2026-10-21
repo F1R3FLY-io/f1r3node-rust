@@ -36,6 +36,7 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -43,10 +44,12 @@ use rholang::rust::interpreter::rho_type::RhoNumber;
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
+use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 
 use crate::rust::errors::CasperError;
@@ -607,7 +610,9 @@ impl RuntimeOps {
         let fallback = self.runtime.create_soft_checkpoint().await;
 
         // Evaluate deploy
-        let eval_result = self.evaluate(&deploy).await?;
+        let mut eval_result = self.evaluate(&deploy).await?;
+        self.reject_bitmask_clears(&fallback, &mut eval_result)
+            .await;
 
         let deploy_log = self.runtime.take_event_log().await;
 
@@ -658,6 +663,67 @@ impl RuntimeOps {
             }
         }
         Ok(result)
+    }
+
+    /// Fails a user deploy that leaves any `BitmaskOr` channel without a bit it
+    /// held when the deploy started (#534). The merge folds these channels as
+    /// `base | (end & !prev)`, so a cleared bit would be silently restored.
+    ///
+    /// - The baseline is the soft checkpoint taken before the deploy, never a
+    ///   read during evaluation, so play and replay reach the same verdict.
+    /// - A channel with no numeric value at the end (consumed and not put back,
+    ///   or replaced by non-numeric data) counts as `0`: it clears every bit.
+    /// - Channels are checked in channel-hash order so the error is identical
+    ///   in play and replay.
+    /// - A deploy that already failed is rolled back anyway, so it is skipped.
+    /// - On rejection `mergeable` is cleared: the rolled-back deploy must not
+    ///   contribute number-channel data to the merge.
+    pub(crate) async fn reject_bitmask_clears(
+        &self,
+        start: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        eval_result: &mut EvaluateResult,
+    ) {
+        if !eval_result.errors.is_empty() {
+            return;
+        }
+        let mut channels: Vec<(Blake2b256Hash, &Par)> = eval_result
+            .mergeable
+            .iter()
+            .filter(|(_, merge_type)| **merge_type == MergeType::BitmaskOr)
+            .map(|(channel, _)| (stable_hash_provider::hash(channel), channel))
+            .collect();
+        channels.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut cleared_channels = Vec::new();
+        for (hash, channel) in channels {
+            let Some(before) = Self::bitmask_value(&self.runtime.get_data_at(start, channel).await)
+            else {
+                continue;
+            };
+            let after = Self::bitmask_value(&self.runtime.get_data(channel).await).unwrap_or(0);
+            let cleared = (before as u64) & !(after as u64);
+            if cleared != 0 {
+                cleared_channels.push((hex::encode(hash.bytes()), cleared));
+            }
+        }
+
+        if !cleared_channels.is_empty() {
+            eval_result
+                .errors
+                .push(InterpreterError::BitmaskBitsCleared {
+                    cleared: cleared_channels,
+                });
+            eval_result.mergeable.clear();
+        }
+    }
+
+    fn bitmask_value(data: &[Datum<ListParWithRandom>]) -> Option<i64> {
+        let nums: Vec<i64> = data
+            .iter()
+            .filter(|datum| datum.a.pars.len() == 1)
+            .filter_map(|datum| RhoNumber::unapply(&datum.a.pars[0]))
+            .collect();
+        Self::fold_bitmask_or(&nums)
     }
 
     pub fn fold_bitmask_or(values: &[i64]) -> Option<i64> {

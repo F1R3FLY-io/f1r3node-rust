@@ -1710,12 +1710,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // subscriber via `.clone()` — the two-layer indirection
             // means Clone shares the outer slot, so any post-spawn
             // `register(logical, root)` on the manager is visible
-            // through this handle.  Empty today pending node::setup
-            // wiring; empty falls through to pre-Shape-A behavior.
-            // `allowed_roots` reads the shared
+            // through this handle.  `allowed_roots` reads the shared
             // `RuntimeManager.consensus_static_roots` slot (slice
-            // 5.134) — same empty-today / populated-at-boot
-            // discipline.
+            // 5.134) populated at boot by
+            // `node::rust::runtime::setup::register_consensus_bundle_roots`.
             let registry = self.runtime_manager.root_registry.clone();
             let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             let _subscriber_handle =

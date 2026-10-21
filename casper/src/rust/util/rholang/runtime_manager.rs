@@ -579,6 +579,18 @@ impl RuntimeManager {
         }
     }
 
+    fn get_cached_value<K, V>(map: &DashMap<K, V>, order: &Mutex<VecDeque<K>>, key: &K) -> Option<V>
+    where
+        K: Eq + Hash + Clone,
+        V: Clone,
+    {
+        let value = map.get(key).map(|entry| entry.value().clone());
+        if value.is_some() {
+            Self::touch_cache_key(order, key);
+        }
+        value
+    }
+
     fn evict_fifo_entry<K, V>(map: &DashMap<K, V>, order: &Mutex<VecDeque<K>>)
     where K: Eq + Hash + Clone {
         if let Ok(mut guard) = order.lock() {
@@ -1104,9 +1116,12 @@ impl RuntimeManager {
         &self,
         start_hash: &StateHash,
     ) -> Result<Vec<Validator>, CasperError> {
-        if let Some(cached) = self.active_validators_cache.get(start_hash) {
-            Self::touch_cache_key(&self.active_validators_cache_order, start_hash);
-            return Ok(cached.clone());
+        if let Some(cached) = Self::get_cached_value(
+            &self.active_validators_cache,
+            &self.active_validators_cache_order,
+            start_hash,
+        ) {
+            return Ok(cached);
         }
 
         let runtime = self.spawn_runtime().await?;
@@ -1155,9 +1170,10 @@ impl RuntimeManager {
     }
 
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
-        if let Some(cached) = self.bonds_cache.get(hash) {
-            Self::touch_cache_key(&self.bonds_cache_order, hash);
-            return Ok(cached.clone());
+        if let Some(cached) =
+            Self::get_cached_value(&self.bonds_cache, &self.bonds_cache_order, hash)
+        {
+            return Ok(cached);
         }
 
         let runtime = self.spawn_runtime().await?;
@@ -1243,11 +1259,14 @@ impl RuntimeManager {
         post_state_hash: &Blake2b256Hash,
         mergeable_chs: &Vec<NumberChannelsDiff>,
     ) -> Result<BlockIndex, CasperError> {
-        if let Some(cached) = self.block_index_cache.get(block_hash) {
-            Self::touch_cache_key(&self.block_index_cache_order, block_hash);
+        if let Some(cached) = Self::get_cached_value(
+            &self.block_index_cache,
+            &self.block_index_cache_order,
+            block_hash,
+        ) {
             metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .set(self.block_index_cache.len() as f64);
-            return Ok(cached.clone());
+            return Ok(cached);
         }
 
         // Cache miss - compute the BlockIndex.
@@ -1288,10 +1307,11 @@ impl RuntimeManager {
         &self,
         key: &ParentsPostStateCacheKey,
     ) -> Option<ParentsPostStateCacheVal> {
-        let result = self.parents_post_state_cache.get(key).map(|entry| {
-            Self::touch_cache_key(&self.parents_post_state_cache_order, key);
-            entry.value().clone()
-        });
+        let result = Self::get_cached_value(
+            &self.parents_post_state_cache,
+            &self.parents_post_state_cache_order,
+            key,
+        );
         metrics::gauge!(PARENTS_POST_STATE_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(self.parents_post_state_cache.len() as f64);
         result
@@ -1804,6 +1824,90 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager, REPLAY_LOCK_PERMITS};
+
+    #[test]
+    fn cache_hit_releases_the_shard_before_waiting_for_order_lock() {
+        use std::collections::VecDeque;
+        use std::sync::{mpsc, Mutex};
+        use std::time::Instant;
+
+        use dashmap::try_result::TryResult;
+        use dashmap::DashMap;
+
+        struct CloneSignal(mpsc::Sender<()>);
+
+        impl Clone for CloneSignal {
+            fn clone(&self) -> Self {
+                self.0.send(()).unwrap();
+                Self(self.0.clone())
+            }
+        }
+
+        let (cloned_tx, cloned_rx) = mpsc::channel();
+        let cache = Arc::new(DashMap::new());
+        cache.insert(1, CloneSignal(cloned_tx));
+        let order = Arc::new(Mutex::new(VecDeque::from([1])));
+        let order_guard = order.lock().unwrap();
+        let reader = {
+            let cache = cache.clone();
+            let order = order.clone();
+            std::thread::spawn(move || RuntimeManager::get_cached_value(&cache, &order, &1))
+        };
+
+        let cloned = cloned_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut shard_available = false;
+        if cloned {
+            loop {
+                if let TryResult::Present(_) = cache.try_get_mut(&1) {
+                    shard_available = true;
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }
+
+        drop(order_guard);
+        let result = reader.join().unwrap();
+        assert!(
+            cloned,
+            "A cache hit must clone before it waits for the order lock"
+        );
+        assert!(
+            shard_available,
+            "A cache hit must release its shard before it waits for the order lock"
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn cache_reads_preserve_hit_order_and_ignore_misses() {
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+
+        use dashmap::DashMap;
+
+        let cache = DashMap::new();
+        cache.insert(1, 11);
+        cache.insert(2, 22);
+        let order = Mutex::new(VecDeque::from([1, 2]));
+
+        assert_eq!(
+            RuntimeManager::get_cached_value(&cache, &order, &1),
+            Some(11)
+        );
+        assert_eq!(RuntimeManager::get_cached_value(&cache, &order, &3), None);
+        assert_eq!(*order.lock().unwrap(), VecDeque::from([2, 1]));
+
+        RuntimeManager::evict_fifo_entry(&cache, &order);
+
+        assert!(!cache.contains_key(&2));
+        assert_eq!(*cache.get(&1).unwrap(), 11);
+        assert_eq!(*order.lock().unwrap(), VecDeque::from([1]));
+    }
 
     #[test]
     fn exploratory_deploy_config_rejects_non_positive_values() {

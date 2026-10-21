@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Promotion Source check. Rejects a pull request from this repository whose
-# head is master or dev, and closes it.
+# head is master, dev, or a release train branch (ca-canary, ca-release), and
+# closes it. ca-canary has the role of dev and ca-release the role of master.
 #
 # A protected head is dangerous in two ways. The repository deletes the head
 # branch of a merged pull request, and GitHub then retargets every open pull
@@ -15,7 +16,7 @@
 # pull-requests: write token, so it also closes the pull request. A closed
 # pull request has no "Update branch" button and cannot merge.
 #
-# A fork pull request from the fork's own master or dev is accepted.
+# A fork pull request from the fork's own protected branch name is accepted.
 set -euo pipefail
 
 event="${EVENT_NAME:-}"
@@ -53,6 +54,18 @@ if { [ "$event" = pull_request ] || [ "$event" = pull_request_target ]; } &&
 				reject "Do not open a back-merge with head master. Run 'just backmerge' to open it from a backmerge/* branch."
 			fi
 			reject "Do not open a pull request with head master. Open it from a temporary branch at the master commit."
+			;;
+		ca-canary)
+			if [ "$base" = ca-release ]; then
+				reject "Do not open a promotion with head ca-canary. Run 'just ca-promote' to open it from a promote/* branch."
+			fi
+			reject "Do not open a pull request with head ca-canary. Open it from a temporary branch at the ca-canary commit."
+			;;
+		ca-release)
+			if [ "$base" = ca-canary ]; then
+				reject "Do not open a back-merge with head ca-release. Run 'just ca-backmerge' to open it from a backmerge/* branch."
+			fi
+			reject "Do not open a pull request with head ca-release. Open it from a temporary branch at the ca-release commit."
 			;;
 	esac
 fi

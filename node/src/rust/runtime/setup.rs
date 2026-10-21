@@ -61,6 +61,241 @@ fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool
     is_node_read_only || dev_mode
 }
 
+/// Populate the `RootIdentityRegistry` from the operator's consensus-mode
+/// static-provisioning entries so `/@bundle/<logical>` -> on-disk root
+/// resolution works at Rholang-handler syscall time.
+///
+/// Composed Fs-genesis source (`format_bundle_for_rholang`, Shape A) emits
+/// `BUNDLE_ROOT_PREFIX` ("/@bundle") for every consensus bundle entry's
+/// Rholang-visible root.  `safe_descend`'s
+/// `resolve_or_identity_gated_for_consensus` consults the registry to
+/// map that virtual root to a real on-disk path.  Without this
+/// registration, every consensus-mode cap read/write fails at
+/// `identity.rs:315` with FSERR_UNSUPPORTED.
+///
+/// Mirrors `casper/tests/helper/rho_spec.rs:429-523` structurally so the
+/// test-harness coverage transfers.
+///
+/// Convention:
+///   * Dir entries: `/@bundle/<logical>` -> `Root::capture(operator_path)`.
+///     The operator-declared directory IS the root; no staging.
+///   * File entries: stage the operator-declared file at
+///     `<data_dir>/fs_bundle_staging/<logical>`; register
+///     `/@bundle` or `/@bundle/<parent-segs>` -> `Root::capture(<staging
+///     dir>)`.  Multiple files sharing a parent segment collapse to one
+///     registration via a BTreeMap dedupe.
+///
+/// Oracular entries bypass this path entirely (the resolver
+/// short-circuits on `BundleConsensusMode::Oracular`).
+///
+/// # Preconditions
+///
+///   * **One node per `data_dir`.**  The staging layer writes
+///     `<data_dir>/fs_bundle_staging/<logical>.partial` and renames
+///     to the final path.  Two nodes sharing the same `data_dir`
+///     would race on the same rename target — last writer wins,
+///     and a crash mid-write can leave a `.partial` from one node
+///     that the other overwrites next boot.  Each node must own
+///     its own `data_dir`; this matches the single-validator-per-
+///     host deployment model Casper CBC assumes anyway.
+///   * **Local POSIX filesystem for `data_dir`.**  The Wave-B
+///     fcntl bracket around read/write syscalls relies on POSIX
+///     advisory-lock semantics; NFS and some shared-storage setups
+///     have well-known fcntl gaps.  On those, a cooperating
+///     sidecar reader can observe torn writes.
+pub(crate) async fn register_consensus_bundle_roots(
+    manager: &casper::rust::util::rholang::runtime_manager::RuntimeManager,
+    provisioning: &crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
+    data_dir: &std::path::Path,
+) -> Result<(), CasperError> {
+    // Thin wrapper over the testable core: snapshot the manager's
+    // registry and feed `register_consensus_static_root` back as the
+    // allowed-roots callback.  Keeping the registry + callback as
+    // explicit params lets the test module exercise the stage-and-
+    // register logic without constructing a full `RuntimeManager`.
+    let mut allowed_roots: Vec<std::path::PathBuf> = Vec::new();
+    register_consensus_bundle_roots_core(
+        &manager.root_registry,
+        &mut allowed_roots,
+        provisioning,
+        data_dir,
+    )?;
+    // Log registry state at boot.  Operators diagnosing an
+    // `FSERR_UNSUPPORTED: unregistered logical root` at deploy
+    // time can grep for `consensus bundle root` in the node log
+    // to see what IS registered.  Deterministic ordering via
+    // `BTreeSet` collection: lexical by logical name.
+    for root in &allowed_roots {
+        tracing::info!(
+            target: "f1r3fly.node.setup",
+            on_disk_root = %root.display(),
+            "consensus bundle root registered"
+        );
+    }
+    tracing::info!(
+        target: "f1r3fly.node.setup",
+        count = allowed_roots.len(),
+        file_entries = provisioning.consensus_static_files.len(),
+        dir_entries = provisioning.consensus_static_dirs.len(),
+        "register_consensus_bundle_roots: boot registration complete"
+    );
+    for root in allowed_roots {
+        manager.register_consensus_static_root(root).await;
+    }
+    Ok(())
+}
+
+/// Testable core of `register_consensus_bundle_roots`.  Writes staging
+/// files + registrations into the supplied `registry`; appends each
+/// manager-visible consensus-static root (the staging dir for file
+/// entries, the operator path for dir entries) to `allowed_roots`.
+///
+/// Separated from the manager-side wrapper so tests can drive it with
+/// a bare `RootIdentityRegistry` + a `Vec` collector — constructing a
+/// full `RuntimeManager` in a unit test is prohibitively expensive.
+pub(crate) fn register_consensus_bundle_roots_core(
+    registry: &rholang::rust::interpreter::io::path::identity::RootIdentityRegistry,
+    allowed_roots: &mut Vec<std::path::PathBuf>,
+    provisioning: &crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
+    data_dir: &std::path::Path,
+) -> Result<(), CasperError> {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    use casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX;
+    use rholang::rust::interpreter::io::path::identity::Root;
+
+    if provisioning.consensus_static_dirs.is_empty()
+        && provisioning.consensus_static_files.is_empty()
+    {
+        info!(
+            target: "f1r3fly.setup.consensus_bundle_roots",
+            "no consensus-mode bundle entries; skipping registration"
+        );
+        return Ok(());
+    }
+
+    let staging_root = data_dir.join("fs_bundle_staging");
+
+    // Dir entries: register operator path directly.
+    for (logical_name, entry) in &provisioning.consensus_static_dirs {
+        let logical = PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{logical_name}"));
+        let captured = Root::capture(&entry.path).map_err(|e| {
+            CasperError::Other(format!(
+                "register_consensus_bundle_roots: capture Dir root {:?} \
+                 for logical `{logical_name}` failed: {e:?}",
+                entry.path
+            ))
+        })?;
+        registry.register(logical, captured);
+        allowed_roots.push(entry.path.clone());
+        info!(
+            target: "f1r3fly.setup.consensus_bundle_roots",
+            logical = %logical_name,
+            on_disk = ?entry.path,
+            kind = "dir",
+            "registered consensus bundle root"
+        );
+    }
+
+    // File entries: stage then register.  Build a dedupe map keyed on
+    // the logical_root string so N files sharing a parent collapse to
+    // one registration (matches rho_spec.rs:508 BTreeMap behavior).
+    if !provisioning.consensus_static_files.is_empty() {
+        std::fs::create_dir_all(&staging_root).map_err(|e| {
+            CasperError::Other(format!(
+                "register_consensus_bundle_roots: create staging root {:?} failed: {e}",
+                staging_root
+            ))
+        })?;
+
+        let mut registrations: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+
+        for (logical_name, entry) in &provisioning.consensus_static_files {
+            let on_disk_target = staging_root.join(logical_name);
+            if let Some(parent) = on_disk_target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    CasperError::Other(format!(
+                        "register_consensus_bundle_roots: create staging parent {:?} \
+                         for logical `{logical_name}` failed: {e}",
+                        parent
+                    ))
+                })?;
+            }
+            // Atomic copy: write to .partial then rename.  A crash
+            // mid-copy leaves a `.partial` sidecar (operator-visible)
+            // rather than a torn staging file.
+            let partial = on_disk_target.with_extension({
+                let mut e = on_disk_target
+                    .extension()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !e.is_empty() {
+                    e.push('.');
+                }
+                e.push_str("partial");
+                e
+            });
+            std::fs::copy(&entry.path, &partial).map_err(|e| {
+                CasperError::Other(format!(
+                    "register_consensus_bundle_roots: copy {:?} -> {:?} for \
+                     logical `{logical_name}` failed: {e}",
+                    entry.path, partial
+                ))
+            })?;
+            std::fs::rename(&partial, &on_disk_target).map_err(|e| {
+                CasperError::Other(format!(
+                    "register_consensus_bundle_roots: rename {:?} -> {:?} failed: {e}",
+                    partial, on_disk_target
+                ))
+            })?;
+
+            // Mirror format_bundle_for_rholang's (root, rel) split:
+            // bare logical name -> ("/@bundle", <staging_root>);
+            // nested "cfg/x" -> ("/@bundle/cfg", <staging_root>/cfg).
+            let logical_path = std::path::Path::new(logical_name);
+            let parent_rel = logical_path.parent().and_then(|p| p.to_str()).unwrap_or("");
+            let (logical_root, on_disk_root) = if parent_rel.is_empty() {
+                (PathBuf::from(BUNDLE_ROOT_PREFIX), staging_root.clone())
+            } else {
+                (
+                    PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}")),
+                    staging_root.join(parent_rel),
+                )
+            };
+            registrations.insert(logical_root, on_disk_root);
+            info!(
+                target: "f1r3fly.setup.consensus_bundle_roots",
+                logical = %logical_name,
+                source = ?entry.path,
+                staged = ?on_disk_target,
+                kind = "file",
+                "staged consensus bundle file"
+            );
+        }
+
+        for (logical, on_disk) in registrations {
+            let captured = Root::capture(&on_disk).map_err(|e| {
+                CasperError::Other(format!(
+                    "register_consensus_bundle_roots: capture File staging root \
+                     {:?} failed: {e:?}",
+                    on_disk
+                ))
+            })?;
+            registry.register(logical.clone(), captured);
+            allowed_roots.push(on_disk.clone());
+            info!(
+                target: "f1r3fly.setup.consensus_bundle_roots",
+                logical_root = ?logical,
+                on_disk_root = ?on_disk,
+                "registered consensus bundle file-staging root"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
@@ -108,6 +343,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     CasperError,
 > {
     info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
+
+    // Clone before moving conf.storage.data_dir into the kv-store manager —
+    // register_consensus_bundle_roots (post-RuntimeManager-build) needs the
+    // path to compute the staging root `<data_dir>/fs_bundle_staging/`.
+    let data_dir_for_bundle_staging = conf.storage.data_dir.clone();
 
     // RNode key-value store manager / manages LMDB databases
     let mut rnode_store_manager = {
@@ -285,6 +525,20 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
     };
+
+    // Populate the RootIdentityRegistry from the operator's
+    // consensus-mode static-provisioning entries BEFORE anything that
+    // spawns a runtime (CasperLaunch below spawns via spawn_runtime,
+    // which snapshots the manager's registry into each spawn via
+    // broadcast_fs_slots).  Oracular entries bypass the registry;
+    // observer nodes with no consensus provisioning fast-path through
+    // the empty-input branch of the helper.
+    register_consensus_bundle_roots(
+        &runtime_manager,
+        &conf.storage.file_io_provisioning,
+        &data_dir_for_bundle_staging,
+    )
+    .await?;
 
     // Reporting runtime
     let reporting_runtime = {
@@ -609,21 +863,21 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             {
                 // Project the merged FileIoProvisioning into the
                 // bundle format `fs_generator` consumes.  Combines
-                // config-file entries with (future ops-9) CLI
-                // `--*-static-*` flags and runs boot-time invariants
-                // (canonicity, mode whitelist, PB-M-16 bucket
-                // disjointness, forbidden chars, cross-source name
-                // conflicts).  On validation failure we panic: an
-                // invalid provisioning would yield a genesis block
-                // no validator could accept, so failing loud at boot
-                // is the correct outcome.  CLI vecs are empty until
-                // ops-9 lands the clap wire-up.
+                // config-file entries with CLI `--*-static-*` flags
+                // (threaded through `conf.storage.cli_*` by
+                // `ConfigMapper::override_config_values`) and runs
+                // boot-time invariants (canonicity, mode whitelist,
+                // PB-M-16 bucket disjointness, forbidden chars,
+                // cross-source name conflicts).  On validation
+                // failure we panic: an invalid provisioning would
+                // yield a genesis block no validator could accept,
+                // so failing loud at boot is the correct outcome.
                 let merged = crate::rust::configuration::provisioning_merge::merge_and_validate(
                     conf.storage.file_io_provisioning.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
+                    conf.storage.cli_oracle_static_files.clone(),
+                    conf.storage.cli_oracle_static_dirs.clone(),
+                    conf.storage.cli_consensus_static_files.clone(),
+                    conf.storage.cli_consensus_static_dirs.clone(),
                 )
                 .unwrap_or_else(|errs| {
                     let msg = errs
@@ -1246,5 +1500,313 @@ mod tests {
         assert_eq!(out[0].transfers.len(), 2);
         assert_eq!(out[0].transfers[0].amount, 1);
         assert_eq!(out[0].transfers[1].amount, 2);
+    }
+
+    // ---------- register_consensus_bundle_roots_core ----------
+
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX;
+    use rholang::rust::interpreter::io::path::identity::RootIdentityRegistry;
+    use tempfile::TempDir;
+
+    use super::register_consensus_bundle_roots_core;
+    use crate::rust::configuration::file_io_provisioning::{
+        FileIoProvisioning, StaticDirEntry, StaticFileEntry,
+    };
+
+    fn empty_provisioning() -> FileIoProvisioning {
+        FileIoProvisioning {
+            oracle_static_files: HashMap::new(),
+            oracle_static_dirs: HashMap::new(),
+            consensus_static_files: HashMap::new(),
+            consensus_static_dirs: HashMap::new(),
+        }
+    }
+
+    fn write_bytes(path: &std::path::Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    /// Empty provisioning -> no registrations, no staging dir created.
+    #[test]
+    fn register_consensus_bundle_roots_core_empty_input_is_noop() {
+        let data_dir = TempDir::new().unwrap();
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let cfg = empty_provisioning();
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("empty input should succeed");
+
+        assert!(allowed.is_empty(), "no allowed roots recorded");
+        assert!(
+            !data_dir.path().join("fs_bundle_staging").exists(),
+            "no staging dir created on empty input"
+        );
+    }
+
+    /// Only oracular entries present -> no consensus registrations,
+    /// no staging dir created.  Oracular entries bypass this path.
+    #[test]
+    fn register_consensus_bundle_roots_core_skips_oracular() {
+        let data_dir = TempDir::new().unwrap();
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.oracle_static_files
+            .insert("cfg".into(), StaticFileEntry {
+                path: PathBuf::from("/etc/cfg"),
+                mode: "r".into(),
+            });
+        cfg.oracle_static_dirs
+            .insert("share".into(), StaticDirEntry {
+                path: PathBuf::from("/srv/share"),
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("oracular-only input should succeed");
+
+        assert!(
+            allowed.is_empty(),
+            "oracular entries don't produce allowed roots"
+        );
+        assert!(
+            !data_dir.path().join("fs_bundle_staging").exists(),
+            "no staging dir created when only oracular entries present"
+        );
+    }
+
+    /// One bare consensus file -> staging dir created, file copied,
+    /// registry has `/@bundle -> <staging>` entry, allowed_roots
+    /// contains the staging dir.
+    #[test]
+    fn register_consensus_bundle_roots_core_stages_bare_file() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let source = source_dir.path().join("logfile.src");
+        write_bytes(&source, b"hello consensus\n");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("logfile".into(), StaticFileEntry {
+                path: source.clone(),
+                mode: "r+".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("bare consensus file should succeed");
+
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        let staged_file = staging_root.join("logfile");
+        assert!(staging_root.is_dir(), "staging root created");
+        assert!(staged_file.is_file(), "file staged under logical name");
+        assert_eq!(
+            std::fs::read(&staged_file).unwrap(),
+            b"hello consensus\n",
+            "staged bytes match source"
+        );
+        assert_eq!(
+            allowed,
+            vec![staging_root.clone()],
+            "staging dir in allowed roots"
+        );
+        assert!(
+            registry.get(&PathBuf::from(BUNDLE_ROOT_PREFIX)).is_some(),
+            "/@bundle registered"
+        );
+    }
+
+    /// Nested consensus file `cfg/theme.json` -> `/@bundle/cfg` entry
+    /// in registry, staging at `<staging>/cfg/theme.json`, allowed
+    /// root is `<staging>/cfg` (not `<staging>` — nested files
+    /// register their parent segment).
+    #[test]
+    fn register_consensus_bundle_roots_core_stages_nested_file() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let source = source_dir.path().join("theme.src");
+        write_bytes(&source, b"{\"theme\": \"dark\"}");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("cfg/theme.json".into(), StaticFileEntry {
+                path: source,
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("nested consensus file should succeed");
+
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        let staged_file = staging_root.join("cfg").join("theme.json");
+        assert!(staged_file.is_file(), "nested file staged at logical path");
+        assert_eq!(
+            std::fs::read(&staged_file).unwrap(),
+            b"{\"theme\": \"dark\"}",
+            "staged bytes match source"
+        );
+        assert_eq!(
+            allowed,
+            vec![staging_root.join("cfg")],
+            "allowed root is the parent segment, not the root staging dir"
+        );
+        assert!(
+            registry
+                .get(&PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/cfg")))
+                .is_some(),
+            "/@bundle/cfg registered"
+        );
+    }
+
+    /// A consensus dir entry registers `/@bundle/<logical>` directly
+    /// to the operator path, with no staging and no copy.
+    #[test]
+    fn register_consensus_bundle_roots_core_dir_entry_no_staging() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        // Dir entries point at an EXISTING directory on the operator's
+        // host; capture needs it to be a real dir.
+        write_bytes(&source_dir.path().join("placeholder"), b"x");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_dirs
+            .insert("shared".into(), StaticDirEntry {
+                path: source_dir.path().to_path_buf(),
+                mode: "r+".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("consensus dir should succeed");
+
+        assert!(
+            !data_dir.path().join("fs_bundle_staging").exists(),
+            "dir entries don't create a staging dir"
+        );
+        assert_eq!(
+            allowed,
+            vec![source_dir.path().to_path_buf()],
+            "operator-declared dir path in allowed roots"
+        );
+        assert!(
+            registry
+                .get(&PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/shared")))
+                .is_some(),
+            "/@bundle/shared registered"
+        );
+    }
+
+    /// Multiple files sharing a parent segment collapse to one
+    /// registration via the BTreeMap dedupe.  Two files under
+    /// `cfg/` produce ONE `/@bundle/cfg` registration + ONE allowed
+    /// root; both files are staged.
+    #[test]
+    fn register_consensus_bundle_roots_core_shared_parent_dedupes() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let src_a = source_dir.path().join("a.src");
+        let src_b = source_dir.path().join("b.src");
+        write_bytes(&src_a, b"AAAA");
+        write_bytes(&src_b, b"BBBB");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("cfg/a.json".into(), StaticFileEntry {
+                path: src_a,
+                mode: "r".into(),
+            });
+        cfg.consensus_static_files
+            .insert("cfg/b.json".into(), StaticFileEntry {
+                path: src_b,
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("shared-parent files should succeed");
+
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        assert!(staging_root.join("cfg").join("a.json").is_file());
+        assert!(staging_root.join("cfg").join("b.json").is_file());
+        assert_eq!(
+            allowed,
+            vec![staging_root.join("cfg")],
+            "shared parent collapses to one allowed root"
+        );
+    }
+
+    /// Missing source file surfaces as a specific error naming the
+    /// logical name and source path.  Boot MUST refuse to continue
+    /// rather than silently drop the entry.
+    #[test]
+    fn register_consensus_bundle_roots_core_missing_source_errors() {
+        let data_dir = TempDir::new().unwrap();
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("logfile".into(), StaticFileEntry {
+                path: PathBuf::from("/nonexistent/path/that/does/not/exist"),
+                mode: "r".into(),
+            });
+
+        let err =
+            register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+                .expect_err("missing source should fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("logfile") || msg.contains("/nonexistent/path"),
+            "error should name the offending entry; got {msg:?}"
+        );
+    }
+
+    /// After a successful stage, a leftover `.partial` sidecar from a
+    /// prior crashed boot does NOT prevent the current boot from
+    /// succeeding — `std::fs::copy` overwrites.  Final state is clean
+    /// (`.partial` renamed away, final file holds new bytes).
+    #[test]
+    fn register_consensus_bundle_roots_core_overwrites_leftover_partial() {
+        let data_dir = TempDir::new().unwrap();
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        std::fs::create_dir_all(&staging_root).unwrap();
+        std::fs::write(staging_root.join("logfile.partial"), b"stale leftover").unwrap();
+
+        let source_dir = TempDir::new().unwrap();
+        let source = source_dir.path().join("logfile.src");
+        write_bytes(&source, b"fresh content");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("logfile".into(), StaticFileEntry {
+                path: source,
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("overwrite leftover .partial");
+
+        assert_eq!(
+            std::fs::read(staging_root.join("logfile")).unwrap(),
+            b"fresh content",
+            "final file has new source bytes"
+        );
+        assert!(
+            !staging_root.join("logfile.partial").exists(),
+            ".partial renamed away"
+        );
     }
 }
