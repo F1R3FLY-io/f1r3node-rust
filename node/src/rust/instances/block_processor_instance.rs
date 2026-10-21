@@ -12,7 +12,6 @@ use casper::rust::metrics_constants::{
     BLOCK_PROCESSING_ACTIVE_METRIC, BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
     BLOCK_PROCESSOR_METRICS_SOURCE,
 };
-use casper::rust::util::rholang::runtime_manager::ExploratoryDeployConfig;
 use casper::rust::ValidBlockProcessing;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
@@ -27,7 +26,8 @@ const RELEASED_BLOCKS_BEFORE_GOSSIP_TURN: usize = 4;
 const MIN_PARALLEL_BLOCKS: usize = 3;
 
 fn derive_pipeline_width(cpu_cores: usize) -> usize {
-    ExploratoryDeployConfig::derive_max_concurrent(cpu_cores)
+    cpu_cores
+        .saturating_sub(2)
         .clamp(MIN_PARALLEL_BLOCKS, tokio::sync::Semaphore::MAX_PERMITS - 2)
 }
 
