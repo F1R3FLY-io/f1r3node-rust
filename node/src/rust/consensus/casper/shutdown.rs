@@ -6,6 +6,13 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 
 use crate::rust::soak_observer::RunningObserver;
 
+pub(super) async fn drain_requests(requests: &TaskScope) -> Result<(), ConsensusError> {
+    while !requests.is_empty() {
+        requests.join_next().await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn cleanup(
     tasks: [Arc<TaskScope>; 5],
     observer: Option<RunningObserver>,
@@ -165,4 +172,101 @@ mod tests {
         );
         assert_eq!(*events.lock().unwrap(), ["storage shutdown"]);
     }
+    struct DrainingAdapter {
+        requests: Arc<TaskScope>,
+        store: Store,
+        draining: tokio::sync::oneshot::Sender<()>,
+    }
+
+    #[async_trait::async_trait]
+    impl ConsensusAdapter for DrainingAdapter {
+        async fn run(self: Box<Self>, mut context: AdapterContext) -> Result<(), ConsensusError> {
+            let requests = self.requests;
+            let mut scopes = std::array::from_fn(|_| Arc::new(TaskScope::default()));
+            scopes[1] = requests.clone();
+            context
+                .cleanup
+                .send(Box::pin(cleanup(scopes, None, Box::new(self.store))))
+                .map_err(|_| ConsensusError::Stopped)?;
+            context.control.ready();
+            context.control.cancelled().await;
+            self.draining.send(()).unwrap();
+            drain_requests(&requests).await
+        }
+    }
+
+    async fn drain_case(finish: bool) {
+        let events = Events::default();
+        let requests = Arc::new(TaskScope::default());
+        let (release, released) = tokio::sync::oneshot::channel();
+        let (started, start_rx) = tokio::sync::oneshot::channel();
+        let task_events = events.clone();
+        requests
+            .spawn("active request", async move {
+                let _guard = TaskGuard(task_events.clone());
+                started.send(()).unwrap();
+                released.await.unwrap();
+                task_events.lock().unwrap().push("request finished");
+                Ok(())
+            })
+            .unwrap();
+        let (draining, draining_rx) = tokio::sync::oneshot::channel();
+        let runtime = RuntimeBuilder::new(
+            ProtocolDescriptor {
+                id: "drain-test".into(),
+                version: 1,
+                capabilities: Capabilities::NONE,
+            },
+            RuntimeConfig {
+                drain_timeout: if finish {
+                    Duration::from_secs(5)
+                } else {
+                    Duration::from_millis(10)
+                },
+                cleanup_timeout: Duration::from_secs(5),
+                ..RuntimeConfig::default()
+            },
+        )
+        .unwrap()
+        .build(Box::new(DrainingAdapter {
+            requests: requests.clone(),
+            store: Store {
+                events: events.clone(),
+                fail: false,
+            },
+            draining,
+        }))
+        .start();
+        runtime.handle().wait_ready().await.unwrap();
+        start_rx.await.unwrap();
+        runtime.handle().request_shutdown();
+        draining_rx.await.unwrap();
+        assert!(events.lock().unwrap().is_empty());
+        if finish {
+            release.send(()).unwrap();
+            runtime.shutdown().await.unwrap();
+            assert_eq!(*events.lock().unwrap(), [
+                "request finished",
+                "task stopped",
+                "storage shutdown"
+            ]);
+        } else {
+            assert_eq!(
+                runtime.shutdown().await,
+                Err(ConsensusError::ShutdownTimeout)
+            );
+            assert_eq!(*events.lock().unwrap(), [
+                "task stopped",
+                "storage shutdown"
+            ]);
+            assert!(release.send(()).is_err());
+        }
+        assert!(requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn graceful_drain_finishes_requests_before_storage_shutdown() { drain_case(true).await; }
+
+    #[tokio::test]
+    async fn drain_timeout_aborts_requests_before_storage_shutdown() { drain_case(false).await; }
 }

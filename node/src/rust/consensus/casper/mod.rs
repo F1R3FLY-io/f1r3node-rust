@@ -375,12 +375,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
         while context.packets.try_recv().is_ok() {}
         result?;
         tasks.shutdown().await;
-        while !packet_requests.is_empty() {
-            packet_requests.join_next().await?;
-        }
-        while !command_requests.is_empty() {
-            command_requests.join_next().await?;
-        }
+        shutdown::drain_requests(&packet_requests).await?;
+        shutdown::drain_requests(&command_requests).await?;
         native_tasks.shutdown().await;
         stop_workers.send_replace(true);
         while !workers.is_empty() {
