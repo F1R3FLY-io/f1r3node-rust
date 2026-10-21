@@ -1096,6 +1096,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "comm",
  "crypto",
  "dashmap",
  "eyre",
