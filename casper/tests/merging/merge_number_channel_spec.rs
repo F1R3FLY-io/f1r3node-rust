@@ -390,7 +390,7 @@ async fn run_test_case(
         Vec::new(),
         |target, source| merging_logic::depends(&target.event_log_index, &source.event_log_index),
         dag_merger::cost_optimal_rejection_alg(),
-        |r| Ok(r.state_changes.clone()),
+        |r| Ok(r.state_changes.as_ref().clone()),
         |r| r.event_log_index.number_channels_data.clone(),
         compute_trie_actions,
         apply_trie_actions,
@@ -399,7 +399,7 @@ async fn run_test_case(
         |merge_set: &HashableSet<DeployChainIndex>| {
             let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
             let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
-                chains_vec.iter().map(|c| &c.event_log_index).collect();
+                chains_vec.iter().map(|c| c.event_log_index.as_ref()).collect();
             let depends_map = merging_logic::compute_depends_map_event_indexed(
                 &chains_vec,
                 &event_logs,
@@ -427,7 +427,7 @@ async fn run_test_case(
                     .iter()
                     .map(|b| {
                         let logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
-                            b.0.iter().map(|chain| &chain.event_log_index).collect();
+                            b.0.iter().map(|chain| chain.event_log_index.as_ref()).collect();
                         let mut acc = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
                         for l in logs {
                             acc = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(&acc, l)?;
