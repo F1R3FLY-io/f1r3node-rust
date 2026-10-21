@@ -331,11 +331,29 @@ pub fn mark_in_flight(blocks: &Arc<InFlightBlocks>, hash: BlockHash) -> InFlight
     InFlightMark::Marked(guard)
 }
 
+#[derive(Debug, Clone)]
+pub struct VerifiedBlock(BlockMessage);
+
+impl VerifiedBlock {
+    pub fn verify(block: BlockMessage) -> Result<Self, InvalidBlock> {
+        Validate::block_hash_and_signature(&block)?;
+        Ok(Self(block))
+    }
+
+    pub fn into_block(self) -> BlockMessage { self.0 }
+}
+
+impl std::ops::Deref for VerifiedBlock {
+    type Target = BlockMessage;
+
+    fn deref(&self) -> &BlockMessage { &self.0 }
+}
+
 /// An item of the block processing queue. The guard keeps the block's
 /// in-flight marker while the item exists.
 pub type BlockQueueItem = (
     Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
-    BlockMessage,
+    VerifiedBlock,
     InFlightBlockGuard,
 );
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -426,7 +444,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     /// check block format and store if check passed
     pub async fn check_if_well_formed_and_store(
         &self,
-        block: &BlockMessage,
+        block: &VerifiedBlock,
     ) -> Result<bool, CasperError> {
         let is_valid = Validate::format_of_fields(block);
 
@@ -985,7 +1003,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     }
 
     /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
-    pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+    pub async fn store_block(&self, block: &VerifiedBlock) -> Result<(), CasperError> {
         self.block_store.put_block_message(block)?;
         Ok(())
     }

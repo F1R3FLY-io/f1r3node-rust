@@ -90,7 +90,8 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, VerifiedBlock,
+    MAX_BLOCKS_IN_PROCESSING,
 };
 
 pub(crate) fn ensure_compatible_approved_block(
@@ -356,6 +357,17 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         }
                         continue;
                     }
+
+                    let block = match VerifiedBlock::verify(block) {
+                        Ok(verified) => verified,
+                        Err(_) => {
+                            tracing::warn!(
+                                "Pendant {} does not match its hash or signature. Skipped.",
+                                PrettyPrinter::build_string_bytes(&hash)
+                            );
+                            continue;
+                        }
+                    };
 
                     // Send block to processing queue for validation and addition to DAG
                     let block_hash = block.block_hash.clone();

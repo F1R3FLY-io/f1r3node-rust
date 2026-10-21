@@ -34,7 +34,6 @@ use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
 use crate::rust::safety::clique_oracle::FtThreshold;
-use crate::rust::validate::Validate;
 
 /// Largest `skip` and `take` a `StoreItemsMessageRequest` may carry. Honest
 /// requesters page with `skip = 0` and at most this many items, so anything
@@ -266,19 +265,24 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         PrettyPrinter::build_string_block_message(&b, true),
                         peer.endpoint.host
                     );
-                } else if Validate::block_hash_and_signature(&b).is_err() {
-                    tracing::debug!(
-                        "Dropping BlockMessage {} from {}: it does not match its hash or signature",
-                        PrettyPrinter::build_string_bytes(&b.block_hash),
-                        peer.endpoint.host
-                    );
                 } else {
+                    let block_hash = b.block_hash.clone();
+                    let b = match VerifiedBlock::verify(b) {
+                        Ok(verified) => verified,
+                        Err(_) => {
+                            tracing::debug!(
+                                "Dropping BlockMessage {} from {}: it does not match its hash or signature",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                peer.endpoint.host
+                            );
+                            return Ok(());
+                        }
+                    };
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(&b, true),
                         peer.endpoint.host
                     );
-                    let block_hash = b.block_hash.clone();
                     let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
                     {
                         InFlightMark::Marked(guard) => guard,
@@ -482,7 +486,8 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, VerifiedBlock,
+    MAX_BLOCKS_IN_PROCESSING,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {

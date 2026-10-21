@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
-    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING, MAX_PARALLEL_BLOCKS,
+    ValidationFailureDisposition, VerifiedBlock, MAX_BLOCKS_IN_PROCESSING, MAX_PARALLEL_BLOCKS,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -238,13 +238,23 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     );
                                     continue;
                                 }
+                                let verified = match VerifiedBlock::verify(pendant.clone()) {
+                                    Ok(verified) => verified,
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            "Dependency-free pendant {} does not match its hash or signature. Skipped.",
+                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                        );
+                                        continue;
+                                    }
+                                };
                                 match mark_in_flight(&blocks_in_processing, pendant_hash.clone()) {
                                     InFlightMark::Marked(guard) => {
                                         tracing::info!(
                                             "Enqueued dependency-free pendant {}",
                                             PrettyPrinter::build_string_bytes(&pendant.block_hash)
                                         );
-                                        released.push((casper.clone(), pendant.clone(), guard));
+                                        released.push((casper.clone(), verified, guard));
                                     }
                                     InFlightMark::CapReached => {
                                         block_processor.note_local_backpressure_drop(
@@ -309,7 +319,7 @@ enum BlockProcessOutcome {
 async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
-    block: BlockMessage,
+    block: VerifiedBlock,
 ) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
@@ -392,7 +402,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     {
         Ok(true) => {
             return Ok(BlockProcessOutcome::Processed(
-                block,
+                block.into_block(),
                 rspace_plus_plus::rspace::history::Either::Left(
                     casper::rust::block_status::BlockError::AdmittedSettled,
                 ),
@@ -465,7 +475,10 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
-    Ok(BlockProcessOutcome::Processed(block, validation_result))
+    Ok(BlockProcessOutcome::Processed(
+        block.into_block(),
+        validation_result,
+    ))
 }
 
 const _: () = assert!(
