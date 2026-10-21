@@ -589,20 +589,6 @@ async fn derive_floor_context(
     .map(Some)
 }
 
-/// Decide whether to pace a proposal by the floor distance. Returns
-/// `Some(floor_distance)` when the floor is far enough behind the snapshot's
-/// max block that pacing engages (the proposer drops user deploys for this
-/// block), and `None` otherwise. Parentless snapshots have no floor and never
-/// pace.
-pub(crate) fn pacing_distance_for_proposal(
-    floor_block_number: Option<i64>,
-    snapshot_max_block_num: i64,
-) -> Option<i64> {
-    let n = floor_block_number?;
-    let distance = snapshot_max_block_num - n;
-    crate::rust::util::rholang::interpreter_util::floor_pacing_engaged(distance).then_some(distance)
-}
-
 /// The parents-rooted canonical-won walk, through the operation context's
 /// memo when one exists (context-less entry points walk directly — over an
 /// empty parent set the walk is empty either way).
@@ -3010,24 +2996,25 @@ pub async fn create_with_progress(
     // bonds packaging exactly as before.
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
-    let pacing_distance = pacing_distance_for_proposal(
-        floor_ctx.as_ref().map(|ctx| ctx.floor.block_number),
-        casper_snapshot.max_block_num,
-    );
-    if let Some(floor_distance) = pacing_distance {
-        metrics::counter!(
-            crate::rust::metrics_constants::FLOOR_PACING_ENGAGED_METRIC,
-            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-        )
-        .increment(1);
-        tracing::info!(
-            target: "f1r3fly.casper.recovery",
-            floor_distance,
-            next_block = next_block_num,
-            "floor distance over the pacing threshold; proposing without user deploys"
-        );
-    }
-    let floor_paced = pacing_distance.is_some();
+    let floor_paced = floor_ctx.as_ref().is_some_and(|ctx| {
+        let floor_distance = casper_snapshot.max_block_num - ctx.floor.block_number;
+        let engaged =
+            crate::rust::util::rholang::interpreter_util::floor_pacing_engaged(floor_distance);
+        if engaged {
+            metrics::counter!(
+                crate::rust::metrics_constants::FLOOR_PACING_ENGAGED_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                floor_distance,
+                next_block = next_block_num,
+                "floor distance over the pacing threshold; proposing without user deploys"
+            );
+        }
+        engaged
+    });
 
     // Prepare deploys
     let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty
@@ -4109,37 +4096,6 @@ mod tests {
         assert_ne!(
             progress.leader,
             Some(validator_identity(3).public_key.bytes)
-        );
-    }
-
-    #[test]
-    fn pacing_disengaged_when_no_floor_context() {
-        assert_eq!(pacing_distance_for_proposal(None, 1_000), None);
-    }
-
-    #[test]
-    fn pacing_disengaged_at_or_below_threshold() {
-        let threshold = crate::rust::util::rholang::interpreter_util::PACING_FLOOR_DISTANCE_BLOCKS;
-        assert_eq!(
-            pacing_distance_for_proposal(Some(0), threshold),
-            None,
-            "distance equal to the strict threshold must not engage pacing"
-        );
-        assert_eq!(
-            pacing_distance_for_proposal(Some(1), threshold),
-            None,
-            "distance one below the threshold must not engage pacing"
-        );
-    }
-
-    #[test]
-    fn pacing_engaged_above_threshold_returns_distance() {
-        let threshold = crate::rust::util::rholang::interpreter_util::PACING_FLOOR_DISTANCE_BLOCKS;
-        let snapshot_max = threshold + 1;
-        assert_eq!(
-            pacing_distance_for_proposal(Some(0), snapshot_max),
-            Some(snapshot_max),
-            "distance one above the threshold must engage and report the computed distance"
         );
     }
 

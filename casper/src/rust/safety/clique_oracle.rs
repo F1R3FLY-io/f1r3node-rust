@@ -109,19 +109,6 @@ pub struct CliqueOracleRunCache {
     max_ancestor_cache_entries: usize,
 }
 
-#[cfg(test)]
-impl CliqueOracleRunCache {
-    /// `(self_justification_cache.len(), ancestor_cache.len())`. Exposed for
-    /// tests that assert the shared cache carries work across runs — a run
-    /// that resumes with a non-empty cache has not restarted from zero.
-    pub(crate) fn entry_counts(&self) -> (usize, usize) {
-        (
-            self.self_justification_cache.len(),
-            self.ancestor_cache.len(),
-        )
-    }
-}
-
 pub type SharedOracleCache = tokio::sync::Mutex<CliqueOracleRunCache>;
 
 pub struct OracleCacheMeter {
