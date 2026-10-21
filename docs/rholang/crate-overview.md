@@ -261,13 +261,13 @@ as the async ISpace provides its own interior mutability and per-channel locking
 `registry.rs` -- URI-based name registry using base32 encoding with CRC14 checksum.
 `registry_bootstrap.rs` -- Built-in registry contracts installed at genesis.
 
-**Legacy URI aliases**: For backward compatibility with older clients (e.g., rust-client), the following `rho:rchain:*` URIs are aliased to their canonical `rho:system:*` equivalents:
-- `rho:rchain:pos` -> `rho:system:pos` (PoS contract)
-- `rho:rchain:revVault` -> `rho:vault:system` (SystemVault)
-- `rho:rchain:deployId` -> `rho:system:deployId` (deploy context)
-- `rho:rchain:deployerId` -> `rho:system:deployerId` (deploy context)
+**System URIs**: The registry and the normalizer resolve only these names. The legacy `rho:rchain:*` names are not supported.
+- `rho:system:pos` (PoS contract)
+- `rho:vault:system` (SystemVault)
+- `rho:system:deployId` (deploy context)
+- `rho:system:deployerId` (deploy context)
 
-Aliases are resolved at the registry and normalizer level. Usage is logged at debug level (`f1r3fly.legacy-uri`).
+A deploy that declares `rho:rchain:deployId` or `rho:rchain:deployerId` in a `new` fails in the reducer with "No value set for" the name. A registry lookup of `rho:rchain:pos` or `rho:rchain:revVault` returns `Nil`.
 
 ## Tests
 

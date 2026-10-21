@@ -540,7 +540,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
         node.allow_empty_blocks = true;
     }
 
-    let term = r#"new return, deployId(`rho:rchain:deployId`) in { return!(*deployId) }"#;
+    let term = r#"new return, deployId(`rho:system:deployId`) in { return!(*deployId) }"#;
 
     // Path 1: `deployer` public key is passed. Sig is a real secp256k1 DER signature over a
     // preimage that folds the `deployer` public key in (via create_unbound).
@@ -557,7 +557,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
     let (pars_with, _block_with, cost_with) = result_with_deployer;
 
     let sig_with = extract_deploy_id_sig(&pars_with[0])
-        .expect("Some(deployer) path should return a GDeployId unforgeable on rho:rchain:deployId");
+        .expect("Some(deployer) path should return a GDeployId unforgeable on rho:system:deployId");
     assert!(
         !sig_with.is_empty(),
         "deployId sig must be non-empty on Some(deployer) path (real secp256k1 DER signature), got {} bytes",
@@ -582,7 +582,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
     let (pars_without, _block_without, cost_without) = result_without_deployer;
 
     let sig_without = extract_deploy_id_sig(&pars_without[0])
-        .expect("None path should return a GDeployId unforgeable on rho:rchain:deployId");
+        .expect("None path should return a GDeployId unforgeable on rho:system:deployId");
     assert!(
         !sig_without.is_empty(),
         "deployId sig must be non-empty on None path (real secp256k1 DER signature)"
@@ -608,7 +608,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
     );
 }
 
-/// Two different deployer public keys must observe different `rho:rchain:deployId`
+/// Two different deployer public keys must observe different `rho:system:deployId`
 /// values for the same term, and repeating the same (term, deployer) within one
 /// process must observe the same value (process-wide ephemeral key is stable).
 #[tokio::test]
@@ -627,7 +627,7 @@ async fn exploratory_deploy_deploy_id_varies_by_deployer_and_is_stable() {
         node.allow_empty_blocks = true;
     }
 
-    let term = r#"new return, deployId(`rho:rchain:deployId`) in { return!(*deployId) }"#;
+    let term = r#"new return, deployId(`rho:system:deployId`) in { return!(*deployId) }"#;
 
     // Two different deployers must produce different deployId values.
     let result_a = BlockAPI::exploratory_deploy(
