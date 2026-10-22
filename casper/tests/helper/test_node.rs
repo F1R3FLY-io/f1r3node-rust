@@ -1207,6 +1207,12 @@ impl TestNode {
             ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
+            finalized_bond_cache:
+                casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
+                    &block_dag_storage,
+                    validator_id_opt.as_ref(),
+                )
+                .unwrap(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(

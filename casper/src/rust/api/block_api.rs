@@ -689,6 +689,17 @@ impl BlockAPI {
                 }));
             }
             let dag = casper.block_dag().await?;
+            casper.get_validator().ok_or_else(|| {
+                eyre::Report::new(DeployValidationError {
+                    message: "Deploy was rejected because node has no validator key.".to_string(),
+                })
+            })?;
+            if !casper.is_local_validator_bonded(&dag)? {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: "Deploy was rejected because node's validator is not bonded."
+                        .to_string(),
+                }));
+            }
             // A deploy admitted now can only ever land in a block that doesn't
             // exist yet — the next one, at `latest_block_number + 1` — never
             // in the current tip, which is already built. block_creator.rs's
