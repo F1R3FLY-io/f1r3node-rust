@@ -264,23 +264,28 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     );
                                     continue;
                                 }
-                                let verified = match VerifiedBlock::verify(pendant.clone()) {
-                                    Ok(verified) => verified,
-                                    Err(_) => {
-                                        tracing::warn!(
-                                            "Dependency-free pendant {} does not match its hash or signature. Skipped.",
-                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
-                                        );
-                                        continue;
-                                    }
-                                };
                                 match mark_in_flight(&blocks_in_processing, pendant_hash.clone()) {
                                     InFlightMark::Marked(guard) => {
-                                        tracing::info!(
-                                            "Enqueued dependency-free pendant {}",
-                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
-                                        );
-                                        released.push((casper.clone(), verified, guard));
+                                        let block = pendant.clone();
+                                        match tokio::task::spawn_blocking(move || {
+                                            VerifiedBlock::verify(block)
+                                        })
+                                        .await
+                                        {
+                                            Ok(Ok(verified)) => {
+                                                tracing::info!(
+                                                    "Enqueued dependency-free pendant {}",
+                                                    PrettyPrinter::build_string_bytes(
+                                                        &pendant.block_hash
+                                                    )
+                                                );
+                                                released.push((casper.clone(), verified, guard));
+                                            }
+                                            _ => tracing::warn!(
+                                                "Dependency-free pendant {} does not match its hash or signature. Skipped.",
+                                                PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                            ),
+                                        }
                                     }
                                     InFlightMark::CapReached => {
                                         block_processor.note_local_backpressure_drop(
