@@ -64,6 +64,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
+        finalized_bond_cache: node.casper.finalized_bond_cache.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
         finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
