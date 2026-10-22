@@ -28,10 +28,16 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
   expected = %w[dev master ca-item ca-daily ca-release]
   errors << "the queues are #{queues.keys.sort.join(", ")}, not #{expected.sort.join(", ")}" unless queues.keys.sort == expected.sort
 
+  mq = doc["merge_queue"] || {}
+  errors << "the merge queue is not serial" unless mq["mode"] == "serial"
+  errors << "the merge queue checks more than one pull request at a time" unless mq["max_parallel_checks"] == 1
+
   queues.each do |name, q|
     errors << "queue #{name} does not check one pull request at a time" unless q["batch_size"] == 1
     errors << "queue #{name} does not merge with a merge commit" unless q["merge_method"] == "merge"
     errors << "queue #{name} does not update by a merge of the base" unless q["update_method"] == "merge"
+    errors << "queue #{name} retries its checks" unless q["max_checks_retries"] == 0
+    errors << "queue #{name} has merge_conditions that differ from its queue_conditions" unless q["merge_conditions"] == q["queue_conditions"]
   end
 
   {
@@ -104,4 +110,4 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
   abort errors.map { |e| "FAIL: #{e}" }.join("\n") unless errors.empty?
 ' "$CONFIG"
 
-printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. Each queue merges one pull request at a time with a merge commit. The dev and master queues require every ruleset check. The heavy queues require ci-heavy, both Integration gates, a review, and a head of this repository. One rule adds ci-heavy to an approved pull request.\n'
+printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. The queue is serial, and each queue checks one pull request in place, without retries, and with identical queue and merge conditions. Each queue merges with a merge commit. The dev and master queues require every ruleset check. The heavy queues require ci-heavy, both Integration gates, a review, and a head of this repository. One rule adds ci-heavy to an approved pull request.\n'
