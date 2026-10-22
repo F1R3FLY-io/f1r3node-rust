@@ -224,8 +224,10 @@ blocked_by: []
 created_at: 2026-10-12
 updated_at: 2026-10-22
 plan: docs/plans/cbc-hierarchical-attributes.md
-claimed_by: claude-session-dfac55a4
-claimed_at: 2026-10-12T14:00:00Z
+claimed_by: claude-session-f1r3node-rust-epic026
+claimed_at: 2026-10-22T13:00:00Z
+previous_claim: "claude-session-dfac55a4 (2026-10-12T14:00:00Z), the session that opened the epic"
+claim_publication: "The claim and the cross-repository messages for R7 publish to the INBOX entry in top-level-gitlab-profile docs/ToDos.md on the dev branch: https://gitlab.com/smart-assets.io/gitlab-profile/-/tree/dev"
 branch: chore/cbc-hierarchical-attributes
 pr_base_branch: dev
 origin: "On 2026-10-12 the maintainer asked to move the cbc=mandatory tags out of the flat root .gitattributes (160 lines) into .gitattributes files in subdirectories, following the new CbC workflow in top-level-gitlab-profile."
@@ -239,6 +241,7 @@ decisions:
   - "2026-10-12: the user approved the revised R1 to R6 and the shared tooling plan (top-level-gitlab-profile INBOX entry). R7 is deferred."
   - "2026-10-22: the maintainer approved the owner map of plan section 4: formal/, scripts/, casper/, crypto/, rspace++/, .github/, block-storage/, node/, shared/. The root keeps rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
   - "2026-10-22: the maintainer added rholang/ and docs/ as owners for those two paths. The root file keeps no cbc rule, so the shared lint reports no potential_override for the owner files."
+  - "2026-10-22: the maintainer approved R7. A per-path cbc-evidence attribute selects the evidence directory. Precedence: the attribute, then CBC_EVIDENCE_DIR, then docs/cbc-evidence. The value is a repository-relative directory inside the worktree. The implementation goes to top-level-gitlab-profile (gitlab.com/smart-assets.io/gitlab-profile) as a merge request into dev and a new tag."
 tooling: "top-level-gitlab-profile e8ba49f: cbc.sh attributes snapshot, compare, lint, route, apply. Tag v2026.10.12 points to 9b056f4, which contains e8ba49f with byte-identical CbC tooling."
 baseline:
   root_file: "On 2026-10-22 (branch head c7ceb2f40), .gitattributes has 166 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 130) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
@@ -254,7 +257,7 @@ tasks:
       - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
   - id: TASK-026-2
     title: "Declare the owner directories"
-    status: done
+    status: complete
     blocked_by: []
     acceptance:
       - "Each of the eleven owner directories of plan section 4 has a .gitattributes file after TASK-026-3."
@@ -263,7 +266,7 @@ tasks:
     decision: "2026-10-22: Option A. The owner files route proposals through the R1 nearest-ancestor rule. The shared tooling reads attribute_owners only from its own config."
   - id: TASK-026-3
     title: "Move the rules into the owner .gitattributes files"
-    status: done
+    status: complete
     progress:
       - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
       - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4 (710a9f309)."
@@ -283,7 +286,7 @@ tasks:
       - "The root file keeps no cbc rule."
   - id: TASK-026-4
     title: "Remove the duplicate lines"
-    status: done
+    status: complete
     progress:
       - "2026-10-22: removed line 8 of .github/.gitattributes and line 11 of scripts/.gitattributes. Both paths keep cbc=mandatory and cbc-weight=high. compare shows no change on an existing path, and lint reports no diagnostic."
     blocked_by: [TASK-026-3]
@@ -292,7 +295,7 @@ tasks:
       - "compare reports no change on an existing path."
   - id: TASK-026-5
     title: "Prove that the migration is exact"
-    status: done
+    status: complete
     progress:
       - "2026-10-22 snapshot: compare against the c7ceb2f40 baseline shows no change on an existing path, for the working tree and the index (39157e82f). The only changed paths are the eleven owner files and the removed root file."
       - "2026-10-22 lint: cbc.sh attributes lint and lint --cached report no diagnostic and no error at 39157e82f."
@@ -308,8 +311,18 @@ tasks:
       - "The independent verifier in top-level-gitlab-profile confirms the result."
   - id: TASK-026-6
     title: "Set the evidence directory per path"
-    status: deferred
-    blocked_by: ["R7 approval as a separate interface change"]
+    status: blocked
+    blocked_by: ["R7 implementation in top-level-gitlab-profile, released as a tag"]
+    progress:
+      - "2026-10-22 profile agent: R7 work is based on top-level-gitlab-profile 95c5a089. A focused fix is not committed yet: ledgers compare by filesystem identity, duplicate summary rows are suppressed, and four regression tests are added. Generated resources need a regeneration, and two generated summaries omit case-equivalent filenames. Blocker: the guarded sandbox has no cached PyYAML. Not ready for adoption and not approved for release. Keep the current tooling pin."
+      - "2026-10-22 review F1: /cbc runs from the local top-level-gitlab-profile checkout, which is at 2130175 on dev. The R7 routing and the stricter ledger parser therefore already apply to /cbc runs here. The e8ba49f pin is a record only and does not hold R7 back."
+      - "2026-10-22 review F2: the casper/src/rust/util/rholang/interpreter_util.rs ledger holds two records (waived, then discharged). e8ba49f reports discharged. 551b1845 reports invalid_record. The other 407 statuses and the 179 gaps are unchanged."
+    acceptance:
+      - "Before adoption, the interpreter_util.rs ledger holds one valid record, and its status stays discharged. The earlier waived record stays in the ledger history."
+      - "The tooling pin moves to the tag that contains R7."
+      - "The owner files set cbc-evidence=docs/casper/cbc-evidence on the Casper claim paths. compare reports only cbc-evidence changes on those paths."
+      - "cbc discharge --strict gives the same per-file statuses as before the change, without CBC_EVIDENCE_DIR."
+      - "check-casper-claims and check-casper-soak-bindings.sh pass. The docs/cbc-evidence symlinks are kept or removed by a recorded decision."
     notes:
       - "2026-10-12: deferred. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the migration does not need R7."
   - id: TASK-026-7
