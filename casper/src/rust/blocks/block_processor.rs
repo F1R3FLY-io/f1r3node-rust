@@ -357,25 +357,35 @@ pub enum ReceiptRefusal {
 }
 
 struct PeerVerificationSlots {
+    generation: u64,
+    users: usize,
     pending: Arc<tokio::sync::Semaphore>,
     running: Arc<tokio::sync::Semaphore>,
 }
 
-type PeerVerificationMap = dashmap::DashMap<prost::bytes::Bytes, Arc<PeerVerificationSlots>>;
+type PeerVerificationMap = dashmap::DashMap<prost::bytes::Bytes, PeerVerificationSlots>;
 
 struct VerificationTicket {
     per_peer: Arc<PeerVerificationMap>,
     peer: prost::bytes::Bytes,
-    slots: Arc<PeerVerificationSlots>,
+    generation: u64,
     permits: Vec<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl Drop for VerificationTicket {
     fn drop(&mut self) {
         self.permits.clear();
-        self.per_peer.remove_if(&self.peer, |_, slots| {
-            Arc::ptr_eq(slots, &self.slots) && Arc::strong_count(slots) == 2
-        });
+        if let dashmap::mapref::entry::Entry::Occupied(mut entry) =
+            self.per_peer.entry(self.peer.clone())
+        {
+            if entry.get().generation == self.generation {
+                let slots = entry.get_mut();
+                slots.users = slots.users.saturating_sub(1);
+                if slots.users == 0 {
+                    entry.remove();
+                }
+            }
+        }
     }
 }
 
@@ -398,6 +408,7 @@ pub struct ReceiptVerifier {
     running: Arc<tokio::sync::Semaphore>,
     max_pending_per_peer: usize,
     per_peer: Arc<PeerVerificationMap>,
+    next_generation: AtomicU64,
     active: Arc<AtomicUsize>,
     peak_active: Arc<AtomicUsize>,
 }
@@ -409,9 +420,45 @@ impl ReceiptVerifier {
             running: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
             max_pending_per_peer,
             per_peer: Arc::new(dashmap::DashMap::new()),
+            next_generation: AtomicU64::new(0),
             active: Arc::new(AtomicUsize::new(0)),
             peak_active: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    fn admit(
+        &self,
+        peer: &prost::bytes::Bytes,
+        pending: tokio::sync::OwnedSemaphorePermit,
+    ) -> (
+        VerificationTicket,
+        Arc<tokio::sync::Semaphore>,
+        Arc<tokio::sync::Semaphore>,
+    ) {
+        let (generation, peer_pending, peer_running) = {
+            let mut slots =
+                self.per_peer
+                    .entry(peer.clone())
+                    .or_insert_with(|| PeerVerificationSlots {
+                        generation: self.next_generation.fetch_add(1, Ordering::Relaxed),
+                        users: 0,
+                        pending: Arc::new(tokio::sync::Semaphore::new(self.max_pending_per_peer)),
+                        running: Arc::new(tokio::sync::Semaphore::new(1)),
+                    });
+            slots.users += 1;
+            (
+                slots.generation,
+                slots.pending.clone(),
+                slots.running.clone(),
+            )
+        };
+        let ticket = VerificationTicket {
+            per_peer: self.per_peer.clone(),
+            peer: peer.clone(),
+            generation,
+            permits: vec![pending],
+        };
+        (ticket, peer_pending, peer_running)
     }
 
     pub fn shared() -> &'static ReceiptVerifier {
@@ -445,34 +492,13 @@ impl ReceiptVerifier {
         let Ok(pending) = self.pending.clone().try_acquire_owned() else {
             return Err(ReceiptRefusal::Overloaded);
         };
-        let slots = self
-            .per_peer
-            .entry(peer.clone())
-            .or_insert_with(|| {
-                Arc::new(PeerVerificationSlots {
-                    pending: Arc::new(tokio::sync::Semaphore::new(self.max_pending_per_peer)),
-                    running: Arc::new(tokio::sync::Semaphore::new(1)),
-                })
-            })
-            .clone();
-        let mut ticket = VerificationTicket {
-            per_peer: self.per_peer.clone(),
-            peer: peer.clone(),
-            slots,
-            permits: vec![pending],
-        };
+        let (mut ticket, peer_pending, peer_running) = self.admit(peer, pending);
 
-        let peer_pending = ticket
-            .slots
-            .pending
-            .clone()
+        let peer_pending = peer_pending
             .try_acquire_owned()
             .map_err(|_| ReceiptRefusal::Overloaded)?;
         ticket.permits.push(peer_pending);
-        let peer_running = ticket
-            .slots
-            .running
-            .clone()
+        let peer_running = peer_running
             .acquire_owned()
             .await
             .map_err(|_| ReceiptRefusal::Overloaded)?;
@@ -2372,5 +2398,57 @@ mod tests {
         assert!(second.await.expect("second caller").is_err());
         assert_eq!(verifier.peak_active(), 1);
         assert_eq!(verifier.tracked_peers(), 0);
+    }
+
+    #[test]
+    fn the_last_verification_ticket_removes_its_peer_entry() {
+        let verifier = ReceiptVerifier::new(2, 8, 8);
+        let peer = prost::bytes::Bytes::from_static(b"peer");
+        let pending = || {
+            verifier
+                .pending
+                .clone()
+                .try_acquire_owned()
+                .expect("pending permit")
+        };
+
+        for _ in 0..500 {
+            let (first, ..) = verifier.admit(&peer, pending());
+            let (second, ..) = verifier.admit(&peer, pending());
+            let barrier = std::sync::Barrier::new(3);
+            let third = std::thread::scope(|scope| {
+                for ticket in [first, second] {
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        drop(ticket);
+                    });
+                }
+                scope
+                    .spawn(|| {
+                        barrier.wait();
+                        verifier.admit(&peer, pending()).0
+                    })
+                    .join()
+                    .expect("admission thread")
+            });
+            drop(third);
+            assert_eq!(verifier.tracked_peers(), 0);
+        }
+
+        let (stale, ..) = verifier.admit(&peer, pending());
+        let stale_generation = stale.generation;
+        drop(stale);
+        let (current, ..) = verifier.admit(&peer, pending());
+        drop(VerificationTicket {
+            per_peer: verifier.per_peer.clone(),
+            peer: peer.clone(),
+            generation: stale_generation,
+            permits: vec![],
+        });
+        assert_eq!(verifier.tracked_peers(), 1);
+        drop(current);
+        assert_eq!(verifier.tracked_peers(), 0);
+        assert_eq!(verifier.pending.available_permits(), 8);
     }
 }
