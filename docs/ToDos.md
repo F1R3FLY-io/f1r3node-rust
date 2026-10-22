@@ -314,7 +314,10 @@ tasks:
   - id: TASK-026-6
     title: "Set the evidence directory per path"
     status: blocked
-    blocked_by: ["R7 release tag in top-level-gitlab-profile for bb830b2"]
+    blocked_by: ["Multi-claim ledger support in top-level-gitlab-profile, released as a tag"]
+    decisions:
+      - "2026-10-22: the maintainer chose shared-tooling support for several claims on one artifact (D1 option a). The consumer does not drop or merge claims. The request goes to top-level-gitlab-profile."
+      - "2026-10-22: TASK-026-6 stays on PR #700 (chore/cbc-hierarchical-attributes). No separate consumer branch."
     decision: "2026-10-22: the maintainer approved the canonical R7 tooling release at top-level-gitlab-profile bb830b285a3dc831a34826975b18a4f4a296b011, with the recorded advisory scan limitations. The approval covers the canonical tooling only, not the GitHub skill-mirror publication."
     progress:
       - "2026-10-22 profile agent: R7 work is based on top-level-gitlab-profile 95c5a089. A focused fix is not committed yet: ledgers compare by filesystem identity, duplicate summary rows are suppressed, and four regression tests are added. Generated resources need a regeneration, and two generated summaries omit case-equivalent filenames. Blocker: the guarded sandbox has no cached PyYAML. Not ready for adoption and not approved for release. Keep the current tooling pin."
@@ -323,10 +326,12 @@ tasks:
       - "2026-10-22 recheck at bb830b2: F1 to F6 resolved. The design requires an immutable tooling checkout with a recorded full commit ID for consumer acceptance and migration runs, and forbids repair by selecting a favorable record."
       - "2026-10-22 C1: three artifacts have independent ledgers in docs/cbc-evidence and docs/casper/cbc-evidence with conflicting statuses: .github/workflows/slashing-tests.yml (pending vs discharged), scripts/bench/write-soak-summary.sh (pending vs discharged), scripts/ci/check-tla-invariants.sh (discharged vs pending)."
       - "2026-10-22 C2: ten Casper ledgers use lowercase filenames, for example formal-tlaplus-casper-soak-campaign-campaigncontrol-tla.md, while the tooling slug keeps the path case (CampaignControl). The lookup works on a case-insensitive filesystem only, so the gate result depends on the platform."
+      - "2026-10-22: tag cbc-r7-bb830b2 (bb830b285a3d) is released and verified. An immutable copy of the tagged tree is extracted for adoption runs."
+      - "2026-10-22 adoption review: the interpreter_util.rs ledger and the three C1 ledger pairs record two independent claims per artifact, not duplicate records. Keeping one ledger would drop a claim. The default selection hides a pending claim on scripts/ci/check-tla-invariants.sh."
+      - "2026-10-22 adoption review: check-casper-claims.rs derives ledger names with case kept and has a lowercase exception for scripts/casper-soak/Cargo.toml. The C2 renames therefore change CbC-mandatory code and need a CbC review package and acceptance."
     acceptance:
       - "Adoption runs use an immutable checkout of the R7 tag with no tracked changes, and the full tooling commit ID is recorded."
-      - "Before adoption, the interpreter_util.rs ledger holds one valid record that a review of its evidence selects, not the more favorable record. The other record stays in the ledger history, and the decision is recorded."
-      - "C1: each of the three artifacts has one canonical ledger, selected by a review of the evidence. The other ledger moves to history or becomes a symlink, and the decision is recorded."
+      - "interpreter_util.rs and the three C1 artifacts keep both claims in one ledger, in the multi-claim format of the shared tooling. No claim is dropped, and each artifact status is its weakest claim."
       - "C2: each Casper ledger and docs/cbc-evidence symlink uses the tooling slug, including its case. A discharge run on a case-sensitive filesystem gives the same statuses as on macOS."
       - "The tooling pin moves to the tag that contains R7."
       - "The owner files set cbc-evidence=docs/casper/cbc-evidence on the Casper claim paths. compare reports only cbc-evidence changes on those paths."
