@@ -27,7 +27,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
-use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
+use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -179,6 +179,17 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
+
+    fn is_local_validator_bonded(
+        &self,
+        dag: &KeyValueDagRepresentation,
+    ) -> Result<bool, CasperError> {
+        let metadata = dag.lookup_unsafe(&dag.last_finalized_block())?;
+        Ok(self
+            .get_validator()
+            .map(|id| metadata.weight_map.contains_key(&id.public_key.bytes))
+            .unwrap_or(false))
+    }
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
@@ -367,8 +378,11 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         }
     }
 
+    let finalized_bond_cache =
+        FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
     let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
         observer: Arc::new(std::sync::OnceLock::new()),
+        finalized_bond_cache: finalized_bond_cache.clone(),
         block_dag_storage,
         block_store,
         runtime_manager,
@@ -392,6 +406,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
+        finalized_bond_cache,
         casper_shard_conf: finalization.shard_conf.clone(),
         approved_block,
         finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
@@ -435,6 +450,14 @@ pub struct CasperSnapshot {
 }
 
 impl CasperSnapshot {
+    pub fn is_validator_bonded(&self, validator: &[u8]) -> Result<bool, CasperError> {
+        let Some(parent) = self.parents.first() else {
+            return Ok(false);
+        };
+        let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
+        Ok(metadata.weight_map.contains_key(validator))
+    }
+
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
         Self {
             dag,

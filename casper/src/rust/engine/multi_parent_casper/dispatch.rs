@@ -229,6 +229,13 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .map_err(Into::into)
     }
 
+    fn is_local_validator_bonded(
+        &self,
+        dag: &KeyValueDagRepresentation,
+    ) -> Result<bool, CasperError> {
+        self.finalized_bond_cache.is_bonded(dag)
+    }
+
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
     fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {

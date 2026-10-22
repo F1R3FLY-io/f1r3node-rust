@@ -202,6 +202,7 @@ pub struct FinalizationContext {
     pub event_publisher: F1r3flyEvents,
     pub divergence_monitor: Arc<DivergenceMonitor>,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    pub finalized_bond_cache: super::bond_cache::FinalizedBondCache,
     pub shard_conf: CasperShardConf,
 }
 
@@ -609,6 +610,7 @@ async fn adopt(
         "record_directly_finalized_total_ms={}",
         effect_started.elapsed().as_millis()
     );
+    ctx.finalized_bond_cache.refresh(&ctx.block_dag_storage)?;
     ctx.divergence_monitor.on_advance();
     Ok(())
 }

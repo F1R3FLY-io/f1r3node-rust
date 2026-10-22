@@ -35,6 +35,7 @@
 // the crate, defeating the encapsulation intent of the
 // nine-module decomposition.
 pub(crate) mod block_admission;
+pub(crate) mod bond_cache;
 pub(crate) mod buffer_resolver;
 pub(crate) mod events;
 pub(crate) mod finalization_runner;
@@ -47,5 +48,6 @@ pub(crate) mod validation_dispatcher;
 // Phase 7 (C-1): explicit re-exports replace the previously transitional
 // glob `pub use crate::rust::engine::multi_parent_casper::*;` which formed a
 // circular alias path (engine → shim → engine).
+pub use bond_cache::FinalizedBondCache;
 pub use events::{added_event, created_event, finalised_event};
 pub use types::MultiParentCasperImpl;

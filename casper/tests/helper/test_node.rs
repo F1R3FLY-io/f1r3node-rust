@@ -1194,8 +1194,15 @@ impl TestNode {
             ..CasperShardConf::new()
         };
 
+        let finalized_bond_cache =
+            casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
+                &block_dag_storage,
+                validator_id_opt.as_ref(),
+            )
+            .unwrap();
         let finalization = casper::rust::engine::multi_parent_casper::FinalizationContext {
             observer: std::sync::Arc::new(std::sync::OnceLock::new()),
+            finalized_bond_cache: finalized_bond_cache.clone(),
             block_dag_storage: block_dag_storage.clone(),
             block_store: block_store.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
@@ -1219,6 +1226,7 @@ impl TestNode {
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
+            finalized_bond_cache,
             casper_shard_conf: finalization.shard_conf.clone(),
             approved_block: genesis.clone(),
             finalizer: casper::rust::engine::multi_parent_casper::Finalizer::start(finalization),
