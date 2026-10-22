@@ -292,7 +292,12 @@ tasks:
       - "compare reports no change on an existing path."
   - id: TASK-026-5
     title: "Prove that the migration is exact"
-    status: pending
+    status: in_progress
+    progress:
+      - "2026-10-22 snapshot: compare against the c7ceb2f40 baseline shows no change on an existing path, for the working tree and the index (39157e82f). The only changed paths are the eleven owner files and the removed root file."
+      - "2026-10-22 lint: cbc.sh attributes lint and lint --cached report no diagnostic and no error at 39157e82f."
+      - "2026-10-22 gate: cbc discharge --strict --json over all 408 mandatory files gives the same result at c7ceb2f40 and at 39157e82f: 217 discharged, 85 pending, 93 none, 14 waived, 179 gaps, exit 4 at both. The per-file results are identical."
+      - "Open: confirmation by the independent verifier in top-level-gitlab-profile."
     blocked_by: [TASK-026-4]
     acceptance:
       - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work and the new owner .gitattributes files. Each such path is recorded with its commit. A new owner file is a new tracked path with no cbc attribute."
