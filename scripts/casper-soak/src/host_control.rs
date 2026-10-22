@@ -250,10 +250,17 @@ mod linux {
                 if uids[1] != unsafe { libc::geteuid() } {
                     return Ok(None);
                 }
-                let environment = bounded(
-                    child(&directory, "environ", false, false)?,
-                    16 * 1024 * 1024,
-                )?;
+                let environment = match child(&directory, "environ", false, false)
+                    .and_then(|file| bounded(file, 16 * 1024 * 1024))
+                {
+                    Ok(environment) => environment,
+                    Err(error)
+                        if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) =>
+                    {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 if !environment
                     .split(|b| *b == 0)
                     .any(|value| value == marker.as_bytes())
@@ -473,6 +480,83 @@ mod linux {
             assert!(different.0.try_wait().unwrap().is_none());
             assert!(stop("").is_err());
             stop(&owner).unwrap();
+        }
+
+        struct Undumpable(libc::pid_t);
+        impl Drop for Undumpable {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::kill(self.0, libc::SIGKILL);
+                    libc::waitpid(self.0, std::ptr::null_mut(), 0);
+                }
+            }
+        }
+        fn undumpable() -> Undumpable {
+            assert!(
+                Path::new("/.dockerenv").is_file(),
+                "Run process fixtures in an isolated container."
+            );
+            let mut pipe = [0; 2];
+            assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                unsafe {
+                    libc::close(pipe[0]);
+                    libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                    libc::write(pipe[1], b"r".as_ptr().cast(), 1);
+                    loop {
+                        libc::pause();
+                    }
+                }
+            }
+            let mut ready = [0u8; 1];
+            unsafe {
+                libc::close(pipe[1]);
+                assert_eq!(libc::read(pipe[0], ready.as_mut_ptr().cast(), 1), 1);
+                libc::close(pipe[0]);
+            }
+            Undumpable(pid)
+        }
+
+        fn unreadable_environment(pid: libc::pid_t) {
+            let read = fs::read(format!("/proc/{pid}/environ"));
+            if unsafe { libc::geteuid() } != 0 {
+                assert!(matches!(
+                    read.unwrap_err().raw_os_error(),
+                    Some(libc::EACCES | libc::EPERM)
+                ));
+            }
+        }
+
+        #[test]
+        fn stop_skips_a_process_whose_environment_is_unreadable() {
+            let owner = marker();
+            let hidden = undumpable();
+            unreadable_environment(hidden.0);
+            let mut first = process(&owner);
+            stop(&owner).unwrap();
+            assert!(first.0.wait().unwrap().code().is_none());
+            assert_eq!(
+                unsafe { libc::waitpid(hidden.0, std::ptr::null_mut(), libc::WNOHANG) },
+                0
+            );
+        }
+
+        #[test]
+        fn oom_preference_skips_a_process_whose_environment_is_unreadable() {
+            let owner = marker();
+            let hidden = undumpable();
+            unreadable_environment(hidden.0);
+            let path = format!("/proc/{}/oom_score_adj", hidden.0);
+            let before = fs::read_to_string(&path).unwrap();
+            let original = process(&owner);
+            prefer_oom(&owner).unwrap();
+            assert_eq!(
+                fs::read_to_string(format!("/proc/{}/oom_score_adj", original.0.id())).unwrap(),
+                "1000\n"
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), before);
         }
 
         #[test]
