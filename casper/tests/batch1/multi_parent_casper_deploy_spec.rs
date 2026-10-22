@@ -115,11 +115,7 @@ async fn block_api_rejects_deploy_from_unbonded_validator() {
         .unwrap_err()
         .to_string()
         .contains("validator is not bonded"));
-    assert!(!node
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(!node.deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test]
@@ -150,11 +146,7 @@ async fn block_api_rejects_deploy_from_keyless_read_only_node() {
         .unwrap_err()
         .to_string()
         .contains("node is running in read-only mode"));
-    assert!(!observer
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(!observer.deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test]
@@ -178,11 +170,7 @@ async fn block_api_accepts_deploy_from_bonded_validator_without_autopropose() {
     .await;
 
     assert!(result.is_ok(), "{result:?}");
-    assert!(node
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(node.deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test]
