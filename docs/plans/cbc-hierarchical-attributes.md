@@ -79,7 +79,7 @@ The leading slash keeps each rule anchored as it is today. Without it, a pattern
 ## 5. Steps
 
 1. **Record the baseline.** Run the snapshot command at the branch base. Keep the output with the pull request as the reference.
-2. **Declare the owners.** Add the owner directories of section 4 to the owner map that the shared tooling defines (R1). The owner map routes new proposals only. It does not change the effective policy.
+2. **Declare the owners.** Each owner directory of section 4 gets its own `.gitattributes` file in step 3. The shared tooling has no repository-local owner list. Without a declared owner, R1 routes a proposal to the nearest ancestor that has a `.gitattributes` file. The owner files therefore route new proposals, and this repository adds no owner configuration. The routing does not change the effective policy.
 3. **Move one owner directory in each commit.** Create the owner file and remove the matching root lines in the same commit. After each commit, run the snapshot comparison against the previous commit. The diff must be empty.
 4. **Remove the duplicate lines in a separate commit.** Step 3 moves both copies of each duplicate line unchanged. A later commit removes the second copy. A duplicate line has no effect on the effective policy, so the snapshot diff must be empty.
 5. **Run the R5 warnings.** After the last move, run the shared R5 command. It must report no override, no duplicate, no unanchored single-file pattern, and no ambient attribute source.

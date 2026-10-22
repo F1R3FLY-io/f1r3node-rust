@@ -256,8 +256,10 @@ tasks:
     status: pending
     blocked_by: []
     acceptance:
-      - "The owner map of the shared tooling lists the nine owner directories of plan section 4."
-      - "The owner map routes new proposals only. The snapshot diff stays empty."
+      - "Each of the nine owner directories of plan section 4 has a .gitattributes file after TASK-026-3."
+      - "cbc.sh attributes route sends a candidate path in each owner directory to that owner file."
+      - "This repository adds no owner configuration. The snapshot diff stays empty."
+    decision: "2026-10-22: Option A. The owner files route proposals through the R1 nearest-ancestor rule. The shared tooling reads attribute_owners only from its own config."
   - id: TASK-026-3
     title: "Move the rules into the owner .gitattributes files"
     status: pending
