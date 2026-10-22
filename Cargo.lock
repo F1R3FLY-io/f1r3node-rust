@@ -5019,6 +5019,7 @@ name = "rholang"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "bincode",
  "chroma",
@@ -5030,6 +5031,7 @@ dependencies = [
  "fileio-test-fixtures",
  "futures",
  "hex",
+ "imbl",
  "indexmap 2.14.0",
  "itertools 0.14.0",
  "k256",
