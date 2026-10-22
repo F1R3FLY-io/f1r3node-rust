@@ -21,8 +21,8 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryRequest,
-    MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheEntry, FloorCacheResponse,
+    MergeableEntryRequest, MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -556,11 +556,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
 
-            initializing.block_dag_storage.insert(
-                block,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
-            )?;
-
             initializing.request_approved_state(approved_block).await?;
 
             initializing
@@ -926,6 +921,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Now populate DAG with the final state (equivalent to evalMap in Scala)
         if let Some(st) = final_state_result {
+            let dag = self.block_dag_storage.get_representation()?;
+            let mut hashes: HashSet<BlockHash> = dag.dag_set.iter().cloned().collect();
+            hashes.extend(st.height_map.values().flatten().cloned());
+            let entries = self.request_floor_cache(approved_block, &hashes).await;
+            self.block_dag_storage.insert(
+                block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )?;
             self.populate_dag(
                 approved_block.candidate.block.clone(),
                 st.lower_bound,
@@ -936,7 +939,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
-            self.request_floor_cache(approved_block).await;
+            let dag = self.block_dag_storage.get_representation()?;
+            match apply_floor_cache_entries(&dag, &hashes, entries) {
+                Ok(written) => tracing::info!(written, "Floor cache applied to restored blocks"),
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "Could not apply the shipped floor cache. Finality will be derived locally."
+                ),
+            }
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -1045,9 +1055,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     }
                 }
             } else {
-                tracing::info!(
-                    "LFS forward-horizon: skipped (max_parent_depth unlimited or LFB at genesis)"
-                );
+                tracing::info!("LFS forward-horizon: no state roots to import");
             }
         }
 
@@ -1085,7 +1093,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     ///
     /// Failure degrades to that crawl — alive and alarmed, never a wedge — so
     /// this never fails the restore.
-    async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
+    async fn request_floor_cache(
+        &self,
+        approved_block: &ApprovedBlock,
+        hashes: &HashSet<BlockHash>,
+    ) -> Vec<FloorCacheEntry> {
         const ATTEMPTS: u32 = 3;
         const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -1093,19 +1105,16 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // derivation terminates locally — the same discriminator guard_deferral
         // and the settled door use. Nothing to ask for.
         if proto_util::block_number(&approved_block.candidate.block) == 0 {
-            return;
+            return Vec::new();
         }
 
-        let result: Result<(), CasperError> = async {
-            let dag = self.block_dag_storage.get_representation()?;
-            let hashes: Vec<BlockHash> = dag.dag_set.iter().cloned().collect();
-            let solicited: HashSet<BlockHash> = hashes.iter().cloned().collect();
+        let result: Result<Vec<FloorCacheEntry>, CasperError> = async {
             let mut rx = self.floor_cache_rx.lock().unwrap().take().ok_or_else(|| {
                 CasperError::RuntimeError("floor-cache receiver not available".to_string())
             })?;
 
             let request = models::rust::casper::protocol::casper_message::FloorCacheRequest {
-                hashes: hashes.clone(),
+                hashes: hashes.iter().cloned().collect(),
             };
             for attempt in 1..=ATTEMPTS {
                 self.transport_layer
@@ -1135,16 +1144,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                             }
                             _ => false,
                         };
-                        let written =
-                            apply_floor_cache_entries(&dag, &solicited, response.entries)?;
                         tracing::info!(
-                            written,
+                            received = response.entries.len(),
                             requested = hashes.len(),
                             genesis_learned = !response.genesis_hash.is_empty(),
                             genesis_landed,
-                            "Floor cache received: restored blocks carry their finality"
+                            "Floor cache received for restored blocks"
                         );
-                        return Ok(());
+                        return Ok(response.entries);
                     }
                     Ok(None) => {
                         return Err(CasperError::RuntimeError(
@@ -1163,13 +1170,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         }
         .await;
 
-        if let Err(e) = result {
+        result.unwrap_or_else(|e| {
             tracing::warn!(
                 error = %e,
                 "Proceeding without the shipped floor cache: sibling-branch validation \
                  will re-derive finality gap-by-gap (slow, not wrong)"
             );
-        }
+            Vec::new()
+        })
     }
 
     /// Record the anchor's floor and frontier as this node's own, so the first

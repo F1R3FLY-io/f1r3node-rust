@@ -89,23 +89,57 @@ fn build_chain(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn returns_empty_when_max_parent_depth_is_unlimited() {
+async fn unlimited_parent_depth_includes_history_through_the_lfb() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
             stake: 10,
         }];
-        let chain = build_chain(&mut block_store, &mut block_dag_storage, 5, bonds, v0);
-
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let chain = build_chain(&mut block_store, &mut block_dag_storage, 6, bonds, v0);
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let conf = mk_conf(i32::MAX, 0);
-
-        let roots = compute_forward_horizon_roots(&dag, &block_store, &chain[4], &conf, horizon_floor(&chain[4], &conf)).unwrap();
-        assert!(
-            roots.is_empty(),
-            "horizon should be empty when max_parent_depth is unlimited (caller falls back to disable-lfs replay)"
+        let roots = compute_forward_horizon_roots(
+            &dag,
+            &block_store,
+            &chain[4],
+            &conf,
+            casper::rust::util::rspace_history_horizon::lfs_min_state_block_number(
+                chain[4].body.state.block_number,
+                conf.max_parent_depth,
+                conf.mergeable_channels_gc_depth_buffer,
+            ),
+        )
+        .unwrap();
+        let expected: std::collections::HashSet<_> = chain[..=4]
+            .iter()
+            .flat_map(|block| {
+                [
+                    &block.body.state.pre_state_hash,
+                    &block.body.state.post_state_hash,
+                ]
+            })
+            .map(Blake2b256Hash::from_bytes_prost)
+            .collect();
+        assert_eq!(
+            roots
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>(),
+            expected
         );
+        assert_eq!(roots.len(), expected.len());
+        assert_eq!(
+            roots.first(),
+            Some(&Blake2b256Hash::from_bytes_prost(
+                &chain[4].body.state.post_state_hash,
+            ))
+        );
+        assert!(!roots.contains(&Blake2b256Hash::from_bytes_prost(
+            &chain[5].body.state.post_state_hash,
+        )));
     })
     .await
 }

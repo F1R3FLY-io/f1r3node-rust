@@ -79,16 +79,9 @@ pub fn compute_forward_horizon_roots(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     lfb: &BlockMessage,
-    casper_shard_conf: &CasperShardConf,
+    _casper_shard_conf: &CasperShardConf,
     min_block_number: i64,
 ) -> Result<Vec<Blake2b256Hash>, KvStoreError> {
-    if casper_shard_conf.max_parent_depth == i32::MAX {
-        // Depth check disabled — joiner can validate against any historical
-        // block. Fall back to no horizon sync; caller can opt into full
-        // replay (`disable-lfs = true`) instead.
-        return Ok(Vec::new());
-    }
-
     let lfb_height = lfb.body.state.block_number;
     let min_height = std::cmp::max(0, min_block_number);
 

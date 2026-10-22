@@ -34,6 +34,7 @@ use tokio::sync::mpsc;
 use crate::engine::setup::TestFixture;
 
 mod offered_restore;
+mod shared_restore;
 
 struct InitializingSpec;
 

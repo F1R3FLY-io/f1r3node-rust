@@ -17,7 +17,7 @@ use crate::util::rholang::resources::{
     generate_scope_id, mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_shared,
 };
 
-async fn offered_block(fixture: &TestFixture) -> BlockMessage {
+pub(super) async fn offered_block(fixture: &TestFixture) -> BlockMessage {
     let mut conf = fixture.casper_shard_conf.clone();
     conf.casper_version = fixture.genesis.header.version;
     let adopted = AdoptedResourcePolicy::load(&fixture.runtime_manager, &fixture.genesis, &conf)
