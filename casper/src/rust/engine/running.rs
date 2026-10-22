@@ -270,8 +270,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     let b = match ReceiptVerifier::shared().verify(&peer.id.key, b).await {
                         Ok(verified) => verified,
                         Err(ReceiptRefusal::Overloaded) => {
-                            self.block_retriever
-                                .note_local_backpressure_drop(&block_hash, "running-verification");
+                            metrics::counter!(
+                                crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
+                                "site" => "running-verification"
+                            )
+                            .increment(1);
                             tracing::debug!(
                                 "Dropping BlockMessage {} from {}: block verification is at capacity",
                                 PrettyPrinter::build_string_bytes(&block_hash),

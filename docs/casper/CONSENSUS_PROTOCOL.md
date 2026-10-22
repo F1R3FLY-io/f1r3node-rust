@@ -206,7 +206,7 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 Before a block enters the pipeline, the node recomputes the block hash and verifies the signature. This check runs when the block message arrives, before the node marks the block hash as in flight. If the hash or the signature does not match, the node drops the copy. The node does not change the in-flight markers, the buffer, or the request state for that block hash, so the original block can still arrive.
 
-The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block and marks its hash for a free retry.
+The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block. The block hash is not verified yet, so the drop does not change the retry budget of that hash.
 
 ### Step 1: Interest Check
 - Already in DAG or casper buffer? Skip.
