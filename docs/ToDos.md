@@ -313,8 +313,8 @@ tasks:
       - "The independent verifier in top-level-gitlab-profile confirms the result."
   - id: TASK-026-6
     title: "Set the evidence directory per path"
-    status: blocked
-    blocked_by: ["Multi-claim ledger support in top-level-gitlab-profile, released as a tag"]
+    status: in_progress
+    blocked_by: []
     decisions:
       - "2026-10-22: the maintainer chose shared-tooling support for several claims on one artifact (D1 option a). The consumer does not drop or merge claims. The request goes to top-level-gitlab-profile."
       - "2026-10-22: TASK-026-6 stays on PR #700 (chore/cbc-hierarchical-attributes). No separate consumer branch."
@@ -331,6 +331,8 @@ tasks:
       - "2026-10-22 adoption review: check-casper-claims.rs derives ledger names with case kept and has a lowercase exception for scripts/casper-soak/Cargo.toml. The C2 renames therefore change CbC-mandatory code and need a CbC review package and acceptance."
       - "2026-10-22 C2 done, pending acceptance: ten Casper ledgers and their docs/cbc-evidence symlinks use the tooling slug with case kept. check-casper-claims.rs uses the shared slug rule without the Cargo.toml exception (126 of 127 audited slugs unchanged). The claim audit, the regression tests, and the cbc-r7-bb830b2 strict discharge give unchanged results. Review package: docs/casper/cbc-evidence/runs/casper-claims-ledger-slug-20261022-01/report.json."
       - "2026-10-22 C2 accepted: jltatbeach accepted the review package on PR #700 (comment 6351702378) at revision 56ff30370. The check-casper-claims.rs ledger records digest 67408ac6 with acceptance record runs/casper-claims-ledger-slug-acceptance-20261022-01."
+      - "2026-10-22 R8 adopted: tag cbc-r8-8a64da8 (8a64da86482a, annotated, tag pipeline 2978758874 succeeded), extracted read-only. The four two-claim artifacts are named collections in their routed Casper ledgers with explicit claim IDs. The moved docs/cbc-evidence ledgers are symlinks, and all originals are in history. Strict discharge stays at 179 gaps. interpreter_util.rs changes from invalid_record to waived, and check-tla-invariants.sh changes from discharged to pending because its pending claim is now counted."
+      - "2026-10-22 R8 auditor: check-casper-claims.rs selects the audited claim record from a named ledger and fails closed on other layouts. Review package runs/casper-r8-named-claims-20261022-01, pending acceptance."
     acceptance:
       - "Adoption runs use an immutable checkout of the R7 tag with no tracked changes, and the full tooling commit ID is recorded."
       - "interpreter_util.rs and the three C1 artifacts keep both claims in one ledger, in the multi-claim format of the shared tooling. No claim is dropped, and each artifact status is its weakest claim."

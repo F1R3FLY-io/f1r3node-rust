@@ -1,4 +1,4 @@
-/workflows/slashing-tests.yml cbc=mandatory cbc-weight=high
+/workflows/slashing-tests.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /workflows/merge-recovery-soak.yml cbc=mandatory cbc-weight=high
 /workflows/ca-soak-dispatch.yml cbc=mandatory cbc-weight=high
 /scripts/ca-soak-dispatch.sh cbc=mandatory cbc-weight=high

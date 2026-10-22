@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "scope": "casper-r8-named-claim-migration",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "PR #700, EPIC-026 TASK-026-6: adopt R8 named claims (tag cbc-r8-8a64da8, commit 8a64da86482aaa9dbf55fc9cf30a4ebc23d28d34) for the four artifacts with two independent claims",
+    "migration": {
+      "method": "Manual. Each record keeps its bytes except two inserted keys, schema cbc-claim/v1 and an explicit claim_id. No status, claim, evidence, or waiver changed. No record was dropped or merged.",
+      "artifacts": {
+        "casper/src/rust/util/rholang/interpreter_util.rs": {
+          "PR299-REJECTION-COUNTS": "waived",
+          "CLAIM-FINALITY-001": "discharged"
+        },
+        ".github/workflows/slashing-tests.yml": {
+          "CLAIM-CASPER-SOAK-001": "discharged",
+          "CLAIM-SOAK-GATE-001": "pending (moved from docs/cbc-evidence)"
+        },
+        "scripts/bench/write-soak-summary.sh": {
+          "CLAIM-CASPER-SOAK-001": "discharged",
+          "CLAIM-CASPER-SOAK-001-008": "pending (moved from docs/cbc-evidence)"
+        },
+        "scripts/ci/check-tla-invariants.sh": {
+          "CLAIM-CASPER-NODE-OBSERVATION-001": "pending",
+          "CLAIM-CASPER-NODE-OBSERVATION-005": "discharged (moved from docs/cbc-evidence)"
+        }
+      },
+      "routing": "The owner files set cbc-evidence=docs/casper/cbc-evidence on these four paths only. The three moved docs/cbc-evidence ledgers are symlinks to the Casper ledgers, as for the other Casper ledgers.",
+      "declared_sets": "Only the recorded claims are declared. Other claim documents that list slashing-tests.yml or check-tla-invariants.sh have no record and are not declared in this change.",
+      "inventories": {
+        "docs/casper/cbc-evidence/casper-src-rust-util-rholang-interpreter-util-rs.claims.json": {
+          "artifact": "casper/src/rust/util/rholang/interpreter_util.rs",
+          "claim_ids": [
+            "CLAIM-FINALITY-001",
+            "PR299-REJECTION-COUNTS"
+          ],
+          "sha256": "f3dc452652ccac4e5783b38f47b48a01e651984835e1d22291ddb65e290805f4"
+        },
+        "docs/casper/cbc-evidence/github-workflows-slashing-tests-yml.claims.json": {
+          "artifact": ".github/workflows/slashing-tests.yml",
+          "claim_ids": [
+            "CLAIM-CASPER-SOAK-001",
+            "CLAIM-SOAK-GATE-001"
+          ],
+          "sha256": "4df48c86f7f8edae692264e827099e86c56a01a8196a0b0877f6b42a396ddfa3"
+        },
+        "docs/casper/cbc-evidence/scripts-bench-write-soak-summary-sh.claims.json": {
+          "artifact": "scripts/bench/write-soak-summary.sh",
+          "claim_ids": [
+            "CLAIM-CASPER-SOAK-001",
+            "CLAIM-CASPER-SOAK-001-008"
+          ],
+          "sha256": "cdeaa75419635a69341fa05f794bae9b44ec09c607bcec89a745a1dfe0e5c08c"
+        },
+        "docs/casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.claims.json": {
+          "artifact": "scripts/ci/check-tla-invariants.sh",
+          "claim_ids": [
+            "CLAIM-CASPER-NODE-OBSERVATION-001",
+            "CLAIM-CASPER-NODE-OBSERVATION-005"
+          ],
+          "sha256": "ffc1a241df9ba86ce5c1c7e35ad41b6a62af77a42a80e9373a709b3d3c2faef0"
+        }
+      },
+      "preserved_originals": [
+        "docs/casper/cbc-evidence/history/18f0e463762718575fef92e8127b7ee9d12ed0657f5c5b1ccdfa990af66246cb-github-workflows-slashing-tests-yml.md",
+        "docs/casper/cbc-evidence/history/3004cd14b7b5b0252ea62789e1c2d2a431a33dd2d598ed5bfab63c29df892239-scripts-bench-write-soak-summary-sh.md",
+        "docs/casper/cbc-evidence/history/4df48c86f7f8edae692264e827099e86c56a01a8196a0b0877f6b42a396ddfa3-github-workflows-slashing-tests-yml.claims.json",
+        "docs/casper/cbc-evidence/history/cdeaa75419635a69341fa05f794bae9b44ec09c607bcec89a745a1dfe0e5c08c-scripts-bench-write-soak-summary-sh.claims.json",
+        "docs/casper/cbc-evidence/history/e27171064db30b5c4da3c3f24d07daa57db99cb5c76d4628b2901dce5f8ba0ec-scripts-ci-check-tla-invariants-sh.md",
+        "docs/casper/cbc-evidence/history/e67da396bec60b6beb5af8293ca58897e9bbbe436612ef7c06c1f86d403fa627-casper-src-rust-util-rholang-interpreter-util-rs.md",
+        "docs/casper/cbc-evidence/history/f3dc452652ccac4e5783b38f47b48a01e651984835e1d22291ddb65e290805f4-casper-src-rust-util-rholang-interpreter-util-rs.claims.json",
+        "docs/casper/cbc-evidence/history/ffc1a241df9ba86ce5c1c7e35ad41b6a62af77a42a80e9373a709b3d3c2faef0-scripts-ci-check-tla-invariants-sh.claims.json",
+        "docs/cbc-evidence/history/2dae6683e5ba6e153de1fbc17b0a00f4df927d4119633220f1748ba7b7d6b2d8-github-workflows-slashing-tests-yml.md",
+        "docs/cbc-evidence/history/6e44a0f96d5fe4a24bb9503e68d149de6d6d3e330370b6bfe7b8c115bc0960fa-scripts-bench-write-soak-summary-sh.md",
+        "docs/cbc-evidence/history/75e49b322c2c63cc568ca22ecb470997e88923515687abedbfe85c5cb1a9e2e2-scripts-ci-check-tla-invariants-sh.md"
+      ],
+      "ignore_rule": "The root .gitignore excludes *.claims.lock."
+    },
+    "auditor": {
+      "file": "scripts/casper-soak/src/bin/check-casper-claims.rs",
+      "change": "A ledger with one JSON block is read as before. A ledger with several blocks requires that every block is a cbc-claim/v1 record with a unique claim_id, and the auditor selects the one record whose claim_id equals the audited claim. Any other layout fails closed."
+    },
+    "test": {
+      "file": "scripts/casper-soak/tests/claims.rs",
+      "change": "New test named_claim_ledgers_select_only_the_audited_claim: the audited claim passes when another claim comes first. A missing, duplicate, unidentified, untyped, or pending selected record fails."
+    }
+  },
+  "source_digests_before_change": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "67408ac6b96424495fd86ddb2f2a69c3ec16a9087f548aaf0c50cb1fe9c0701b",
+    "scripts/casper-soak/tests/claims.rs": "8813eba982f56f4fd45e339e61f5ee4b70c29e67bc28b1b2e85c0633b5eeb7d2"
+  },
+  "source_digests": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "ba7301dd0bdd1e8b2e93c04e12dbd44665196d0a5c680b731c9ae951ba83be24",
+    "scripts/casper-soak/tests/claims.rs": "fc5de1960d83db4c8ed1959442fdcd6b9601ce0d3a7d44fbcab466025d39189e"
+  },
+  "evidence_before_change": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": {
+      "path": "docs/casper/cbc-evidence/runs/casper-claims-ledger-slug-acceptance-20261022-01/report.json",
+      "sha256": "8d453852851444b41f9182566d173413d08a908e8e10437d09c6f9acc99bb834"
+    }
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+  },
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "tooling": "top-level-gitlab-profile tag cbc-r8-8a64da8 (8a64da86482aaa9dbf55fc9cf30a4ebc23d28d34), extracted with git archive; the extracted tree equals the tag tree. Tag pipeline 2978758874 succeeded.",
+    "shared_gate": {
+      "command": "cbc.sh discharge --strict --json over the 408 mandatory files",
+      "before": "408 rows, 179 gaps, exit 4",
+      "after": "408 rows, 179 gaps, exit 4",
+      "status_changes": [
+        "casper/src/rust/util/rholang/interpreter_util.rs: invalid_record -> waived (both claims readable)",
+        "scripts/ci/check-tla-invariants.sh: discharged -> pending (the pending CLAIM-CASPER-NODE-OBSERVATION-001 claim is now counted)"
+      ]
+    },
+    "attributes_lint": "no errors, no diagnostics",
+    "claim_audit": {
+      "command": "cargo run --locked -p casper-soak --bin check-casper-claims -- --output <file>",
+      "exit": 0,
+      "result": "CLAIM-CASPER-SOAK-001 and -002 pending, -003 to -008 discharged"
+    },
+    "regression_tests": "cargo test --locked -p casper-soak --test models --test claims --test interruption: 4, 4, and 2 passed",
+    "static": "cargo fmt --check and cargo clippy -D warnings (bin and tests) passed"
+  },
+  "hosted": "pending",
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #700 comment",
+    "scope": "One acceptance covers the auditor change, its test, and the R8 migration of the four ledgers."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The check-casper-claims.rs ledger keeps digest 67408ac6 until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "waiver": null,
+  "soak": "pending",
+  "verified_at": "2026-10-22"
+}

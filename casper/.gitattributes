@@ -6,7 +6,7 @@
 /src/rust/merging/dag_merger.rs cbc=mandatory cbc-weight=high
 /src/rust/merging/deploy_chain_index.rs cbc=mandatory cbc-weight=high
 /src/rust/rholang/replay_runtime.rs cbc=mandatory cbc-weight=high
-/src/rust/util/rholang/interpreter_util.rs cbc=mandatory cbc-weight=high
+/src/rust/util/rholang/interpreter_util.rs cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /src/rust/util/rholang/runtime_manager.rs cbc=mandatory cbc-weight=high
 /src/rust/validate.rs cbc=mandatory cbc-weight=high
 /src/rust/genesis/contracts/standard_deploys.rs cbc=mandatory cbc-weight=high
