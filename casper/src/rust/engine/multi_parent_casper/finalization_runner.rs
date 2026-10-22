@@ -382,6 +382,7 @@ pub(crate) struct DerivedLfb {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum ALinPolicy {
     Halt,
     Alarm,

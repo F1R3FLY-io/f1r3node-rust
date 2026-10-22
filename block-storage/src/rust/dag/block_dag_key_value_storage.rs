@@ -1376,8 +1376,11 @@ impl BlockDagKeyValueStorage {
             let newly_bonded_unseen: Vec<Validator> = newly_bonded_set
                 .difference(&justification_validators)
                 .filter_map(|validator| {
-                    (!self.store_mirror.read().latest.contains_key(*validator))
-                        .then(|| (*validator).clone())
+                    if self.store_mirror.read().latest.contains_key(*validator) {
+                        None
+                    } else {
+                        Some((*validator).clone())
+                    }
                 })
                 .collect();
 
