@@ -263,7 +263,10 @@ tasks:
     decision: "2026-10-22: Option A. The owner files route proposals through the R1 nearest-ancestor rule. The shared tooling reads attribute_owners only from its own config."
   - id: TASK-026-3
     title: "Move the rules into the owner .gitattributes files"
-    status: pending
+    status: in_progress
+    progress:
+      - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
+      - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4."
     blocked_by: [TASK-026-1, TASK-026-2]
     acceptance:
       - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
@@ -284,7 +287,7 @@ tasks:
     status: pending
     blocked_by: [TASK-026-4, "shared R5 snapshot command"]
     acceptance:
-      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work. Each such path is recorded with its commit."
+      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work and the new owner .gitattributes files. Each such path is recorded with its commit. A new owner file is a new tracked path with no cbc attribute."
       - "Both working-tree and index snapshots are compared against their respective baselines. The index comparison uses --cached for both snapshot and compare commands."
       - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
       - "cbc discharge --strict gives the same result at the branch base and the branch head."
