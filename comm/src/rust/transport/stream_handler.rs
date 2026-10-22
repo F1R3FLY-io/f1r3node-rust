@@ -477,21 +477,15 @@ impl StreamHandler {
                 Ok(ChunkProcessResult::Continue(new_streamed))
             }
             Some(Content::Data(chunk_data)) => {
-                // Process data chunk
                 let ChunkData { content_data } = chunk_data;
-                let received_bytes = content_data.to_vec();
+                let received_len = content_data.len();
+                cache
+                    .entry(streamed.key.clone())
+                    .or_default()
+                    .value_mut()
+                    .extend_from_slice(&content_data);
 
-                // Write data to cache
-                let mut existing_data = cache
-                    .get(&streamed.key)
-                    .map(|entry| entry.value().clone())
-                    .unwrap_or_default();
-
-                existing_data.extend_from_slice(&received_bytes);
-                cache.insert(streamed.key.clone(), existing_data);
-
-                // Update read count
-                let new_read_so_far = streamed.read_so_far + received_bytes.len() as u64;
+                let new_read_so_far = streamed.read_so_far + received_len as u64;
                 let new_streamed = streamed.with_read_so_far(new_read_so_far);
 
                 Ok(ChunkProcessResult::Continue(new_streamed))
