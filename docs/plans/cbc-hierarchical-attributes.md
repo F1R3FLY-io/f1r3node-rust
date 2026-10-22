@@ -58,13 +58,17 @@ A comparison runs the command for two commits and compares the outputs with `dif
 | `casper/` | 68 | `casper/.gitattributes` |
 | `crypto/` | 27 | `crypto/.gitattributes` |
 | `rspace++/` | 19 | `rspace++/.gitattributes` |
-| `.github/` | 11 | `.github/.gitattributes` |
+| `.github/` | 16 | `.github/.gitattributes` |
 | `block-storage/` | 8 | `block-storage/.gitattributes` |
 | `node/` | 5 | `node/.gitattributes` |
 | `shared/` | 4 | `shared/.gitattributes` |
-| Root | 2 | `.gitattributes` keeps `rholang/src/rust/interpreter/reduce.rs` and `docs/crypto/README.md` |
+| `rholang/` | 1 | `rholang/.gitattributes` |
+| `docs/` | 1 | `docs/.gitattributes` |
+| Root | 0 | `.gitattributes` keeps no `cbc` rule |
 
-The counts are effective paths, not lines. A glob line covers more than one path.
+The counts are effective paths, not lines, from the 2026-10-22 baseline. A glob line covers more than one path.
+
+The root file keeps no `cbc` rule. The shared lint reports `potential_override` when a child file and an ancestor file set the same attribute names, also when their patterns do not overlap. With no `cbc` rule in the root file, no owner file has a `cbc` ancestor, and the lint reports no override.
 
 The mapping rule is the same for every line. Remove the owner prefix, and then add a leading slash. The attributes stay the same.
 

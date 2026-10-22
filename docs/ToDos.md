@@ -238,6 +238,7 @@ execution_contract:
 decisions:
   - "2026-10-12: the user approved the revised R1 to R6 and the shared tooling plan (top-level-gitlab-profile INBOX entry). R7 is deferred."
   - "2026-10-22: the maintainer approved the owner map of plan section 4: formal/, scripts/, casper/, crypto/, rspace++/, .github/, block-storage/, node/, shared/. The root keeps rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
+  - "2026-10-22: the maintainer added rholang/ and docs/ as owners for those two paths. The root file keeps no cbc rule, so the shared lint reports no potential_override for the owner files."
 tooling: "top-level-gitlab-profile e8ba49f (tag v2026.10.12): cbc.sh attributes snapshot, compare, lint, route, apply."
 baseline:
   root_file: "On 2026-10-22 (branch head c7ceb2f40), .gitattributes has 166 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 130) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
@@ -269,7 +270,8 @@ tasks:
       - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
       - "No owner file uses an [attr] macro."
       - "The snapshot diff against the previous commit is empty after each commit."
-      - "The root file keeps only rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
+      - "rholang/.gitattributes holds /src/rust/interpreter/reduce.rs and docs/.gitattributes holds /crypto/README.md."
+      - "The root file keeps no cbc rule."
   - id: TASK-026-4
     title: "Remove the duplicate lines"
     status: pending
@@ -283,6 +285,7 @@ tasks:
     blocked_by: [TASK-026-4, "shared R5 snapshot command"]
     acceptance:
       - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work. Each such path is recorded with its commit."
+      - "Both working-tree and index snapshots are compared against their respective baselines. The index comparison uses --cached for both snapshot and compare commands."
       - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
       - "cbc discharge --strict gives the same result at the branch base and the branch head."
       - "The independent verifier in top-level-gitlab-profile confirms the result."
