@@ -23,6 +23,12 @@ pub enum RSpaceError {
         leftover_count: usize,
         leftover: Vec<String>,
     },
+    /// Added by G3 (DR-135): the owner of a new datum or continuation cannot
+    /// pay for its introduction (R8). The operation stores nothing.
+    IntroductionRefused,
+    /// Added by G3 (DR-135): an owner of a matched tuple cannot pay for the
+    /// COMM (R5). The tuple stays stored.
+    CommRefused,
 }
 
 impl std::fmt::Display for RSpaceError {
@@ -45,6 +51,12 @@ impl std::fmt::Display for RSpaceError {
                 "Unused COMM event: replayData multimap has {} elements left; leftover={:?}",
                 leftover_count, leftover
             ),
+            // Added by G3 (DR-135).
+            RSpaceError::IntroductionRefused => {
+                write!(f, "Introduction refused: its owner cannot pay")
+            }
+            // Added by G3 (DR-135).
+            RSpaceError::CommRefused => write!(f, "COMM refused: an owner cannot pay"),
         }
     }
 }

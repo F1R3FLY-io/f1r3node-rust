@@ -9,11 +9,15 @@ use std::time::Instant;
 use serde::Serialize;
 
 use super::RSpace;
+// Added by G3 (DR-135, S5): the item test of an owner-funded consume.
+use super::accounting::ConsumeAdmission;
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
     CONSUME_COMM_LABEL, LOCKED_CONSUME_SPAN, RSPACE_METRICS_SOURCE,
 };
+// Added by G3 (DR-135, S5): the item test of an owner-funded consume.
+use crate::rspace::operation_context::ItemAdmission;
 use crate::rspace::rspace_interface::{
     ContResult, MaybeConsumeResult, RSpaceAccountingObserver, RSpaceOperationCompletion,
     RSpaceOperationSource, RSpaceResult,
@@ -100,10 +104,44 @@ where
             .cloned()
             .zip(patterns.iter().cloned())
             .collect();
-        let options: Option<Vec<ConsumeCandidate<C, A>>> = self
-            .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
-            .into_iter()
-            .collect();
+        // Changed by G3 (DR-135, S5): with owner funding each item passes its
+        // item test (R5). Without it the search is that of dev.
+        // let options: Option<Vec<ConsumeCandidate<C, A>>> = self
+        //     .extract_data_candidates(
+        //         &self.matcher, &zipped, &mut channel_to_indexed_data,
+        //     )
+        //     .into_iter()
+        //     .collect();
+        let candidates = match observer.filter(|observer| observer.owner_checks_active()) {
+            Some(observer) => {
+                let admission = ConsumeAdmission {
+                    observer,
+                    error: Default::default(),
+                };
+                let item = ItemAdmission {
+                    admission: &admission,
+                    continuation,
+                    persistent: persist,
+                    channel_count: channels.len(),
+                };
+                let mut rollback = Vec::new();
+                let candidates = self.extract_data_candidates_rollback(
+                    &self.matcher,
+                    &zipped,
+                    &mut channel_to_indexed_data,
+                    &mut rollback,
+                    Some(item),
+                );
+                if let Some(error) = admission.error.into_inner() {
+                    return Err(error);
+                }
+                candidates
+            }
+            None => {
+                self.extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
+            }
+        };
+        let options: Option<Vec<ConsumeCandidate<C, A>>> = candidates.into_iter().collect();
         metrics::counter!("rspace.consume.match_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t2.elapsed().as_nanos() as u64);
 
@@ -139,7 +177,20 @@ where
                     peeks.clone(),
                     produce_counters_closure,
                 );
-                Self::observe_comm(observer, &comm, continuation, persist, &data_candidates)?;
+                // Changed by G3 (DR-135, S5): an owner that cannot pay refuses
+                // the COMM. The consume then waits, as on a miss (R5).
+                // Self::observe_comm(
+                //     observer, &comm, continuation, persist, &data_candidates,
+                // )?;
+                match Self::observe_comm(observer, &comm, continuation, persist, &data_candidates) {
+                    Ok(()) => {}
+                    Err(RSpaceError::CommRefused) => {
+                        self.log_consume(consume_ref);
+                        self.store_waiting_continuation(channels.to_vec(), wk);
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                }
                 self.log_consume(consume_ref);
                 self.log_comm(comm, CONSUME_COMM_LABEL);
                 self.store_persistent_data(&data_candidates);

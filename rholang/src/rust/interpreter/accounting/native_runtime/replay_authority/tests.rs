@@ -25,6 +25,8 @@ fn row(id: u8, owners: usize, granted: bool, retry: bool) -> ReplayAuthorityObse
         }),
         granted,
         retry,
+        // Added by G3 (DR-135, S6): a COMM row is never owner-refused.
+        owner_refused: false,
     }
 }
 

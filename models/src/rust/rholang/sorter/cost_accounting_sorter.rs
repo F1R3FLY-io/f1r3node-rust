@@ -133,15 +133,35 @@ pub fn sort_signed_term(term: &CostSignedTerm) -> ScoredTerm<CostSignedTerm> {
             term: CostSignature::default(),
             score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
         });
+    // Changed by G3 (DR-135, S3b): a held term keeps its held price, and the
+    // price is the last leaf of its score, in the big-endian bytes that a
+    // `GUint64` scores with. A held term so never sorts as the signed term of
+    // the surface syntax with the same body and signature.
+    // ScoredTerm {
+    //     term: CostSignedTerm {
+    //         body: term.body.as_ref().map(|_| body.term),
+    //         signature: term.signature.as_ref().map(|_| signature.term),
+    //     },
+    //     score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIGNED_TERM, vec![
+    //         signature.score,
+    //         body.score,
+    //     ]),
+    // }
+    let mut scores = Vec::with_capacity(3);
+    scores.push(signature.score);
+    scores.push(body.score);
+    if let Some(price) = term.held_price {
+        scores.push(Tree::<ScoreAtom>::create_leaf_from_bytes(
+            price.to_be_bytes().to_vec(),
+        ));
+    }
     ScoredTerm {
         term: CostSignedTerm {
             body: term.body.as_ref().map(|_| body.term),
             signature: term.signature.as_ref().map(|_| signature.term),
+            held_price: term.held_price,
         },
-        score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIGNED_TERM, vec![
-            signature.score,
-            body.score,
-        ]),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIGNED_TERM, scores),
     }
 }
 

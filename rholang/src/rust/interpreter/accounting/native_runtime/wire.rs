@@ -1,29 +1,60 @@
 use std::sync::Arc;
 
-use models::rhoapi::CostAuthority;
+// Changed by G3 (DR-135, S4): the owner table carries prost signatures.
+// use models::rhoapi::CostAuthority;
+use models::rhoapi::{CostAuthority, CostSignature};
 use models::rust::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireLimits};
 use prost::Message;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 
 use super::path_trie::{NativePathTrie, PathId};
 use super::recording::recording_error;
+// Changed by G3 (DR-135, S4): a journal row carries its refused COMMs.
+// use super::{
+//     ByteObservation, InterpreterError, NativeBudgetRecording, NativeBudgetRetry, NativeCommRecord,
+//     NativeCommSource, NativeConsumeSource, NativeObservationLink, NativeOperationOccurrence,
+//     NativeOperationRecord, NativeOperationSource, NativeProduceSource,
+// };
 use super::{
     ByteObservation, InterpreterError, NativeBudgetRecording, NativeBudgetRetry, NativeCommRecord,
     NativeCommSource, NativeConsumeSource, NativeObservationLink, NativeOperationOccurrence,
-    NativeOperationRecord, NativeOperationSource, NativeProduceSource,
+    NativeOperationRecord, NativeOperationSource, NativeProduceSource, NativeRefusal,
 };
-use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
+// Changed by G3 (DR-135, S4): the owner table holds canonical signatures.
+// use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
+use crate::rust::interpreter::accounting::authority::{
+    canonical_cost_signature, AuthorityByteEventKind,
+};
 use crate::rust::interpreter::accounting::byte_accounting::ByteCharge;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence, NativeBudgetTraceLimits,
     NativeDenialCause, NativeStackTransferEvent, NativeStackTransferKind,
 };
+// Added by G3 (DR-135, S4).
+use crate::rust::interpreter::accounting::owner_funding::OwnerTableEntry;
 
 const BUDGET_DOMAIN: &[u8] = b"f1r3node:native-budget-recording:v1";
 const JOURNAL_DOMAIN: &[u8] = b"f1r3node:native-operation-journal:v1";
 const BUDGET_DOMAIN_V2: &[u8] = b"f1r3node:native-budget-recording:v2";
 const BUDGET_DOMAIN_V3: &[u8] = b"f1r3node:native-budget-recording:v3";
 const JOURNAL_DOMAIN_V2: &[u8] = b"f1r3node:native-operation-journal:v2";
+const BUDGET_DOMAIN_V4: &[u8] = b"f1r3node:native-budget-recording:v4";
+/// Added by G3 (DR-135, S4): version 3 of the operation journal adds the
+/// refused COMMs of each row after its COMM field.
+const JOURNAL_DOMAIN_V3: &[u8] = b"f1r3node:native-operation-journal:v3";
+
+/// Added by G3 (DR-135, S4): the version of a decoded recording or journal.
+/// Version 1 encodes full paths. Versions 2 and 3 encode path deltas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WireVersion {
+    V1,
+    V2,
+    V3,
+}
+
+impl WireVersion {
+    fn delta(self) -> bool { self != Self::V1 }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeRecordingWireLimits {
@@ -402,6 +433,136 @@ fn read_observation(wire: &mut Reader<'_>) -> Result<Arc<ByteObservation>, Inter
     }))
 }
 
+fn decision_tag(attempt: &NativeBudgetAttempt) -> Result<u8, InterpreterError> {
+    match (attempt.granted, attempt.owner_refused, attempt.cause) {
+        (false, false, NativeDenialCause::Budget) => Ok(0),
+        (true, false, NativeDenialCause::Budget) => Ok(1),
+        (false, false, NativeDenialCause::Allocation) => Ok(2),
+        (false, true, NativeDenialCause::Budget) => Ok(3),
+        _ => Err(malformed()),
+    }
+}
+
+fn decision(
+    value: u8,
+    version: WireVersion,
+    extended: bool,
+) -> Result<(bool, bool, NativeDenialCause), InterpreterError> {
+    match (value, version, extended) {
+        (0, _, _) => Ok((false, false, NativeDenialCause::Budget)),
+        (1, _, _) => Ok((true, false, NativeDenialCause::Budget)),
+        (2, _, true) => Ok((false, false, NativeDenialCause::Allocation)),
+        (3, WireVersion::V3, _) => Ok((false, true, NativeDenialCause::Budget)),
+        _ => Err(malformed()),
+    }
+}
+
+fn owner_fields(recording: &NativeBudgetRecording) -> bool {
+    !recording.owner_table.is_empty()
+        || recording
+            .attempts
+            .iter()
+            .any(|attempt| attempt.owner_refused || !attempt.restorations.is_empty())
+}
+
+/// Added by G3 (DR-135, S4): the maximum number of owner table entries. The
+/// protected production limits keep no owner-table field, so the decoder
+/// bounds the table by the authority-node limit of the budget trace. The
+/// journal check bounds it by the room of the binding (the funding sources
+/// minus the client payers).
+fn owner_table_limit(limits: NativeRecordingWireLimits) -> usize { limits.budget.regions.regions }
+
+/// Added by G3 (DR-135, S4): writes the owner table (R3): each entry is the
+/// prost bytes of its canonical signature and its budget.
+fn write_owner_table(
+    wire: &mut Writer,
+    table: &[OwnerTableEntry],
+    limits: NativeRecordingWireLimits,
+) -> Result<(), InterpreterError> {
+    if table.len() > owner_table_limit(limits) {
+        return Err(malformed());
+    }
+    wire.u64(length(table.len())?)?;
+    for entry in table {
+        canonical_cost_signature(&entry.signature).map_err(|_| malformed())?;
+        wire.bytes(&entry.signature.encode_to_vec())?;
+        wire.u64(entry.budget)?;
+    }
+    Ok(())
+}
+
+/// Added by G3 (DR-135, S4): reads the owner table. Each signature must
+/// decode, encode to the same bytes, and be canonical.
+fn read_owner_table(
+    wire: &mut Reader<'_>,
+    limits: NativeRecordingWireLimits,
+) -> Result<Arc<[OwnerTableEntry]>, InterpreterError> {
+    let count = bounded_count(wire.u64()?, owner_table_limit(limits))?;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let bytes = wire.bytes()?;
+        let signature = CostSignature::decode(bytes).map_err(|_| malformed())?;
+        if signature.encoded_len() != bytes.len() || signature.encode_to_vec() != bytes {
+            return Err(malformed());
+        }
+        canonical_cost_signature(&signature).map_err(|_| malformed())?;
+        entries.push(OwnerTableEntry {
+            signature,
+            budget: wire.u64()?,
+        });
+    }
+    Ok(entries.into())
+}
+
+/// Added by G3 (DR-135, S4 review): writes the restorations of an attempt
+/// (R9): their count, then each introduction observation. Only a COMM
+/// attempt restores data, and each restoration is a produce introduction.
+/// `total` counts the restorations of the recording, which the attempt
+/// limit bounds, because each restoration introduces at most one datum.
+fn write_restorations(
+    wire: &mut Writer,
+    attempt: &NativeBudgetAttempt,
+    total: &mut usize,
+    limits: NativeRecordingWireLimits,
+) -> Result<(), InterpreterError> {
+    if !attempt.restorations.is_empty() && attempt.occurrence.stage != NativeAttemptStage::Comm {
+        return Err(malformed());
+    }
+    add_count(total, attempt.restorations.len(), limits.budget.attempts)?;
+    wire.u64(length(attempt.restorations.len())?)?;
+    for restoration in attempt.restorations.iter() {
+        if restoration.kind != AuthorityByteEventKind::ProduceIntroduction {
+            return Err(malformed());
+        }
+        write_observation(wire, restoration)?;
+    }
+    Ok(())
+}
+
+/// Added by G3 (DR-135, S4 review): reads the restorations of an attempt of
+/// `stage`, with the checks of `write_restorations`.
+fn read_restorations(
+    wire: &mut Reader<'_>,
+    stage: NativeAttemptStage,
+    total: &mut usize,
+    limits: NativeRecordingWireLimits,
+) -> Result<Arc<[Arc<ByteObservation>]>, InterpreterError> {
+    let count = bounded_count(wire.u64()?, limits.budget.attempts.saturating_sub(*total))?;
+    add_count(total, count, limits.budget.attempts)?;
+    if count != 0 && stage != NativeAttemptStage::Comm {
+        return Err(malformed());
+    }
+    let mut restorations = Vec::with_capacity(count);
+    for _ in 0..count {
+        let restoration = read_observation(wire)?;
+        if restoration.kind != AuthorityByteEventKind::ProduceIntroduction {
+            return Err(malformed());
+        }
+        restorations.push(restoration);
+    }
+    Ok(restorations.into())
+}
+
 pub fn encode_native_budget_recording(
     recording: &NativeBudgetRecording,
     limits: NativeRecordingWireLimits,
@@ -419,12 +580,16 @@ pub fn encode_native_budget_recording(
     let mut wire = Writer {
         wire: PhloWireEncoder::new(limits.wire),
     };
-    let extended = !recording.transfers.is_empty()
+    let owners = owner_fields(recording);
+    let extended = owners
+        || !recording.transfers.is_empty()
         || recording
             .attempts
             .iter()
             .any(|attempt| attempt.cause != NativeDenialCause::Budget);
-    wire.bytes(if extended {
+    wire.bytes(if owners {
+        BUDGET_DOMAIN_V4
+    } else if extended {
         BUDGET_DOMAIN_V3
     } else {
         BUDGET_DOMAIN_V2
@@ -434,6 +599,8 @@ pub fn encode_native_budget_recording(
     wire.u64(length(recording.attempts.len())?)?;
     let paths = recording.paths.as_ref();
     let mut previous = PathId::ROOT;
+    // Added by G3 (DR-135, S4 review): the restorations of the recording.
+    let mut restorations = 0;
     for attempt in recording.attempts.iter() {
         write_occurrence_delta(
             &mut wire,
@@ -449,7 +616,10 @@ pub fn encode_native_budget_recording(
             return Err(malformed());
         }
         write_observation(&mut wire, &attempt.observation)?;
-        wire.u8(attempt_tag(attempt)?)?;
+        wire.u8(decision_tag(attempt)?)?;
+        if owners {
+            write_restorations(&mut wire, attempt, &mut restorations, limits)?;
+        }
     }
     wire.u64(length(recording.retries.len())?)?;
     for retry in recording.retries.iter() {
@@ -467,6 +637,9 @@ pub fn encode_native_budget_recording(
     if extended {
         write_transfers(&mut wire, recording)?;
     }
+    if owners {
+        write_owner_table(&mut wire, &recording.owner_table, limits)?;
+    }
     Ok(wire.finish())
 }
 
@@ -475,17 +648,21 @@ pub fn decode_native_budget_recording(
     limits: NativeRecordingWireLimits,
 ) -> Result<NativeBudgetRecording, InterpreterError> {
     let mut wire = Reader::new(input, limits.wire)?;
-    let (delta, extended) = match wire.bytes()? {
-        BUDGET_DOMAIN => (false, false),
-        BUDGET_DOMAIN_V2 => (true, false),
-        BUDGET_DOMAIN_V3 => (true, true),
+    let (version, extended) = match wire.bytes()? {
+        BUDGET_DOMAIN => (WireVersion::V1, false),
+        BUDGET_DOMAIN_V2 => (WireVersion::V2, false),
+        BUDGET_DOMAIN_V3 => (WireVersion::V2, true),
+        BUDGET_DOMAIN_V4 => (WireVersion::V3, true),
         _ => return Err(malformed()),
     };
+    let delta = version.delta();
     let session = wire.fixed32()?;
     let used = wire.u64()?;
     let attempts_count = bounded_count(wire.u64()?, limits.budget.attempts)?;
     let mut paths = NativePathTrie::new(limits.budget.path_segments);
     let mut attempts = Vec::<NativeBudgetAttempt>::with_capacity(attempts_count);
+    // Added by G3 (DR-135, S4 review): the restorations of the recording.
+    let mut restorations_total = 0;
     for _ in 0..attempts_count {
         let previous = attempts
             .last()
@@ -496,20 +673,38 @@ pub fn decode_native_budget_recording(
             read_occurrence(&mut wire, &mut paths, limits)?
         };
         let observation = read_observation(&mut wire)?;
-        let (granted, cause) = match (wire.u8()?, extended) {
-            (0, _) => (false, NativeDenialCause::Budget),
-            (1, _) => (true, NativeDenialCause::Budget),
-            (2, true) => (false, NativeDenialCause::Allocation),
-            _ => return Err(malformed()),
-        };
+        let (granted, owner_refused, cause) = decision(wire.u8()?, version, extended)?;
         if occurrence.session != session || occurrence.stage != observation.kind.into() {
             return Err(malformed());
         }
+        // Changed by G3 (DR-135, S4): the attempt records its owner decision.
+        // attempts.push(NativeBudgetAttempt {
+        //     occurrence,
+        //     observation,
+        //     granted,
+        // });
+        // Added by G3 (DR-135, S4 review): the restorations of version 3.
+        let restorations = match version {
+            WireVersion::V3 => {
+                read_restorations(&mut wire, occurrence.stage, &mut restorations_total, limits)?
+            }
+            WireVersion::V1 | WireVersion::V2 => Arc::from([]),
+        };
+        // Changed by G3 (DR-135, S4 review): the attempt keeps its
+        // restorations.
+        // attempts.push(NativeBudgetAttempt {
+        //     occurrence,
+        //     observation,
+        //     granted,
+        //     owner_refused,
+        // });
         attempts.push(NativeBudgetAttempt {
             occurrence,
             observation,
             granted,
             cause,
+            owner_refused,
+            restorations,
         });
     }
     let retries_count = bounded_count(wire.u64()?, limits.budget.attempts - attempts_count)?;
@@ -546,12 +741,25 @@ pub fn decode_native_budget_recording(
     } else {
         Vec::new()
     };
-    if extended
-        && transfers.is_empty()
-        && attempts
+    let owner_table = match version {
+        WireVersion::V3 => read_owner_table(&mut wire, limits)?,
+        WireVersion::V1 | WireVersion::V2 => Arc::from([]),
+    };
+    let owners = !owner_table.is_empty()
+        || attempts
             .iter()
-            .all(|row| row.cause == NativeDenialCause::Budget)
-    {
+            .any(|row| row.owner_refused || !row.restorations.is_empty());
+    let canonical = match version {
+        WireVersion::V3 => owners,
+        WireVersion::V1 | WireVersion::V2 => {
+            !extended
+                || !transfers.is_empty()
+                || attempts
+                    .iter()
+                    .any(|row| row.cause != NativeDenialCause::Budget)
+        }
+    };
+    if !canonical {
         return Err(malformed());
     }
     wire.finish()?;
@@ -562,16 +770,9 @@ pub fn decode_native_budget_recording(
         used,
         transfers: transfers.into(),
         paths: Arc::new(paths),
+        // Added by G3 (DR-135, S4).
+        owner_table,
     })
-}
-
-fn attempt_tag(attempt: &NativeBudgetAttempt) -> Result<u8, InterpreterError> {
-    match (attempt.granted, attempt.cause) {
-        (false, NativeDenialCause::Budget) => Ok(0),
-        (true, NativeDenialCause::Budget) => Ok(1),
-        (false, NativeDenialCause::Allocation) => Ok(2),
-        (true, NativeDenialCause::Allocation) => Err(malformed()),
-    }
 }
 
 fn write_transfers(
@@ -755,35 +956,111 @@ fn read_i32(wire: &mut Reader<'_>) -> Result<i32, InterpreterError> {
     Ok(value as i32)
 }
 
+// Changed by G3 (DR-135, S4): the COMM source codec moved into
+// `write_comm_source` and `read_comm_source`, which the refused COMMs share
+// without a link (R7). The bytes of a COMM do not change.
+// fn write_comm(
+//     wire: &mut Writer,
+//     comm: &NativeCommRecord,
+//     sources: &mut usize,
+//     limits: NativeRecordingWireLimits,
+// ) -> Result<(), InterpreterError> {
+//     add_count(sources, 1, limits.source_entries)?;
+//     write_consume(wire, &comm.source.consume, sources, limits)?;
+//     add_count(sources, comm.source.produces.len(), limits.source_entries)?;
+//     wire.u64(length(comm.source.produces.len())?)?;
+//     for source in comm.source.produces.iter() {
+//         write_produce(wire, source)?;
+//     }
+//     add_count(sources, comm.source.peeks.len(), limits.source_entries)?;
+//     wire.u64(length(comm.source.peeks.len())?)?;
+//     for &index in comm.source.peeks.iter() {
+//         write_i32(wire, index)?;
+//     }
+//     add_count(
+//         sources,
+//         comm.source.repetitions.len(),
+//         limits.source_entries,
+//     )?;
+//     wire.u64(length(comm.source.repetitions.len())?)?;
+//     for (source, count) in comm.source.repetitions.iter() {
+//         write_produce(wire, source)?;
+//         write_i32(wire, *count)?;
+//     }
+//     write_link(wire, comm.observation)
+// }
+//
+// fn read_comm(
+//     wire: &mut Reader<'_>,
+//     sources: &mut usize,
+//     limits: NativeRecordingWireLimits,
+// ) -> Result<NativeCommRecord, InterpreterError> {
+//     add_count(sources, 1, limits.source_entries)?;
+//     let consume = read_consume(wire, sources, limits)?;
+//     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
+//     add_count(sources, count, limits.source_entries)?;
+//     let mut produces = Vec::with_capacity(count);
+//     for _ in 0..count {
+//         produces.push(read_produce(wire)?);
+//     }
+//     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
+//     add_count(sources, count, limits.source_entries)?;
+//     let mut peeks = Vec::with_capacity(count);
+//     for _ in 0..count {
+//         peeks.push(read_i32(wire)?);
+//     }
+//     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
+//     add_count(sources, count, limits.source_entries)?;
+//     let mut repetitions = Vec::with_capacity(count);
+//     for _ in 0..count {
+//         repetitions.push((read_produce(wire)?, read_i32(wire)?));
+//     }
+//     let observation = read_link(wire, limits.budget)?;
+//     Ok(NativeCommRecord {
+//         source: Arc::new(NativeCommSource {
+//             consume,
+//             produces: produces.into(),
+//             peeks: peeks.into(),
+//             repetitions: repetitions.into(),
+//         }),
+//         observation,
+//     })
+// }
 fn write_comm(
     wire: &mut Writer,
     comm: &NativeCommRecord,
     sources: &mut usize,
     limits: NativeRecordingWireLimits,
 ) -> Result<(), InterpreterError> {
+    write_comm_source(wire, &comm.source, sources, limits)?;
+    write_link(wire, comm.observation)
+}
+
+fn write_comm_source(
+    wire: &mut Writer,
+    source: &NativeCommSource,
+    sources: &mut usize,
+    limits: NativeRecordingWireLimits,
+) -> Result<(), InterpreterError> {
     add_count(sources, 1, limits.source_entries)?;
-    write_consume(wire, &comm.source.consume, sources, limits)?;
-    add_count(sources, comm.source.produces.len(), limits.source_entries)?;
-    wire.u64(length(comm.source.produces.len())?)?;
-    for source in comm.source.produces.iter() {
-        write_produce(wire, source)?;
+    write_consume(wire, &source.consume, sources, limits)?;
+    add_count(sources, source.produces.len(), limits.source_entries)?;
+    wire.u64(length(source.produces.len())?)?;
+    for produce in source.produces.iter() {
+        write_produce(wire, produce)?;
     }
-    add_count(sources, comm.source.peeks.len(), limits.source_entries)?;
-    wire.u64(length(comm.source.peeks.len())?)?;
-    for &index in comm.source.peeks.iter() {
+    add_count(sources, source.peeks.len(), limits.source_entries)?;
+    wire.u64(length(source.peeks.len())?)?;
+    for &index in source.peeks.iter() {
         write_i32(wire, index)?;
     }
-    add_count(
-        sources,
-        comm.source.repetitions.len(),
-        limits.source_entries,
-    )?;
-    wire.u64(length(comm.source.repetitions.len())?)?;
-    for (source, count) in comm.source.repetitions.iter() {
-        write_produce(wire, source)?;
+    add_count(sources, source.repetitions.len(), limits.source_entries)?;
+    wire.u64(length(source.repetitions.len())?)?;
+    for (produce, count) in source.repetitions.iter() {
+        write_produce(wire, produce)?;
         write_i32(wire, *count)?;
     }
-    write_link(wire, comm.observation)
+    Ok(())
 }
 
 fn read_comm(
@@ -791,6 +1068,19 @@ fn read_comm(
     sources: &mut usize,
     limits: NativeRecordingWireLimits,
 ) -> Result<NativeCommRecord, InterpreterError> {
+    let source = read_comm_source(wire, sources, limits)?;
+    let observation = read_link(wire, limits.budget)?;
+    Ok(NativeCommRecord {
+        source: Arc::new(source),
+        observation,
+    })
+}
+
+fn read_comm_source(
+    wire: &mut Reader<'_>,
+    sources: &mut usize,
+    limits: NativeRecordingWireLimits,
+) -> Result<NativeCommSource, InterpreterError> {
     add_count(sources, 1, limits.source_entries)?;
     let consume = read_consume(wire, sources, limits)?;
     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
@@ -811,16 +1101,47 @@ fn read_comm(
     for _ in 0..count {
         repetitions.push((read_produce(wire)?, read_i32(wire)?));
     }
-    let observation = read_link(wire, limits.budget)?;
-    Ok(NativeCommRecord {
-        source: Arc::new(NativeCommSource {
-            consume,
-            produces: produces.into(),
-            peeks: peeks.into(),
-            repetitions: repetitions.into(),
-        }),
-        observation,
+    Ok(NativeCommSource {
+        consume,
+        produces: produces.into(),
+        peeks: peeks.into(),
+        repetitions: repetitions.into(),
     })
+}
+
+/// Added by G3 (DR-135, S4): writes the refused COMMs of a row: each COMM
+/// source without its link, then its position (R7). Their sources count
+/// toward the source entries.
+fn write_refusals(
+    wire: &mut Writer,
+    refusals: &[NativeRefusal],
+    sources: &mut usize,
+    limits: NativeRecordingWireLimits,
+) -> Result<(), InterpreterError> {
+    wire.u64(length(refusals.len())?)?;
+    for refusal in refusals {
+        write_comm_source(wire, &refusal.source, sources, limits)?;
+        wire.u64(length(refusal.position)?)?;
+    }
+    Ok(())
+}
+
+/// Added by G3 (DR-135, S4): reads the refused COMMs of a row. Each refusal
+/// takes at least one source entry, so the remaining entries bound the
+/// count.
+fn read_refusals(
+    wire: &mut Reader<'_>,
+    sources: &mut usize,
+    limits: NativeRecordingWireLimits,
+) -> Result<Arc<[NativeRefusal]>, InterpreterError> {
+    let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
+    let mut refusals = Vec::with_capacity(count);
+    for _ in 0..count {
+        let source = Arc::new(read_comm_source(wire, sources, limits)?);
+        let position = bounded_count(wire.u64()?, limits.budget.attempts)?;
+        refusals.push(NativeRefusal { source, position });
+    }
+    Ok(refusals.into())
 }
 
 fn completion_tag(completion: RSpaceOperationCompletion) -> u8 {
@@ -853,7 +1174,9 @@ pub fn encode_native_operation_journal(
     let mut wire = Writer {
         wire: PhloWireEncoder::new(limits.wire),
     };
-    wire.bytes(JOURNAL_DOMAIN_V2)?;
+    // Changed by G3 (DR-135, S4): version 3 (refused COMMs).
+    // wire.bytes(JOURNAL_DOMAIN_V2)?;
+    wire.bytes(JOURNAL_DOMAIN_V3)?;
     wire.u64(length(operations.len())?)?;
     let (mut sources, mut footprints, mut footprint_bytes, mut edges) = (0, 0, 0, 0);
     let mut previous = PathId::ROOT;
@@ -912,6 +1235,8 @@ pub fn encode_native_operation_journal(
                 write_comm(&mut wire, comm, &mut sources, limits)?;
             }
         }
+        // Added by G3 (DR-135, S4): the refused COMMs of the row (R7).
+        write_refusals(&mut wire, &row.refusals, &mut sources, limits)?;
         wire.u8(completion_tag(row.completion))?;
         wire.u64(length(row.budget_start)?)?;
         wire.u64(length(row.budget_end)?)?;
@@ -931,11 +1256,20 @@ pub fn decode_native_operation_journal(
         recording_error("native operation journal needs the recording's unshared path trie")
     })?;
     let mut wire = Reader::new(input, limits.wire)?;
-    let delta = match wire.bytes()? {
-        JOURNAL_DOMAIN => false,
-        JOURNAL_DOMAIN_V2 => true,
+    // Changed by G3 (DR-135, S4): version 3 adds the refused COMMs. Versions
+    // 1 and 2 still decode, with no refusals.
+    // let delta = match wire.bytes()? {
+    //     JOURNAL_DOMAIN => false,
+    //     JOURNAL_DOMAIN_V2 => true,
+    //     _ => return Err(malformed()),
+    // };
+    let version = match wire.bytes()? {
+        JOURNAL_DOMAIN => WireVersion::V1,
+        JOURNAL_DOMAIN_V2 => WireVersion::V2,
+        JOURNAL_DOMAIN_V3 => WireVersion::V3,
         _ => return Err(malformed()),
     };
+    let delta = version.delta();
     let count = bounded_count(wire.u64()?, limits.operations)?;
     let mut operations = Vec::<NativeOperationRecord>::with_capacity(count);
     let (mut sources, mut footprints, mut footprint_bytes, mut edges) = (0, 0, 0, 0);
@@ -1005,6 +1339,11 @@ pub fn decode_native_operation_journal(
             1 => Some(read_comm(&mut wire, &mut sources, limits)?),
             _ => return Err(malformed()),
         };
+        // Added by G3 (DR-135, S4): the refused COMMs of version 3 (R7).
+        let refusals = match version {
+            WireVersion::V3 => read_refusals(&mut wire, &mut sources, limits)?,
+            WireVersion::V1 | WireVersion::V2 => Arc::from([]),
+        };
         let completion = completion(wire.u8()?)?;
         let budget_start = bounded_count(wire.u64()?, limits.budget.attempts)?;
         let budget_end = bounded_count(wire.u64()?, limits.budget.attempts)?;
@@ -1016,6 +1355,8 @@ pub fn decode_native_operation_journal(
             predecessors: predecessors.into(),
             introduction,
             comm,
+            // Added by G3 (DR-135, S4).
+            refusals,
             completion,
             budget_start,
             budget_end,
@@ -1028,7 +1369,10 @@ pub fn decode_native_operation_journal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Added by G3 (DR-135, S4): the owner table holds ground signatures.
+    use crate::rust::interpreter::accounting::authority::sig_to_cost_signature;
     use crate::rust::interpreter::accounting::native_phlo_rules::NativePhloRegionLimits;
+    use crate::rust::interpreter::accounting::Sig;
 
     fn limits() -> NativeRecordingWireLimits {
         NativeRecordingWireLimits {
@@ -1081,6 +1425,10 @@ mod tests {
                 observation: Arc::clone(&observation),
                 granted: true,
                 cause: NativeDenialCause::Budget,
+                // Added by G3 (DR-135, S4).
+                owner_refused: false,
+                // Added by G3 (DR-135, S4 review).
+                restorations: Arc::from([]),
             }]
             .into(),
             retries: vec![NativeBudgetRetry {
@@ -1097,6 +1445,8 @@ mod tests {
             transfers: Arc::from([]),
             used: 12,
             paths: Arc::new(paths),
+            // Added by G3 (DR-135, S4).
+            owner_table: Arc::from([]),
         }
     }
 
@@ -1118,6 +1468,8 @@ mod tests {
             predecessors: Arc::from([]),
             introduction: NativeObservationLink::Attempt(0),
             comm: None,
+            // Added by G3 (DR-135, S4).
+            refusals: Arc::from([]),
             completion: RSpaceOperationCompletion::Stored,
             budget_start: 0,
             budget_end: 1,
@@ -1151,11 +1503,330 @@ mod tests {
                 }),
                 observation: NativeObservationLink::Attempt(0),
             }),
+            // Added by G3 (DR-135, S4).
+            refusals: Arc::from([]),
             completion: RSpaceOperationCompletion::Matched,
             budget_start: 1,
             budget_end: 1,
         };
         vec![first, second].into()
+    }
+
+    /// Added by G3 (DR-135, S4): the version 2 encoder of a recording, as it
+    /// stood before version 3. The decision byte is `decision_tag`, which is
+    /// the version 2 byte for every attempt that is not owner-refused.
+    fn v2_recording_bytes(recording: &NativeBudgetRecording) -> Vec<u8> {
+        let mut wire = Writer {
+            wire: PhloWireEncoder::new(limits().wire),
+        };
+        wire.bytes(BUDGET_DOMAIN_V2).expect("domain");
+        wire.bytes(&recording.session).expect("session");
+        wire.u64(recording.used).expect("usage");
+        wire.u64(recording.attempts.len() as u64).expect("count");
+        let paths = recording.paths.as_ref();
+        let mut previous = PathId::ROOT;
+        for attempt in recording.attempts.iter() {
+            write_occurrence_delta(
+                &mut wire,
+                paths,
+                &attempt.occurrence,
+                previous,
+                limits().budget,
+            )
+            .expect("occurrence");
+            previous = attempt.occurrence.path;
+            write_observation(&mut wire, &attempt.observation).expect("observation");
+            wire.u8(decision_tag(attempt).expect("decision"))
+                .expect("decision byte");
+        }
+        wire.u64(recording.retries.len() as u64).expect("count");
+        for retry in recording.retries.iter() {
+            write_occurrence_delta(
+                &mut wire,
+                paths,
+                &retry.occurrence,
+                previous,
+                limits().budget,
+            )
+            .expect("occurrence");
+            previous = retry.occurrence.path;
+            write_observation(&mut wire, &retry.observation).expect("observation");
+            wire.u64(retry.accepted_attempt as u64).expect("attempt");
+            wire.u64(retry.fresh_before as u64).expect("fresh");
+        }
+        wire.finish()
+    }
+
+    /// Added by G3 (DR-135, S4): the version 2 encoder of a journal, as it
+    /// stood before version 3. It writes no refusals.
+    fn v2_journal_bytes(rows: &[NativeOperationRecord], paths: &NativePathTrie) -> Vec<u8> {
+        let limits = limits();
+        let mut wire = Writer {
+            wire: PhloWireEncoder::new(limits.wire),
+        };
+        wire.bytes(JOURNAL_DOMAIN_V2).expect("domain");
+        wire.u64(rows.len() as u64).expect("count");
+        let mut sources = 0;
+        let mut previous = PathId::ROOT;
+        for row in rows {
+            wire.bytes(&row.occurrence.session).expect("session");
+            write_path_delta(&mut wire, paths, row.occurrence.path, previous, 4).expect("path");
+            previous = row.occurrence.path;
+            match &row.source {
+                NativeOperationSource::Produce(source) => {
+                    wire.u8(0).expect("tag");
+                    write_produce(&mut wire, source).expect("produce");
+                }
+                NativeOperationSource::Consume(source) => {
+                    wire.u8(1).expect("tag");
+                    write_consume(&mut wire, source, &mut sources, limits).expect("consume");
+                }
+            }
+            match &row.consume_peeks {
+                None => wire.u8(0).expect("tag"),
+                Some(peeks) => {
+                    wire.u8(1).expect("tag");
+                    wire.u64(peeks.len() as u64).expect("count");
+                    for &index in peeks.iter() {
+                        write_i32(&mut wire, index).expect("peek");
+                    }
+                }
+            }
+            wire.u64(row.footprint.len() as u64).expect("count");
+            for channel in row.footprint.iter() {
+                wire.bytes(channel).expect("channel");
+            }
+            wire.u64(row.predecessors.len() as u64).expect("count");
+            for &index in row.predecessors.iter() {
+                wire.u64(index as u64).expect("predecessor");
+            }
+            write_link(&mut wire, row.introduction).expect("link");
+            match &row.comm {
+                None => wire.u8(0).expect("tag"),
+                Some(comm) => {
+                    wire.u8(1).expect("tag");
+                    write_comm(&mut wire, comm, &mut sources, limits).expect("comm");
+                }
+            }
+            wire.u8(completion_tag(row.completion)).expect("completion");
+            wire.u64(row.budget_start as u64).expect("start");
+            wire.u64(row.budget_end as u64).expect("end");
+        }
+        wire.finish()
+    }
+
+    /// Added by G3 (DR-135, S4): a ground signature of the owner table.
+    fn ground(byte: u8) -> CostSignature {
+        sig_to_cost_signature(&Sig::Ground(vec![byte])).expect("a ground signature")
+    }
+
+    /// Added by G3 (DR-135, S4): the canonical fixture with an owner table of
+    /// two purses and two refused COMMs on its produce row.
+    fn owner_fixture() -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
+        let mut recording = recording();
+        recording.owner_table = vec![
+            OwnerTableEntry {
+                signature: ground(1),
+                budget: 40,
+            },
+            OwnerTableEntry {
+                signature: ground(2),
+                budget: 0,
+            },
+        ]
+        .into();
+        let mut rows = journal(&recording).to_vec();
+        let NativeOperationSource::Produce(produce) = rows[0].source.clone() else {
+            unreachable!("the first fixture row is a produce")
+        };
+        let refusal = |hash: u8, position: usize| NativeRefusal {
+            source: Arc::new(NativeCommSource {
+                consume: NativeConsumeSource {
+                    channels: vec![produce.channel].into(),
+                    hash: [hash; 32],
+                    persistent: false,
+                },
+                produces: vec![produce.clone()].into(),
+                peeks: Arc::from([]),
+                repetitions: Arc::from([]),
+            }),
+            position,
+        };
+        rows[0].refusals = vec![refusal(8, 1), refusal(9, 1)].into();
+        (recording, rows.into())
+    }
+
+    /// Added by G3 (DR-135, S4): an owner-refused introduction keeps its
+    /// decision on the wire, and its journal row is the `Rejected` row of a
+    /// denied introduction (R8). Version 2 rejects the decision byte 2.
+    #[test]
+    fn owner_refused_introduction_roundtrips_on_the_wire() {
+        let mut original = recording();
+        let mut attempts = original.attempts.to_vec();
+        attempts[0].granted = false;
+        attempts[0].owner_refused = true;
+        original.attempts = attempts.into();
+        original.retries = Arc::from([]);
+        let bytes = encode_native_budget_recording(&original, limits()).expect("v3 encodes");
+        let mut decoded = decode_native_budget_recording(&bytes, limits()).expect("v3 decodes");
+        assert_eq!(decoded.attempts.as_ref(), original.attempts.as_ref());
+        assert!(decoded.attempts[0].owner_refused && !decoded.attempts[0].granted);
+        assert_eq!(
+            encode_native_budget_recording(&decoded, limits()).expect("v3 encodes"),
+            bytes
+        );
+        assert!(decode_native_budget_recording(&v2_recording_bytes(&original), limits()).is_err());
+        let mut row = journal(&original)[0].clone();
+        row.completion = RSpaceOperationCompletion::Rejected;
+        let rows: Arc<[NativeOperationRecord]> = vec![row].into();
+        let bytes =
+            encode_native_operation_journal(&rows, &original.paths, limits()).expect("v3 encodes");
+        let decoded_rows =
+            decode_native_operation_journal(&bytes, &mut decoded, limits()).expect("v3 decodes");
+        assert_eq!(decoded_rows.as_ref(), rows.as_ref());
+        let mut both = original.attempts.to_vec();
+        both[0].granted = true;
+        original.attempts = both.into();
+        assert!(encode_native_budget_recording(&original, limits()).is_err());
+    }
+
+    /// Added by G3 (DR-135, S4): version 3 carries the owner table after the
+    /// retries and the refused COMMs after the COMM of each row, and both
+    /// round-trip to the same bytes. A non-canonical signature or a table
+    /// above the bound fails in the encoder and in the decoder.
+    #[test]
+    fn owner_table_and_refusals_roundtrip_v3() {
+        let (original, rows) = owner_fixture();
+        let bytes = encode_native_budget_recording(&original, limits()).expect("v3 encodes");
+        let mut decoded = decode_native_budget_recording(&bytes, limits()).expect("v3 decodes");
+        assert_eq!(decoded.owner_table.as_ref(), original.owner_table.as_ref());
+        assert_eq!(
+            encode_native_budget_recording(&decoded, limits()).expect("v3 encodes"),
+            bytes
+        );
+        let journal_bytes =
+            encode_native_operation_journal(&rows, &original.paths, limits()).expect("v3 encodes");
+        let decoded_rows = decode_native_operation_journal(&journal_bytes, &mut decoded, limits())
+            .expect("v3 decodes");
+        assert_eq!(decoded_rows.as_ref(), rows.as_ref());
+        assert_eq!(decoded_rows[0].refusals.len(), 2);
+        assert_eq!(
+            encode_native_operation_journal(&decoded_rows, &decoded.paths, limits())
+                .expect("v3 encodes"),
+            journal_bytes
+        );
+
+        let pair = |left: u8, right: u8| CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Compound(
+                models::rhoapi::CostSignatureCompound {
+                    elements: vec![ground(left), ground(right)],
+                },
+            )),
+        };
+        let unsorted = [pair(1, 2), pair(2, 1)]
+            .into_iter()
+            .find(|signature| canonical_cost_signature(signature).is_err())
+            .expect("one order of a pair is not canonical");
+        let mut forged = original.clone();
+        forged.owner_table = vec![OwnerTableEntry {
+            signature: unsorted.clone(),
+            budget: 1,
+        }]
+        .into();
+        assert!(encode_native_budget_recording(&forged, limits()).is_err());
+        let mut writer = Writer {
+            wire: PhloWireEncoder::new(limits().wire),
+        };
+        writer.u64(1).expect("count");
+        writer.bytes(&unsorted.encode_to_vec()).expect("signature");
+        writer.u64(1).expect("budget");
+        let table = writer.finish();
+        let mut reader = Reader::new(&table, limits().wire).expect("reader opens");
+        assert!(read_owner_table(&mut reader, limits()).is_err());
+
+        let mut long = original.clone();
+        long.owner_table = (0..=limits().budget.regions.regions)
+            .map(|index| OwnerTableEntry {
+                signature: ground(index as u8),
+                budget: 1,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        assert!(encode_native_budget_recording(&long, limits()).is_err());
+        let mut tight = limits();
+        tight.budget.regions.regions = 1;
+        assert!(decode_native_budget_recording(&bytes, tight).is_err());
+    }
+
+    /// Added by G3 (DR-135, S4 review): the attempt of a peek COMM carries
+    /// the introductions of its restorations in version 3 (R9). Only a COMM
+    /// attempt restores data, and each restoration is a produce
+    /// introduction. Version 2 has no restorations.
+    #[test]
+    fn comm_restorations_roundtrip_v3() {
+        let mut original = recording();
+        let restoration = Arc::clone(&original.attempts[0].observation);
+        let mut comm_observation = restoration.as_ref().clone();
+        comm_observation.kind = AuthorityByteEventKind::Comm;
+        let mut attempts = original.attempts.to_vec();
+        attempts[0].occurrence.stage = NativeAttemptStage::Comm;
+        attempts[0].observation = Arc::new(comm_observation);
+        attempts[0].restorations = vec![Arc::clone(&restoration)].into();
+        original.attempts = attempts.into();
+        original.retries = Arc::from([]);
+        let bytes = encode_native_budget_recording(&original, limits()).expect("v3 encodes");
+        let decoded = decode_native_budget_recording(&bytes, limits()).expect("v3 decodes");
+        assert_eq!(decoded.attempts.as_ref(), original.attempts.as_ref());
+        assert_eq!(decoded.attempts[0].restorations.len(), 1);
+        assert_eq!(
+            encode_native_budget_recording(&decoded, limits()).expect("v3 encodes"),
+            bytes
+        );
+        let mut wrong_kind = original.clone();
+        let mut attempts = wrong_kind.attempts.to_vec();
+        attempts[0].restorations = vec![Arc::clone(&attempts[0].observation)].into();
+        wrong_kind.attempts = attempts.into();
+        assert!(encode_native_budget_recording(&wrong_kind, limits()).is_err());
+        let mut introduction = recording();
+        let mut attempts = introduction.attempts.to_vec();
+        attempts[0].restorations = vec![restoration].into();
+        introduction.attempts = attempts.into();
+        assert!(encode_native_budget_recording(&introduction, limits()).is_err());
+        let mut many = original.clone();
+        let mut attempts = many.attempts.to_vec();
+        let restoration = Arc::clone(&attempts[0].restorations[0]);
+        attempts[0].restorations = vec![restoration; limits().budget.attempts + 1].into();
+        many.attempts = attempts.into();
+        assert!(encode_native_budget_recording(&many, limits()).is_err());
+    }
+
+    /// Added by G3 (DR-135, S4): the recordings and journals of versions 1
+    /// and 2 still decode, with no owner table and no refusals.
+    #[test]
+    fn v1_and_v2_recordings_still_decode() {
+        let original = recording();
+        let mut decoded = decode_native_budget_recording(&v2_recording_bytes(&original), limits())
+            .expect("v2 decodes");
+        assert_eq!(decoded.attempts.as_ref(), original.attempts.as_ref());
+        assert_eq!(
+            decoded.retries[0].occurrence,
+            original.retries[0].occurrence
+        );
+        assert_eq!(decoded.paths, original.paths);
+        assert!(decoded.owner_table.is_empty());
+        let rows = journal(&original);
+        let decoded_rows = decode_native_operation_journal(
+            &v2_journal_bytes(&rows, &original.paths),
+            &mut decoded,
+            limits(),
+        )
+        .expect("v2 decodes");
+        assert_eq!(decoded_rows.as_ref(), rows.as_ref());
+        assert!(decoded_rows.iter().all(|row| row.refusals.is_empty()));
+        assert_eq!(
+            encode_native_budget_recording(&decoded, limits()).expect("v3 encodes"),
+            encode_native_budget_recording(&original, limits()).expect("v3 encodes")
+        );
     }
 
     #[test]

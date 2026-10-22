@@ -214,6 +214,8 @@ fn fixture() -> Fixture {
                 observation: intro,
                 granted: intro_granted,
                 cause: NativeDenialCause::Budget,
+                owner_refused: false,
+                restorations: Arc::from([]),
             });
             let mut row = operation(
                 slot as u64,
@@ -281,6 +283,8 @@ fn fixture() -> Fixture {
                         observation,
                         granted,
                         cause,
+                        owner_refused: false,
+                        restorations: Arc::from([]),
                     });
                     row.budget_end += 1;
                     row.completion = if granted {
@@ -326,6 +330,7 @@ fn fixture() -> Fixture {
             transfers: transfers.into(),
             used,
             paths: fixture_paths(),
+            owner_table: Arc::from([]),
         },
         rows,
         log,

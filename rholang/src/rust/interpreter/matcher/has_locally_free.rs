@@ -1759,6 +1759,8 @@ mod by_reference_tests {
             check(&context, CostSignedTerm {
                 body: signed.0,
                 signature: signed.1,
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
             })?;
             check(&context, CostStack { cells })?;
             check(&context, Bundle {

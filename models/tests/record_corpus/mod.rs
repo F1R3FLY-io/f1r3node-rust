@@ -64,14 +64,18 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::{VarInstance, WildcardMsg};
+// Changed by G3 (DR-135): the corpus also builds the caller of a region.
+// use models::rhoapi::{
+//     BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
 use models::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
-    CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
-    EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GAuthorityId,
-    GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate, GSysAuthToken,
-    GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match, MatchCase, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostCaller, CostRegion,
+    CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot,
+    EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr,
+    GAuthorityId, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate,
+    GSysAuthToken, GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match,
+    MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    VarRef,
 };
 use models::rust::rholang::record_decoder::{
     connective_instance_variant_index, cost_value_variant_index, expr_instance_variant_index,
@@ -152,12 +156,41 @@ pub fn cost_authority() -> CostAuthority {
             CostRegion {
                 instance_id: vec![1, 2, 3],
                 signature: Some(compound_signature()),
+                // Added by G3 (DR-135): an unpriced region without a caller.
+                price: 0,
+                caller: None,
             },
             CostRegion {
                 instance_id: Vec::new(),
                 signature: None,
+                // Added by G3 (DR-135): the widest price, and a caller with no
+                // signature.
+                price: u64::MAX,
+                caller: Some(CostCaller {
+                    signature: None,
+                    price: 0,
+                }),
+            },
+            // Added by G3 (DR-135): a priced region whose caller quotes a
+            // `Par`, so the caller's signature is a machine value (SA3).
+            CostRegion {
+                instance_id: vec![9; 32],
+                signature: Some(unit_signature()),
+                price: 3,
+                caller: Some(quoting_caller()),
             },
         ],
+    }
+}
+
+/// Added by G3 (DR-135): a caller whose signature quotes a `Par` with every
+/// field, at a price whose eight bytes all differ.
+pub fn quoting_caller() -> CostCaller {
+    CostCaller {
+        signature: Some(CostSignature {
+            value: Some(CostValue::Quote(all_par_fields())),
+        }),
+        price: 0x0102_0304_0506_0708,
     }
 }
 
@@ -593,10 +626,15 @@ pub fn all_par_fields() -> Par {
             CostSignedTerm {
                 body: Some(gint(24)),
                 signature: Some(unit_signature()),
+                // Added by G3 (DR-135, S3b): a held term, so the corpus holds
+                // a held price.
+                held_price: Some(25),
             },
             CostSignedTerm {
                 body: None,
                 signature: None,
+                // Added by G3 (DR-135, S3b): no held price.
+                held_price: None,
             },
         ],
         cost_stacks: vec![
@@ -726,6 +764,9 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                 cost_signed_terms: vec![CostSignedTerm {
                     body: Some(p),
                     signature: None,
+                    // Added by G3 (DR-135, S3b): the held price follows the
+                    // body in the stream, so a deep chain interleaves both.
+                    held_price: Some(level as u64),
                 }],
                 ..Default::default()
             },

@@ -787,6 +787,16 @@ mod racing_evaluation_tests;
 #[path = "tests/deferral.rs"]
 mod deferral_tests;
 
+// Added by G3 (DR-135): every region of a native run records the price of
+// the context that created it (plan S2).
+#[path = "tests/region_price.rs"]
+mod region_price_tests;
+
+// Added by G3 (DR-135): a fired body runs for the owner of its seal, and a
+// system body for its caller (plan S3).
+#[path = "tests/body_owner.rs"]
+mod body_owner_tests;
+
 /// DR-113: a native charge past a signed limit is the classified user failure
 /// `SignedLimitExhausted`, and its charge is retained. The same charge past a
 /// certified bound stays the certificate failure `OutOfPhlogistonsError`.
@@ -873,3 +883,8 @@ fn a_signed_limit_bound_is_the_signed_limit() {
         },
     );
 }
+
+// Added by G3 (DR-135): the owner ledger of the recorder and the owner fold
+// (plan S4).
+#[path = "tests/owner_ledger.rs"]
+mod owner_ledger_tests;

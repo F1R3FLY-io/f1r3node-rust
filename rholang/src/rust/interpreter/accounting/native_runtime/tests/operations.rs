@@ -36,9 +36,16 @@ fn start_row(
     channels: &[Par],
     joins: &[Vec<Par>],
 ) -> OperationOrder {
+    // Changed by G3 (DR-135, S6): play starts every operation through
+    // `start_native_owner_operation`.
+    // budget
+    //     .start_native_operation(source, channels, joins)
+    //     .expect("native operation start")
+    //     .expect("native accounting names each row")
     budget
-        .start_native_operation(source, channels, joins)
+        .start_native_owner_operation(source, channels, joins)
         .expect("native operation start")
+        .0
         .expect("native accounting names each row")
 }
 
@@ -235,8 +242,13 @@ fn native_operation_recording_rejects_overlapping_conflicting_operations() {
         operation_context::sync_scope(name, || introduce(&budget, &source));
     });
     scope(&budget, 1, || {
+        // Changed by G3 (DR-135, S6): play starts every operation through
+        // `start_native_owner_operation`.
+        // assert!(budget
+        //     .start_native_operation(RSpaceOperationSource::Produce(&source), &[channel], &[])
+        //     .is_err());
         assert!(budget
-            .start_native_operation(RSpaceOperationSource::Produce(&source), &[channel], &[])
+            .start_native_owner_operation(RSpaceOperationSource::Produce(&source), &[channel], &[])
             .is_err());
     });
     assert!(budget.native_operation_recording().is_err());

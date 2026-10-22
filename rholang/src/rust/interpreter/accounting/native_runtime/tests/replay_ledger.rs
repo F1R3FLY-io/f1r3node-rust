@@ -26,6 +26,10 @@ fn replay_fixture() -> NativeOperationReplay {
             ),
             granted: index != 2,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         });
         let mut row = operation(
             index,
@@ -57,6 +61,10 @@ fn replay_fixture() -> NativeOperationReplay {
                 ),
                 granted: index == 1,
                 cause: NativeDenialCause::Budget,
+                // Added by G3 (DR-135, S4).
+                owner_refused: false,
+                // Added by G3 (DR-135, S4 review).
+                restorations: Arc::from([]),
             });
             row.budget_end += 1;
         }
@@ -74,6 +82,8 @@ fn replay_fixture() -> NativeOperationReplay {
         transfers: Arc::from([]),
         used: 9,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     let log = events(&rows);
     bind(&recording, rows.into(), log)
@@ -211,11 +221,17 @@ fn single_footprint_fixture(footprint: Vec<Arc<[u8]>>) -> NativeOperationReplay 
             observation: observation(0, AuthorityByteEventKind::ProduceIntroduction, 1),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         }]),
         retries: Arc::from([]),
         transfers: Arc::from([]),
         used: 1,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
     row.footprint = footprint.into();
@@ -605,6 +621,8 @@ fn empty_replay_is_complete_and_supports_root_checkpoint() {
         transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     let replay = bind(&recording, Arc::from([]), Vec::new())
         .unwrap()
@@ -826,6 +844,10 @@ fn source_chain_fixture(sources: &[u8]) -> (NativeOperationReplay, NativeBudgetR
             observation: observation(id as u8, AuthorityByteEventKind::ProduceIntroduction, 1),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         })
         .collect();
     let mut latest = [None; P2_SOURCES as usize];
@@ -852,6 +874,8 @@ fn source_chain_fixture(sources: &[u8]) -> (NativeOperationReplay, NativeBudgetR
         transfers: Arc::from([]),
         used: sources.len() as u64,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     let replay = bind(&recording, rows.into(), log)
         .expect("the generated journal binds")

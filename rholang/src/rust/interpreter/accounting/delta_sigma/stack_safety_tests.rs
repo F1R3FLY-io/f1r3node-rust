@@ -176,7 +176,14 @@ fn node(
     Par {
         cost_signed_terms: signed
             .into_iter()
-            .map(|(signature, body)| CostSignedTerm { body, signature })
+            // Changed by G3 (DR-135, S3b): surface signed terms have no held
+            // price.
+            // .map(|(signature, body)| CostSignedTerm { body, signature })
+            .map(|(signature, body)| CostSignedTerm {
+                body,
+                signature,
+                held_price: None,
+            })
             .collect(),
         cost_stacks: stacks,
         sends: node_sends(sends),
@@ -572,6 +579,8 @@ fn deep_term(depth: usize) -> Par {
         );
         match level % 6 {
             0 => outer.cost_signed_terms.push(CostSignedTerm {
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
                 body: Some(par),
                 signature: Some(ground(u8::try_from(level / 6 % 4).expect("small tag"))),
             }),

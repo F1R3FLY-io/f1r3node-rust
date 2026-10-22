@@ -19,6 +19,8 @@ fn empty_trace() -> CheckedNativeOperationTrace {
         transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     bind(&recording, Arc::from([]), Vec::new()).unwrap()
 }

@@ -510,6 +510,10 @@ proptest! {
                 observation: intro,
                 granted: outcome != 2,
                 cause: NativeDenialCause::Budget,
+                // Added by G3 (DR-135, S4).
+                owner_refused: false,
+                // Added by G3 (DR-135, S4 review).
+                restorations: Arc::from([]),
             });
             let mut row = operation(index as u64, start, start + 1, NativeObservationLink::Attempt(start));
             row.occurrence.path = path;
@@ -523,6 +527,10 @@ proptest! {
                 attempts.push(NativeBudgetAttempt {
                     occurrence: NativeBudgetOccurrence { session: [0; 32], path, stage: NativeAttemptStage::Comm },
                     observation: observation(index as u8, AuthorityByteEventKind::Comm, if outcome == 3 { 101 } else { 0 }), granted: outcome == 1, cause: NativeDenialCause::Budget,
+                    // Added by G3 (DR-135, S4).
+                    owner_refused: false,
+                    // Added by G3 (DR-135, S4 review).
+                    restorations: Arc::from([]),
                 });
                 row.budget_end += 1;
                 row.completion = if outcome == 3 { RSpaceOperationCompletion::Rejected } else { RSpaceOperationCompletion::Matched };
@@ -532,7 +540,7 @@ proptest! {
             }
             rows.push(row);
         }
-        let recording = NativeBudgetRecording { session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), transfers: Arc::from([]), used: 0, paths: Arc::new(trie) };
+        let recording = NativeBudgetRecording { session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), transfers: Arc::from([]), used: 0, paths: Arc::new(trie), owner_table: Arc::from([]) };
         let log = events_in(&recording.paths, &rows);
         let trace = bind(&recording, rows.into(), log.clone()).unwrap();
         let projected: Vec<_> = (0..trace.operation_count()).flat_map(|slot| trace.events(slot).unwrap().iter().cloned()).collect();

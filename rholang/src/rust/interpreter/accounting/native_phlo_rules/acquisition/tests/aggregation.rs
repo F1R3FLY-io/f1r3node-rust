@@ -63,6 +63,8 @@ fn pooled_snapshot(rows: &[(Vec<u8>, [u64; 3])]) -> ByteObservationSnapshot {
                         .map(|instance| CostRegion {
                             instance_id: vec![*instance; 32],
                             signature: Some(pooled_signature(usize::from(*instance))),
+                            // Added by G3 (DR-135): no price and no caller.
+                            ..Default::default()
                         })
                         .collect(),
                 },

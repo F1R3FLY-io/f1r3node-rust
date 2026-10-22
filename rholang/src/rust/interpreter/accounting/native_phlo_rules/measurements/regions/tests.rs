@@ -270,6 +270,8 @@ fn empty_measurements_do_not_invent_demand_and_zero_rows_do_not_hide_malformed_r
     Arc::make_mut(&mut zero).authority.regions.push(CostRegion {
         instance_id: vec![0; 32],
         signature: None,
+        // Added by G3 (DR-135): no price and no caller.
+        ..Default::default()
     });
     let input = snapshot(vec![zero]);
     let measured = rules.measure(&input, 1).unwrap();

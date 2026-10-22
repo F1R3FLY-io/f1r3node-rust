@@ -10,6 +10,10 @@ pub use sections::{
 };
 
 pub const NATIVE_COST_EVIDENCE_V1_DOMAIN: &[u8] = b"f1r3node:native-cost-evidence:v1";
+/// Added by G3 (DR-135, S7): the evidence of owner funding. After `fee_rev`
+/// it holds `owner_phlo` (u64) and `owner_rev` (u128). A v1 record decodes
+/// with both owner terms 0. Every record encodes as v2.
+pub const NATIVE_COST_EVIDENCE_V2_DOMAIN: &[u8] = b"f1r3node:native-cost-evidence:v2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeCostFailureClass {
@@ -48,6 +52,11 @@ pub struct NativeCostEvidenceV1<'a> {
     pub phlo_limit: u64,
     pub phlo_price: u64,
     pub fee_rev: u128,
+    /// Added by G3 (DR-135, S7): the phlo of `fresh_phlo` that owners paid
+    /// at their own prices (R4, G-4).
+    pub owner_phlo: u64,
+    /// Added by G3 (DR-135, S7): the REV that owners paid for `owner_phlo`.
+    pub owner_rev: u128,
     pub failure_class: NativeCostFailureClass,
     pub wallet_settlement_log_events: u64,
     pub budget_recording: &'a [u8],
@@ -71,6 +80,9 @@ pub enum NativeCostEvidenceError {
     PhloBreakdown,
     #[error("native cost evidence REV amount overflows")]
     RevOverflow,
+    /// Added by G3 (DR-135, S7).
+    #[error("native cost evidence has more owner phlo than fresh phlo")]
+    OwnerPhlo,
     #[error(transparent)]
     Section(#[from] NativeSectionError),
     #[error(transparent)]
@@ -79,11 +91,25 @@ pub enum NativeCostEvidenceError {
 
 impl NativeCostEvidenceV1<'_> {
     pub fn encoded_len(&self, limits: PhloWireLimits) -> Result<usize, NativeCostEvidenceError> {
-        let fixed = 20usize
-            .checked_mul(8)
-            .and_then(|bytes| bytes.checked_add(NATIVE_COST_EVIDENCE_V1_DOMAIN.len()))
-            .and_then(|bytes| bytes.checked_add(6 * 32 + 6 * 8 + 16 + 1))
-            .ok_or(PhloWireError::LimitExceeded)?;
+        // Changed by G3 (DR-135, S7): v2 adds the owner phlo and the owner
+        // REV, so it has 22 fields.
+        // let fixed = 20usize
+        //     .checked_mul(8)
+        //     .and_then(|bytes| bytes.checked_add(NATIVE_COST_EVIDENCE_V1_DOMAIN.len()))
+        //     .and_then(|bytes| bytes.checked_add(6 * 32 + 6 * 8 + 16 + 1))
+        //     .ok_or(PhloWireError::LimitExceeded)?;
+        let fixed = if self.has_owner_terms() {
+            22usize
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(NATIVE_COST_EVIDENCE_V2_DOMAIN.len()))
+                .and_then(|bytes| bytes.checked_add(6 * 32 + 7 * 8 + 2 * 16 + 1))
+        } else {
+            20usize
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(NATIVE_COST_EVIDENCE_V1_DOMAIN.len()))
+                .and_then(|bytes| bytes.checked_add(6 * 32 + 6 * 8 + 16 + 1))
+        }
+        .ok_or(PhloWireError::LimitExceeded)?;
         let size = [
             self.budget_recording,
             self.operation_journal,
@@ -105,6 +131,8 @@ impl NativeCostEvidenceV1<'_> {
         Ok(size)
     }
 
+    pub fn has_owner_terms(&self) -> bool { self.owner_phlo != 0 || self.owner_rev != 0 }
+
     pub fn rev_ceiling(&self) -> Result<u128, NativeCostEvidenceError> {
         u128::from(self.phlo_limit)
             .checked_mul(u128::from(self.phlo_price))
@@ -116,17 +144,42 @@ impl NativeCostEvidenceV1<'_> {
         if self.fresh_phlo > self.phlo_used {
             return Err(NativeCostEvidenceError::PhloBreakdown);
         }
+        // Changed by G3 (DR-135, S11): the signed limit bounds only the
+        // caller's part of the usage: the owners pay `owner_phlo` from their
+        // own budgets (item 13). The replaced check follows.
+        // if self
+        //     .phlo_used
+        //     .checked_add(self.retained_phlo)
+        //     .filter(|used| *used <= self.phlo_limit)
+        //     .is_none()
+        // {
+        //     return Err(NativeCostEvidenceError::PhloLimit);
+        // }
         if self
             .phlo_used
+            .checked_sub(self.owner_phlo)
+            .ok_or(NativeCostEvidenceError::OwnerPhlo)?
             .checked_add(self.retained_phlo)
             .filter(|used| *used <= self.phlo_limit)
             .is_none()
         {
             return Err(NativeCostEvidenceError::PhloLimit);
         }
-        u128::from(self.fresh_phlo)
+        // Changed by G3 (DR-135, S7): the client pays the fresh phlo that no
+        // owner paid at the signed price, and the owners pay `owner_rev`.
+        // With no owner phlo this is the v1 amount.
+        // u128::from(self.fresh_phlo)
+        //     .checked_add(u128::from(self.retained_phlo))
+        //     .and_then(|used| used.checked_mul(u128::from(self.phlo_price)))
+        //     .ok_or(NativeCostEvidenceError::RevOverflow)
+        let client_fresh = self
+            .fresh_phlo
+            .checked_sub(self.owner_phlo)
+            .ok_or(NativeCostEvidenceError::OwnerPhlo)?;
+        u128::from(client_fresh)
             .checked_add(u128::from(self.retained_phlo))
             .and_then(|used| used.checked_mul(u128::from(self.phlo_price)))
+            .and_then(|client| client.checked_add(self.owner_rev))
             .ok_or(NativeCostEvidenceError::RevOverflow)
     }
 
@@ -140,9 +193,18 @@ impl NativeCostEvidenceV1<'_> {
         self.rev_ceiling()?;
         self.rev_spent()?;
         let mut wire = PhloWireEncoder::with_capacity(limits, self.encoded_len(limits)?)?;
+        // Changed by G3 (DR-135, S7): v2 encodes the owner phlo and the owner
+        // REV after the fee.
+        // for field in [
+        //     NATIVE_COST_EVIDENCE_V1_DOMAIN,
+        let owner_terms = self.has_owner_terms();
+        wire.bytes(if owner_terms {
+            NATIVE_COST_EVIDENCE_V2_DOMAIN
+        } else {
+            NATIVE_COST_EVIDENCE_V1_DOMAIN
+        })?;
         for field in [
-            NATIVE_COST_EVIDENCE_V1_DOMAIN,
-            &self.envelope_commitment,
+            &self.envelope_commitment[..],
             &self.genesis_policy_commitment,
             &self.schedule_commitment,
             &self.original_funding_root,
@@ -154,7 +216,15 @@ impl NativeCostEvidenceV1<'_> {
             &self.phlo_limit.to_be_bytes(),
             &self.phlo_price.to_be_bytes(),
             &self.fee_rev.to_be_bytes(),
-            &[self.failure_class.as_byte()],
+        ] {
+            wire.bytes(field)?;
+        }
+        if owner_terms {
+            wire.bytes(&self.owner_phlo.to_be_bytes())?;
+            wire.bytes(&self.owner_rev.to_be_bytes())?;
+        }
+        for field in [
+            &[self.failure_class.as_byte()][..],
             &self.wallet_settlement_log_events.to_be_bytes(),
             self.budget_recording,
             self.operation_journal,
@@ -185,9 +255,16 @@ impl<'a> NativeCostEvidenceV1<'a> {
         limits: PhloWireLimits,
     ) -> Result<Self, NativeCostEvidenceError> {
         let mut wire = PhloWireDecoder::new(input, limits)?;
-        if wire.bytes()? != NATIVE_COST_EVIDENCE_V1_DOMAIN {
-            return Err(NativeCostEvidenceError::FormatDomain);
-        }
+        // Changed by G3 (DR-135, S7): a v1 record has no owner terms, so they
+        // decode as 0. A v2 record holds them after the fee.
+        // if wire.bytes()? != NATIVE_COST_EVIDENCE_V1_DOMAIN {
+        //     return Err(NativeCostEvidenceError::FormatDomain);
+        // }
+        let owner_terms = match wire.bytes()? {
+            NATIVE_COST_EVIDENCE_V1_DOMAIN => false,
+            NATIVE_COST_EVIDENCE_V2_DOMAIN => true,
+            _ => return Err(NativeCostEvidenceError::FormatDomain),
+        };
         let record = Self {
             envelope_commitment: fixed_field(&mut wire)?,
             genesis_policy_commitment: fixed_field(&mut wire)?,
@@ -201,6 +278,15 @@ impl<'a> NativeCostEvidenceV1<'a> {
             phlo_limit: u64::from_be_bytes(fixed_field(&mut wire)?),
             phlo_price: u64::from_be_bytes(fixed_field(&mut wire)?),
             fee_rev: u128::from_be_bytes(fixed_field(&mut wire)?),
+            // Added by G3 (DR-135, S7).
+            owner_phlo: match owner_terms {
+                true => u64::from_be_bytes(fixed_field(&mut wire)?),
+                false => 0,
+            },
+            owner_rev: match owner_terms {
+                true => u128::from_be_bytes(fixed_field(&mut wire)?),
+                false => 0,
+            },
             failure_class: NativeCostFailureClass::from_byte(fixed_field::<1>(&mut wire)?[0])?,
             wallet_settlement_log_events: u64::from_be_bytes(fixed_field(&mut wire)?),
             budget_recording: wire.bytes()?,
@@ -210,6 +296,9 @@ impl<'a> NativeCostEvidenceV1<'a> {
             wallet_settlement: wire.bytes()?,
         };
         wire.finish()?;
+        if owner_terms != record.has_owner_terms() {
+            return Err(NativeCostEvidenceError::FormatDomain);
+        }
         record.rev_ceiling()?;
         record.rev_spent()?;
         Ok(record)

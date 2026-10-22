@@ -40,6 +40,10 @@ fn recording(decisions: &[bool]) -> NativeBudgetRecording {
             }),
             granted: *granted,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         })
         .collect();
     let retries: Vec<_> = attempts
@@ -64,6 +68,8 @@ fn recording(decisions: &[bool]) -> NativeBudgetRecording {
         transfers: Arc::from([]),
         used: 0,
         paths: Arc::new(paths),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     }
 }
 

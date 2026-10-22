@@ -29,6 +29,8 @@ use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+// Added by G3 (DR-135, S3b H8): a native recorded reply must be plain data.
+use super::accounting::owner_funding::plain_data;
 use super::accounting::RuntimeBudget;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
@@ -692,6 +694,36 @@ fn native_failure_reply(name: &str, code: super::io::errors::FserrCode, text: &s
     super::io::response::err(code, format!("{name}: {text}"))
 }
 
+/// Added by G3 (DR-135, S3b H8): the reply that native play records for the
+/// service reply `reply` of process `name`. A reply that is not plain data
+/// becomes the paid `EXT_FAILED` failure reply before the size fold and the
+/// record-room take, so it takes no room. No code names a bad output, so the
+/// failure code is the general one. A plain reply takes its bytes of the
+/// record room, as in DR-114.
+pub(crate) fn native_played_reply(name: &str, reply: Vec<Par>, cost: &RuntimeBudget) -> Vec<Par> {
+    if !reply.iter().all(plain_data) {
+        return vec![native_failure_reply(
+            name,
+            EXT_FAILED,
+            "external output is not plain data",
+        )];
+    }
+    let bytes = reply.iter().try_fold(0_u64, |total, par| {
+        u64::try_from(par.encoded_len())
+            .ok()
+            .and_then(|bytes| bytes.checked_add(64))
+            .and_then(|bytes| total.checked_add(bytes))
+    });
+    match bytes {
+        Some(bytes) if cost.take_native_record_room(bytes) => reply,
+        _ => vec![native_failure_reply(
+            name,
+            EXT_OUTPUT_TOO_LARGE,
+            "external output exceeds the record room",
+        )],
+    }
+}
+
 #[derive(Clone)]
 pub struct ProcessContext {
     pub space: ExecutionSpace,
@@ -1291,25 +1323,37 @@ impl SystemProcesses {
                     "native replay of {name} has no recorded output"
                 )));
             }
+            // Added by G3 (DR-135, S3b H8): play records only plain data, so
+            // a recorded output of another shape is an invalid recording. The
+            // check runs before the produce, and the block is rejected.
+            if !previous_output.iter().all(plain_data) {
+                return Err(InterpreterError::BugFoundError(format!(
+                    "native replay of {name} has a recorded output that is not plain data"
+                )));
+            }
             previous_output
         } else {
             match self.native_service_call(body_ref, request).await {
-                NativeCallOutcome::Reply(reply) => {
-                    let bytes = reply.iter().try_fold(0_u64, |total, par| {
-                        u64::try_from(par.encoded_len())
-                            .ok()
-                            .and_then(|bytes| bytes.checked_add(64))
-                            .and_then(|bytes| total.checked_add(bytes))
-                    });
-                    match bytes {
-                        Some(bytes) if cost.take_native_record_room(bytes) => reply,
-                        _ => vec![native_failure_reply(
-                            name,
-                            EXT_OUTPUT_TOO_LARGE,
-                            "external output exceeds the record room",
-                        )],
-                    }
-                }
+                // Changed by G3 (DR-135, S3b H8): the reply passes the
+                // plain-data check before the size fold and the record-room
+                // take, in `native_played_reply`.
+                // NativeCallOutcome::Reply(reply) => {
+                //     let bytes = reply.iter().try_fold(0_u64, |total, par| {
+                //         u64::try_from(par.encoded_len())
+                //             .ok()
+                //             .and_then(|bytes| bytes.checked_add(64))
+                //             .and_then(|bytes| total.checked_add(bytes))
+                //     });
+                //     match bytes {
+                //         Some(bytes) if cost.take_native_record_room(bytes) => reply,
+                //         _ => vec![native_failure_reply(
+                //             name,
+                //             EXT_OUTPUT_TOO_LARGE,
+                //             "external output exceeds the record room",
+                //         )],
+                //     }
+                // }
+                NativeCallOutcome::Reply(reply) => native_played_reply(name, reply, cost),
                 NativeCallOutcome::BadArgument => {
                     vec![native_failure_reply(name, EXT_BAD_ARG, "invalid argument")]
                 }

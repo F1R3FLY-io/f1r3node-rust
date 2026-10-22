@@ -10,6 +10,8 @@ use rand::seq::SliceRandom;
 use serde::Serialize;
 
 use super::RSpace;
+// Added by G3 (DR-135, S5): the owner checks of an owner-funded produce.
+use super::accounting::ProduceAdmission;
 // Changed by DR-129: restored dev's randomized candidate order (user decision
 // 2026-10-12). Play no longer calls the canonical order.
 // use crate::rspace::candidate_order::CandidateSource;
@@ -18,6 +20,8 @@ use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
     LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RSPACE_METRICS_SOURCE,
 };
+// Added by G3 (DR-135, S5): the owner checks of a match.
+use crate::rspace::operation_context::MatchAdmission;
 use crate::rspace::rspace_interface::{
     MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceAccountingObserver,
     RSpaceOperationCompletion, RSpaceOperationSource,
@@ -90,20 +94,52 @@ where
         observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         Self::observe_produce(observer, produce_ref, &channel, &data, persist)?;
+        // Added by G3 (DR-135, S5): with owner funding the matcher runs the
+        // owner checks (R5, R6), and the tuple test observes the COMM.
+        let admission = observer
+            .filter(|observer| observer.owner_checks_active())
+            .map(|observer| ProduceAdmission::new(self, observer, produce_ref, persist, &channel));
         let t1 = Instant::now();
-        let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
-            a: data.clone(),
-            persist,
-            source: produce_ref.clone(),
-        });
+        // Changed by G3 (DR-135, S5): the extraction takes the owner checks.
+        // let extracted = self.extract_produce_candidate(
+        //     grouped_channels, channel.clone(), Datum {
+        //     a: data.clone(),
+        //     persist,
+        //     source: produce_ref.clone(),
+        // });
+        let extracted = self.extract_produce_candidate(
+            grouped_channels,
+            channel.clone(),
+            Datum {
+                a: data.clone(),
+                persist,
+                source: produce_ref.clone(),
+            },
+            admission
+                .as_ref()
+                .map(|admission| admission as &dyn MatchAdmission<C, P, A, K>),
+        );
         metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
+        // Added by G3 (DR-135, S5): a hard error that an owner check kept.
+        if let Some(error) = admission.as_ref().and_then(ProduceAdmission::take_error) {
+            return Err(error);
+        }
 
         match extracted {
             Some(produce_candidate) => {
                 let t2 = Instant::now();
+                // Changed by G3 (DR-135, S5): the tuple test observed the COMM
+                // of an owner-funded match.
+                // .process_match_found(produce_candidate, produce_ref, persist, observer)
                 let result = self
-                    .process_match_found(produce_candidate, produce_ref, persist, observer)
+                    .process_match_found(
+                        produce_candidate,
+                        produce_ref,
+                        persist,
+                        observer,
+                        admission.is_some(),
+                    )
                     .map(|result| {
                         result.map(|consume_result| {
                             (consume_result.0, consume_result.1, produce_ref.clone())
@@ -133,11 +169,20 @@ where
      * data. And then in 'run_matcher_for_channels' we call the functions
      * defined below
      */
+    // Changed by G3 (DR-135, S5): the search takes the owner checks of an
+    // owner-funded produce.
+    // fn extract_produce_candidate(
+    //     &self,
+    //     grouped_channels: Vec<Vec<C>>,
+    //     bat_channel: C,
+    //     data: Datum<A>,
+    // ) -> MaybeProduceCandidate<C, P, A, K> {
     fn extract_produce_candidate(
         &self,
         grouped_channels: Vec<Vec<C>>,
         bat_channel: C,
         data: Datum<A>,
+        admission: Option<&dyn MatchAdmission<C, P, A, K>>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let fetch_matching_continuations =
             |channels: Vec<C>| -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)> {
@@ -167,19 +212,36 @@ where
             (channel, shuffled_data)
         };
 
+        // Changed by G3 (DR-135, S5): with the owner checks.
+        // self.run_matcher_for_channels(
+        //     grouped_channels,
+        //     fetch_matching_continuations,
+        //     fetch_matching_data,
+        // )
         self.run_matcher_for_channels(
             grouped_channels,
             fetch_matching_continuations,
             fetch_matching_data,
+            admission,
         )
     }
 
+    // Changed by G3 (DR-135, S5): the tuple test of an owner-funded match
+    // already observed the COMM.
+    // fn process_match_found(
+    //     &self,
+    //     pc: ProduceCandidate<C, P, A, K>,
+    //     produce_ref: &Produce,
+    //     produce_persistent: bool,
+    //     observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    // ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
     fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
         produce_ref: &Produce,
         produce_persistent: bool,
         observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        comm_observed: bool,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
@@ -196,20 +258,32 @@ where
             source: consume_ref,
         } = &continuation;
 
-        let produce_counters_closure = |produces: &[Produce]| {
-            let mut counters = self.produce_counters(produces);
-            if !produce_persistent && produces.contains(produce_ref) {
-                *counters.entry(produce_ref.clone()).or_insert(0) += 1;
-            }
-            counters
-        };
-        let comm = COMM::new(
+        // Changed by G3 (DR-135, S5): the COMM is built as the tuple test
+        // builds it.
+        // let produce_counters_closure = |produces: &[Produce]| {
+        //     let mut counters = self.produce_counters(produces);
+        //     if !produce_persistent && produces.contains(produce_ref) {
+        //         *counters.entry(produce_ref.clone()).or_insert(0) += 1;
+        //     }
+        //     counters
+        // };
+        // let comm = COMM::new(
+        //     &data_candidates,
+        //     consume_ref.clone(),
+        //     peeks.clone(),
+        //     produce_counters_closure,
+        // );
+        // Self::observe_comm(observer, &comm, _cont, *persist, &data_candidates)?;
+        let comm = self.produce_comm(
             &data_candidates,
-            consume_ref.clone(),
-            peeks.clone(),
-            produce_counters_closure,
+            consume_ref,
+            peeks,
+            produce_ref,
+            produce_persistent,
         );
-        Self::observe_comm(observer, &comm, _cont, *persist, &data_candidates)?;
+        if !comm_observed {
+            Self::observe_comm(observer, &comm, _cont, *persist, &data_candidates)?;
+        }
         self.log_produce(produce_ref, produce_persistent);
         self.log_comm(comm, PRODUCE_COMM_LABEL);
 
@@ -221,6 +295,27 @@ where
         self.remove_matched_datum_and_join(&channels, &data_candidates);
 
         Ok(self.wrap_result(&channels, &continuation, &data_candidates))
+    }
+
+    /// Added by G3 (DR-135, S5): the COMM of a produce that matched
+    /// `data_candidates`. The tuple test and the match build it in one way:
+    /// a non-persistent incoming produce counts once more.
+    pub(super) fn produce_comm(
+        &self,
+        data_candidates: &[ConsumeCandidate<C, A>],
+        consume_ref: &crate::rspace::trace::event::Consume,
+        peeks: &std::collections::BTreeSet<i32>,
+        produce_ref: &Produce,
+        produce_persistent: bool,
+    ) -> COMM {
+        let produce_counters_closure = |produces: &[Produce]| {
+            let mut counters = self.produce_counters(produces);
+            if !produce_persistent && produces.contains(produce_ref) {
+                *counters.entry(produce_ref.clone()).or_insert(0) += 1;
+            }
+            counters
+        };
+        COMM::new(data_candidates, consume_ref.clone(), peeks.clone(), produce_counters_closure)
     }
 
     fn store_data(
@@ -261,6 +356,17 @@ where
         }
     }
 
+    // Changed by G3 (DR-135, S5): with the owner checks of an owner-funded
+    // produce.
+    // fn run_matcher_for_channels(
+    //     &self,
+    //     grouped_channels: Vec<Vec<C>>,
+    //     fetch_matching_continuations: impl Fn(
+    //         Vec<C>,
+    //     )
+    //         -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
+    //     fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
+    // ) -> MaybeProduceCandidate<C, P, A, K> {
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
@@ -269,6 +375,7 @@ where
         )
             -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
+        admission: Option<&dyn MatchAdmission<C, P, A, K>>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
         for channels in &grouped_channels {
             let t_cont = Instant::now();
@@ -287,11 +394,19 @@ where
                 .increment(t_data.elapsed().as_nanos() as u64);
 
             let t_match = Instant::now();
+            // Changed by G3 (DR-135, S5): with the owner checks.
+            // let first_match = self.extract_first_match(
+            //     &self.matcher,
+            //     channels.to_vec(),
+            //     match_candidates,
+            //     channel_to_indexed_data,
+            // );
             let first_match = self.extract_first_match(
                 &self.matcher,
                 channels.to_vec(),
                 match_candidates,
                 channel_to_indexed_data,
+                admission,
             );
             metrics::counter!("rspace.matcher.extract_first_match_ns", "source" => RSPACE_METRICS_SOURCE)
                 .increment(t_match.elapsed().as_nanos() as u64);

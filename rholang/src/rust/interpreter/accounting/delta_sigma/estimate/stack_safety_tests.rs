@@ -679,7 +679,10 @@ fn nested_list(depth: usize) -> Par {
 fn a_datum_at_the_sizing_bound_is_sized_on_a_small_stack() {
     let reducer = evaluator(HashMap::new());
     let core = isolated_evaluator(&reducer);
-    let probe = Estimator::new(&funding(), &core).expect("an estimator");
+    // Changed by G3 (DR-135): the estimator takes the price of the regions.
+    // let probe = Estimator::new(&funding(), &core).expect("an estimator");
+    let probe =
+        Estimator::new(&funding(), schedule([1; 4]).actual_price, &core).expect("an estimator");
     let env_height = probe.env_height;
     let fits = |height: u32| height + env_height + WRAPPER_MARGIN <= SIZING_HEIGHT_LIMIT;
     let mut depth = 0usize;
@@ -900,6 +903,8 @@ fn arb_scanned_signature() -> impl Strategy<Value = CostSignature> {
             2 => (inner.clone(), arb_scanned_leaf()).prop_map(|(signature, body)| {
                 scanned_signature(CostSignatureValue::Quote(Par {
                     cost_signed_terms: vec![CostSignedTerm {
+                        // Added by G3 (DR-135, S3b): a surface signed term.
+                        held_price: None,
                         body: Some(body),
                         signature: Some(signature),
                     }],
@@ -917,6 +922,8 @@ fn arb_scanned_signature() -> impl Strategy<Value = CostSignature> {
             1 => (inner.clone(), arb_scanned_leaf()).prop_map(|(signature, datum)| {
                 let signed = Par {
                     cost_signed_terms: vec![CostSignedTerm {
+                        // Added by G3 (DR-135, S3b): a surface signed term.
+                        held_price: None,
                         body: None,
                         signature: Some(signature),
                     }],
@@ -988,6 +995,8 @@ fn deep_signature(depth: usize, bottom: CostSignature) -> CostSignature {
     for _ in 0..depth {
         signature = scanned_signature(CostSignatureValue::Quote(Par {
             cost_signed_terms: vec![CostSignedTerm {
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
                 body: None,
                 signature: Some(signature),
             }],
@@ -1013,6 +1022,8 @@ fn the_variable_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_smal
             .spawn(move || {
                 dismantle_term(Par {
                     cost_signed_terms: vec![CostSignedTerm {
+                        // Added by G3 (DR-135, S3b): a surface signed term.
+                        held_price: None,
                         body: None,
                         signature: Some(signature),
                     }],

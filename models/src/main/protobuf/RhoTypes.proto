@@ -67,11 +67,27 @@ message CostSignatureCompound {
 message CostSignedTerm {
   Par body = 1;
   CostSignature signature = 2;
+  // Added by G3 (DR-135, S3b): the price of the holder of a held term (Rule
+  // H). Only the reducer sets it, on the held terms that it makes. A signed
+  // term of the surface syntax has no held price, which prost omits.
+  optional uint64 held_price = 3;
 }
 
 message CostRegion {
   bytes instance_id = 1;
   CostSignature signature = 2;
+  // Added by G3 (DR-135): the signed price of the context that created the
+  // region (R4). Zero outside native execution, which prost omits.
+  uint64 price = 3;
+  // Added by G3 (DR-135): on a system residue region, the caller of the system
+  // body (A1). Absent everywhere else.
+  CostCaller caller = 4;
+}
+
+// Added by G3 (DR-135): an owner with its signed price (A1).
+message CostCaller {
+  CostSignature signature = 1;
+  uint64 price = 2;
 }
 
 message CostAuthority {

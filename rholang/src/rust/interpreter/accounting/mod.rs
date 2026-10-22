@@ -49,6 +49,8 @@ pub mod phlo_controls;
 pub mod native_phlo_rules;
 pub mod phlo_execution;
 pub mod economic_failure;
+// Added by G3 (DR-135): owners fund their stored processes.
+pub mod owner_funding;
 mod native_runtime;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -176,6 +178,14 @@ pub struct RuntimeBudget {
     unmetered: Arc<AtomicU64>,
     comm_accounting_scopes: Arc<AtomicUsize>,
     authority_state: Arc<Mutex<AuthorityRuntimeState>>,
+    // Added by G3 (DR-135): the signed price of the running native execution.
+    // Every region that the run creates carries it (R4). It is 0 outside
+    // native execution. The accessor is in `owner_funding.rs`.
+    region_price: Arc<AtomicU64>,
+    // Added by G3 (DR-135): the owner funding of the running native execution
+    // (R11). Each fired body loads it without a lock. Without it every G3
+    // hook keeps the behavior of dev. The accessor is in `owner_funding.rs`.
+    owner_binding: Arc<arc_swap::ArcSwapOption<owner_funding::OwnerFundingBinding>>,
 }
 
 struct LegacyCostState {
@@ -529,6 +539,10 @@ impl RuntimeBudget {
             unmetered: Arc::new(AtomicU64::new(0)),
             comm_accounting_scopes: Arc::new(AtomicUsize::new(0)),
             authority_state: Arc::new(Mutex::new(AuthorityRuntimeState::default())),
+            // Added by G3 (DR-135).
+            region_price: Arc::new(AtomicU64::new(0)),
+            // Added by G3 (DR-135).
+            owner_binding: Arc::new(arc_swap::ArcSwapOption::empty()),
         }
     }
 
@@ -887,8 +901,17 @@ impl RuntimeBudget {
         let signature =
             authority::sig_to_cost_signature(&current_signature).map_err(native_authority_error)?;
         drop(current_signature);
-        let region = authority::cost_region(&signature, &identity, u32::from(kind.tag()))
-            .map_err(native_authority_error)?;
+        // Changed by G3 (DR-135): the fallback region carries the price of the
+        // running context (R4).
+        // let region = authority::cost_region(&signature, &identity, u32::from(kind.tag()))
+        //     .map_err(native_authority_error)?;
+        let region = authority::priced_cost_region(
+            &signature,
+            &identity,
+            u32::from(kind.tag()),
+            self.region_price(),
+        )
+        .map_err(native_authority_error)?;
         canonical_native_authority(&CostAuthority {
             regions: vec![region],
         })
@@ -1061,7 +1084,9 @@ impl RuntimeBudget {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
-        self.reserve_canonical_authority_identity(identity, witness, cost, Some(measurement))
+        // Changed by G3 (DR-135, S4): the core takes the owner terms of a COMM.
+        // self.reserve_canonical_authority_identity(identity, witness, cost, Some(measurement))
+        self.reserve_canonical_authority_identity(identity, witness, cost, Some(measurement), None)
     }
 
     pub fn prepare_authority_stack_transfer(
@@ -1310,18 +1335,36 @@ impl RuntimeBudget {
         //     canonical_observation_authority(cost_authority, host.as_ref())?;
         // let demand = native_authority_demand(&canonical_authority, host.as_ref())?;
         let witness = canonical_native_witness(cost_authority)?;
-        self.reserve_canonical_authority_identity(identity, witness, comm_byte_cost, measurement)
+        // Changed by G3 (DR-135, S4): the core takes the owner terms of a COMM.
+        // self.reserve_canonical_authority_identity(identity, witness, comm_byte_cost, measurement)
+        self.reserve_canonical_authority_identity(
+            identity,
+            witness,
+            comm_byte_cost,
+            measurement,
+            None,
+        )
     }
 
     /// Added by D-F1 (DR-117): the COMM reservation core for a canonical
     /// witness. It keeps the empty-authority error of the canonicalization
     /// and reads the demand from the witness.
+    // Changed by G3 (DR-135, S4): the core takes the owner terms of a COMM
+    // (A5, R9). Without owner funding they are none.
+    // fn reserve_canonical_authority_identity(
+    //     &self,
+    //     identity: [u8; 32],
+    //     witness: authority::CanonicalAuthority,
+    //     comm_byte_cost: u64,
+    //     measurement: Option<byte_accounting::ByteCharge>,
+    // ) -> Result<(), InterpreterError> {
     fn reserve_canonical_authority_identity(
         &self,
         identity: [u8; 32],
         witness: authority::CanonicalAuthority,
         comm_byte_cost: u64,
         measurement: Option<byte_accounting::ByteCharge>,
+        extras: Option<owner_funding::OwnerCommExtras>,
     ) -> Result<(), InterpreterError> {
         if witness.is_empty() {
             return Err(InterpreterError::ReduceError(
@@ -1338,7 +1381,10 @@ impl RuntimeBudget {
             measurement,
             legacy_amount,
         });
-        let prepared = self.prepare_native_observation(&observation)?;
+        // Changed by G3 (DR-135, S4): the preparation also takes the owner
+        // terms of the COMM.
+        // let prepared = self.prepare_native_observation(&observation)?;
+        let prepared = self.prepare_native_observation_with(&observation, extras)?;
         let mut state = self.authority_state.lock().expect("authority state");
         // Disabled by C13 (DR-80): one charge on the summed size covered three
         // linear searches and the inserts. A B-tree bound is charged for each
@@ -1407,7 +1453,14 @@ impl RuntimeBudget {
                 weight,
                 "COMM authority and byte debit",
             ) {
-                state.frontier.insert(identity, canonical_authority);
+                // Changed by G3 (DR-135, S4, SA6): an owner refusal leaves no
+                // frontier entry, as replay inserts none for it. The frontier
+                // insert of the allocation check above sees no owner refusal,
+                // because the meter decides after it.
+                // state.frontier.insert(identity, canonical_authority);
+                if !owner_funding::is_owner_refusal(&error) {
+                    state.frontier.insert(identity, canonical_authority);
+                }
                 return Err(error);
             }
         }
@@ -2002,6 +2055,11 @@ impl RuntimeBudget {
             authority.pending_replay_events.clear();
             authority.pending_replay_rows = 0;
         }
+        // Added by G3 (DR-135): a reset budget has no native price. A native
+        // configuration sets it again.
+        self.region_price.store(0, Ordering::Release);
+        // Added by G3 (DR-135): nor an owner binding (R11).
+        self.owner_binding.store(None);
         *cache = None;
     }
 

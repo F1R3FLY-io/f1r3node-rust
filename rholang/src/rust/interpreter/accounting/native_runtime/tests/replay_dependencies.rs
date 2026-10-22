@@ -9,12 +9,20 @@ fn retry_waits_for_its_exact_accepted_owner_while_independent_work_proceeds() {
             observation: accepted.clone(),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         },
         NativeBudgetAttempt {
             occurrence: occurrence(1, NativeAttemptStage::ProduceIntroduction),
             observation: observation(1, AuthorityByteEventKind::ProduceIntroduction, 2),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         },
     ];
     let retry = NativeBudgetRetry {
@@ -37,6 +45,8 @@ fn retry_waits_for_its_exact_accepted_owner_while_independent_work_proceeds() {
         transfers: Arc::from([]),
         used: 3,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     let replay = bind(&recording, rows.into(), log)
         .unwrap()
@@ -160,6 +170,10 @@ proptest! {
             observation: observation(id as u8, AuthorityByteEventKind::ProduceIntroduction, 1),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         }).collect();
         let mut latest = [None; 8];
         let rows: Vec<_> = channels.iter().enumerate().map(|(id, channel)| {
@@ -172,6 +186,8 @@ proptest! {
         let log = events(&rows);
         let recording = NativeBudgetRecording {
             session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), transfers: Arc::from([]), used: channels.len() as u64, paths: fixture_paths(),
+            // Added by G3 (DR-135, S4).
+            owner_table: Arc::from([]),
         };
         let replay = bind(&recording, rows.into(), log).unwrap().into_replay().unwrap();
         let root = replay.checkpoint().unwrap();

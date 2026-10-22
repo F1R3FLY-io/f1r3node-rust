@@ -459,9 +459,16 @@ async fn native_typed_replay_preserves_denied_comm_and_accepted_introduction_usa
             // budget
             //     .start_native_operation(source, &channels, &[])
             //     .unwrap();
+            // Changed by G3 (DR-135, S6): play starts every operation through
+            // `start_native_owner_operation`.
+            // let name = budget
+            //     .start_native_operation(source, &channels, &[])
+            //     .expect("native operation start")
+            //     .expect("native accounting names each row");
             let name = budget
-                .start_native_operation(source, &channels, &[])
+                .start_native_owner_operation(source, &channels, &[])
                 .expect("native operation start")
+                .0
                 .expect("native accounting names each row");
             operation_context::sync_scope(name, || {
                 if produce {

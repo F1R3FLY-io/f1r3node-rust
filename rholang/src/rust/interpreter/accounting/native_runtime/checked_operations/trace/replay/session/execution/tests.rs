@@ -31,6 +31,8 @@ use crate::rust::interpreter::system_processes::Definition;
 mod funding;
 // Added by DR-114: recorded external-service calls in native execution.
 mod recorded_calls;
+// Added by G3 (DR-135, S6): native replay of runs with owner funding.
+mod owner_replay;
 use funding::FundingFixture;
 
 fn extra_processes() -> Vec<Definition> {
@@ -132,6 +134,8 @@ async fn replay_process_with_context(
     .await
 }
 
+// Changed by DR-134 (DR-70): the body moved to `replay_process_logged`; the
+// harness replays without a logger.
 async fn replay_process_with_funding(
     term: &str,
     limit: u64,
@@ -139,6 +143,31 @@ async fn replay_process_with_funding(
     check_authority: bool,
     interruption: Interruption,
     funding: FundingFixture,
+) -> (Option<u64>, bool) {
+    replay_process_logged(
+        term,
+        limit,
+        change_context,
+        check_authority,
+        interruption,
+        funding,
+        None,
+    )
+    .await
+}
+
+/// Added by DR-134 (DR-70): `replay_process_with_funding` whose native replay
+/// logs its stored and matched operations to `logger`, as a block report does.
+/// Every assertion of the harness compares the replay with play, so a run with
+/// a logger shows that the logger does not change the replay.
+async fn replay_process_logged(
+    term: &str,
+    limit: u64,
+    change_context: bool,
+    check_authority: bool,
+    interruption: Interruption,
+    funding: FundingFixture,
+    logger: Option<crate::rust::interpreter::rho_runtime::RhoSpaceLogger>,
 ) -> (Option<u64>, bool) {
     let weights = funding.weights;
     let injection = match term.contains(INTEGER_ADD_TAG_URI) {
@@ -221,18 +250,21 @@ async fn replay_process_with_funding(
     replay_budget
         .reset_for_native_execution(replay_settings)
         .unwrap();
-    let mut environment = create_native_replay_env(
-        trace,
-        history.clone(),
-        Arc::new(Box::new(Matcher)),
-        Arc::new(RwLock::new(HashMap::new())),
-        Arc::new(default_mergeable_tags()),
-        &mut extra_processes(),
-        replay_budget,
-        ExternalServices::noop(),
-    )
-    .await
-    .unwrap();
+    // Changed by DR-134 (DR-70): the replay takes the optional logger.
+    let mut environment =
+        crate::rust::interpreter::rho_runtime::create_native_replay_env_with_logger(
+            trace,
+            history.clone(),
+            Arc::new(Box::new(Matcher)),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(default_mergeable_tags()),
+            &mut extra_processes(),
+            replay_budget,
+            ExternalServices::noop(),
+            logger,
+        )
+        .await
+        .unwrap();
     assert_eq!(environment.urn_map(), reducer.urn_map.as_ref());
     assert_eq!(
         environment.mergeable_tags(),
@@ -548,6 +580,51 @@ proptest! {
             assert!(denied, "no round denied a COMM at its limit");
         });
     }
+}
+
+/// Added by DR-134 (DR-70): a native replay with dev's reporting logger passes
+/// every play-versus-replay assertion of the harness, so the logger does not
+/// change the replay. It logs each produce and each consume once, and each
+/// COMM once, whichever side of a COMM arrives first, as dev's ReplayRSpace
+/// logs them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reporting_logger_records_the_native_replay_without_changing_it() {
+    use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingLogger};
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let logger: crate::rust::interpreter::rho_runtime::RhoSpaceLogger = Box::new(ReportingLogger {
+        report: Arc::new(std::sync::Mutex::new(Vec::new())),
+        soft_report: events.clone(),
+    });
+    replay_process_logged(
+        r#"new x in { x!(1) | for (@v <- x) { @"out"!(v) } }"#,
+        1_000_000,
+        false,
+        false,
+        Interruption::None,
+        FundingFixture::default(),
+        Some(logger),
+    )
+    .await;
+    // The harness evaluates the term twice: once, and again after it restores
+    // the checkpoint of the start. Each run has two produces, one consume and
+    // one COMM.
+    let events = events.lock().expect("the report buffer lock");
+    let count = |pick: fn(&ReportingEvent<_, _, _, _>) -> bool| {
+        events.iter().filter(|event| pick(event)).count()
+    };
+    assert_eq!(
+        count(|event| matches!(event, ReportingEvent::ReportingProduce(_))),
+        4
+    );
+    assert_eq!(
+        count(|event| matches!(event, ReportingEvent::ReportingConsume(_))),
+        2
+    );
+    assert_eq!(
+        count(|event| matches!(event, ReportingEvent::ReportingComm(_))),
+        2
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

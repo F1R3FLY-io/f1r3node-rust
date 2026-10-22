@@ -10,10 +10,16 @@ mod execution;
 pub use acquisition::{
     NativePhloAcquisitionDemand, NativePhloAcquisitionError, NativePhloAcquisitionLimits,
 };
-pub(super) use execution::CheckedNativeBudgetEvidence;
 // Added by dedup (task 11415, D8): the leaf walk of the native meter, which the
 // estimate shares.
 pub(crate) use execution::{signature_leaf_units, SignatureUnitsMeter};
+// Changed by G3 (DR-135, S4): the owner ledger and the owner fold.
+// pub(super) use execution::CheckedNativeBudgetEvidence;
+// Changed by G3 (DR-135, S6): replay reads the owner fold.
+// pub(super) use execution::{CheckedNativeBudgetEvidence, OwnerFoldInput, OwnerReservation};
+pub(super) use execution::{
+    CheckedNativeBudgetEvidence, OwnerFold, OwnerFoldInput, OwnerReservation,
+};
 pub use execution::{
     CheckedNativeBudgetTrace, NativeAttemptStage, NativeBoundSource, NativeBudgetAttempt,
     NativeBudgetOccurrence, NativeBudgetReplayDecision, NativeBudgetTraceError,

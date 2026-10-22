@@ -728,6 +728,8 @@ fn cost_schema_fields_match_derived_bincode_decoder() {
         cost_signed_terms: vec![CostSignedTerm {
             body: Some(Par::default()),
             signature: Some(compound),
+            // Added by G3 (DR-135, S3b): the largest held price.
+            held_price: Some(u64::MAX),
         }],
         cost_stacks: vec![stack.clone()],
         ..Default::default()
@@ -883,4 +885,212 @@ fn a_truncated_row_that_holds_a_deep_compound_is_rejected_on_a_small_stack() {
         .expect("spawn the small-stack thread")
         .join()
         .expect("the machine overflowed a small stack while TEARING DOWN a rejected row");
+}
+
+// ===========================================================================
+// Added by G3 (DR-135): the price and the caller of a region (SA3)
+// ===========================================================================
+
+/// Added by G3 (DR-135): every combination of a region's signature, price and
+/// caller decodes as the derived decoder reads it, with the exact extent and
+/// with trailing bytes. The decoded regions hold the encoded prices and
+/// callers. A machine that skipped the two fields would misread every later
+/// region, and the field check names the first region that differs.
+#[test]
+fn record_decoder_decodes_prices_and_callers() {
+    use models::rhoapi::{CostAuthority, CostCaller, CostRegion};
+
+    let signatures = [
+        None,
+        Some(corpus::unit_signature()),
+        Some(corpus::compound_signature()),
+    ];
+    let prices = [0_u64, 1, u64::MAX];
+    let callers = [
+        None,
+        Some(CostCaller {
+            signature: None,
+            price: 0,
+        }),
+        Some(CostCaller {
+            signature: Some(corpus::compound_signature()),
+            price: 2,
+        }),
+        Some(corpus::quoting_caller()),
+    ];
+    let mut regions = Vec::with_capacity(signatures.len() * prices.len() * callers.len());
+    for signature in &signatures {
+        for price in prices {
+            for caller in &callers {
+                let index = u8::try_from(regions.len()).expect("fewer than 256 regions");
+                regions.push(CostRegion {
+                    instance_id: vec![index; 32],
+                    signature: signature.clone(),
+                    price,
+                    caller: caller.clone(),
+                });
+            }
+        }
+    }
+    let authority = CostAuthority { regions };
+    let list = ListParWithRandom {
+        pars: vec![corpus::gint(1)],
+        random_state: vec![3],
+        cost_authority: Some(authority.clone()),
+        cost_stack: None,
+    };
+    let continuation = TaggedContinuation {
+        guard: None,
+        cost_authority: Some(authority.clone()),
+        tagged_cont: Some(TaggedCont::ScalaBodyRef(7)),
+    };
+    agree("priced ListParWithRandom", &list);
+    agree("priced TaggedContinuation", &continuation);
+    agree_with_trailing("priced ListParWithRandom trailing", &list);
+    agree_with_trailing("priced TaggedContinuation trailing", &continuation);
+
+    let decoded = ListParWithRandom::cold_decode(&bincode::serialize(&list).expect("serialize"))
+        .expect("the machine decodes priced regions");
+    let decoded = decoded
+        .cost_authority
+        .expect("the decoded datum keeps its authority")
+        .regions;
+    assert_eq!(decoded.len(), authority.regions.len());
+    for (index, (decoded, encoded)) in decoded.iter().zip(&authority.regions).enumerate() {
+        assert_eq!(decoded.price, encoded.price, "the price of region {index}");
+        assert_eq!(
+            decoded.caller, encoded.caller,
+            "the caller of region {index}"
+        );
+        assert_eq!(decoded, encoded, "region {index}");
+    }
+
+    // Every truncation of one region of each caller shape is rejected exactly
+    // when the derived decoder rejects it.
+    let short = ListParWithRandom {
+        pars: Vec::new(),
+        random_state: Vec::new(),
+        cost_authority: Some(CostAuthority {
+            regions: authority
+                .regions
+                .iter()
+                .skip(signatures.len() * prices.len() * callers.len() - callers.len())
+                .cloned()
+                .collect(),
+        }),
+        cost_stack: None,
+    };
+    let bytes = bincode::serialize(&short).expect("serialize");
+    for end in 0..bytes.len() {
+        let prefix = &bytes[..end];
+        assert_eq!(
+            ListParWithRandom::cold_decode_prefix(prefix).is_ok(),
+            bincode::deserialize::<ListParWithRandom>(prefix).is_ok(),
+            "truncation at {end} of {} bytes",
+            bytes.len(),
+        );
+    }
+}
+
+/// Added by G3 (DR-135): the encoding of a datum row whose one region has a
+/// caller. The caller's signature is `depth` compounds of one element around
+/// `Unit(true)`. It is built by hand, because the derived encoder recurses
+/// once for each level. The region's price is 5 and the caller's price is 9.
+fn encoded_row_with_deep_caller(depth: usize) -> Vec<u8> {
+    let mut row = Vec::with_capacity(8 + 8 + 1 + 8 + 8 + 32 + 1 + 8 + 2 + depth * 13 + 6 + 8 + 1);
+    row.extend_from_slice(&0u64.to_le_bytes()); // pars: none
+    row.extend_from_slice(&0u64.to_le_bytes()); // random_state: empty
+    row.push(1); // cost_authority: Some
+    row.extend_from_slice(&1u64.to_le_bytes()); // regions: one
+    row.extend_from_slice(&32u64.to_le_bytes()); // instance_id: 32 bytes
+    row.extend_from_slice(&[7; 32]);
+    row.push(0); // signature: None
+    row.extend_from_slice(&5u64.to_le_bytes()); // price
+    row.push(1); // caller: Some
+    row.push(1); // caller.signature: Some
+    for _ in 0..depth {
+        row.push(1); // Some(value)
+        row.extend_from_slice(&CS_COMPOUND.to_le_bytes());
+        row.extend_from_slice(&1u64.to_le_bytes()); // one element
+    }
+    row.push(1); // Some(value)
+    row.extend_from_slice(&CS_UNIT.to_le_bytes());
+    row.push(1); // Unit(true)
+    row.extend_from_slice(&9u64.to_le_bytes()); // caller.price
+    row.push(0); // cost_stack: None
+    row
+}
+
+/// Added by G3 (DR-135): takes the caller signature of the one region of a
+/// decoded row, checks the prices, counts its compound levels without
+/// recursion, and releases it with `dismantle_term`.
+fn caller_depth_and_release(row: ListParWithRandom) -> usize {
+    let mut regions = row
+        .cost_authority
+        .expect("the row keeps its authority")
+        .regions;
+    assert_eq!(regions.len(), 1, "one region");
+    let region = regions.pop().expect("one region");
+    assert_eq!(region.price, 5, "the region price");
+    let caller = region.caller.expect("the region keeps its caller");
+    assert_eq!(caller.price, 9, "the caller price");
+    let signature = caller.signature.expect("the caller keeps its signature");
+    let mut depth = 0usize;
+    let mut current = &signature;
+    while let Some(CostValue::Compound(compound)) = current.value.as_ref() {
+        depth += 1;
+        current = compound.elements.first().expect("one element per level");
+    }
+    assert_eq!(
+        current,
+        &corpus::unit_signature(),
+        "Unit(true) is innermost"
+    );
+    dismantle_term(Par {
+        cost_stacks: vec![CostStack {
+            cells: vec![signature],
+        }],
+        ..Default::default()
+    });
+    depth
+}
+
+/// Added by G3 (DR-135): a caller signature 100,000 levels deep decodes and
+/// tears down on a small stack. Two truncated rows are rejected on the same
+/// stack: one fails after the caller is complete, and one fails inside the
+/// caller's price, while the deep signature still waits on the machine's
+/// stack. The second case fails if the machine took the signature off its
+/// stack before it read the price.
+#[test]
+fn a_deep_caller_signature_decodes_and_tears_down_on_a_small_stack() {
+    let shallow = encoded_row_with_deep_caller(3);
+    let oracle: ListParWithRandom =
+        bincode::deserialize(&shallow).expect("the hand-built row is the derived layout");
+    let (machine, consumed) =
+        ListParWithRandom::cold_decode_prefix(&shallow).expect("machine shallow decode");
+    assert!(same_value(&machine, &oracle));
+    assert_eq!(consumed, shallow.len());
+    assert_eq!(caller_depth_and_release(machine), 3);
+
+    let deep = encoded_row_with_deep_caller(DEEP_COMPOUND_NESTING);
+    std::thread::Builder::new()
+        .name("deep-caller-decode".to_string())
+        .stack_size(SMALL_STACK_BYTES)
+        .spawn(move || {
+            let (value, consumed) =
+                ListParWithRandom::cold_decode_prefix(&deep).expect("deep caller decode");
+            assert_eq!(consumed, deep.len());
+            assert_eq!(caller_depth_and_release(value), DEEP_COMPOUND_NESTING);
+            assert!(
+                ListParWithRandom::cold_decode_prefix(&deep[..deep.len() - 1]).is_err(),
+                "a row without its cost_stack tag must be REJECTED"
+            );
+            assert!(
+                ListParWithRandom::cold_decode_prefix(&deep[..deep.len() - 5]).is_err(),
+                "a row with a truncated caller price must be REJECTED"
+            );
+        })
+        .expect("spawn the small-stack thread")
+        .join()
+        .expect("the deep caller decodes and tears down within a small stack");
 }

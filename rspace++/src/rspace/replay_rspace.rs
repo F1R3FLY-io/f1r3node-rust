@@ -1729,11 +1729,20 @@ where
                         .map(|c| fetch_matching_data(c.clone()))
                         .collect();
 
+                    // Changed by G3 (DR-135, S5): the legacy replay matcher runs no owner
+                    // checks.
+                    // let first_match = self.extract_first_match(
+                    //     &self.matcher,
+                    //     channels.to_vec(),
+                    //     match_candidates,
+                    //     channel_to_indexed_data,
+                    // );
                     let first_match = self.extract_first_match(
                         &self.matcher,
                         channels.to_vec(),
                         match_candidates,
                         channel_to_indexed_data,
+                        None,
                     );
 
                     match first_match {

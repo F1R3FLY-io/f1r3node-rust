@@ -46,6 +46,11 @@ pub struct NativeReplaySession<C, P: Clone, A: Clone, K: Clone, E> {
     identity: Arc<()>,
     gate: RwLock<()>,
     unavailable: AtomicBool,
+    /// Added by DR-134 (DR-70): a session for a block report logs its stored
+    /// and matched operations to the logger of `space`, at the points where
+    /// dev's ReplayRSpace logs them. Validation and play build no logger, so
+    /// they skip every logging step.
+    logging: bool,
 }
 
 #[derive(Debug)]
@@ -113,10 +118,23 @@ where
         + Send,
     E: NativeReplayEpoch,
 {
+    // Changed by DR-134 (DR-70): the body moved to `new_with_logger`, which
+    // builds the space with a logger when it has one.
     pub fn new(
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         epoch: E,
+    ) -> Result<Self, RSpaceError> {
+        Self::new_with_logger(history, matcher, epoch, None)
+    }
+
+    /// Added by DR-134 (DR-70): `new` with an optional logger. Without a
+    /// logger the session is exactly the session of `new` before this change.
+    pub fn new_with_logger(
+        history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        epoch: E,
+        logger: Option<Box<dyn RSpaceLogger<C, P, A, K>>>,
     ) -> Result<Self, RSpaceError> {
         let reader = history.get_current_history_reader_native();
         let root = reader.root().0.try_into().map_err(|_| {
@@ -124,24 +142,45 @@ where
         })?;
         let base = reader.base();
         let store = HotStoreInstances::create_from_hr(base);
+        let logging = logger.is_some();
+        let space = match logger {
+            Some(logger) => {
+                ReplayRSpace::apply_with_logger(history, Arc::new(store), matcher, logger)
+            }
+            None => ReplayRSpace::apply(history, Arc::new(store), matcher),
+        };
         Ok(Self {
-            space: ReplayRSpace::apply(history, Arc::new(store), matcher),
+            space,
             store: Arc::new(NativeHotStore::new()),
             root,
             epoch,
             identity: Arc::new(()),
             gate: RwLock::new(()),
             unavailable: AtomicBool::new(false),
+            logging,
         })
     }
 
+    // Changed by DR-134 (DR-70): the body moved to
+    // `new_with_installs_and_logger`.
     pub fn new_with_installs(
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         epoch: E,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
     ) -> Result<Self, RSpaceError> {
-        let session = Self::new(history, matcher, epoch)?;
+        Self::new_with_installs_and_logger(history, matcher, epoch, installations, None)
+    }
+
+    /// Added by DR-134 (DR-70): `new_with_installs` with an optional logger.
+    pub fn new_with_installs_and_logger(
+        history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        epoch: E,
+        installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
+        logger: Option<Box<dyn RSpaceLogger<C, P, A, K>>>,
+    ) -> Result<Self, RSpaceError> {
+        let session = Self::new_with_logger(history, matcher, epoch, logger)?;
         for (channels, install) in installations {
             session.install(channels, install)?;
         }

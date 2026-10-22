@@ -566,3 +566,66 @@ fn scored_term_should_sort_so_that_unequal_list_have_unequal_scores() {
         ExprSortMatcher::sort_match(&list_4).score
     );
 }
+
+// Added by G3 (DR-135, S3b): the held price of a held term (Rule H).
+
+fn signed_term(held_price: Option<u64>) -> models::rhoapi::CostSignedTerm {
+    models::rhoapi::CostSignedTerm {
+        body: Some(Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(1)),
+        }])),
+        signature: Some(models::rhoapi::CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(vec![7])),
+        }),
+        held_price,
+    }
+}
+
+fn hash_of<T: std::hash::Hash>(value: &T) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The sort keeps the held price, and the price is a leaf of the score, so a
+/// held term never sorts as the surface term with the same body and
+/// signature, nor as a held term with another price.
+#[test]
+fn the_sort_keeps_and_scores_the_held_price() {
+    use models::rust::rholang::sorter::cost_accounting_sorter::sort_signed_term;
+    let surface = sort_signed_term(&signed_term(None));
+    let held = sort_signed_term(&signed_term(Some(7)));
+    let other = sort_signed_term(&signed_term(Some(8)));
+    assert_eq!(surface.term.held_price, None);
+    assert_eq!(held.term.held_price, Some(7));
+    assert_ne!(held.score, surface.score);
+    assert_ne!(held.score, other.score);
+    let par = Par {
+        cost_signed_terms: vec![signed_term(Some(7))],
+        ..Default::default()
+    };
+    assert_eq!(
+        ParSortMatcher::sort_match(&par).term.cost_signed_terms[0].held_price,
+        Some(7),
+        "the sort of a Par keeps the held price"
+    );
+}
+
+/// The equality and the hash read the held price, so a held term is never
+/// equal to the surface term with the same body and signature.
+#[test]
+fn the_equality_and_the_hash_read_the_held_price() {
+    assert_eq!(signed_term(Some(7)), signed_term(Some(7)));
+    assert_ne!(signed_term(Some(7)), signed_term(None));
+    assert_ne!(signed_term(Some(7)), signed_term(Some(8)));
+    assert_eq!(
+        hash_of(&signed_term(Some(7))),
+        hash_of(&signed_term(Some(7)))
+    );
+    assert_ne!(hash_of(&signed_term(Some(7))), hash_of(&signed_term(None)));
+    assert_ne!(
+        hash_of(&signed_term(Some(7))),
+        hash_of(&signed_term(Some(8)))
+    );
+}

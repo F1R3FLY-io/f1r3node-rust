@@ -64,6 +64,8 @@ fn operation(
         predecessors: Arc::from([]),
         introduction,
         comm: None,
+        // Added by G3 (DR-135, S4).
+        refusals: Arc::from([]),
         completion: RSpaceOperationCompletion::Stored,
         budget_start: start,
         budget_end: end,
@@ -78,18 +80,30 @@ fn fixture() -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
             observation: first.clone(),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         },
         NativeBudgetAttempt {
             occurrence: occurrence(1, NativeAttemptStage::ProduceIntroduction),
             observation: observation(1, AuthorityByteEventKind::ProduceIntroduction, 1),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         },
         NativeBudgetAttempt {
             occurrence: occurrence(1, NativeAttemptStage::Comm),
             observation: observation(2, AuthorityByteEventKind::Comm, 1),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         },
     ];
     let retries = vec![NativeBudgetRetry {
@@ -127,6 +141,8 @@ fn fixture() -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
             transfers: Arc::from([]),
             used: 3,
             paths: fixture_paths(),
+            // Added by G3 (DR-135, S4).
+            owner_table: Arc::from([]),
         },
         rows.into(),
     )
@@ -143,12 +159,18 @@ fn consume_fixture(
             observation: observation(0, AuthorityByteEventKind::ConsumeIntroduction, 1),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         }]
         .into(),
         retries: Arc::from([]),
         transfers: Arc::from([]),
         used: 1,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
     row.source = NativeOperationSource::Consume(NativeConsumeSource {
@@ -223,6 +245,8 @@ fn journal_accepts_complete_evidence_and_empty_execution() {
         transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     assert_eq!(check(&empty, Arc::from([])).unwrap().total(), 0);
 }
@@ -365,12 +389,20 @@ fn stage_fixture(
             observation: observation(0, AuthorityByteEventKind::ProduceIntroduction, 0),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         },
         NativeBudgetAttempt {
             occurrence: occurrence(0, NativeAttemptStage::Comm),
             observation: observation(1, AuthorityByteEventKind::Comm, 0),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         },
     ];
     let mut retries = Vec::new();
@@ -394,6 +426,10 @@ fn stage_fixture(
                 observation,
                 granted: true,
                 cause: NativeDenialCause::Budget,
+                // Added by G3 (DR-135, S4).
+                owner_refused: false,
+                // Added by G3 (DR-135, S4 review).
+                restorations: Arc::from([]),
             });
         }
     }
@@ -417,6 +453,10 @@ fn stage_fixture(
         observation: observation(2, AuthorityByteEventKind::ProduceIntroduction, 0),
         granted: true,
         cause: NativeDenialCause::Budget,
+        // Added by G3 (DR-135, S4).
+        owner_refused: false,
+        // Added by G3 (DR-135, S4 review).
+        restorations: Arc::from([]),
     });
     rows.push(operation(
         2,
@@ -432,6 +472,8 @@ fn stage_fixture(
             transfers: Arc::from([]),
             used: 0,
             paths: fixture_paths(),
+            // Added by G3 (DR-135, S4).
+            owner_table: Arc::from([]),
         },
         rows.into(),
     )
@@ -493,6 +535,10 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                     ),
                     granted: intro,
                     cause: NativeDenialCause::Budget,
+                    // Added by G3 (DR-135, S4).
+                    owner_refused: false,
+                    // Added by G3 (DR-135, S4 review).
+                    restorations: Arc::from([]),
                 }];
                 let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
                 row.completion = completion;
@@ -506,6 +552,10 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                         ),
                         granted,
                         cause: NativeDenialCause::Budget,
+                        // Added by G3 (DR-135, S4).
+                        owner_refused: false,
+                        // Added by G3 (DR-135, S4 review).
+                        restorations: Arc::from([]),
                     });
                     row.budget_end = 2;
                     row.comm = Some(NativeCommRecord {
@@ -520,6 +570,8 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                     transfers: Arc::from([]),
                     used: 0,
                     paths: fixture_paths(),
+                    // Added by G3 (DR-135, S4).
+                    owner_table: Arc::from([]),
                 };
                 let result = with_contract(0, [0, 0, 1, 0], |contract| {
                     contract.check_operation_journal(
@@ -561,11 +613,17 @@ fn journal_preserves_overflow_denial_and_rejects_retry_of_denied_attempt() {
             observation: observation(0, AuthorityByteEventKind::ProduceIntroduction, u64::MAX),
             granted: false,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         }]),
         retries: Arc::from([]),
         transfers: Arc::from([]),
         used: 0,
         paths: fixture_paths(),
+        // Added by G3 (DR-135, S4).
+        owner_table: Arc::from([]),
     };
     let mut row = operation(0, 0, 1, NativeObservationLink::Attempt(0));
     row.completion = RSpaceOperationCompletion::Rejected;
@@ -641,9 +699,15 @@ proptest! {
             observation: observation(index as u8, AuthorityByteEventKind::ProduceIntroduction, 0),
             granted: true,
             cause: NativeDenialCause::Budget,
+            // Added by G3 (DR-135, S4).
+            owner_refused: false,
+            // Added by G3 (DR-135, S4 review).
+            restorations: Arc::from([]),
         }).collect::<Vec<_>>();
         let recording = NativeBudgetRecording {
             session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), transfers: Arc::from([]), used: 0, paths: fixture_paths(),
+            // Added by G3 (DR-135, S4).
+            owner_table: Arc::from([]),
         };
         let rows = links.iter().map(|index| operation(*index as u64, 0, total, NativeObservationLink::Attempt(*index)))
             .collect::<Vec<_>>();
@@ -652,4 +716,176 @@ proptest! {
         let expected = reference == (0..total).collect::<Vec<_>>();
         prop_assert_eq!(check(&recording, rows.into()).is_ok(), expected);
     }
+}
+
+/// Added by G3 (DR-135, S4): the checks of the refused COMMs of a row (R6,
+/// R7). A refusal lies in the budget interval of its row and before the
+/// attempt of its COMM, the refusals are in order, each consume source is
+/// refused once, and each refusal of a produce row holds the produce of the
+/// row. Refusals need owner funding.
+#[test]
+fn journal_rejects_a_refusal_outside_its_interval() {
+    use crate::rust::interpreter::accounting::native_runtime::NativeRefusal;
+    use crate::rust::interpreter::accounting::owner_funding::{
+        OwnerFundingBinding, OwnerPurseSet, OwnerTable,
+    };
+
+    fn no_purse(_: &models::rhoapi::CostSignature) -> Option<OwnerPurseSet> { None }
+
+    let binding = OwnerFundingBinding::new(Default::default(), no_purse, OwnerTable::empty(0));
+    let check_owned = |recording: &NativeBudgetRecording, rows: Arc<[NativeOperationRecord]>| {
+        with_contract(100, [0, 0, 1, 0], |contract| {
+            contract.check_operation_journal_with_owners(
+                [0; 32],
+                recording,
+                rows,
+                journal_limits(),
+                Some(&binding),
+            )
+        })
+    };
+    let refusal = |consume: u8, position: usize, produce_id: u8| NativeRefusal {
+        source: Arc::new(NativeCommSource {
+            consume: NativeConsumeSource {
+                channels: Arc::from([[1; 32]]),
+                hash: [consume; 32],
+                persistent: false,
+            },
+            produces: Arc::from([produce(produce_id)]),
+            peeks: Arc::from([]),
+            repetitions: Arc::from([]),
+        }),
+        position,
+    };
+    let (recording, rows) = fixture();
+    let refused = |row: usize, refusals: Vec<NativeRefusal>| -> Arc<[NativeOperationRecord]> {
+        let mut rows = rows.to_vec();
+        rows[row].refusals = refusals.into();
+        rows.into()
+    };
+    check_owned(
+        &recording,
+        refused(1, vec![refusal(8, 1, 1), refusal(9, 2, 1)]),
+    )
+    .expect("two refusals in the interval, before the COMM, in order");
+    check_owned(&recording, refused(0, vec![refusal(8, 1, 0)]))
+        .expect("a refusal at the end of a stored row");
+    for (row, refusals, case) in [
+        (1, vec![refusal(8, 0, 1)], "before the interval"),
+        (0, vec![refusal(8, 2, 0)], "after the interval"),
+        (1, vec![refusal(8, 3, 1)], "after the COMM attempt"),
+        (1, vec![refusal(8, 2, 1), refusal(9, 1, 1)], "out of order"),
+        (
+            1,
+            vec![refusal(8, 1, 1), refusal(8, 2, 1)],
+            "a consume refused twice",
+        ),
+        (1, vec![refusal(8, 1, 2)], "without the produce of the row"),
+    ] {
+        assert!(
+            matches!(
+                check_owned(&recording, refused(row, refusals)),
+                Err(NativeOperationJournalError::Refusal)
+            ),
+            "{case}"
+        );
+    }
+    assert!(matches!(
+        check(&recording, refused(1, vec![refusal(8, 1, 1)])),
+        Err(NativeOperationJournalError::OwnerTable)
+    ));
+}
+
+/// Added by G3 (DR-135, S4 review): with owner funding, the attempt of a
+/// peek COMM records the introduction of each non-persistent datum of the
+/// COMM, by the identity of its produce hash (R9). The journal check
+/// rejects a missing, a wrong or a surplus restoration, and a restoration
+/// without owner funding.
+#[test]
+fn journal_rejects_restorations_that_differ_from_the_peek() {
+    use crate::rust::interpreter::accounting::byte_accounting::produce_introduction_identity_of_hash;
+    use crate::rust::interpreter::accounting::owner_funding::{
+        OwnerFundingBinding, OwnerPurseSet, OwnerTable,
+    };
+
+    fn no_purse(_: &models::rhoapi::CostSignature) -> Option<OwnerPurseSet> { None }
+
+    let binding = OwnerFundingBinding::new(Default::default(), no_purse, OwnerTable::empty(0));
+    let (recording, rows) = fixture();
+    let restored = NativeProduceSource {
+        channel: [1; 32],
+        hash: [9; 32],
+        persistent: false,
+    };
+    let mut peeking = rows.to_vec();
+    let comm = peeking[1]
+        .comm
+        .as_mut()
+        .expect("the fixture row has a COMM");
+    let mut source = comm.source.as_ref().clone();
+    source.peeks = Arc::from([0]);
+    source.produces = vec![produce(1), restored.clone()].into();
+    comm.source = Arc::new(source);
+    let peeking: Arc<[NativeOperationRecord]> = peeking.into();
+    let restoration = |identity: [u8; 32]| {
+        Arc::new(ByteObservation {
+            event_id: identity,
+            ..observation(9, AuthorityByteEventKind::ProduceIntroduction, 0)
+                .as_ref()
+                .clone()
+        })
+    };
+    let with = |restorations: Vec<Arc<ByteObservation>>| {
+        let mut recording = recording.clone();
+        let mut attempts = recording.attempts.to_vec();
+        attempts[2].restorations = restorations.into();
+        recording.attempts = attempts.into();
+        recording
+    };
+    let check_owned = |recording: &NativeBudgetRecording, rows: Arc<[NativeOperationRecord]>| {
+        with_contract(100, [0, 0, 1, 0], |contract| {
+            contract.check_operation_journal_with_owners(
+                [0; 32],
+                recording,
+                rows,
+                journal_limits(),
+                Some(&binding),
+            )
+        })
+    };
+    let identity = produce_introduction_identity_of_hash(&restored.hash);
+    check_owned(&with(vec![restoration(identity)]), Arc::clone(&peeking))
+        .expect("the peek records the restoration of its non-persistent datum");
+    for (restorations, rows, case) in [
+        (vec![], Arc::clone(&peeking), "a missing restoration"),
+        (
+            vec![restoration([7; 32])],
+            Arc::clone(&peeking),
+            "a wrong identity",
+        ),
+        (
+            vec![restoration(identity), restoration(identity)],
+            Arc::clone(&peeking),
+            "a surplus restoration",
+        ),
+        (
+            vec![restoration(identity)],
+            Arc::clone(&rows),
+            "a COMM that peeks nothing",
+        ),
+    ] {
+        assert!(
+            matches!(
+                check_owned(&with(restorations), rows),
+                Err(NativeOperationJournalError::Restoration)
+            ),
+            "{case}"
+        );
+    }
+    assert!(matches!(
+        check(&with(vec![restoration(identity)]), peeking),
+        Err(NativeOperationJournalError::Budget(
+            NativeBudgetTraceError::Decision
+        ))
+    ));
 }

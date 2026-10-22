@@ -18,6 +18,8 @@ async fn native_signed_term_preserves_nil_execution() {
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let term = CostSignedTerm {
+        // Added by G3 (DR-135, S3b): a surface signed term.
+        held_price: None,
         body: Some(Par::default()),
         signature: Some(CostSignature {
             value: Some(CostSignatureValue::Ground(vec![1, 2, 3])),
@@ -553,11 +555,20 @@ proptest::proptest! {
             let core = reducer.core.clone();
             let (dispatched, observed, drained) = with_dispatch_scope(async {
                 for _ in 0..bodies {
+                    // Changed by G3 (DR-135): a body takes its context. The
+                    // default context is the old `false` flag with no owner
+                    // and no caller.
+                    // core.eval_continuation(
+                    //     body.clone(),
+                    //     Env::new(),
+                    //     Blake2b512Random::create_from_length(128),
+                    //     false,
+                    // )
                     core.eval_continuation(
                         body.clone(),
                         Env::new(),
                         Blake2b512Random::create_from_length(128),
-                        false,
+                        crate::rust::interpreter::accounting::owner_funding::BodyContext::default(),
                     )
                     .await
                     .expect("a body in a scope returns at once");

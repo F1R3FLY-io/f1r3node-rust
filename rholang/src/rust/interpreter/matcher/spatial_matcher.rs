@@ -1459,6 +1459,8 @@ mod tests {
                         .map(|open| CostSignedTerm {
                             body: body(open),
                             signature: None,
+                            // Added by G3 (DR-135, S3b): a surface signed term.
+                            held_price: None,
                         })
                         .collect(),
                     cost_stacks: stacks

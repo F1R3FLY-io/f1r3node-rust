@@ -30,6 +30,8 @@ pub(super) fn row(
             regions: vec![CostRegion {
                 instance_id: vec![3; 32],
                 signature: Some(sig_to_cost_signature(&signature).unwrap()),
+                // Added by G3 (DR-135): no price and no caller.
+                ..Default::default()
             }],
         },
         measurement: Some(ByteCharge {

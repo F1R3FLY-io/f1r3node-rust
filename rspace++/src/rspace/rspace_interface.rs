@@ -123,6 +123,54 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
         continuation_persistent: bool,
         data: &[(&A, bool)],
     ) -> Result<(), RSpaceError>;
+
+    /// Added by G3 (DR-135, S5): whether the observer checks owners in the
+    /// running operation (R5, R6). Without owner funding it is false, and
+    /// RSpace matches as on dev.
+    fn owner_checks_active(&self) -> bool { false }
+
+    /// Added by G3 (DR-135, S5): whether a continuation may take `datum` as
+    /// one item of a match, before the other items are known (R5). A false
+    /// result makes the datum a miss of its pattern.
+    fn admit_item(
+        &self,
+        _continuation: &K,
+        _continuation_persistent: bool,
+        _channel_count: usize,
+        _datum: &A,
+        _datum_persistent: bool,
+    ) -> Result<bool, RSpaceError> {
+        Ok(true)
+    }
+
+    /// Added by G3 (DR-135, S5): `observe_comm` with the channel and the
+    /// stored value of each datum (R9). The default observes the COMM as
+    /// `observe_comm` does.
+    fn observe_comm_participants(
+        &self,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        participants: &[CommParticipant<'_, C, A>],
+    ) -> Result<(), RSpaceError> {
+        let mut data = Vec::with_capacity(participants.len());
+        data.extend(
+            participants
+                .iter()
+                .map(|participant| (participant.matched, participant.persistent)),
+        );
+        self.observe_comm(comm, continuation, continuation_persistent, &data)
+    }
+}
+
+/// Added by G3 (DR-135, S5): one datum of a COMM: its channel, the value that
+/// the continuation binds, the value that the store held, and whether the
+/// datum is persistent. A peek restores the stored value (R9).
+pub struct CommParticipant<'a, C, A> {
+    pub channel: &'a C,
+    pub matched: &'a A,
+    pub stored: &'a A,
+    pub persistent: bool,
 }
 
 /// Added by DR-132: the accounting observer of a locked operation and the

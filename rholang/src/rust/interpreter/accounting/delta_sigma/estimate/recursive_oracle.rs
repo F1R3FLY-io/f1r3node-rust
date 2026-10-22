@@ -160,7 +160,9 @@ pub(super) fn analyze(
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
-    let mut estimator = Estimator::new(funding, &core)?;
+    // Changed by G3 (DR-135): the estimator takes the price of the regions.
+    // let mut estimator = Estimator::new(funding, &core)?;
+    let mut estimator = Estimator::new(funding, schedule.actual_price, &core)?;
     estimator.measure(resolved)?;
     let shallow = estimator.signatures_fit();
     let plan = match shallow {
@@ -200,7 +202,9 @@ pub(super) fn analyze_iteratively(
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the estimator takes the price of the regions.
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, schedule.actual_price, &core)?;
         estimator.measure(resolved)?;
         let shallow = estimator.signatures_fit();
         let plan = match shallow {
@@ -236,7 +240,10 @@ pub(super) fn estimator_levels(
 ) -> Result<Vec<(usize, usize)>, InterpreterError> {
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the estimator takes the price of the
+        // regions. The levels of pass 1 do not depend on it.
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, 0, &core)?;
         estimator.measure(program)?;
         estimator.walk(program)?;
         Ok(estimator.levels)
@@ -402,7 +409,10 @@ pub(super) fn peak_binders(
 ) -> Result<(usize, usize), InterpreterError> {
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the estimator takes the price of the
+        // regions. The binder counts do not depend on it.
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, 0, &core)?;
         let counts = estimator.measure(program)?;
         estimator.walk(program)?;
         Ok((counts.peak_binders, estimator.observed_peak))

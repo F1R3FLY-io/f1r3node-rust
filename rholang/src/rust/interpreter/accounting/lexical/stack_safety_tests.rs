@@ -750,6 +750,8 @@ fn deep_new_chain(depth: usize) -> Par {
             locally_free: Vec::new(),
         });
         outer.cost_signed_terms.push(CostSignedTerm {
+            // Added by G3 (DR-135, S3b): a surface signed term.
+            held_price: None,
             body: Some(Par::default()),
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::BoundLevel(0)),
@@ -990,6 +992,8 @@ fn deep_mixed_term(depth: usize) -> Par {
                 connective_used: false,
             }),
             _ => outer.cost_signed_terms.push(CostSignedTerm {
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
                 body: Some(par),
                 signature: Some(ground()),
             }),
@@ -1140,6 +1144,8 @@ fn the_free_level_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_sm
         });
         let par = Par {
             cost_signed_terms: vec![CostSignedTerm {
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
                 body: None,
                 signature: Some(signature),
             }],

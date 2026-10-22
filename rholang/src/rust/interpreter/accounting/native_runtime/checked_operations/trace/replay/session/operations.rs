@@ -2,9 +2,14 @@ use std::collections::BTreeSet;
 
 use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::internal::ConsumeCandidate;
+// Changed by G3 (DR-135, S6): the ticket gives the owner checks.
+// use rspace_plus_plus::rspace::replay_rspace::native_epoch::{
+//     NativeCandidateIdentity, NativeOperationEpoch, NativeOperationPublication,
+//     NativeOperationTicket, NativeReplayDecision,
+// };
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::{
     NativeCandidateIdentity, NativeOperationEpoch, NativeOperationPublication,
-    NativeOperationTicket, NativeReplayDecision,
+    NativeOperationTicket, NativeOwnerFilter, NativeReplayDecision,
 };
 use rspace_plus_plus::rspace::rspace_interface::{MaybeConsumeResult, MaybeProduceResult};
 use rspace_plus_plus::rspace::trace::event::{Consume, IOEvent, Produce};
@@ -21,6 +26,7 @@ fn decision(
             NativeBudgetReplayDecision::Denied | NativeBudgetReplayDecision::DeniedAllocation => {
                 NativeReplayDecision::Denied
             }
+            NativeBudgetReplayDecision::OwnerRefused => NativeReplayDecision::OwnerRefused,
         })
         .map_err(error)
 }
@@ -159,6 +165,41 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
 
     fn prepare(self, outcome: NativeReplayOutcome) -> Result<Self::Publication, RSpaceError> {
         self.prepare_completion(outcome).map_err(error)
+    }
+
+    /// Added by G3 (DR-135, S6): the owner checks of a member with owner
+    /// funding (`owners.rs`).
+    fn owner_filter(
+        &self,
+    ) -> Option<&dyn NativeOwnerFilter<Par, BindPattern, ListParWithRandom, TaggedContinuation>>
+    {
+        self.owner_checks()
+    }
+
+    /// Added by G3 (DR-135, S6): the refused COMMs of the row (R7).
+    fn refusal_count(&self) -> usize { self.operation().refusals.len() }
+
+    /// Added by G3 (DR-135, S6).
+    fn refusal_identity(&self, index: usize) -> Option<&dyn NativeCandidateIdentity> {
+        self.operation()
+            .refusals
+            .get(index)
+            .map(|refusal| refusal.source.as_ref() as &dyn NativeCandidateIdentity)
+    }
+
+    /// Added by G3 (DR-135, S6): SA4 and the shortfall of the refusal
+    /// (`owners.rs`).
+    fn verify_refusal(
+        &mut self,
+        index: usize,
+        comm: &COMM,
+        continuation: &TaggedContinuation,
+        persistent: bool,
+        data: &[ConsumeCandidate<Par, ListParWithRandom>],
+        incoming: Option<&ListParWithRandom>,
+    ) -> Result<(), RSpaceError> {
+        self.verify_owner_refusal(index, comm, continuation, persistent, data, incoming)
+            .map_err(error)
     }
 }
 

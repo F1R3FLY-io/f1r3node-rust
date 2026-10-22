@@ -69,6 +69,9 @@
 //!    decoder reads the real length.
 //! 3. `ConnNotBody` holds a bare `Par` with no `Option` tag.
 //! 4. `ETuple` has no `remainder` field, unlike `EList`, `ESet` and `EMap`.
+//! 5. Added by G3 (DR-135): `CostRegion` holds its `price` (`u64`) and the
+//!    `Option` of its `caller` after its signature. The caller's signature
+//!    can quote a `Par`, so the caller is a machine type (SA3).
 //!
 //! ## The rejection set
 //!
@@ -98,14 +101,18 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::tagged_continuation::TaggedCont;
 use crate::rhoapi::var::{VarInstance, WildcardMsg};
+// Changed by G3 (DR-135): the machine also builds the caller of a region.
+// use crate::rhoapi::{
+//     BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
 use crate::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
-    CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
-    EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GAuthorityId,
-    GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate, GSysAuthToken,
-    GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match, MatchCase, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostCaller, CostRegion,
+    CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot,
+    EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr,
+    GAuthorityId, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate,
+    GSysAuthToken, GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match,
+    MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    VarRef,
 };
 use crate::rust::rholang::dismantle::dismantle_terms;
 
@@ -646,6 +653,8 @@ enum Op {
     CostSignedTermSignature {
         has_body: bool,
     },
+    // Added by G3 (DR-135, S3b): after its signature, a signed term reads its
+    // held price, an Option tag and then a u64.
     CostSignedTermBuild {
         has_body: bool,
         has_signature: bool,
@@ -655,7 +664,19 @@ enum Op {
         count: usize,
     },
     CostRegionStart,
+    // Changed by G3 (DR-135): after its signature, a region reads its price
+    // and the tag of its caller (SA3).
     CostRegionBuild {
+        has_signature: bool,
+    },
+    /// Added by G3 (DR-135): closes a region whose caller the machine decoded
+    /// after the region's price. The price waits on `region_prices`.
+    CostRegionFinish {
+        has_signature: bool,
+    },
+    /// Added by G3 (DR-135): `CostCaller`: signature, price.
+    CostCallerStart,
+    CostCallerBuild {
         has_signature: bool,
     },
     CostAuthorityStart,
@@ -902,6 +923,8 @@ struct Machine<'a> {
     cost_signed_terms: Vec<CostSignedTerm>,
     cost_stacks: Vec<CostStack>,
     cost_regions: Vec<CostRegion>,
+    /// Added by G3 (DR-135): the callers of the regions (A1).
+    cost_callers: Vec<CostCaller>,
     cost_authorities: Vec<CostAuthority>,
     news: Vec<New>,
     matches: Vec<Match>,
@@ -922,6 +945,9 @@ struct Machine<'a> {
     par_frames: Vec<ParFrame>,
     bind_tails: Vec<BindTail>,
     region_ids: Vec<Vec<u8>>,
+    /// Added by G3 (DR-135): the price of a region whose caller is still in
+    /// decode.
+    region_prices: Vec<u64>,
     receive_tails: Vec<ReceiveTail>,
     new_frames: Vec<NewFrame>,
     method_names: Vec<String>,
@@ -940,6 +966,16 @@ fn take_one<T>(stack: &mut Vec<T>, what: &'static str) -> Res<T> {
     stack
         .pop()
         .ok_or(ColdStoreDecodeError::MachineInvariant(what))
+}
+
+/// Added by G3 (DR-135): moves the signatures of a partly decoded region, its
+/// own and its caller's, into the teardown list. Either can quote a deep
+/// `Par`, so neither may leave through the recursive derived `Drop`.
+fn release_region(region: CostRegion, signatures: &mut Vec<CostSignature>) {
+    signatures.extend(region.signature);
+    if let Some(caller) = region.caller {
+        signatures.extend(caller.signature);
+    }
 }
 
 /// Pops a `Par` when `present`, and gives `None` otherwise.
@@ -975,6 +1011,8 @@ impl<'a> Machine<'a> {
             cost_signed_terms: Vec::new(),
             cost_stacks: Vec::new(),
             cost_regions: Vec::new(),
+            // Added by G3 (DR-135).
+            cost_callers: Vec::new(),
             cost_authorities: Vec::new(),
             news: Vec::new(),
             matches: Vec::new(),
@@ -993,6 +1031,8 @@ impl<'a> Machine<'a> {
             par_frames: Vec::new(),
             bind_tails: Vec::new(),
             region_ids: Vec::new(),
+            // Added by G3 (DR-135).
+            region_prices: Vec::new(),
             receive_tails: Vec::new(),
             new_frames: Vec::new(),
             method_names: Vec::new(),
@@ -1055,6 +1095,8 @@ impl<'a> Machine<'a> {
             ("cost_signed_terms", self.cost_signed_terms.len(), false),
             ("cost_stacks", self.cost_stacks.len(), false),
             ("cost_regions", self.cost_regions.len(), false),
+            // Added by G3 (DR-135).
+            ("cost_callers", self.cost_callers.len(), false),
             ("cost_authorities", self.cost_authorities.len(), false),
             ("news", self.news.len(), false),
             ("matches", self.matches.len(), false),
@@ -1096,9 +1138,15 @@ impl<'a> Machine<'a> {
                 return Err(ColdStoreDecodeError::MachineInvariant(name));
             }
         }
+        // Changed by G3 (DR-135): the region prices are a side frame too.
+        // if !self.par_frames.is_empty()
+        //     || !self.bind_tails.is_empty()
+        //     || !self.region_ids.is_empty()
+        //     || !self.receive_tails.is_empty()
         if !self.par_frames.is_empty()
             || !self.bind_tails.is_empty()
             || !self.region_ids.is_empty()
+            || !self.region_prices.is_empty()
             || !self.receive_tails.is_empty()
             || !self.new_frames.is_empty()
             || !self.method_names.is_empty()
@@ -1435,10 +1483,36 @@ impl<'a> Machine<'a> {
                     self.ops.push(Op::CostSignatureStart);
                 }
             }
+            // Changed by G3 (DR-135, S3b): the held price follows the
+            // signature in the stream, an Option tag and then a u64. It is
+            // read before the signature and the body leave their stacks, so a
+            // truncated input never drops a deep term through the recursive
+            // derived `Drop`, and the teardown of the machine stays iterative.
+            // Op::CostSignedTermBuild {
+            //     has_body,
+            //     has_signature,
+            // } => {
+            //     let signature = if has_signature {
+            //         Some(take_one(
+            //             &mut self.cost_signatures,
+            //             "CostSignedTerm.signature",
+            //         )?)
+            //     } else {
+            //         None
+            //     };
+            //     let body = take_opt_par(&mut self.pars, has_body, "CostSignedTerm.body")?;
+            //     self.cost_signed_terms
+            //         .push(CostSignedTerm { body, signature });
+            // }
             Op::CostSignedTermBuild {
                 has_body,
                 has_signature,
             } => {
+                let held_price = if self.r.option_tag()? {
+                    Some(self.r.u64()?)
+                } else {
+                    None
+                };
                 let signature = if has_signature {
                     Some(take_one(
                         &mut self.cost_signatures,
@@ -1448,8 +1522,11 @@ impl<'a> Machine<'a> {
                     None
                 };
                 let body = take_opt_par(&mut self.pars, has_body, "CostSignedTerm.body")?;
-                self.cost_signed_terms
-                    .push(CostSignedTerm { body, signature });
+                self.cost_signed_terms.push(CostSignedTerm {
+                    body,
+                    signature,
+                    held_price,
+                });
             }
             Op::CostStackStart => {
                 let count = self.r.len()?;
@@ -1469,17 +1546,56 @@ impl<'a> Machine<'a> {
                     self.ops.push(Op::CostSignatureStart);
                 }
             }
+            // Changed by G3 (DR-135): the price and the caller tag follow the
+            // signature in the stream (SA3). A region without a caller closes
+            // here. A region with a caller first decodes the caller, whose
+            // signature lands above the region's own signature on
+            // `cost_signatures`, so `CostCallerBuild` takes the caller's.
+            // Op::CostRegionBuild { has_signature } => {
+            //     let signature = if has_signature {
+            //         Some(take_one(&mut self.cost_signatures, "CostRegion.signature")?)
+            //     } else {
+            //         None
+            //     };
+            //     let instance_id = take_one(&mut self.region_ids, "CostRegion.instance_id")?;
+            //     self.cost_regions.push(CostRegion {
+            //         instance_id,
+            //         signature,
+            //     });
+            // }
             Op::CostRegionBuild { has_signature } => {
+                let price = self.r.u64()?;
+                if self.r.option_tag()? {
+                    self.region_prices.push(price);
+                    self.ops.push(Op::CostRegionFinish { has_signature });
+                    self.ops.push(Op::CostCallerStart);
+                } else {
+                    self.push_region(has_signature, price, None)?;
+                }
+            }
+            Op::CostRegionFinish { has_signature } => {
+                let caller = take_one(&mut self.cost_callers, "CostRegion.caller")?;
+                let price = take_one(&mut self.region_prices, "CostRegion.price")?;
+                self.push_region(has_signature, price, Some(caller))?;
+            }
+            Op::CostCallerStart => {
+                let has_signature = self.r.option_tag()?;
+                self.ops.push(Op::CostCallerBuild { has_signature });
+                if has_signature {
+                    self.ops.push(Op::CostSignatureStart);
+                }
+            }
+            Op::CostCallerBuild { has_signature } => {
+                // The price is read before the signature leaves its stack, so
+                // a truncated input never drops a deep signature through the
+                // recursive derived `Drop`.
+                let price = self.r.u64()?;
                 let signature = if has_signature {
-                    Some(take_one(&mut self.cost_signatures, "CostRegion.signature")?)
+                    Some(take_one(&mut self.cost_signatures, "CostCaller.signature")?)
                 } else {
                     None
                 };
-                let instance_id = take_one(&mut self.region_ids, "CostRegion.instance_id")?;
-                self.cost_regions.push(CostRegion {
-                    instance_id,
-                    signature,
-                });
+                self.cost_callers.push(CostCaller { signature, price });
             }
             Op::CostAuthorityStart => {
                 let count = self.r.len()?;
@@ -2244,6 +2360,30 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
+    /// Added by G3 (DR-135): closes a region. Its signature, when present, is
+    /// on top of `cost_signatures`, and its identity is on top of
+    /// `region_ids`.
+    fn push_region(
+        &mut self,
+        has_signature: bool,
+        price: u64,
+        caller: Option<CostCaller>,
+    ) -> Res<()> {
+        let signature = if has_signature {
+            Some(take_one(&mut self.cost_signatures, "CostRegion.signature")?)
+        } else {
+            None
+        };
+        let instance_id = take_one(&mut self.region_ids, "CostRegion.instance_id")?;
+        self.cost_regions.push(CostRegion {
+            instance_id,
+            signature,
+            price,
+            caller,
+        });
+        Ok(())
+    }
+
     /// Pops the cost authority of a continuation or a datum when present.
     fn take_authority(&mut self, present: bool) -> Res<Option<CostAuthority>> {
         if present {
@@ -2284,6 +2424,8 @@ impl<'a> Machine<'a> {
             && self.cost_signed_terms.is_empty()
             && self.cost_stacks.is_empty()
             && self.cost_regions.is_empty()
+            // Added by G3 (DR-135).
+            && self.cost_callers.is_empty()
             && self.cost_authorities.is_empty()
             && self.news.is_empty()
             && self.matches.is_empty()
@@ -2312,12 +2454,25 @@ impl<'a> Machine<'a> {
 
         let mut loose: Vec<Par> = mem::take(&mut self.pars);
         let mut loose_cost_signatures = mem::take(&mut self.cost_signatures);
+        // Changed by G3 (DR-135): a region also releases the signature of its
+        // caller, which can quote a deep `Par`.
+        // for region in mem::take(&mut self.cost_regions) {
+        //     loose_cost_signatures.extend(region.signature);
+        // }
+        // for authority in mem::take(&mut self.cost_authorities) {
+        //     for region in authority.regions {
+        //         loose_cost_signatures.extend(region.signature);
+        //     }
+        // }
         for region in mem::take(&mut self.cost_regions) {
-            loose_cost_signatures.extend(region.signature);
+            release_region(region, &mut loose_cost_signatures);
+        }
+        for caller in mem::take(&mut self.cost_callers) {
+            loose_cost_signatures.extend(caller.signature);
         }
         for authority in mem::take(&mut self.cost_authorities) {
             for region in authority.regions {
-                loose_cost_signatures.extend(region.signature);
+                release_region(region, &mut loose_cost_signatures);
             }
         }
 
@@ -2371,7 +2526,9 @@ impl<'a> Machine<'a> {
             loose.extend(list.pars);
             if let Some(authority) = list.cost_authority {
                 for region in authority.regions {
-                    loose_cost_signatures.extend(region.signature);
+                    // Changed by G3 (DR-135): with the caller's signature.
+                    // loose_cost_signatures.extend(region.signature);
+                    release_region(region, &mut loose_cost_signatures);
                 }
             }
             loose_cost_stacks.extend(list.cost_stack);
@@ -2383,7 +2540,9 @@ impl<'a> Machine<'a> {
             }
             if let Some(authority) = continuation.cost_authority {
                 for region in authority.regions {
-                    loose_cost_signatures.extend(region.signature);
+                    // Changed by G3 (DR-135): with the caller's signature.
+                    // loose_cost_signatures.extend(region.signature);
+                    release_region(region, &mut loose_cost_signatures);
                 }
             }
         }

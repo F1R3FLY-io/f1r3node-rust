@@ -43,9 +43,21 @@ use tokio::sync::RwLock;
 // Added by DR-132: the per-call scope of dev holds task handles.
 use tokio::task::{JoinError, JoinHandle};
 
+// Changed by G3 (DR-135): every region that the reducer creates carries the
+// price of its creating context (R4).
+// use super::accounting::authority::{
+//     cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
+//     sig_to_cost_signature, system_residue_authority, AuthorityError, ResidueContext,
+// };
+// Changed by G3 (DR-135): a system body seals its residue through
+// `residue_seal_of`, which records its caller (A1).
+// use super::accounting::authority::{
+//     cost_signature_to_sig, extend_authority, priced_cost_region, resolve_system_residue,
+//     system_residue_authority, AuthorityError, ResidueContext,
+// };
 use super::accounting::authority::{
-    cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
-    sig_to_cost_signature, system_residue_authority, ResidueContext,
+    cost_signature_to_sig, extend_authority, priced_cost_region, resolve_system_residue,
+    ResidueContext,
 };
 use super::accounting::byte_accounting::{
     message_field_bytes, par_with_random_bytes, IntroductionMeasurement,
@@ -63,6 +75,13 @@ use super::accounting::costs::{
 // Added by DR-132: the per-call scope records the failure classes.
 use super::accounting::economic_failure::{
     classify_errors, EvaluationFailureSummary, FailureRecorder,
+};
+// Added by G3 (DR-135): the context of a fired body (R1, A1).
+// Changed by G3 (DR-135, S3b): the context also holds the held map, and the
+// sends of Rule H record the holder of their datum.
+// use super::accounting::owner_funding::{BodyContext, RegionOwner};
+use super::accounting::owner_funding::{
+    held_term_holder, strip_held_markers, BodyContext, HeldMap, RegionOwner, SendRecord,
 };
 use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::RuntimeBudget;
@@ -468,6 +487,16 @@ pub struct ReducerCore {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    /// Added by G3 (DR-135): the owner of a fired owner body. Its unsigned
+    /// surfaces open regions of the owner at the owner's price (R1).
+    pub(crate) owner: Option<RegionOwner>,
+    /// Added by G3 (DR-135): the caller of a system body. Its residue records
+    /// the caller, and a process that it holds runs for the caller (A1).
+    pub(crate) caller: Option<RegionOwner>,
+    /// Added by G3 (DR-135, S3b): the holders of the values that the fired
+    /// body binds, by env position (Rule H, H0 and H3). Empty without a
+    /// binding.
+    pub(crate) held: HeldMap,
 }
 
 type Application = Option<(
@@ -505,15 +534,52 @@ impl ReducerCore {
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
     }
 
-    /// DR-101: this reducer outside a system body.
-    fn without_residue_seal(&self) -> std::borrow::Cow<'_, Self> {
+    // Changed by G3 (DR-135): the held-process context moved to
+    // `held_process_reducer`, which keeps this DR-101 rule and adds A1.
+    // /// DR-101: this reducer outside a system body.
+    // fn without_residue_seal(&self) -> std::borrow::Cow<'_, Self> {
+    //     if self.residue_seal {
+    //         std::borrow::Cow::Owned(ReducerCore {
+    //             residue_seal: false,
+    //             ..self.clone()
+    //         })
+    //     } else {
+    //         std::borrow::Cow::Borrowed(self)
+    //     }
+    // }
+
+    /// DR-101: the reducer of a process that this reducer holds in a variable.
+    /// A held process keeps its sender's provenance, so it never runs as a
+    /// system body: inside a system body it runs outside the system seal.
+    /// Added by G3 (DR-135, A1): inside a system body it runs for the body's
+    /// caller, as an owner body runs for its owner. Outside a system body the
+    /// reducer stays as it is.
+    // Changed by G3 (DR-135, S3b T1): a caller on a client lane of the
+    // running binding gives no owner, so the running deployment pays, and the
+    // copy starts an empty held map.
+    // fn held_process_reducer(&self) -> std::borrow::Cow<'_, Self> {
+    //     if self.residue_seal {
+    //         std::borrow::Cow::Owned(ReducerCore {
+    //             residue_seal: false,
+    //             owner: self.caller.clone(),
+    //             caller: None,
+    //             ..self.clone()
+    //         })
+    //     } else {
+    //         std::borrow::Cow::Borrowed(self)
+    //     }
+    // }
+    fn held_process_reducer(&self) -> Result<std::borrow::Cow<'_, Self>, InterpreterError> {
         if self.residue_seal {
-            std::borrow::Cow::Owned(ReducerCore {
+            Ok(std::borrow::Cow::Owned(ReducerCore {
                 residue_seal: false,
+                owner: self.residue_owner()?,
+                caller: None,
+                held: HeldMap::default(),
                 ..self.clone()
-            })
+            }))
         } else {
-            std::borrow::Cow::Borrowed(self)
+            Ok(std::borrow::Cow::Borrowed(self))
         }
     }
 
@@ -583,18 +649,57 @@ impl ReducerCore {
         })
     }
 
+    // Changed by G3 (DR-135): the body runs in its context: the DR-101 system
+    // flag, the owner of an owner body and the caller of a system body (R1,
+    // A1). The reducer is reused only when all three match.
+    // pub(crate) async fn eval_continuation(
+    //     self: &Arc<Self>,
+    //     par: Par,
+    //     env: Env<Par>,
+    //     rand: Blake2b512Random,
+    //     system_body: bool,
+    // ) -> Result<(), InterpreterError> {
+    //     let reducer = if system_body == self.residue_seal {
+    //         self.clone()
+    //     } else {
+    //         Arc::new(ReducerCore {
+    //             residue_seal: system_body,
+    //             ..(**self).clone()
+    //         })
+    //     };
     pub(crate) async fn eval_continuation(
         self: &Arc<Self>,
         par: Par,
         env: Env<Par>,
         rand: Blake2b512Random,
-        system_body: bool,
+        context: BodyContext,
     ) -> Result<(), InterpreterError> {
-        let reducer = if system_body == self.residue_seal {
+        // Changed by G3 (DR-135, S3b): the held map is part of the context.
+        // let reducer = if context.system == self.residue_seal
+        //     && context.owner == self.owner
+        //     && context.caller == self.caller
+        // {
+        //     self.clone()
+        // } else {
+        //     Arc::new(ReducerCore {
+        //         residue_seal: context.system,
+        //         owner: context.owner,
+        //         caller: context.caller,
+        //         ..(**self).clone()
+        //     })
+        // };
+        let reducer = if context.system == self.residue_seal
+            && context.owner == self.owner
+            && context.caller == self.caller
+            && context.held == self.held
+        {
             self.clone()
         } else {
             Arc::new(ReducerCore {
-                residue_seal: system_body,
+                residue_seal: context.system,
+                owner: context.owner,
+                caller: context.caller,
+                held: context.held,
                 ..(**self).clone()
             })
         };
@@ -1431,11 +1536,19 @@ impl ReducerCore {
                     let introduction_authority = match removed_data.cost_authority.as_ref() {
                         Some(seal) => {
                             let budget = self_clone.metering.budget();
+                            // Changed by G3 (DR-135): the resolved payer region
+                            // carries the region price (R4).
+                            // let context =
+                            //     ResidueContext::new(&budget.signature(), budget.deploy_id())
+                            //         .map_err(|error| {
+                            //             InterpreterError::ReduceError(error.to_string())
+                            //         })?;
                             let context =
                                 ResidueContext::new(&budget.signature(), budget.deploy_id())
                                     .map_err(|error| {
                                         InterpreterError::ReduceError(error.to_string())
-                                    })?;
+                                    })?
+                                    .with_price(budget.region_price());
                             resolve_system_residue(seal, &removed_data.random_state, &context)
                                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
                                 .into_owned()
@@ -1687,11 +1800,28 @@ impl ReducerCore {
                 Some(expr_instance) => match expr_instance {
                     // DR-101 (P1 rem:signed-subst): a process held in a variable
                     // keeps its sender's provenance, so it never runs as a system body.
+                    // Changed by G3 (DR-135): both exits take the held-process
+                    // context of `held_process_reducer` (A1).
                     ExprInstance::EVarBody(e) => {
                         let res = self.eval_var(&e.clone().v.unwrap(), env)?;
-                        self.without_residue_seal()
-                            .eval_with_authority(res, env, rand, authority.clone())
-                            .await
+                        // self.without_residue_seal()
+                        // Changed by G3 (DR-135, S3b H1): a value whose holder
+                        // differs from the context signature runs for its
+                        // holder, with an empty authority.
+                        // self.held_process_reducer()
+                        //     .eval_with_authority(res, env, rand, authority.clone())
+                        //     .await
+                        match self.held_switch(self.var_exit_holder(e.v.as_ref(), env))? {
+                            Some(held) => {
+                                held.eval_with_authority(res, env, rand, CostAuthority::default())
+                                    .await
+                            }
+                            None => {
+                                self.held_process_reducer()?
+                                    .eval_with_authority(res, env, rand, authority.clone())
+                                    .await
+                            }
+                        }
                     }
                     ExprInstance::EMethodBody(e) => {
                         let res = self.eval_expr_to_par(
@@ -1700,9 +1830,23 @@ impl ReducerCore {
                             },
                             env,
                         )?;
-                        self.without_residue_seal()
-                            .eval_with_authority(res, env, rand, authority.clone())
-                            .await
+                        // self.without_residue_seal()
+                        // Changed by G3 (DR-135, S3b H1): a method on a held
+                        // target runs for its holder, as a held variable does.
+                        // self.held_process_reducer()
+                        //     .eval_with_authority(res, env, rand, authority.clone())
+                        //     .await
+                        match self.held_switch(self.method_exit_holder(e, env)?)? {
+                            Some(held) => {
+                                held.eval_with_authority(res, env, rand, CostAuthority::default())
+                                    .await
+                            }
+                            None => {
+                                self.held_process_reducer()?
+                                    .eval_with_authority(res, env, rand, authority.clone())
+                                    .await
+                            }
+                        }
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
@@ -1738,20 +1882,36 @@ impl ReducerCore {
         self.metering.reserve_primitive(send_eval_cost())?;
         let opens_region =
             authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
-        let authority = if opens_region {
-            let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            let region = cost_region(&signature, &rand.to_bytes(), 0)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            extend_authority(authority, region)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
-        } else {
-            authority.clone()
+        // Changed by G3 (DR-135, S3b H5): the opened region is kept, so that
+        // the send can record the holder of its datum on it.
+        // let authority = if opens_region {
+        //     // Changed by G3 (DR-135): the opened region carries the region
+        //     // price (R4).
+        //     // let signature = sig_to_cost_signature(&self.metering.budget().signature())
+        //     //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        //     // let region = cost_region(&signature, &rand.to_bytes(), 0)
+        //     //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        //     let region = self.opened_region(&rand.to_bytes(), 0)?;
+        //     extend_authority(authority, region)
+        //         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        // } else {
+        //     authority.clone()
+        // };
+        let opened = match opens_region {
+            true => Some(self.opened_region(&rand.to_bytes(), 0)?),
+            false => None,
+        };
+        let authority = match opened.as_ref() {
+            Some(region) => extend_authority(authority, region.clone())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+            None => authority.clone(),
         };
         // DR-101: a system body pays through its payer region but stores system residue.
+        // Changed by G3 (DR-135): the residue records the body's caller (A1).
         let seal = if opens_region && self.residue_seal {
-            system_residue_authority(&authority, &self.metering.budget().deploy_id())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            // system_residue_authority(&authority, &self.metering.budget().deploy_id())
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            self.residue_seal_of(&authority)?
         } else {
             authority.clone()
         };
@@ -1782,8 +1942,15 @@ impl ReducerCore {
         //         self.substitute.substitute_and_charge(&evaluated, 0, env)
         //     })
         //     .collect::<Result<Vec<_>, InterpreterError>>()?;
-        let measured_data = send
-            .data
+        // Added by G3 (DR-135, S3b H5): every run strips the held markers of
+        // the data before the evaluation and the measured fold, so no held
+        // term reaches a datum. The strip charges no phlo.
+        let (data, markers) = strip_held_markers(&send.data)?;
+        // Changed by G3 (DR-135, S3b H5): the fold reads the stripped data.
+        // let measured_data = send
+        //     .data
+        //     .iter()
+        let measured_data = data
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
@@ -1799,6 +1966,28 @@ impl ReducerCore {
             .into_iter()
             .map(|(par, _)| par)
             .collect::<Vec<_>>();
+        // Added by G3 (DR-135, S3b H5): the datum records the holder of its
+        // code: an owner body on its opened region, a system body on its
+        // residue.
+        let (authority, seal) =
+            match self.held_send_record(&data, &markers, &subst_data, env, opens_region)? {
+                SendRecord::Unchanged => (authority, seal),
+                SendRecord::Caller(caller) => {
+                    let mut region = opened.ok_or_else(|| {
+                        InterpreterError::BugFoundError(
+                            "a send records a holder without an opened region".to_string(),
+                        )
+                    })?;
+                    region.caller = Some(caller);
+                    let authority = extend_authority(&CostAuthority::default(), region)
+                        .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                    (authority.clone(), authority)
+                }
+                SendRecord::Residue(caller) => {
+                    let seal = self.residue_seal_with(&authority, caller.as_ref())?;
+                    (authority, seal)
+                }
+            };
 
         self.produce(
             unbundled,
@@ -1838,10 +2027,13 @@ impl ReducerCore {
         let opens_region =
             authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
         let introduction_authority = if opens_region {
-            let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            let region = cost_region(&signature, &entropy, 0)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            // Changed by G3 (DR-135): the opened region carries the region
+            // price (R4).
+            // let signature = sig_to_cost_signature(&self.metering.budget().signature())
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            // let region = cost_region(&signature, &entropy, 0)
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = self.opened_region(&entropy, 0)?;
             extend_authority(authority, region)
                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
         } else {
@@ -1851,8 +2043,10 @@ impl ReducerCore {
             authority.clone()
         } else if opens_region && self.residue_seal {
             // DR-101: a system body pays through its payer region but stores system residue.
-            system_residue_authority(&introduction_authority, &self.metering.budget().deploy_id())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            // Changed by G3 (DR-135): the residue records the body's caller (A1).
+            // system_residue_authority(&introduction_authority, &self.metering.budget().deploy_id())
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            self.residue_seal_of(&introduction_authority)?
         } else {
             introduction_authority.clone()
         };
@@ -1869,10 +2063,19 @@ impl ReducerCore {
                                 0,
                                 env,
                             )?;
-                            let region = cost_region(&signature, &entropy, (index + 1) as u32)
-                                .map_err(|error| {
-                                    InterpreterError::ReduceError(error.to_string())
-                                })?;
+                            // Changed by G3 (DR-135): a bind region carries the
+                            // region price (R4).
+                            // let region = cost_region(&signature, &entropy, (index + 1) as u32)
+                            //     .map_err(|error| {
+                            //         InterpreterError::ReduceError(error.to_string())
+                            //     })?;
+                            let region = priced_cost_region(
+                                &signature,
+                                &entropy,
+                                (index + 1) as u32,
+                                self.region_price(),
+                            )
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
                             extend_authority(&authority, region)
                                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))
                         }
@@ -1947,8 +2150,22 @@ impl ReducerCore {
         //     introduction_authority,
         // )
         // .await?;
+        // Changed by G3 (DR-135, S3b H2): before the substitution, the held
+        // uses of the body are wrapped in held terms, so the stored body keeps
+        // the holders of the values that it captures.
+        // let (subst_body, body_bytes) = self.substitute.substitute_no_sort_and_measure(
+        //     receive.body.as_ref().unwrap(),
+        //     0,
+        //     &env.shift(receive.bind_count),
+        // )?;
+        let stored_body = receive
+            .body
+            .as_ref()
+            .expect("Receive.body: normalizer post-condition");
+        let wrapped_body =
+            self.wrap_held_uses(stored_body, receive.bind_count, env, &receive_authority)?;
         let (subst_body, body_bytes) = self.substitute.substitute_no_sort_and_measure(
-            receive.body.as_ref().unwrap(),
+            wrapped_body.as_ref().unwrap_or(stored_body),
             0,
             &env.shift(receive.bind_count),
         )?;
@@ -2077,16 +2294,27 @@ impl ReducerCore {
                                         continue;
                                     }
 
-                                    self.eval_with_authority(
-                                        single_case
-                                            .source
-                                            .clone()
-                                            .expect("MatchCase.source: protobuf no_box invariant"),
-                                        &case_env,
-                                        rand,
-                                        authority.clone(),
-                                    )
-                                    .await?;
+                                    // Changed by G3 (DR-135, S3b H3): a match on
+                                    // one held variable binds the values of the
+                                    // case for the variable's holder.
+                                    // self.eval_with_authority(
+                                    let case_reducer = self.match_case_reducer(
+                                        mat.target.as_ref(),
+                                        env,
+                                        single_case.free_count,
+                                    );
+                                    case_reducer
+                                        .as_ref()
+                                        .unwrap_or(self)
+                                        .eval_with_authority(
+                                            single_case.source.clone().expect(
+                                                "MatchCase.source: protobuf no_box invariant",
+                                            ),
+                                            &case_env,
+                                            rand,
+                                            authority.clone(),
+                                        )
+                                        .await?;
 
                                     return Ok(());
                                 }
@@ -2266,6 +2494,24 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
+        // Added by G3 (DR-135, S3b H4): a held term runs for its holder with
+        // an empty authority, and opens no region of its own. Without a
+        // binding it runs as the current reducer runs its body. Its signature
+        // and price pass the guard in every run (T13, T14).
+        if let Some(holder) = held_term_holder(term)? {
+            let body = unwrap_option_safe(term.body.clone())?;
+            return match self.metering.budget().owner_binding() {
+                Some(_) => {
+                    self.held_reducer(&holder)?
+                        .eval_with_authority(body, env, rand, CostAuthority::default())
+                        .await
+                }
+                None => {
+                    self.eval_with_authority(body, env, rand, authority.clone())
+                        .await
+                }
+            };
+        }
         let native_error =
             crate::rust::interpreter::accounting::authority::authority_interpreter_error;
         let signature = unwrap_option_safe(term.signature.clone())?;
@@ -2273,7 +2519,11 @@ impl ReducerCore {
             .substitute
             .substitute_cost_signature(signature, 0, env)?;
         let authority = {
-            let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+            // Changed by G3 (DR-135): the region of a signed term carries the
+            // price of the context that runs the term (R4).
+            // let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+            let region = priced_cost_region(&signature, &rand.to_bytes(), 0, self.region_price())
+                .map_err(native_error)?;
             extend_authority(authority, region).map_err(native_error)?
         };
         self.eval_with_authority(unwrap_option_safe(term.body.clone())?, env, rand, authority)
@@ -2311,9 +2561,12 @@ impl ReducerCore {
         let signature = cost_signature_to_sig(head).map_err(native_error)?;
         let authority =
             if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
-                let payer = self.metering.budget().signature();
-                let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
-                let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+                // Changed by G3 (DR-135): the opened region carries the region
+                // price (R4).
+                // let payer = self.metering.budget().signature();
+                // let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
+                // let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+                let region = self.opened_region(&rand.to_bytes(), 0)?;
                 extend_authority(authority, region).map_err(native_error)?
             } else {
                 authority.clone()
@@ -2339,7 +2592,15 @@ impl ReducerCore {
             &authority,
         )?;
         self.produce(channel, datum, false, authority, None).await?;
-        reservation.commit();
+        // Changed by G3 (DR-135, S4, SA5): an owner that cannot pay for the
+        // introduction refuses it, and the produce stores nothing. The stack
+        // transfer is then aborted, so no birth lacks its stack.
+        // reservation.commit();
+        let identity = super::accounting::byte_accounting::produce_introduction_identity(&source);
+        match self.metering.budget().introduction_refused(&identity) {
+            true => drop(reservation),
+            false => reservation.commit(),
+        }
         Ok(())
     }
 
@@ -8701,6 +8962,12 @@ impl ReducerCore {
             // Default: reject fs native URNs.  Genesis composition
             // flips the flag off via a yet-to-land runtime slice.
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            // Added by G3 (DR-135): the root reducer has no owner and no
+            // caller.
+            owner: None,
+            caller: None,
+            // Added by G3 (DR-135, S3b): nor held values.
+            held: super::accounting::owner_funding::HeldMap::default(),
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();

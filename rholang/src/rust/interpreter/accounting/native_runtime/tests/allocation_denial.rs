@@ -58,6 +58,7 @@ fn check(
                 Arc::clone(&recording.attempts),
                 Arc::clone(&recording.transfers),
                 limits,
+                None,
             )
             .map(|evidence| evidence.total())
     })
