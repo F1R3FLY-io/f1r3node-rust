@@ -239,7 +239,7 @@ decisions:
   - "2026-10-12: the user approved the revised R1 to R6 and the shared tooling plan (top-level-gitlab-profile INBOX entry). R7 is deferred."
   - "2026-10-22: the maintainer approved the owner map of plan section 4: formal/, scripts/, casper/, crypto/, rspace++/, .github/, block-storage/, node/, shared/. The root keeps rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
   - "2026-10-22: the maintainer added rholang/ and docs/ as owners for those two paths. The root file keeps no cbc rule, so the shared lint reports no potential_override for the owner files."
-tooling: "top-level-gitlab-profile e8ba49f (tag v2026.10.12): cbc.sh attributes snapshot, compare, lint, route, apply."
+tooling: "top-level-gitlab-profile e8ba49f: cbc.sh attributes snapshot, compare, lint, route, apply. Tag v2026.10.12 points to 9b056f4, which contains e8ba49f with byte-identical CbC tooling."
 baseline:
   root_file: "On 2026-10-22 (branch head c7ceb2f40), .gitattributes has 166 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 130) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
   snapshot: "2026-10-22, c7ceb2f40: 3849 tracked files, 408 cbc=mandatory paths (346 high, 62 medium), no errors, no ambient sources. Per owner: formal/ 155, scripts/ 104, casper/ 68, crypto/ 27, rspace++/ 19, .github/ 16, block-storage/ 8, node/ 5, shared/ 4, root 2."
@@ -292,12 +292,13 @@ tasks:
       - "compare reports no change on an existing path."
   - id: TASK-026-5
     title: "Prove that the migration is exact"
-    status: in_progress
+    status: done
     progress:
       - "2026-10-22 snapshot: compare against the c7ceb2f40 baseline shows no change on an existing path, for the working tree and the index (39157e82f). The only changed paths are the eleven owner files and the removed root file."
       - "2026-10-22 lint: cbc.sh attributes lint and lint --cached report no diagnostic and no error at 39157e82f."
-      - "2026-10-22 gate: cbc discharge --strict --json over all 408 mandatory files gives the same result at c7ceb2f40 and at 39157e82f: 217 discharged, 85 pending, 93 none, 14 waived, 179 gaps, exit 4 at both. The per-file results are identical."
-      - "Open: confirmation by the independent verifier in top-level-gitlab-profile."
+      - "2026-10-22 gate: cbc discharge --strict --json over all 408 mandatory files gives the same result at c7ceb2f40 and at 39157e82f: 217 discharged, 85 pending, 93 none, 14 waived, 179 gaps, exit 4 at both. The per-file results are identical. One of the 14 waived rows has a null path (see the TASK-026-7 defect note), so the output has 409 rows."
+      - "2026-10-22 verifier: the independent verifier (top-level-gitlab-profile agent, tooling e8ba49f9af9e) returned pass for base c7ceb2f40 and head c50b4604c. No effective policy difference by path, working tree and index equivalent, 408 mandatory paths (346 high, 62 medium), head lint clean, rules 166 to 164 (two exact duplicates removed), strict discharge output identical (sorted items SHA-256 9d3dac802b69d9bb86760bacd01d0fedcd0db390100bf6ef808891276d7c8c07), source checkouts unchanged."
+      - "The result confirms migration equivalence, not a passing gate. The 179 gaps existed before the migration."
     blocked_by: [TASK-026-4]
     acceptance:
       - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work and the new owner .gitattributes files. Each such path is recorded with its commit. A new owner file is a new tracked path with no cbc attribute."
@@ -317,6 +318,7 @@ tasks:
     blocked_by: [TASK-026-5]
     notes:
       - "2026-10-22: added at the maintainer request. The migration is complete only when the current /cbc slash commands work with the owner files."
+      - "Known defect, before the migration and unchanged by it: the ledger docs/casper/cbc-evidence/casper-src-rust-util-rholang-interpreter-util-rs.md holds two JSON records. cbc discharge then emits an extra waived row with path null. Record it as a defect in this task."
     acceptance:
       - "The check records the top-level-gitlab-profile revision of the /cbc commands that it uses."
       - "/cbc identify finds the same CbC-mandatory files at the branch base and at the branch head, for the same scope."
