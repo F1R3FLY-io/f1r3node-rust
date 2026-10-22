@@ -13,7 +13,8 @@
 #   - docker/.env is tracked (.gitignore lists .env, compose auto-loads it),
 #   - a file under docker/helm/ sets privateKey to a value (the chart reads the
 #     keys from a Secret, see validatorKeys.existingSecret),
-#   - a workflow passes an inline hex key to --validator-private-key.
+#   - a workflow passes an inline hex key to --validator-private-key, after
+#     "=" or a space, quoted or not.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,6 +22,12 @@ repo="${1:-$ROOT}"
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo "ERROR: $repo is not a git repository." >&2; exit 2; }
 
 failed=0
+
+# Prints matched lines indented, with every hex run of key length redacted, so
+# a line with several keys leaks none of them.
+redact() {
+	sed -E 's/[0-9a-fA-F]{64,}/<redacted>/g; s/^/  /'
+}
 
 if [ -n "$(git -C "$repo" ls-files -- docker/.env)" ]; then
 	echo "ERROR: docker/.env is tracked. It holds local node keys. Untrack it with git rm --cached docker/.env and keep docker/.env.example as the template." >&2
@@ -30,14 +37,14 @@ fi
 helm_keys="$(git -C "$repo" grep -nE "privateKey:[[:space:]]*[\"']?[0-9a-fA-F]{64}" -- 'docker/helm/' || true)"
 if [ -n "$helm_keys" ]; then
 	echo "ERROR: the Helm chart sets privateKey values. Read the keys from the Secret in validatorKeys.existingSecret instead:" >&2
-	sed -E 's/(privateKey:[[:space:]]*).*/\1<redacted>/; s/^/  /' <<<"$helm_keys" >&2
+	redact <<<"$helm_keys" >&2
 	failed=1
 fi
 
-workflow_keys="$(git -C "$repo" grep -nE -- '--validator-private-key=[0-9a-fA-F]{64}' -- '.github/workflows/' || true)"
+workflow_keys="$(git -C "$repo" grep -nE -- "--validator-private-key(=|[[:space:]]+)[\"']?[0-9a-fA-F]{64}" -- '.github/workflows/' || true)"
 if [ -n "$workflow_keys" ]; then
 	echo "ERROR: a workflow passes an inline validator private key. Read it from docker/.env.example or a secret instead:" >&2
-	sed -E 's/(--validator-private-key=)[0-9a-fA-F]+/\1<redacted>/; s/^/  /' <<<"$workflow_keys" >&2
+	redact <<<"$workflow_keys" >&2
 	failed=1
 fi
 

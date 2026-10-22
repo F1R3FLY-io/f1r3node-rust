@@ -83,6 +83,32 @@ check
 [[ "$out" == *"ci.yml"*"--validator-private-key=<redacted>"* ]] || fail "the workflow key is not named: $out"
 [[ "$out" != *"$KEY"* ]] || fail "the workflow key is printed: $out"
 
+for form in "=\"$KEY\"" "='$KEY'" " $KEY" " \"$KEY\""; do
+	fixture workflow-form
+	printf '      - run: node run --validator-private-key%s --host=localhost\n' "$form" >>"$repo/.github/workflows/ci.yml"
+	git -C "$repo" add -A
+	check
+	[ "$status" -eq 1 ] || fail "an inline workflow key in the form --validator-private-key$form passed: $out"
+	[[ "$out" != *"$KEY"* ]] || fail "the workflow key in the form --validator-private-key$form is printed: $out"
+	rm -rf "$repo"
+done
+
+KEY2="fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+fixture workflow-two-keys
+printf '      - run: a --validator-private-key=%s && b --validator-private-key %s\n' "$KEY" "$KEY2" >>"$repo/.github/workflows/ci.yml"
+git -C "$repo" add -A
+check
+[ "$status" -eq 1 ] || fail "a workflow line with two keys passed: $out"
+[[ "$out" == *"--validator-private-key=<redacted> && b --validator-private-key <redacted>"* ]] || fail "both keys on one line are not redacted: $out"
+[[ "$out" != *"$KEY"* && "$out" != *"$KEY2"* ]] || fail "a key on a line with two keys is printed: $out"
+
+fixture helm-two-keys
+printf '  - {privateKey: %s}\n  - {publicKey: 04aa, privateKey: %s}\n' "$KEY" "$KEY2" >>"$repo/docker/helm/f1r3fly/values.yaml"
+git -C "$repo" add -A
+check
+[ "$status" -eq 1 ] || fail "flow-style Helm keys passed: $out"
+[[ "$out" != *"$KEY"* && "$out" != *"$KEY2"* ]] || fail "a flow-style Helm key is printed: $out"
+
 fixture all
 printf 'K=%s\n' "$KEY" >"$repo/docker/.env"
 printf '    privateKey: %s\n' "$KEY" >>"$repo/docker/helm/f1r3fly/values.yaml"
