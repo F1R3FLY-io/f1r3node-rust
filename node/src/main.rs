@@ -95,7 +95,7 @@ async fn start_node(options: Options) -> Result<()> {
         options.log_sink.clone(),
     );
     // Defaults are baked into the binary via include_str!; the optional
-    // <data-dir>/rnode.conf override and CLI flags layer on top.
+    // <data-dir>/f1r3fly.conf override and CLI flags layer on top.
     let (mut node_conf, profile, config_file, deferred_warnings) =
         node::rust::configuration::builder::build(options)?;
 
@@ -365,9 +365,9 @@ fn generate_key(
     let secp256k1 = Secp256k1;
     let (private_key, public_key) = <Secp256k1 as SignaturesAlg>::new_key_pair(&secp256k1);
 
-    let private_pem_key_path = path.join("rnode.key");
-    let public_pem_key_path = path.join("rnode.pub.pem");
-    let public_key_hex_file = path.join("rnode.pub.hex");
+    let private_pem_key_path = path.join("f1r3fly.key");
+    let public_pem_key_path = path.join("f1r3fly.pub.pem");
+    let public_key_hex_file = path.join("f1r3fly.pub.hex");
 
     KeyUtil::write_keys(
         &private_key,
