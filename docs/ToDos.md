@@ -268,7 +268,8 @@ tasks:
       - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
       - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4 (710a9f309)."
       - "2026-10-22 casper/: 64 rules, 68 paths (e0f236bdf)."
-      - "2026-10-22 crypto/: 27 rules, 27 paths. Every tracked crypto/ file has a tag."
+      - "2026-10-22 crypto/: 27 rules, 27 paths. Every tracked crypto/ file has a tag (f911c862b)."
+      - "2026-10-22 rspace++/: 19 rules, 19 paths."
     blocked_by: []
     acceptance:
       - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
