@@ -329,6 +329,7 @@ tasks:
       - "2026-10-22: tag cbc-r7-bb830b2 (bb830b285a3d) is released and verified. An immutable copy of the tagged tree is extracted for adoption runs."
       - "2026-10-22 adoption review: the interpreter_util.rs ledger and the three C1 ledger pairs record two independent claims per artifact, not duplicate records. Keeping one ledger would drop a claim. The default selection hides a pending claim on scripts/ci/check-tla-invariants.sh."
       - "2026-10-22 adoption review: check-casper-claims.rs derives ledger names with case kept and has a lowercase exception for scripts/casper-soak/Cargo.toml. The C2 renames therefore change CbC-mandatory code and need a CbC review package and acceptance."
+      - "2026-10-22 C2 done, pending acceptance: ten Casper ledgers and their docs/cbc-evidence symlinks use the tooling slug with case kept. check-casper-claims.rs uses the shared slug rule without the Cargo.toml exception (126 of 127 audited slugs unchanged). The claim audit, the regression tests, and the cbc-r7-bb830b2 strict discharge give unchanged results. Review package: docs/casper/cbc-evidence/runs/casper-claims-ledger-slug-20261022-01/report.json."
     acceptance:
       - "Adoption runs use an immutable checkout of the R7 tag with no tracked changes, and the full tooling commit ID is recorded."
       - "interpreter_util.rs and the three C1 artifacts keep both claims in one ledger, in the multi-claim format of the shared tooling. No claim is dropped, and each artifact status is its weakest claim."

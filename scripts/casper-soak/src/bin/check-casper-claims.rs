@@ -87,13 +87,11 @@ fn discharged(root: &Path, spec: &str, header: &str, id: &str) -> Result<()> {
     for artifact in artifacts {
         ensure!(seen.insert(artifact), "An artifact is duplicated.");
         let source = relative(root, artifact)?;
-        let slug = if artifact == "scripts/casper-soak/Cargo.toml" {
-            "scripts-casper-soak-cargo-toml".to_owned()
-        } else {
-            artifact
-                .trim_start_matches('.')
-                .replace(['/', '.', '_'], "-")
-        };
+        let slug = artifact
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
         let ledger_path = relative(root, &format!("docs/casper/cbc-evidence/{slug}.md"))?;
         let ledger = parse(fenced(&ledger_path, "json")?.as_bytes())?;
         ensure!(
