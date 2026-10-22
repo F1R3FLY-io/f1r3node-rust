@@ -228,15 +228,23 @@ The workflow uses the promotion app token from `release-credentials`, as the Pro
 
 Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Every merge is a merge commit. Each queue checks one pull request at a time. Mergify first merges the current base into the pull request, and then it waits for the checks on the pull request head.
 
+The rulesets require a branch to be up to date before a merge. Mergify then accepts only in-place checks on the pull request head, not checks on a temporary draft pull request. A draft pull request has no `ci-heavy` label, so it would get no Integration Gate result. `.mergify.yml` therefore sets these values:
+
+- `merge_queue.mode: serial` and `merge_queue.max_parallel_checks: 1`
+- `batch_size: 1` and `max_checks_retries: 0` in each queue
+- `merge_conditions` identical to `queue_conditions` in each queue
+
+Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
+
 Mergify adds the `ci-heavy` label to an approved pull request of this repository. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
 
-| Queue | Pull requests | Merge conditions |
+| Queue | Pull requests | Queue and merge conditions |
 |---|---|---|
-| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | To enter the queue: an approving review, no requested changes, and the `ci-heavy` label. To merge: the `devProtect` checks, Promotion Source, and the Integration Gates. |
-| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | To enter the queue: as for `dev`. To merge: the `masterProtect` checks, the casper shards, and the Integration Gates. |
-| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | To enter the queue: as for `dev`, and also the `ca-soaked` label. To merge: as for `dev`. |
+| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approving review, no requested changes, the `ci-heavy` label, the `devProtect` checks, Promotion Source, and the Integration Gates |
+| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | As for `dev`, with the `masterProtect` checks and the casper shards |
+| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`, and also the `ca-soaked` label |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
-| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | To enter the queue: as for `dev`. To merge: as for `dev`. |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | As for `dev` |
 
 To merge a pull request into `dev`, `master`, or `ca-release`, get an approving review. Mergify adds `ci-heavy`, queues the pull request, and merges it after the checks pass. A push to the pull request starts the checks again.
 
@@ -255,7 +263,7 @@ Imports fork pull request #<N>.
 
 Commit Policy then exempts each commit that the fork pull request lists and attributes to its author. The commit must also be in the new pull request. A rebase or an amended commit gets a new SHA, so it loses the exemption.
 
-`test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and the `merge_conditions` of `.mergify.yml` in the same pull request.
+`test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and both condition lists of `.mergify.yml` in the same pull request. The test also checks the serial in-place settings.
 
 The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`.
 
@@ -269,7 +277,7 @@ On 2026-10-21, PR #794 merged into `dev` outside the merge queue. An organizatio
 
 | Ruleset | Change |
 |---|---|
-| `mergify-only` (new) | Targets `dev` and `master`. The **Restrict updates** rule blocks every update of the branch. The bypass actors are the Mergify app (10562) and the CI automation app (4428544) only. |
+| `mergify-only` (new) | Targets `dev`, `master`, `ca-canary`, and `ca-release`. The **Restrict updates** rule blocks every update of the branch. The bypass actors are the Mergify app (10562) and the CI automation app (4428544) only. |
 | `devProtect` | Remove the `merge_queue` rule, so Mergify can merge. Keep the pull request and required check rules. |
 | `masterProtect` | No change. |
 

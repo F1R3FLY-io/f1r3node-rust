@@ -214,6 +214,17 @@ Only the workflow-copy line differs among the 39 accepted artifacts. Fresh isola
 
 The renewal preserves the previous ledgers and unsuccessful inventory controls. It restores this bounded pre-merge discharge without authorizing node execution.
 
+On 2026-10-21, PR #811 changed the owner scan of `scripts/casper-soak/src/host_control.rs`. The change narrows the ownership guarantee, and it needs a fresh acceptance.
+
+- Before the change, one same-user process with an unreadable environment failed every `stop-owned` and `prefer-oom` call. A non-root runner has such processes, so every stop failed even when no owned writer remained (hosted run 39639227494).
+- After the change, the scan skips a same-user process when the environment read fails with EACCES or EPERM. Every other scan error still fails the call. A writer that does not stop still fails `stop-owned`.
+- **Limitation:** an owned process with an unreadable environment escapes cleanup. `stop-owned` does not kill it, and `prefer-oom` does not change its OOM score. A writer has an unreadable environment only when it is not dumpable, for example after a set-user-ID execution or a `PR_SET_DUMPABLE` change. The soak node, pytest, and the Docker CLI do not do this.
+- The unit tests `stop_skips_a_process_whose_environment_is_unreadable` and `oom_preference_skips_a_process_whose_environment_is_unreadable` run as UID 65534 in the binding container. Each requires an unreadable unrelated process, kills or marks the readable owned writer, and leaves the unrelated process unchanged.
+
+On 2026-10-21 the maintainer accepted this change, the narrower guarantee, and its limitation (PR #811, comment 6324960804) at revision `32798242d`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-01/report.json).
+
+Later on 2026-10-21 the maintainer accepted a fixture fix (PR #811, comment 6326106207) at revision `c3a9a0a28`. Three assertions of `scripts/bench/test-run-merge-recovery-soak.sh` could not fail under `set -e`, and they now fail with a message. The [second acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-02/report.json) binds the fixture to its [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-02/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
