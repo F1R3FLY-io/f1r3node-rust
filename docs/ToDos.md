@@ -251,7 +251,9 @@ baseline:
 tasks:
   - id: TASK-026-1
     title: "Record the attribute baseline"
-    status: in_progress
+    status: complete
+    progress:
+      - "2026-10-22: PR #700 comment 6349907432 records the c7ceb2f40 baseline: tooling e8ba49f, 408 mandatory paths, per-owner counts, and the SHA-256 of the working-tree snapshot (7b54b81a8313b3ec5b97a509553b9eccdd18a78b50b2395520c47b3639dea449) and the index snapshot (b905a048e7486f0f8567ea89837d08e1d6be66fe32a6fd66cc1d52380118cf7a)."
     blocked_by: []
     acceptance:
       - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
@@ -312,7 +314,8 @@ tasks:
   - id: TASK-026-6
     title: "Set the evidence directory per path"
     status: blocked
-    blocked_by: ["R7 implementation in top-level-gitlab-profile, released as a tag"]
+    blocked_by: ["R7 release tag in top-level-gitlab-profile for bb830b2"]
+    decision: "2026-10-22: the maintainer approved the canonical R7 tooling release at top-level-gitlab-profile bb830b285a3dc831a34826975b18a4f4a296b011, with the recorded advisory scan limitations. The approval covers the canonical tooling only, not the GitHub skill-mirror publication."
     progress:
       - "2026-10-22 profile agent: R7 work is based on top-level-gitlab-profile 95c5a089. A focused fix is not committed yet: ledgers compare by filesystem identity, duplicate summary rows are suppressed, and four regression tests are added. Generated resources need a regeneration, and two generated summaries omit case-equivalent filenames. Blocker: the guarded sandbox has no cached PyYAML. Not ready for adoption and not approved for release. Keep the current tooling pin."
       - "2026-10-22 review F1: /cbc runs from the local top-level-gitlab-profile checkout, which is at 2130175 on dev. The R7 routing and the stricter ledger parser therefore already apply to /cbc runs here. The e8ba49f pin is a record only and does not hold R7 back."
