@@ -3091,6 +3091,7 @@ dependencies = [
  "bincode",
  "clap",
  "console",
+ "crossbeam-queue",
  "crypto",
  "dotenv",
  "futures",
@@ -3137,7 +3138,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -3152,7 +3153,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -3161,7 +3162,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5"
 dependencies = [
  "anyhow",
  "quote",
@@ -3324,9 +3325,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -3798,7 +3799,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4492,9 +4493,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]
