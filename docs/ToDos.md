@@ -217,12 +217,12 @@ tasks:
 ---
 epic_id: EPIC-026
 title: "Hierarchical CbC Attributes (Nested .gitattributes Files)"
-status: blocked
+status: in_progress
 priority: p2
 user_story: null
-blocked_by: ["top-level-gitlab-profile docs/ToDos.md INBOX: hierarchical cbc .gitattributes design (2026-10-12)"]
+blocked_by: []
 created_at: 2026-10-12
-updated_at: 2026-10-12
+updated_at: 2026-10-22
 plan: docs/plans/cbc-hierarchical-attributes.md
 claimed_by: claude-session-dfac55a4
 claimed_at: 2026-10-12T14:00:00Z
@@ -235,21 +235,26 @@ roles:
 execution_contract:
   design_policy: "No change to any .gitattributes file before the maintainer approves the design. The rule moves follow docs/plans/cbc-hierarchical-attributes.md. The revised R1 to R7 apply: the owner map routes proposals only, existing rules keep their coverage, and R7 is a separate change."
   git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+decisions:
+  - "2026-10-12: the user approved the revised R1 to R6 and the shared tooling plan (top-level-gitlab-profile INBOX entry). R7 is deferred."
+  - "2026-10-22: the maintainer approved the owner map of plan section 4: formal/, scripts/, casper/, crypto/, rspace++/, .github/, block-storage/, node/, shared/. The root keeps rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
+tooling: "top-level-gitlab-profile e8ba49f (tag v2026.10.12): cbc.sh attributes snapshot, compare, lint, route, apply."
 baseline:
-  root_file: ".gitattributes has 160 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 125) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
+  root_file: "On 2026-10-22 (branch head c7ceb2f40), .gitattributes has 166 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 130) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
+  snapshot: "2026-10-22, c7ceb2f40: 3849 tracked files, 408 cbc=mandatory paths (346 high, 62 medium), no errors, no ambient sources. Per owner: formal/ 155, scripts/ 104, casper/ 68, crypto/ 27, rspace++/ 19, .github/ 16, block-storage/ 8, node/ 5, shared/ 4, root 2."
   evidence_dirs: "docs/cbc-evidence/ (tooling default) and docs/casper/cbc-evidence/ (selected through CBC_EVIDENCE_DIR in docs/casper/README.md)."
   acceptance: "No entry sets cbc-acceptance yet."
 tasks:
   - id: TASK-026-1
     title: "Record the attribute baseline"
-    status: pending
+    status: in_progress
     blocked_by: []
     acceptance:
       - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
   - id: TASK-026-2
     title: "Declare the owner directories"
     status: pending
-    blocked_by: ["design approval", "shared owner map interface (R1)"]
+    blocked_by: []
     acceptance:
       - "The owner map of the shared tooling lists the nine owner directories of plan section 4."
       - "The owner map routes new proposals only. The snapshot diff stays empty."
