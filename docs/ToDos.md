@@ -266,7 +266,8 @@ tasks:
     status: in_progress
     progress:
       - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
-      - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4."
+      - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4 (710a9f309)."
+      - "2026-10-22 casper/: 64 rules, 68 paths."
     blocked_by: [TASK-026-1, TASK-026-2]
     acceptance:
       - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
