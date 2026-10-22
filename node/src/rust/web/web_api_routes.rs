@@ -387,11 +387,11 @@ async fn pending_deploys_logic(
     get,
     path = "/api/balance/{address}",
     params(
-        ("address" = String, Path, description = "REV wallet address (Base58-encoded, starts with `1111`)"),
+        ("address" = String, Path, description = "Native-token wallet address (Base58-encoded, starts with `1111`)"),
         ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "REV balance for the address", body = BalanceResponse),
+        (status = 200, description = "Native-token balance for the address", body = BalanceResponse),
         (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),

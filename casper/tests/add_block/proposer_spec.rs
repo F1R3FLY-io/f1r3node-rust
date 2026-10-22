@@ -51,8 +51,8 @@ impl ActiveValidatorChecker for AlwaysNotActiveChecker {
         &self,
         _: &CasperSnapshot,
         _: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult {
-        CheckProposeConstraintsResult::not_bonded()
+    ) -> Result<CheckProposeConstraintsResult, CasperError> {
+        Ok(CheckProposeConstraintsResult::not_bonded())
     }
 }
 
@@ -62,8 +62,8 @@ impl ActiveValidatorChecker for AlwaysActiveChecker {
         &self,
         _: &CasperSnapshot,
         _: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult {
-        CheckProposeConstraintsResult::success()
+    ) -> Result<CheckProposeConstraintsResult, CasperError> {
+        Ok(CheckProposeConstraintsResult::success())
     }
 }
 
