@@ -55,7 +55,7 @@ The previous ledger remains in the archive below. Earlier reports retain their e
 
 ## Claim CLAIM-CASPER-SOAK-001-008
 
-This record moved from `docs/cbc-evidence/scripts-bench-write-soak-summary-sh.md` during the EPIC-026 R8 migration. The original bytes are in `docs/cbc-evidence/history/6e44a0f96d5fe4a24bb9503e68d149de6d6d3e330370b6bfe7b8c115bc0960fa-scripts-bench-write-soak-summary-sh.md`.
+This record moved from `docs/cbc-evidence/scripts-bench-write-soak-summary-sh.md` during the EPIC-026 R8 migration. The original bytes are Git blob `e248f1b01653f59c00b32737e2f8ebde194058fb` at `docs/cbc-evidence/scripts-bench-write-soak-summary-sh.md` in commit `a59d92667685e3d655f269afd6a010df2fb720a9`.
 
 ```json
 {

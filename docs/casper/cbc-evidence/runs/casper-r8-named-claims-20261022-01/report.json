@@ -64,19 +64,53 @@
           "sha256": "ffc1a241df9ba86ce5c1c7e35ad41b6a62af77a42a80e9373a709b3d3c2faef0"
         }
       },
-      "preserved_originals": [
-        "docs/casper/cbc-evidence/history/18f0e463762718575fef92e8127b7ee9d12ed0657f5c5b1ccdfa990af66246cb-github-workflows-slashing-tests-yml.md",
-        "docs/casper/cbc-evidence/history/3004cd14b7b5b0252ea62789e1c2d2a431a33dd2d598ed5bfab63c29df892239-scripts-bench-write-soak-summary-sh.md",
-        "docs/casper/cbc-evidence/history/4df48c86f7f8edae692264e827099e86c56a01a8196a0b0877f6b42a396ddfa3-github-workflows-slashing-tests-yml.claims.json",
-        "docs/casper/cbc-evidence/history/cdeaa75419635a69341fa05f794bae9b44ec09c607bcec89a745a1dfe0e5c08c-scripts-bench-write-soak-summary-sh.claims.json",
-        "docs/casper/cbc-evidence/history/e27171064db30b5c4da3c3f24d07daa57db99cb5c76d4628b2901dce5f8ba0ec-scripts-ci-check-tla-invariants-sh.md",
-        "docs/casper/cbc-evidence/history/e67da396bec60b6beb5af8293ca58897e9bbbe436612ef7c06c1f86d403fa627-casper-src-rust-util-rholang-interpreter-util-rs.md",
-        "docs/casper/cbc-evidence/history/f3dc452652ccac4e5783b38f47b48a01e651984835e1d22291ddb65e290805f4-casper-src-rust-util-rholang-interpreter-util-rs.claims.json",
-        "docs/casper/cbc-evidence/history/ffc1a241df9ba86ce5c1c7e35ad41b6a62af77a42a80e9373a709b3d3c2faef0-scripts-ci-check-tla-invariants-sh.claims.json",
-        "docs/cbc-evidence/history/2dae6683e5ba6e153de1fbc17b0a00f4df927d4119633220f1748ba7b7d6b2d8-github-workflows-slashing-tests-yml.md",
-        "docs/cbc-evidence/history/6e44a0f96d5fe4a24bb9503e68d149de6d6d3e330370b6bfe7b8c115bc0960fa-scripts-bench-write-soak-summary-sh.md",
-        "docs/cbc-evidence/history/75e49b322c2c63cc568ca22ecb470997e88923515687abedbfe85c5cb1a9e2e2-scripts-ci-check-tla-invariants-sh.md"
-      ],
+      "preserved_originals": {
+        "method": "The original ledgers are not copied into the working tree. Each original is cited by its Git blob at the parent commit. The SHA-256 values equal the digests that the removed archive copies carried in their names.",
+        "commit": "a59d92667685e3d655f269afd6a010df2fb720a9",
+        "ledgers": [
+          {
+            "path": "docs/casper/cbc-evidence/github-workflows-slashing-tests-yml.md",
+            "blob": "c64ec311c21fc3846fbf2d84937b2b2253a45651",
+            "sha256": "18f0e463762718575fef92e8127b7ee9d12ed0657f5c5b1ccdfa990af66246cb"
+          },
+          {
+            "path": "docs/casper/cbc-evidence/scripts-bench-write-soak-summary-sh.md",
+            "blob": "994ce24c598a3c3cd4a5afdff58f13374f9b9bdd",
+            "sha256": "3004cd14b7b5b0252ea62789e1c2d2a431a33dd2d598ed5bfab63c29df892239"
+          },
+          {
+            "path": "docs/casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+            "blob": "acfdfca6bf4d21e748053241990476bea992d2dc",
+            "sha256": "e27171064db30b5c4da3c3f24d07daa57db99cb5c76d4628b2901dce5f8ba0ec"
+          },
+          {
+            "path": "docs/casper/cbc-evidence/casper-src-rust-util-rholang-interpreter-util-rs.md",
+            "blob": "5f8f092cce32a0c3559b4b241df4b78888c419e2",
+            "sha256": "e67da396bec60b6beb5af8293ca58897e9bbbe436612ef7c06c1f86d403fa627"
+          },
+          {
+            "path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+            "blob": "1dfe9b19964d142846ed487cc55f9d356ba82cbb",
+            "sha256": "2dae6683e5ba6e153de1fbc17b0a00f4df927d4119633220f1748ba7b7d6b2d8"
+          },
+          {
+            "path": "docs/cbc-evidence/scripts-bench-write-soak-summary-sh.md",
+            "blob": "e248f1b01653f59c00b32737e2f8ebde194058fb",
+            "sha256": "6e44a0f96d5fe4a24bb9503e68d149de6d6d3e330370b6bfe7b8c115bc0960fa"
+          },
+          {
+            "path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+            "blob": "c4a7284a05682aedf155d606f23bd5dd5e1ae1d1",
+            "sha256": "75e49b322c2c63cc568ca22ecb470997e88923515687abedbfe85c5cb1a9e2e2"
+          }
+        ],
+        "inventory_history": [
+          "docs/casper/cbc-evidence/history/4df48c86f7f8edae692264e827099e86c56a01a8196a0b0877f6b42a396ddfa3-github-workflows-slashing-tests-yml.claims.json",
+          "docs/casper/cbc-evidence/history/cdeaa75419635a69341fa05f794bae9b44ec09c607bcec89a745a1dfe0e5c08c-scripts-bench-write-soak-summary-sh.claims.json",
+          "docs/casper/cbc-evidence/history/f3dc452652ccac4e5783b38f47b48a01e651984835e1d22291ddb65e290805f4-casper-src-rust-util-rholang-interpreter-util-rs.claims.json",
+          "docs/casper/cbc-evidence/history/ffc1a241df9ba86ce5c1c7e35ad41b6a62af77a42a80e9373a709b3d3c2faef0-scripts-ci-check-tla-invariants-sh.claims.json"
+        ]
+      },
       "ignore_rule": "The root .gitignore excludes *.claims.lock."
     },
     "auditor": {

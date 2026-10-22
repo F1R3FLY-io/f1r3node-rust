@@ -85,7 +85,7 @@ The prior harness evidence remains recorded below. This package does not automat
 
 ## Claim CLAIM-CASPER-NODE-OBSERVATION-005
 
-This record moved from `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md` during the EPIC-026 R8 migration. The original bytes are in `docs/cbc-evidence/history/75e49b322c2c63cc568ca22ecb470997e88923515687abedbfe85c5cb1a9e2e2-scripts-ci-check-tla-invariants-sh.md`.
+This record moved from `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md` during the EPIC-026 R8 migration. The original bytes are Git blob `c4a7284a05682aedf155d606f23bd5dd5e1ae1d1` at `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md` in commit `a59d92667685e3d655f269afd6a010df2fb720a9`.
 
 ```json
 {

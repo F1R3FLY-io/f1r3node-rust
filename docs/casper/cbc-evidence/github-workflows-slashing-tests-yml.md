@@ -55,7 +55,7 @@ The previous ledger remains in the archive below. Earlier reports retain their e
 
 ## Claim CLAIM-SOAK-GATE-001
 
-This record moved from `docs/cbc-evidence/github-workflows-slashing-tests-yml.md` during the EPIC-026 R8 migration. The original bytes are in `docs/cbc-evidence/history/2dae6683e5ba6e153de1fbc17b0a00f4df927d4119633220f1748ba7b7d6b2d8-github-workflows-slashing-tests-yml.md`.
+This record moved from `docs/cbc-evidence/github-workflows-slashing-tests-yml.md` during the EPIC-026 R8 migration. The original bytes are Git blob `1dfe9b19964d142846ed487cc55f9d356ba82cbb` at `docs/cbc-evidence/github-workflows-slashing-tests-yml.md` in commit `a59d92667685e3d655f269afd6a010df2fb720a9`.
 
 ```json
 {
