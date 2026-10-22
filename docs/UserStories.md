@@ -42,6 +42,27 @@ I want an expiry outcome for an accepted deploy that no block includes.
 **Design:** [Deploy admission](designs/deploy-admission.md).
 **Specification:** [Deploy admission](specs/deploy-admission.md).
 
+---
+
+#### US-013: Trusted daily back-merges
+
+> As a **release engineer**, I want **verified daily back-merges** so that **the release train accepts only release code and verified base merges**.
+
+**Implemented in:** EPIC-029
+
+**Value Stream:** Release Assurance
+
+**Status:** In progress
+
+**Acceptance Criteria:**
+- [ ] The validator accepts clean base merges without a new release source.
+- [ ] Pull request code cannot change the trusted validator.
+- [ ] The daily queue requires a successful status on the current head commit.
+
+**Design:** [Daily back-merge provenance](plans/ca-daily-provenance.md).
+
+---
+
 ## Completed Stories
 
 ---

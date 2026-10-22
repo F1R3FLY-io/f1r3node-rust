@@ -143,6 +143,19 @@ impl ChargingRSpace {
                 self.space.get_data(channel).await
             }
 
+            async fn get_data_at(
+                &self,
+                checkpoint: &SoftCheckpoint<
+                    Par,
+                    BindPattern,
+                    ListParWithRandom,
+                    TaggedContinuation,
+                >,
+                channel: &Par,
+            ) -> Vec<Datum<ListParWithRandom>> {
+                self.space.get_data_at(checkpoint, channel).await
+            }
+
             async fn get_waiting_continuations(
                 &self,
                 channels: Vec<Par>,
