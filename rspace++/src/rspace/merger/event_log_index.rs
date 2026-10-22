@@ -500,7 +500,7 @@ impl EventLogIndexFold {
 fn trace_union(field: &'static str, acc_len: usize, incoming_len: usize, result_len: usize) {
     tracing::debug!(
         target: "f1r3fly.merge.step",
-        step = "combine.EXIT",
+        step = "combine.ADD",
         field,
         x_len = acc_len,
         y_len = incoming_len,
