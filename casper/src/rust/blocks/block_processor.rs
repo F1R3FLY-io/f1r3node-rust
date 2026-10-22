@@ -36,6 +36,7 @@ use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::engine::multi_parent_casper::buffer_resolver::dependencies_are_ready;
+use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
@@ -442,6 +443,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         let authorization = self.dependencies.sender_authorization(block)?;
         if authorization == SenderAuthorization::Unauthorized {
             self.dependencies.discard_pending(block);
+            self.dependencies
+                .strike_block_source(&block.block_hash, Strike::UnauthorizedSender);
             tracing::warn!(
                 "Ignoring block {} because block creator {} has 0 weight in main parent.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -449,6 +452,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             );
         }
         Ok(authorization)
+    }
+
+    /// Strike the peer that pushed this block unsolicited, if one is known.
+    pub fn strike_block_source(&self, block: &BlockMessage, strike: Strike) {
+        self.dependencies
+            .strike_block_source(&block.block_hash, strike);
+    }
+
+    /// Drop the pushing peer of a block whose outcome carries no strike.
+    pub fn forget_block_source(&self, block: &BlockMessage) {
+        self.dependencies.forget_block_source(&block.block_hash);
     }
 
     /// Check block format and store the block if the check passed. A block
@@ -463,6 +477,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         let valid_format = Validate::format_of_fields(block);
         let valid_sig = Validate::block_signature(block);
         if !(valid_format && valid_sig) {
+            self.dependencies
+                .strike_block_source(&block.block_hash, Strike::Malformed);
             return Ok(false);
         }
 
@@ -481,6 +497,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                         PrettyPrinter::build_string_bytes(&block.sender),
                         held
                     );
+                }
+                if held == PendingInsert::SenderLimitReached {
+                    self.dependencies
+                        .strike_block_source(&block.block_hash, Strike::SenderLimitReached);
                 }
                 held == PendingInsert::Accepted
             }
@@ -656,6 +676,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         let status = guard_deferral(status, self.approved_block_number(casper.clone())?);
         metrics::histogram!(BLOCK_VALIDATION_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(validation_start.elapsed().as_secs_f64());
+        match &status {
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender)) => self
+                .dependencies
+                .strike_block_source(&block.block_hash, Strike::InvalidSender),
+            Either::Right(_) | Either::Left(BlockError::Invalid(_)) => {
+                self.dependencies.forget_block_source(&block.block_hash)
+            }
+            Either::Left(_) => {}
+        }
 
         // Record validation outcome
         let _ = match &status {
@@ -1640,6 +1669,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
 
     pub fn was_requested_as_dependency(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         self.block_retriever.was_requested_as_dependency(hash)
+    }
+
+    pub fn strike_block_source(&self, hash: &BlockHash, strike: Strike) {
+        self.block_retriever.strike_block_source(hash, strike);
+    }
+
+    pub fn forget_block_source(&self, hash: &BlockHash) {
+        self.block_retriever.forget_block_source(hash);
     }
 
     /// Admit an arriving block as settled history if [`admit_as_settled`]'s

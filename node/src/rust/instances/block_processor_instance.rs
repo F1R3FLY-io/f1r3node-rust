@@ -188,8 +188,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                         // Already logged at INFO by the pipeline; a routine
                         // drop is not a failure.
-                        Ok(BlockProcessOutcome::NotOfInterest)
-                        | Ok(BlockProcessOutcome::UnauthorizedSender)
+                        Ok(BlockProcessOutcome::NotOfInterest) => {
+                            block_processor.forget_block_source(&block);
+                        }
+                        Ok(BlockProcessOutcome::UnauthorizedSender)
                         | Ok(BlockProcessOutcome::Malformed) => {}
                         Err(e) => {
                             tracing::error!(block = %block_str, error = %e, "block processing failed");
