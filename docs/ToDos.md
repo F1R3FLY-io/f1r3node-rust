@@ -268,6 +268,7 @@ tasks:
       - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
       - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4 (710a9f309)."
       - "2026-10-22 casper/: 64 rules, 68 paths (e0f236bdf)."
+      - "2026-10-22 crypto/: 27 rules, 27 paths. Every tracked crypto/ file has a tag."
     blocked_by: []
     acceptance:
       - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
@@ -299,6 +300,20 @@ tasks:
     blocked_by: ["R7 approval as a separate interface change"]
     notes:
       - "2026-10-12: deferred. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the migration does not need R7."
+  - id: TASK-026-7
+    title: "Verify the /cbc commands against the migrated layout"
+    status: pending
+    blocked_by: [TASK-026-5]
+    notes:
+      - "2026-10-22: added at the maintainer request. The migration is complete only when the current /cbc slash commands work with the owner files."
+    acceptance:
+      - "The check records the top-level-gitlab-profile revision of the /cbc commands that it uses."
+      - "/cbc identify finds the same CbC-mandatory files at the branch base and at the branch head, for the same scope."
+      - "/cbc status and /cbc discharge --strict give the same ledger result at the branch base and at the branch head."
+      - "/cbc:review (cbc-identify-critical.sh) proposes each new tag in the nearest owner .gitattributes file with an anchored pattern, and not in the root file."
+      - "/cbc:scaffold in dry-run mode routes a new tag to the nearest owner file and changes no file."
+      - "/cbc attributes lint reports no error, no override, and no duplicate."
+      - "Each failure is recorded as a defect against the shared tooling or this repository before the epic closes."
 ---
 ```
 
