@@ -57,6 +57,54 @@ pub enum FundingSearchError {
     InvalidAssignmentCell,
     #[error("exact funding contributions do not equal the total obligation")]
     UnequalFundingTotals,
+    #[error("funding search exceeds its edge-scan cap")]
+    ScanCapExceeded,
+}
+
+impl FundingSearchError {
+    pub fn protocol_cap(&self) -> Option<models::rust::cost_protocol_limits::ProtocolCap> {
+        matches!(self, FundingSearchError::ScanCapExceeded)
+            .then_some(models::rust::cost_protocol_limits::ProtocolCap::FundingSearchScans)
+    }
+}
+
+thread_local! {
+    static SCAN_BUDGET: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+pub(in crate::rust::interpreter::accounting) struct FundingScanScope {
+    previous: Option<usize>,
+}
+
+impl FundingScanScope {
+    #[cfg(test)]
+    pub(in crate::rust::interpreter::accounting) fn remaining(&self) -> Option<usize> {
+        SCAN_BUDGET.with(std::cell::Cell::get)
+    }
+}
+
+impl Drop for FundingScanScope {
+    fn drop(&mut self) { SCAN_BUDGET.with(|budget| budget.set(self.previous)); }
+}
+
+pub(in crate::rust::interpreter::accounting) fn funding_scan_scope(cap: usize) -> FundingScanScope {
+    FundingScanScope {
+        previous: SCAN_BUDGET.with(|budget| budget.replace(Some(cap))),
+    }
+}
+
+fn draw_scans(scans: usize) -> Result<(), FundingSearchError> {
+    SCAN_BUDGET.with(|budget| match budget.get() {
+        None => Ok(()),
+        Some(remaining) if remaining < scans => {
+            budget.set(Some(0));
+            Err(FundingSearchError::ScanCapExceeded)
+        }
+        Some(remaining) => {
+            budget.set(Some(remaining - scans));
+            Ok(())
+        }
+    })
 }
 
 const ABSENT: usize = usize::MAX;
@@ -116,6 +164,7 @@ pub fn solve_funding_feasibility(
         .and_then(|n| n.checked_add(count))
         .and_then(|n| n.checked_mul(2))
         .ok_or(FundingSearchError::Overflow)?;
+    draw_scans(directed_edges)?;
     let mut edges = reserved_vec(directed_edges)?;
     let mut heads = filled_vec(vertices, ABSENT)?;
     let first_obligation = sources + 1;
@@ -148,6 +197,7 @@ pub fn solve_funding_feasibility(
         let mut cursor = 0;
         #[cfg(test)]
         search_properties::assert_search_state(&edges, &heads, &parents, &queue, cursor);
+        let mut scans = 0_usize;
         while cursor < queue.len() && parents[sink] == ABSENT {
             #[cfg(test)]
             let scan = search_properties::SearchStepSnapshot::new(&queue, cursor);
@@ -155,6 +205,7 @@ pub fn solve_funding_feasibility(
             cursor += 1;
             let mut adjacency_cursor = heads[node];
             while adjacency_cursor != ABSENT {
+                scans += 1;
                 let index = advance_adjacency(&edges, &mut adjacency_cursor)
                     .ok_or(FundingSearchError::InvalidResult)?;
                 let edge = &edges[index];
@@ -165,6 +216,7 @@ pub fn solve_funding_feasibility(
             #[cfg(test)]
             search_properties::assert_search_state(&edges, &heads, &parents, &queue, cursor);
         }
+        draw_scans(scans)?;
         if parents[sink] == ABSENT {
             #[cfg(test)]
             assert_eq!(

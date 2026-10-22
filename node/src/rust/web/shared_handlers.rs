@@ -389,6 +389,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "host_work_rejected",
             ie.to_string(),
         ),
+        CapExceeded(_) => (S::UNPROCESSABLE_ENTITY, "cap_exceeded", ie.to_string()),
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)

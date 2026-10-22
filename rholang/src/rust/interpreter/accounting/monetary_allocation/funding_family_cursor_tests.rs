@@ -18,6 +18,7 @@ fn limits() -> FundingFamilyLimits {
             obligation_cap: NonZeroUsize::new(16).unwrap(),
         },
         case_cap: NonZeroUsize::new(16).unwrap(),
+        search_scans: usize::MAX,
     }
 }
 

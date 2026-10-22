@@ -7,6 +7,7 @@ pub enum RSpaceError {
     OutOfPhlogistons,
     /// Added by DR-113: a native charge exceeds the signed phlo limit.
     SignedLimitExhausted,
+    CapExceeded(String),
     InterpreterError(String),
     HistoryError(HistoryError),
     RadixTreeError(RadixTreeError),
@@ -29,6 +30,7 @@ impl std::fmt::Display for RSpaceError {
         match self {
             RSpaceError::OutOfPhlogistons => write!(f, "Out of phlogistons"),
             RSpaceError::SignedLimitExhausted => write!(f, "Signed phlo limit exhausted"),
+            RSpaceError::CapExceeded(cap) => write!(f, "Protocol cap exceeded: {}", cap),
             RSpaceError::InterpreterError(err) => write!(f, "Interpreter Error: {}", err),
             RSpaceError::HistoryError(err) => write!(f, "History Error: {}", err),
             RSpaceError::RadixTreeError(err) => write!(f, "Radix Tree Error: {}", err),

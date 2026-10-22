@@ -112,6 +112,7 @@ fn signed_native_family_checks_maximum_holds_before_selecting_charged_or_zero_br
             authority_nodes: 1024,
         },
         aggregate_key_bytes: 1_048_576,
+        search_scans: usize::MAX,
     };
     let capture_limits = PhloCaptureLimits {
         funding: FundingSearchLimits {
@@ -602,6 +603,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     authority_nodes: 65_536,
                 },
                 aggregate_key_bytes: 1_048_576,
+                search_scans: usize::MAX,
             };
             assert!(!checked_intent
                 .verify_funding_policy(0, 0, policy_limits)

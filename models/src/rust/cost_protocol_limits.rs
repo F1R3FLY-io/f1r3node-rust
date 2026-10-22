@@ -1,4 +1,7 @@
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use serde::{Deserialize, Serialize};
 
 use super::deploy_envelope::DeployEnvelopeLimits;
 use super::native_cost_evidence::{NativeFundingCaseLimits, NativePrepaidDeltaLimits};
@@ -6,6 +9,84 @@ use super::phlo_controls::PhloControlsLimits;
 use super::phlo_intent::PhloFundingIntentLimits;
 use super::phlo_wire::PhloWireLimits;
 use super::signed_phlo_deploy::FundedDeployLimits;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProtocolCap {
+    FundingSearchScans,
+    AuthoritySearchNodes,
+}
+
+impl ProtocolCap {
+    pub const ALL: [ProtocolCap; 2] = [
+        ProtocolCap::FundingSearchScans,
+        ProtocolCap::AuthoritySearchNodes,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ProtocolCap::FundingSearchScans => "funding-search-scans",
+            ProtocolCap::AuthoritySearchNodes => "authority-search-nodes",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|cap| cap.name() == name)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct ProtocolCaps {
+    pub funding_search_scans: usize,
+    pub authority_search_nodes: usize,
+}
+
+impl Default for ProtocolCaps {
+    fn default() -> Self { OFFERED_FUNDED_V6_CAPS }
+}
+
+impl ProtocolCaps {
+    pub fn value(&self, cap: ProtocolCap) -> usize {
+        match cap {
+            ProtocolCap::FundingSearchScans => self.funding_search_scans,
+            ProtocolCap::AuthoritySearchNodes => self.authority_search_nodes,
+        }
+    }
+
+    pub fn check(&self) -> Result<(), ProtocolCap> {
+        match ProtocolCap::ALL
+            .into_iter()
+            .find(|cap| self.value(*cap) == 0)
+        {
+            Some(cap) => Err(cap),
+            None => Ok(()),
+        }
+    }
+}
+
+pub const OFFERED_FUNDED_V6_CAPS: ProtocolCaps = ProtocolCaps {
+    funding_search_scans: 268_435_456,
+    authority_search_nodes: 268_435_456,
+};
+
+static FUNDING_SEARCH_SCANS: AtomicUsize =
+    AtomicUsize::new(OFFERED_FUNDED_V6_CAPS.funding_search_scans);
+static AUTHORITY_SEARCH_NODES: AtomicUsize =
+    AtomicUsize::new(OFFERED_FUNDED_V6_CAPS.authority_search_nodes);
+
+pub fn set_protocol_caps(caps: ProtocolCaps) -> Result<(), ProtocolCap> {
+    caps.check()?;
+    FUNDING_SEARCH_SCANS.store(caps.funding_search_scans, Ordering::Relaxed);
+    AUTHORITY_SEARCH_NODES.store(caps.authority_search_nodes, Ordering::Relaxed);
+    Ok(())
+}
+
+pub fn protocol_caps() -> ProtocolCaps {
+    ProtocolCaps {
+        funding_search_scans: FUNDING_SEARCH_SCANS.load(Ordering::Relaxed),
+        authority_search_nodes: AUTHORITY_SEARCH_NODES.load(Ordering::Relaxed),
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct OfferedFundedProtocolLimits {
@@ -103,5 +184,35 @@ mod tests {
             limits.funding_case.cells
                 <= limits.funding_case.sources * limits.funding_case.obligations
         );
+    }
+
+    #[test]
+    fn caps_read_from_configuration_with_defaults_and_reject_zero() {
+        let partial: ProtocolCaps =
+            serde_json::from_str(r#"{"funding-search-scans": 40000000}"#).expect("a partial block");
+        assert_eq!(partial.funding_search_scans, 40_000_000);
+        assert_eq!(
+            partial.authority_search_nodes,
+            OFFERED_FUNDED_V6_CAPS.authority_search_nodes
+        );
+        assert_eq!(
+            serde_json::from_str::<ProtocolCaps>("{}").expect("an empty block"),
+            ProtocolCaps::default()
+        );
+        let zero = ProtocolCaps {
+            authority_search_nodes: 0,
+            ..partial
+        };
+        assert_eq!(zero.check(), Err(ProtocolCap::AuthoritySearchNodes));
+        assert_eq!(partial.check(), Ok(()));
+    }
+
+    #[test]
+    fn each_cap_has_one_name_and_a_positive_value() {
+        for cap in ProtocolCap::ALL {
+            assert_eq!(ProtocolCap::from_name(cap.name()), Some(cap));
+            assert!(OFFERED_FUNDED_V6_CAPS.value(cap) > 0);
+        }
+        assert_eq!(ProtocolCap::from_name("host-work"), None);
     }
 }

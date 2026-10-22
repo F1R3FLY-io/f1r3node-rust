@@ -31,6 +31,7 @@ pub struct PhloFamilyFundingLimits {
     pub funding: PhloFundingLimits,
     pub keys: PhloObligationKeyLimits,
     pub aggregate_key_bytes: usize,
+    pub search_scans: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,6 +445,7 @@ pub fn select_phlo_funding_family(
         FundingFamilyLimits {
             search,
             case_cap: limits.funding.cases,
+            search_scans: limits.search_scans,
         },
     )?
     else {

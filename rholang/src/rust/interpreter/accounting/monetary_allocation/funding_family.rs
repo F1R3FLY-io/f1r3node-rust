@@ -18,6 +18,7 @@ pub struct FundingFamilyProblem<'a> {
 pub struct FundingFamilyLimits {
     pub search: FundingSearchLimits,
     pub case_cap: NonZeroUsize,
+    pub search_scans: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +48,15 @@ pub enum FundingFamilyError {
     IncompatiblePriorityContext,
     #[error(transparent)]
     Search(#[from] FundingSearchError),
+}
+
+impl FundingFamilyError {
+    pub fn protocol_cap(&self) -> Option<models::rust::cost_protocol_limits::ProtocolCap> {
+        match self {
+            FundingFamilyError::Search(error) => error.protocol_cap(),
+            _ => None,
+        }
+    }
 }
 
 pub(super) struct HoldBox {

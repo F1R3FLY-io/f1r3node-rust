@@ -112,6 +112,7 @@ pub fn classify_errors(
             SignedLimitExhausted | RSpaceError(SpaceError::SignedLimitExhausted) => {
                 (Some(PhloFailure::User), None)
             }
+            CapExceeded(_) | RSpaceError(SpaceError::CapExceeded(_)) => (Some(PhloFailure::User), None),
             RSpaceError(_)
             | BugFoundError(_)
             | UndefinedRequiredProtobufFieldError(_)

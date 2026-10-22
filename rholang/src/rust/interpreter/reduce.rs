@@ -45,7 +45,7 @@ use tokio::task::{JoinError, JoinHandle};
 
 use super::accounting::authority::{
     cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
-    sig_to_cost_signature, system_residue_authority, AuthorityError, ResidueContext,
+    sig_to_cost_signature, system_residue_authority, ResidueContext,
 };
 use super::accounting::byte_accounting::{
     message_field_bytes, par_with_random_bytes, IntroductionMeasurement,
@@ -2266,7 +2266,8 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
+        let native_error =
+            crate::rust::interpreter::accounting::authority::authority_interpreter_error;
         let signature = unwrap_option_safe(term.signature.clone())?;
         let signature = self
             .substitute
@@ -2286,7 +2287,8 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
+        let native_error =
+            crate::rust::interpreter::accounting::authority::authority_interpreter_error;
         let stack = CostStack {
             cells: stack
                 .cells

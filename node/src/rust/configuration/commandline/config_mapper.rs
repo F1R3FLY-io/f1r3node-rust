@@ -846,6 +846,7 @@ mod tests {
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
+                protocol_caps: Default::default(),
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,
@@ -1063,6 +1064,10 @@ mod tests {
         assert_eq!(default_config.casper.height_constraint_threshold, 111111);
         assert_eq!(default_config.casper.max_user_deploys_per_block, 777777);
         assert_eq!(default_config.casper.min_phlo_price, 1);
+        assert_eq!(
+            default_config.casper.protocol_caps,
+            models::rust::cost_protocol_limits::ProtocolCaps::default()
+        );
 
         // Heartbeat configuration
         // --heartbeat-disabled takes precedence over --heartbeat-enabled (both set in test options)

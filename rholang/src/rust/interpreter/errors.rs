@@ -21,6 +21,7 @@ pub enum InterpreterError {
     /// Added by DR-113: a native charge exceeds the signed phlo limit. It is a
     /// classified user failure.
     SignedLimitExhausted,
+    CapExceeded(models::rust::cost_protocol_limits::ProtocolCap),
     HostWorkRejected,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
@@ -188,6 +189,10 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::SignedLimitExhausted => {
                 write!(f, "Computation exhausted its signed phlo limit.")
+            }
+
+            InterpreterError::CapExceeded(cap) => {
+                write!(f, "Computation exceeded the protocol cap {}.", cap.name())
             }
 
             InterpreterError::HostWorkRejected => {
@@ -401,6 +406,12 @@ impl From<RSpaceError> for InterpreterError {
         match err {
             RSpaceError::OutOfPhlogistons => InterpreterError::OutOfPhlogistonsError,
             RSpaceError::SignedLimitExhausted => InterpreterError::SignedLimitExhausted,
+            RSpaceError::CapExceeded(name) => {
+                match models::rust::cost_protocol_limits::ProtocolCap::from_name(&name) {
+                    Some(cap) => InterpreterError::CapExceeded(cap),
+                    None => InterpreterError::RSpaceError(RSpaceError::CapExceeded(name)),
+                }
+            }
             other => InterpreterError::RSpaceError(other),
         }
     }
@@ -411,6 +422,7 @@ impl From<InterpreterError> for RSpaceError {
         match error {
             InterpreterError::OutOfPhlogistonsError => Self::OutOfPhlogistons,
             InterpreterError::SignedLimitExhausted => Self::SignedLimitExhausted,
+            InterpreterError::CapExceeded(cap) => Self::CapExceeded(cap.name().to_owned()),
             InterpreterError::RSpaceError(error) => error,
             other => Self::InterpreterError(other.to_string()),
         }
@@ -772,5 +784,30 @@ mod tests {
             illegal_argument_error("nth"),
             InterpreterError::IllegalArgumentError("Incorrect arguments for nth".to_string())
         );
+    }
+
+    #[test]
+    fn a_cap_failure_keeps_its_cap_across_rspace_and_is_a_user_failure() {
+        use models::rust::cost_protocol_limits::ProtocolCap;
+
+        use crate::rust::interpreter::accounting::economic_failure::classify_errors;
+        use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
+        for cap in ProtocolCap::ALL {
+            let error = InterpreterError::CapExceeded(cap);
+            let transported = RSpaceError::from(error.clone());
+            assert_eq!(transported, RSpaceError::CapExceeded(cap.name().to_owned()));
+            assert_eq!(InterpreterError::from(transported.clone()), error);
+            for errors in [vec![error.clone()], vec![InterpreterError::RSpaceError(
+                transported,
+            )]] {
+                let summary = classify_errors(&errors).expect("a classified failure");
+                assert_eq!(
+                    summary,
+                    crate::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary::single(
+                        PhloFailure::User
+                    )
+                );
+            }
+        }
     }
 }

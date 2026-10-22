@@ -74,6 +74,7 @@ fn limits() -> PhloFamilyFundingLimits {
             authority_nodes: 100,
         },
         aggregate_key_bytes: 1_000_000,
+        search_scans: usize::MAX,
     }
 }
 
@@ -1005,6 +1006,7 @@ fn exhausted_key_storage_returns_an_error_not_infeasibility() {
         input(&sources, &requirements, 2),
         PhloFamilyFundingLimits {
             aggregate_key_bytes: 0,
+            search_scans: usize::MAX,
             ..limits()
         }
     )

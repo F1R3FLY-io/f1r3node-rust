@@ -9,6 +9,7 @@ fn limits() -> FundingFamilyLimits {
             obligation_cap: NonZeroUsize::new(16).unwrap(),
         },
         case_cap: NonZeroUsize::new(16).unwrap(),
+        search_scans: usize::MAX,
     }
 }
 
@@ -355,6 +356,7 @@ fn family_validation_precedes_infeasibility() {
             },
             FundingFamilyLimits {
                 case_cap: NonZeroUsize::new(1).unwrap(),
+                search_scans: usize::MAX,
                 ..limits()
             }
         ),

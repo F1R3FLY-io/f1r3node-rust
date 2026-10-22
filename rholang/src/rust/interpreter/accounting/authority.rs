@@ -7,6 +7,7 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
     CostAuthority, CostRegion, CostSignature, CostSignatureCompound, GPrivate, GUnforgeable, Par,
 };
+use models::rust::cost_protocol_limits::ProtocolCap;
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -54,6 +55,17 @@ pub fn canonical_cost_signature(
         return Err(AuthorityError::NonCanonicalSignature);
     }
     Ok(canonical)
+}
+
+pub(crate) fn authority_interpreter_error(
+    error: AuthorityError,
+) -> crate::rust::interpreter::errors::InterpreterError {
+    match error {
+        AuthorityError::CapExceeded(cap) => {
+            crate::rust::interpreter::errors::InterpreterError::CapExceeded(cap)
+        }
+        other => crate::rust::interpreter::errors::InterpreterError::ReduceError(other.to_string()),
+    }
 }
 
 fn validate_cost_signature(signature: &CostSignature) -> Result<(), AuthorityError> {
@@ -582,7 +594,7 @@ pub fn allocate_quantitative_events(
         })
         .collect::<Result<Vec<_>, AuthorityError>>()?;
     let mut failed = BTreeSet::new();
-    allocate_event_options(&options, available, &mut failed)
+    allocate_event_options(&options, available, &mut failed, authority_search_cap())?
         .map(|(_, draws)| {
             draws
                 .into_iter()
@@ -609,7 +621,12 @@ pub fn allocate_authority_events_with_custody(
         .iter()
         .map(authority_funding_options)
         .collect::<Result<Vec<_>, _>>()?;
-    allocate_event_options_with_custody(&options, available, balance_custody)
+    allocate_event_options_with_custody(
+        &options,
+        available,
+        balance_custody,
+        authority_search_cap(),
+    )
 }
 
 pub fn allocate_quantitative_events_with_custody(
@@ -642,7 +659,12 @@ pub fn allocate_quantitative_events_with_custody(
                 .collect::<Result<Vec<_>, AuthorityError>>()
         })
         .collect::<Result<Vec<_>, AuthorityError>>()?;
-    allocate_event_options_with_custody(&options, available, balance_custody)
+    allocate_event_options_with_custody(
+        &options,
+        available,
+        balance_custody,
+        authority_search_cap(),
+    )
 }
 
 pub fn allocate_authority_event_draws(
@@ -654,7 +676,7 @@ pub fn allocate_authority_event_draws(
         .map(authority_funding_options)
         .collect::<Result<Vec<_>, _>>()?;
     let mut failed = BTreeSet::new();
-    allocate_event_options(&options, available, &mut failed)
+    allocate_event_options(&options, available, &mut failed, authority_search_cap())?
         .map(|(_, draws)| {
             events
                 .iter()
@@ -669,11 +691,16 @@ pub fn allocate_authority_event_draws(
         .ok_or(AuthorityError::InsufficientAuthority)
 }
 
+fn authority_search_cap() -> usize {
+    models::rust::cost_protocol_limits::protocol_caps().authority_search_nodes
+}
+
 fn allocate_event_options(
     options: &[Vec<ResourceMultiset<[u8; 32]>>],
     available: &ResourceMultiset<[u8; 32]>,
     failed: &mut BTreeSet<(usize, Vec<([u8; 32], u64)>)>,
-) -> Option<(ResourceMultiset<[u8; 32]>, Vec<ResourceMultiset<[u8; 32]>>)> {
+    cap: usize,
+) -> Result<Option<(ResourceMultiset<[u8; 32]>, Vec<ResourceMultiset<[u8; 32]>>)>, AuthorityError> {
     struct Frame {
         index: usize,
         next_option: usize,
@@ -686,9 +713,16 @@ fn allocate_event_options(
         available: available.clone(),
     }];
     let mut draws = Vec::with_capacity(options.len());
+    let mut nodes = 0_usize;
     while let Some(frame) = frames.last_mut() {
+        nodes += 1;
+        if nodes > cap {
+            return Err(AuthorityError::CapExceeded(
+                ProtocolCap::AuthoritySearchNodes,
+            ));
+        }
         if frame.index == options.len() {
-            return Some((frame.available.clone(), draws));
+            return Ok(Some((frame.available.clone(), draws)));
         }
         let state = (
             frame.index,
@@ -720,13 +754,14 @@ fn allocate_event_options(
             });
         }
     }
-    None
+    Ok(None)
 }
 
 fn allocate_event_options_with_custody(
     options: &[Vec<ResourceMultiset<[u8; 32]>>],
     available: &ResourceMultiset<[u8; 32]>,
     balance_custody: &BTreeMap<[u8; 32], [u8; 32]>,
+    cap: usize,
 ) -> Result<AuthorityBalanceSettlement<[u8; 32]>, AuthorityError> {
     struct Frame {
         index: usize,
@@ -750,7 +785,14 @@ fn allocate_event_options_with_custody(
     }];
     let mut draws = Vec::with_capacity(options.len());
     let mut failed = BTreeSet::new();
+    let mut nodes = 0_usize;
     while let Some(frame) = frames.last_mut() {
+        nodes += 1;
+        if nodes > cap {
+            return Err(AuthorityError::CapExceeded(
+                ProtocolCap::AuthoritySearchNodes,
+            ));
+        }
         if frame.index == options.len() {
             let logical_debit = draws
                 .iter()
@@ -1281,6 +1323,7 @@ fn search_physical_settlement(
     event_stacks: BTreeSet<[u8; 32]>,
     born_available_after: &BTreeMap<[u8; 32], usize>,
     failed: &mut BTreeSet<PhysicalSearchState>,
+    cap: usize,
 ) -> Result<Option<Vec<AuthorityPhysicalEventDraw<[u8; 32]>>>, AuthorityError> {
     let initial = PhysicalSearchNode {
         event_index,
@@ -1292,8 +1335,15 @@ fn search_physical_settlement(
         draws: None,
     };
     let mut work = vec![PhysicalSearchWork::Search(initial)];
+    let mut nodes = 0_usize;
 
     while let Some(next_work) = work.pop() {
+        nodes += 1;
+        if nodes > cap {
+            return Err(AuthorityError::CapExceeded(
+                ProtocolCap::AuthoritySearchNodes,
+            ));
+        }
         let mut node = match next_work {
             PhysicalSearchWork::Search(node) => node,
             PhysicalSearchWork::MarkFailed(state) => {
@@ -1539,6 +1589,7 @@ pub fn allocate_physical_settlement(
         BTreeSet::new(),
         &born_available_after,
         &mut BTreeSet::new(),
+        authority_search_cap(),
     )?
     .ok_or(AuthorityError::InsufficientAuthority)?;
     verify_physical_settlement(events, signatures, inventory, &draws)
@@ -2190,6 +2241,8 @@ impl AuthorityCostWitness<[u8; 32]> {
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum AuthorityError {
+    #[error("cost authority exceeds the protocol cap {}", .0.name())]
+    CapExceeded(ProtocolCap),
     #[error("cost authority is missing a signature")]
     MissingSignature,
     #[error("a billable communication has no cost-authority wrapper")]
@@ -4609,5 +4662,79 @@ mod tests {
             .expect("canonical");
         let merged = rekey_by(equal, collide).expect("equal signatures merge");
         assert_eq!(merged.as_authority().regions, vec![region(9, ground(&[1]))]);
+    }
+
+    fn lane_options(
+        events: usize,
+    ) -> (
+        Vec<Vec<ResourceMultiset<[u8; 32]>>>,
+        ResourceMultiset<[u8; 32]>,
+    ) {
+        let options = (0..events)
+            .map(|_| {
+                vec![
+                    ResourceMultiset::singleton([1; 32], 1),
+                    ResourceMultiset::singleton([2; 32], 1),
+                ]
+            })
+            .collect();
+        let available = ResourceMultiset::singleton([1; 32], 1)
+            .checked_add(&ResourceMultiset::singleton([2; 32], events as u64 - 2))
+            .expect("a small supply");
+        (options, available)
+    }
+
+    fn smallest_admitting_cap(
+        search: impl Fn(usize) -> Result<bool, AuthorityError>,
+    ) -> (usize, bool) {
+        let mut cap = 1;
+        loop {
+            match search(cap) {
+                Err(AuthorityError::CapExceeded(ProtocolCap::AuthoritySearchNodes)) => cap += 1,
+                Ok(found) => return (cap, found),
+                Err(other) => panic!("unexpected search error {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_authority_search_cap_admits_exactly_the_searches_within_it() {
+        for events in [3, 5, 8] {
+            let (options, available) = lane_options(events);
+            let search = |cap: usize| {
+                allocate_event_options(&options, &available, &mut BTreeSet::new(), cap)
+                    .map(|found| found.is_some())
+            };
+            let (cap, found) = smallest_admitting_cap(search);
+            assert!(!found, "{events} events need one more unit than the supply");
+            assert!(cap > events, "the search must backtrack");
+            assert_eq!(search(usize::MAX), Ok(false));
+            let counts: Vec<_> = std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..8)
+                    .map(|_| scope.spawn(|| smallest_admitting_cap(search).0))
+                    .collect();
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("a search thread joins"))
+                    .collect()
+            });
+            assert!(counts.iter().all(|count| *count == cap), "{counts:?}");
+        }
+        let custody: BTreeMap<_, _> = [([1; 32], [11; 32]), ([2; 32], [12; 32])].into();
+        let (options, _) = lane_options(4);
+        let supply = ResourceMultiset::singleton([11; 32], 1)
+            .checked_add(&ResourceMultiset::singleton([12; 32], 3))
+            .expect("a small supply");
+        let search = |cap: usize| {
+            allocate_event_options_with_custody(&options, &supply, &custody, cap).map(|_| true)
+        };
+        let (cap, found) = smallest_admitting_cap(search);
+        assert!(found);
+        assert!(matches!(
+            search(cap - 1),
+            Err(AuthorityError::CapExceeded(
+                ProtocolCap::AuthoritySearchNodes
+            ))
+        ));
     }
 }

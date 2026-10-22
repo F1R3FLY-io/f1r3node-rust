@@ -135,6 +135,9 @@ pub struct CasperConf {
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
+
+    #[serde(rename = "protocol-caps", default)]
+    pub protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }

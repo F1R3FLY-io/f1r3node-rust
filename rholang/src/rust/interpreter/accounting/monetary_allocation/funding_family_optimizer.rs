@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use super::funding_family::{push, split_hold_box, sum, vector, HoldBox};
+use super::funding_feasibility::funding_scan_scope;
 use super::{
     select_fixed_funding_policy, select_funding_with_unit_fee, FundingAssignmentError,
     FundingAssignmentTotals, FundingBoxProblem, FundingFamilyError, FundingFamilyLimits,
@@ -232,6 +233,14 @@ fn compare(
 }
 
 pub fn optimize_funding_family(
+    problem: FundingFamilyOptimizationProblem<'_>,
+    limits: FundingFamilyLimits,
+) -> Result<Option<FundingFamilyAllocation>, FundingFamilyError> {
+    let _solves = funding_scan_scope(limits.search_scans);
+    optimize_within_budget(problem, limits)
+}
+
+fn optimize_within_budget(
     problem: FundingFamilyOptimizationProblem<'_>,
     limits: FundingFamilyLimits,
 ) -> Result<Option<FundingFamilyAllocation>, FundingFamilyError> {

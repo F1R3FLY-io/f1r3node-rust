@@ -447,7 +447,7 @@ pub struct BillableTokenEvent {
 }
 
 fn native_authority_error(error: authority::AuthorityError) -> InterpreterError {
-    InterpreterError::ReduceError(error.to_string())
+    authority::authority_interpreter_error(error)
 }
 
 fn canonical_native_authority(

@@ -105,6 +105,20 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     ),
     CasperError,
 > {
+    models::rust::cost_protocol_limits::set_protocol_caps(conf.casper.protocol_caps).map_err(
+        |cap| {
+            CasperError::RuntimeError(format!(
+                "casper.protocol-caps.{} must be positive",
+                cap.name()
+            ))
+        },
+    )?;
+    info!(
+        funding_search_scans = conf.casper.protocol_caps.funding_search_scans,
+        authority_search_nodes = conf.casper.protocol_caps.authority_search_nodes,
+        "Protocol caps"
+    );
+
     info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
 
     // RNode key-value store manager / manages LMDB databases

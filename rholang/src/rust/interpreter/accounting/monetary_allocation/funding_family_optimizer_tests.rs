@@ -19,6 +19,7 @@ fn limits() -> FundingFamilyLimits {
             obligation_cap: NonZeroUsize::new(16).unwrap(),
         },
         case_cap: NonZeroUsize::new(16).unwrap(),
+        search_scans: usize::MAX,
     }
 }
 
@@ -852,6 +853,7 @@ fn funding_search_time_at_the_protocol_size_limits() {
                 .expect("a positive obligation limit"),
         },
         case_cap: NonZeroUsize::new(1).expect("one case"),
+        search_scans: usize::MAX,
     };
     let capacities = vec![u64::MAX; n];
     let fee = vec![true; n];
@@ -894,5 +896,147 @@ fn funding_search_time_at_the_protocol_size_limits() {
             break;
         }
         m *= 4;
+    }
+}
+
+fn capped(search_scans: usize) -> FundingFamilyLimits {
+    FundingFamilyLimits {
+        search_scans,
+        ..limits()
+    }
+}
+
+fn counted(
+    problem: FundingFamilyOptimizationProblem<'_>,
+    limits: FundingFamilyLimits,
+) -> (
+    Result<Option<FundingFamilyAllocation>, FundingFamilyError>,
+    usize,
+) {
+    let scope = funding_scan_scope(limits.search_scans);
+    let result = optimize_within_budget(problem, limits);
+    let remaining = scope.remaining().expect("the scope holds a budget");
+    (result, limits.search_scans - remaining)
+}
+
+fn dense_point<T>(
+    n: usize,
+    m: usize,
+    check: impl FnOnce(FundingFamilyOptimizationProblem<'_>) -> T,
+) -> T {
+    let capacities = vec![u64::MAX; n];
+    let fee = vec![true; n];
+    let count = u64::try_from(m).expect("an obligation count fits in u64");
+    let amount = u64::MAX / count;
+    let obligations = vec![amount; m];
+    let eligible = vec![vec![true; m]; n];
+    let outcomes = [FundingOutcomeProblem {
+        resources: FundingMinimaxProblem {
+            capacities: &capacities,
+            obligations: &obligations,
+            eligible: &eligible,
+        },
+        unit_fee_eligible: Some(&fee),
+    }];
+    check(FundingFamilyOptimizationProblem {
+        capacities: &capacities,
+        outcomes: &outcomes,
+        exposure_limit: u128::from(amount) * u128::from(count) + 1,
+        resource_cursor: 0,
+        fee_cursor: 0,
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+    #[test]
+    fn the_scan_cap_admits_exactly_the_searches_within_it(data in small_family()) {
+        with_small_family(data, |problem| {
+            let (expected, scans) = counted(problem, limits());
+            let expected = expected.expect("the uncapped search completes");
+            assert_eq!(
+                optimize_funding_family(problem, capped(scans))
+                    .expect("a cap equal to the scan count admits the search"),
+                expected
+            );
+            if scans > 0 {
+                assert!(matches!(
+                    optimize_funding_family(problem, capped(scans - 1)),
+                    Err(FundingFamilyError::Search(FundingSearchError::ScanCapExceeded))
+                ));
+            }
+        });
+    }
+}
+
+#[test]
+fn the_scan_count_is_the_same_on_every_thread() {
+    let count = || dense_point(6, 3, |problem| counted(problem, limits()).1);
+    let expected = count();
+    assert!(expected > 1, "the fixture must scan more than one edge");
+    let counts: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8).map(|_| scope.spawn(count)).collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("a counting thread joins"))
+            .collect()
+    });
+    assert!(counts.iter().all(|scans| *scans == expected), "{counts:?}");
+    dense_point(6, 3, |problem| {
+        assert!(matches!(
+            optimize_funding_family(problem, capped(expected - 1)),
+            Err(FundingFamilyError::Search(
+                FundingSearchError::ScanCapExceeded
+            ))
+        ));
+        assert!(optimize_funding_family(problem, capped(expected))
+            .expect("the cap admits the search")
+            .is_some());
+    });
+}
+
+#[test]
+fn a_scan_scope_restores_the_enclosing_budget() {
+    let outer = funding_scan_scope(7);
+    dense_point(4, 2, |problem| {
+        optimize_funding_family(problem, limits()).expect("the search completes")
+    });
+    assert_eq!(outer.remaining(), Some(7));
+    drop(outer);
+    let scope = funding_scan_scope(usize::MAX);
+    drop(scope);
+    dense_point(4, 2, |problem| {
+        let (result, scans) = counted(problem, limits());
+        assert!(result.expect("the search completes").is_some());
+        assert!(scans > 0);
+    });
+}
+
+#[test]
+#[ignore = "a measurement for choosing the funding search scan cap"]
+fn funding_search_scans_and_time_by_size() {
+    for n in [2_usize, 8, 16, 32, 64] {
+        for m in [1_usize, 4, 16, 64] {
+            let limits = FundingFamilyLimits {
+                search: FundingSearchLimits {
+                    source_cap: NonZeroUsize::new(n).expect("a positive source count"),
+                    obligation_cap: NonZeroUsize::new(m).expect("a positive obligation count"),
+                },
+                case_cap: NonZeroUsize::new(1).expect("one case"),
+                search_scans: usize::MAX,
+            };
+            let started = std::time::Instant::now();
+            let scans = dense_point(n, m, |problem| {
+                let (result, scans) = counted(problem, limits);
+                assert!(result.expect("the search completes").is_some());
+                scans
+            });
+            let seconds = started.elapsed().as_secs_f64();
+            println!(
+                "CAP sources={n} obligations={m} scans={scans} seconds={seconds:.4} \
+                 nanoseconds_per_scan={:.2}",
+                seconds * 1e9 / scans as f64
+            );
+        }
     }
 }
