@@ -236,22 +236,26 @@ The rulesets require a branch to be up to date before a merge. Mergify then acce
 
 Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
 
-Mergify adds the `ci-heavy` label to an approved pull request of this repository. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
+Mergify adds the `ci-heavy` label to an approved pull request of this repository. It also adds the label to a pull request into `dev` or `ca-canary` from a member of `@F1R3FLY-io/ci-maintainers`. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
 
 | Queue | Pull requests | Queue and merge conditions |
 |---|---|---|
-| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approving review, no requested changes, the `ci-heavy` label, the `devProtect` checks, Promotion Source, and the Integration Gates |
-| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | As for `dev`, with the `masterProtect` checks and the casper shards |
+| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, reviews from requested reviewers, no requested changes, `ci-heavy`, the `devProtect` checks, Promotion Source, and the Integration Gates |
+| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `ci-heavy` label, the `masterProtect` checks, Promotion Source, the casper shards, and the Integration Gates |
 | `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`, and also the `ca-soaked` label |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
-| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | As for `dev` |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | As for `master`, with the `dev` checks |
 
-To merge a pull request into `dev`, `master`, or `ca-release`, get an approving review. Mergify adds `ci-heavy`, queues the pull request, and merges it after the checks pass. A push to the pull request starts the checks again.
+To merge a pull request into `master` or `ca-release`, get an approving review.
+
+A member of `@F1R3FLY-io/ci-maintainers` can merge a pull request into `dev` or `ca-canary` without an approval. Any other author needs an approving review. In both cases, each requested reviewer or team must submit a review, and no review can request changes. A reviewer who does not agree must use **Request changes**. A comment-only review removes the request and does not block the merge.
+
+To merge any other pull request into `dev`, get an approving review. Mergify adds `ci-heavy`, queues the pull request, and merges it after the checks pass. A push to the pull request starts the checks again.
 
 To merge a `ca/<item>` pull request:
 
 1. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
-2. Get an approving review.
+2. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
 
 Mergify then adds `ci-heavy` and queues the pull request.
 

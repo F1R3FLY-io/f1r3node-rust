@@ -19,6 +19,8 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
   repo = "F1R3FLY-io/f1r3node-rust"
   heavy = ["Integration Gate (amd64)", "Integration Gate (arm64)"]
   review = ["#approved-reviews-by>=1", "#changes-requested-reviews-by=0"]
+  maintainer = {"or" => ["#approved-reviews-by>=1", "author=@F1R3FLY-io/ci-maintainers"]}
+  maintained = ["#review-requested=0", "#changes-requested-reviews-by=0"]
   queues = doc.fetch("queue_rules").to_h { |q| [q.fetch("name"), q] }
   rules = doc.fetch("pull_request_rules")
   errors = []
@@ -54,7 +56,15 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
     (heavy - checks.(q)).each { |h| errors << "queue #{name} does not require #{h}" }
     errors << "queue #{name} does not require the ci-heavy label" unless c.include?("label=ci-heavy")
     errors << "queue #{name} accepts a fork head" unless c.include?("head-repo-full-name=#{repo}")
-    (review - c).each { |r| errors << "queue #{name} does not require #{r}" }
+    if %w[dev ca-item].include?(name)
+      raw = Array(q["queue_conditions"])
+      errors << "queue #{name} does not require an approval or a ci-maintainers author" unless raw.include?(maintainer)
+      errors << "queue #{name} accepts a ci-maintainers author without the any-of block" if c.include?("author=@F1R3FLY-io/ci-maintainers")
+      (maintained - c).each { |r| errors << "queue #{name} does not require #{r}" }
+    else
+      (review - c).each { |r| errors << "queue #{name} does not require #{r}" }
+      errors << "queue #{name} accepts a merge without an approval" if Array(q["queue_conditions"]).any? { |x| x.is_a?(Hash) }
+    end
   end
 
   {"dev" => "base=dev", "master" => "base=master", "ca-item" => "base=ca-canary",
@@ -102,9 +112,11 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
       %w[dev master ca-canary ca-release].each { |b| errors << "the ci-heavy rule skips #{b}" unless re.match?(b) }
       %w[staging feature/x].each { |b| errors << "the ci-heavy rule labels #{b}" if re.match?(b) }
     end
-    ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-draft", "-head~=^backmerge/ca-release-", *review].each do |x|
+    ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-draft", "-head~=^backmerge/ca-release-", "#changes-requested-reviews-by=0"].each do |x|
       errors << "the ci-heavy rule does not require #{x}" unless c.include?(x)
     end
+    approval = {"or" => ["#approved-reviews-by>=1", {"and" => ["base~=^(dev|ca-canary)$", "author=@F1R3FLY-io/ci-maintainers"]}]}
+    errors << "the ci-heavy rule does not require an approval or a ci-maintainers author into dev or ca-canary" unless Array(label.first["conditions"]).include?(approval)
   end
 
   abort errors.map { |e| "FAIL: #{e}" }.join("\n") unless errors.empty?
