@@ -111,11 +111,35 @@
       "result": "408 rows, 179 gaps, exit 4. The per-file statuses are identical to the run before the renames."
     }
   },
-  "hosted": "pending",
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "1200ec4a2c1b67acf8b3d0634ee5be26f0410c53",
+    "claims_and_bindings": {
+      "run_id": 39851457805,
+      "job": "Casper driver binding fixtures",
+      "job_id": 120079934811,
+      "steps": {
+        "Audit Casper claim identities and discharge evidence": "success",
+        "Check isolated driver bindings and actual case counts": "success",
+        "Check model, claim-audit, and interruption regressions": "success",
+        "Require complete Casper claim discharge": "skipped"
+      }
+    },
+    "soak_harness_tests": {
+      "run_id": 39854462973,
+      "job_id": 120089767649,
+      "steps": {
+        "Verify isolated disk admission and emergency scenarios": "success",
+        "Verify soak fail-closed driver": "success",
+        "Verify the disk admission failure report and bounded-command liveness": "success"
+      }
+    }
+  },
   "acceptance_request": {
     "acceptor": "jltatbeach",
     "where": "PR #700 comment",
-    "scope": "One acceptance covers the slug change in check-casper-claims.rs and the ten ledger renames."
+    "scope": "One acceptance covers the slug change in check-casper-claims.rs and the ten ledger renames.",
+    "tested_sha": "1200ec4a2c1b67acf8b3d0634ee5be26f0410c53"
   },
   "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The check-casper-claims.rs ledger keeps the digest 3a5f28ef until a maintainer accepts this package.",
   "claim_discharge": "pending",
