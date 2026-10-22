@@ -1,7 +1,7 @@
 name: Promote and Back-merge
-run-name: ${{ inputs.operation == 'backmerge' && 'Back-merge master into dev' || 'Promote dev to master' }}
+run-name: ${{ inputs.operation == 'backmerge' && 'Back-merge master into dev' || inputs.operation == 'ca-promote' && 'Promote ca-canary to ca-release' || 'Promote dev to master' }}
 
-# The Run workflow button on the Actions tab opens one of two pull requests.
+# The Run workflow button on the Actions tab opens one of three pull requests.
 # The operation input selects it:
 #
 #   promote    dev -> master, as `just promote` does. It runs
@@ -12,6 +12,12 @@ run-name: ${{ inputs.operation == 'backmerge' && 'Back-merge master into dev' ||
 #              .github/scripts/open-backmerge-pr.sh, which creates a temporary
 #              backmerge/* branch at the origin/master commit. A back-merge
 #              never uses master as its head.
+#   ca-promote ca-canary -> ca-release, as `just ca-promote` does. It runs
+#              open-promotion-pr.sh with PROMOTE_SOURCE=ca-canary and
+#              PROMOTE_TARGET=ca-release, which creates a temporary
+#              promote/ca-release-* branch at the origin/ca-canary commit.
+#              The ca-daily-sync workflow does the ca-release -> ca-canary
+#              back-merge.
 #
 # The workflow always runs from master. The operation input selects the
 # direction, not the "Use workflow from" branch: the release-credentials
@@ -38,11 +44,12 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: "promote opens dev -> master. backmerge opens master -> dev."
+        description: "promote opens dev -> master. backmerge opens master -> dev. ca-promote opens ca-canary -> ca-release."
         type: choice
         options:
           - promote
           - backmerge
+          - ca-promote
         default: promote
 
 permissions:
@@ -103,10 +110,15 @@ jobs:
               BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_TRIGGERED_BY="$TRIGGERED_BY" \
                 bash .github/scripts/open-backmerge-pr.sh
               ;;
-            # The form allows only the two choices, but an API dispatch can
+            ca-promote)
+              PROMOTE_SOURCE=ca-canary PROMOTE_TARGET=ca-release \
+                PROMOTE_REPOSITORY="$REPOSITORY" PROMOTE_TRIGGERED_BY="$TRIGGERED_BY" \
+                bash .github/scripts/open-promotion-pr.sh
+              ;;
+            # The form allows only the three choices, but an API dispatch can
             # send any value. Keep this guard.
             *)
-              echo "::error::Unknown operation '$OPERATION'. Use promote or backmerge."
+              echo "::error::Unknown operation '$OPERATION'. Use promote, backmerge, or ca-promote."
               exit 1
               ;;
           esac
