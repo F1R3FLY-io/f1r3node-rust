@@ -3,17 +3,9 @@ node/src/rust/soak_observer.rs cbc=mandatory cbc-weight=high
 node/tests/soak_observer.rs cbc=mandatory cbc-weight=high
 shared/src/rust/store/soak_snapshot.rs cbc=mandatory cbc-weight=high
 shared/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high
-block-storage/src/rust/dag/soak_snapshot.rs cbc=mandatory cbc-weight=high
-block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs cbc=mandatory cbc-weight=high
-block-storage/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high
-block-storage/src/rust/dag/carrier_index.rs cbc=mandatory cbc-weight=high
-block-storage/src/rust/dag/block_dag_key_value_storage.rs cbc=mandatory cbc-weight=high
 rholang/src/rust/interpreter/reduce.rs cbc=mandatory cbc-weight=high
 docs/crypto/README.md cbc=mandatory cbc-weight=medium
 shared/src/rust/store/lmdb_key_value_store.rs cbc=mandatory cbc-weight=high
 shared/src/rust/dag/observation_work.rs cbc=mandatory cbc-weight=high
-block-storage/src/rust/dag/soak_equivocations.rs cbc=mandatory cbc-weight=high
-block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs cbc=mandatory cbc-weight=high
 node/src/rust/instances/block_processor_instance.rs cbc=mandatory cbc-weight=medium
-block-storage/src/rust/dag/buffer_dag_transition.rs cbc=mandatory cbc-weight=high
 node/src/rust/instances/release_queue.rs cbc=mandatory cbc-weight=medium
