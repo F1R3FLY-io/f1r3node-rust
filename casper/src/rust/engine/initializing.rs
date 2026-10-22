@@ -26,7 +26,6 @@ use models::rust::casper::protocol::casper_message::{
     MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
@@ -35,7 +34,6 @@ use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::rust::block_status::ValidBlock;
 use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
@@ -1084,12 +1082,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         Ok(())
     }
 
-    fn validate_block(&self, block: &BlockMessage) -> bool {
-        matches!(
-            Validate::block_hash(block),
-            Either::Right(ValidBlock::Valid)
-        )
-    }
+    fn validate_block(&self, block: &BlockMessage) -> bool { Validate::historical_block(block) }
 
     /// Receive finality for the restored window instead of re-deriving it.
     ///

@@ -254,6 +254,11 @@ impl Validate {
         Ok(())
     }
 
+    pub fn historical_block(b: &BlockMessage) -> bool {
+        matches!(Self::block_hash(b), Either::Right(_))
+            && (proto_util::block_number(b) == 0 || Self::block_signature(b))
+    }
+
     pub fn block_sender_has_weight(
         b: &BlockMessage,
         genesis: &BlockMessage,
@@ -2206,5 +2211,37 @@ mod previous_hash_rule_tests {
         block.block_hash = proto_util::hash_block(&block);
         assert!(Validate::approved_block(&approved(block.clone())));
         assert!(ensure_compatible_approved_block(&approved(block)).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod historical_block_tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rust::block_implicits::get_random_block_default;
+
+    use super::*;
+    use crate::rust::validator_identity::ValidatorIdentity;
+
+    #[test]
+    fn historical_blocks_need_a_valid_signature_except_genesis() {
+        let (secret_key, _) = Secp256k1.new_key_pair();
+        let mut block = get_random_block_default();
+        block.body.state.block_number = 5;
+        let signed = ValidatorIdentity::new(&secret_key).sign_block(&block);
+        assert!(Validate::historical_block(&signed));
+
+        let mut tampered = signed.clone();
+        tampered.sig = vec![0u8; 70].into();
+        assert!(matches!(Validate::block_hash(&tampered), Either::Right(_)));
+        assert!(!Validate::historical_block(&tampered));
+
+        let mut genesis = get_random_block_default();
+        genesis.body.state.block_number = 0;
+        genesis.sender = Bytes::new();
+        genesis.sig = Bytes::new();
+        genesis.sig_algorithm = String::new();
+        genesis.block_hash = proto_util::hash_block(&genesis);
+        assert!(Validate::historical_block(&genesis));
     }
 }
