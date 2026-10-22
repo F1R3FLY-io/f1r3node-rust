@@ -464,7 +464,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             let mut traversal_result: Vec<BlockHash> = Vec::new();
             proto_util::walk_blocks_in_scope(
                 &dag,
-                parent_metas.iter().map(|meta| meta.block_hash.clone()),
+                parent_metas,
                 earliest_block_number,
                 proto_util::UnheldParent::SkipSettled,
                 |hash| {

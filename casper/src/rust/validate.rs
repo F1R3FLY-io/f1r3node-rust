@@ -824,7 +824,7 @@ impl Validate {
         let scan_start = Instant::now();
         let scan_result = proto_util::walk_blocks_in_scope(
             &s.dag,
-            init_parents.iter().map(|meta| meta.block_hash.clone()),
+            init_parents,
             earliest_block_number,
             proto_util::UnheldParent::Surface,
             |block_hash| {
