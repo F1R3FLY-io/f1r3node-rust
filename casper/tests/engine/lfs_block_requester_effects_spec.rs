@@ -10,7 +10,7 @@ use casper::rust::errors::CasperError;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, Justification,
+    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, Justification, MergeableEntryResponse,
 };
 use prost::bytes::Bytes;
 use tokio::sync::mpsc;
@@ -149,6 +149,8 @@ fn get_blocks() -> (
 pub struct TestST {
     blocks: HashMap<BlockHash, BlockMessage>,
     invalid: HashSet<BlockHash>,
+    mergeable_requests: usize,
+    mergeable_puts: usize,
 }
 
 impl TestST {
@@ -156,6 +158,8 @@ impl TestST {
         Self {
             blocks,
             invalid: HashSet::new(),
+            mergeable_requests: 0,
+            mergeable_puts: 0,
         }
     }
 
@@ -175,6 +179,8 @@ pub enum TestError {
 pub struct Mock {
     /// Channel sender to simulate receiving blocks from external source
     block_receiver_tx: mpsc::Sender<BlockMessage>,
+
+    mergeable_tx: mpsc::Sender<MergeableEntryResponse>,
 
     /// Channel receiver to observe outgoing block requests
     request_observer_rx: mpsc::UnboundedReceiver<BlockHash>,
@@ -210,6 +216,12 @@ impl Mock {
 
     /// Provides access to mutable test state for controlling mock behavior
     pub fn setup(&self) -> Arc<Mutex<TestST>> { self.test_state.clone() }
+
+    pub fn block_sender(&self) -> mpsc::Sender<BlockMessage> { self.block_receiver_tx.clone() }
+
+    pub fn mergeable_sender(&self) -> mpsc::Sender<MergeableEntryResponse> {
+        self.mergeable_tx.clone()
+    }
 }
 
 /// Mock implementation of BlockRequesterOps for testing
@@ -285,20 +297,23 @@ impl BlockRequesterOps for MockBlockRequesterOps {
         !state.invalid.contains(&block.block_hash)
     }
 
-    /// No-op — these tests don't exercise the mergeable-entry path.
     async fn request_for_mergeable_entry(
         &self,
         _block_hash: &BlockHash,
     ) -> Result<(), CasperError> {
+        self.test_state
+            .lock()
+            .expect("Lock error")
+            .mergeable_requests += 1;
         Ok(())
     }
 
-    /// No-op — these tests don't exercise the mergeable-entry path.
     fn put_mergeable_entry(
         &self,
         _block_hash: &BlockHash,
         _serialized_entry: &[u8],
     ) -> Result<(), CasperError> {
+        self.test_state.lock().expect("Lock error").mergeable_puts += 1;
         Ok(())
     }
 }
@@ -326,8 +341,11 @@ where
 
     let (save_tx, save_rx) = mpsc::unbounded_channel();
 
+    let (mergeable_tx, mergeable_rx) = tokio::sync::mpsc::channel(50);
+
     let mock = Mock {
         block_receiver_tx: response_tx,
+        mergeable_tx,
         request_observer_rx: request_rx,
         save_observer_rx: save_rx,
         test_state: test_state.clone(),
@@ -341,8 +359,6 @@ where
 
         let empty_queue = std::collections::VecDeque::new();
         let response_queue_pending = Arc::new(AtomicUsize::new(0));
-        // Unused receiver to satisfy the stream signature.
-        let (_mergeable_tx, mergeable_rx) = tokio::sync::mpsc::channel(50);
         let lfs_stream = casper::rust::engine::lfs_block_requester::stream(
             &approved_block,
             &empty_queue,
@@ -964,6 +980,86 @@ mod tests {
                 Ok(())
             },
         )
+        .await
+        .expect("Test should complete successfully");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn remote_mergeable_entries_are_never_requested_or_stored() {
+        init_logger();
+
+        let (b9, b8, ..) = get_blocks();
+
+        dag_from_block(
+            b9,
+            true,
+            std::time::Duration::from_secs(3600),
+            |mut mock| async move {
+                let (_, hash8, ..) = get_hashes();
+                assert_eq!(mock.next_request().await, Some(hash8.clone()));
+                mock.receive_block(&[b8]).await?;
+                assert_eq!(
+                    mock.next_save().await.map(|save| save.0),
+                    Some(hash8.clone())
+                );
+
+                mock.mergeable_sender()
+                    .send(MergeableEntryResponse {
+                        block_hash: hash8,
+                        serialized_entry: Bytes::from(vec![0u8; 8]),
+                    })
+                    .await
+                    .map_err(|_| TestError::ChannelClosed)?;
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+                let state = mock.setup();
+                let state = state.lock().expect("Lock should work");
+                assert_eq!(state.mergeable_requests, 0);
+                assert_eq!(state.mergeable_puts, 0);
+                Ok(())
+            },
+        )
+        .await
+        .expect("Test should complete successfully");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ignored_messages_do_not_postpone_a_resend() {
+        init_logger();
+
+        let (b9, _, _, _, b5, ..) = get_blocks();
+        let request_timeout = std::time::Duration::from_secs(1);
+
+        dag_from_block(b9, true, request_timeout, |mut mock| async move {
+            let (_, hash8, ..) = get_hashes();
+            assert_eq!(mock.next_request().await, Some(hash8.clone()));
+
+            let blocks = mock.block_sender();
+            let mergeable = mock.mergeable_sender();
+            let deadline = tokio::time::sleep(request_timeout * 3);
+            tokio::pin!(deadline);
+            let mut ignored_traffic = tokio::time::interval(request_timeout / 4);
+            loop {
+                tokio::select! {
+                    _ = &mut deadline => panic!("hash8 must be requested again"),
+                    _ = ignored_traffic.tick() => {
+                        let _ = blocks.send(b5.clone()).await;
+                        let _ = mergeable
+                            .send(MergeableEntryResponse {
+                                block_hash: hash8.clone(),
+                                serialized_entry: Bytes::new(),
+                            })
+                            .await;
+                    }
+                    request = mock.next_request() => {
+                        if request == Some(hash8.clone()) {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
         .await
         .expect("Test should complete successfully");
     }

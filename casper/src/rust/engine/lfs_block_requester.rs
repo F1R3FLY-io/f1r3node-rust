@@ -402,7 +402,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
         }
     }
 
-    async fn process_block(&mut self, block: &BlockMessage) -> Result<(), CasperError> {
+    async fn process_block(&mut self, block: &BlockMessage) -> Result<bool, CasperError> {
         // Validate and mark received block
         let is_valid = self.validate_received_block(block).await?;
 
@@ -412,7 +412,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
         }
         // Trigger request queue (without resend of already requested)
         self.request_next(false).await?;
-        Ok(())
+        Ok(is_valid)
     }
 
     /// Validate received block, check if it was requested and if block hash is correct.
@@ -614,31 +614,15 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             );
         }
 
-        // Block-side done; register pending mergeable-entry request. The
-        // block is in store and won't be requested again, but per-block work
-        // isn't finished until the entry has also been imported — see
-        // `ST::is_finished`.
+        // Block-side done. Mergeable-channel entries are not requested from
+        // peers: nothing can verify a remote entry, so the replay after the
+        // sync rebuilds every entry locally.
         let state_update_start = std::time::Instant::now();
         {
             let mut state = self.st.lock().map_err(|_| {
                 CasperError::StreamError("Failed to acquire state lock for done".to_string())
             })?;
             *state = state.done(block.block_hash.clone());
-            *state = state.mergeable_pending(block.block_hash.clone());
-        }
-        // Fire the mergeable-entry request immediately. Sequential per block:
-        // block was just saved → ask for its entry now. Failure to send is
-        // tolerated; idle-retry will pick up unsent requests.
-        if let Err(e) = self
-            .requester
-            .request_for_mergeable_entry(&block.block_hash)
-            .await
-        {
-            tracing::warn!(
-                "Failed to send MergeableEntryRequest for block {}: {:?}; will retry via idle-resend.",
-                block_hash_str,
-                e
-            );
         }
         let state_update_duration = state_update_start.elapsed();
 
@@ -653,57 +637,27 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
         Ok(())
     }
 
-    /// Apply an imported mergeable-channels entry. The block must already be
-    /// in the local store (entries are only requested after `save_block`).
-    /// Empty `serialized_entry` is a soft miss — we still mark as received
-    /// so the per-block work completes.
+    /// A remote mergeable-channels entry is never stored: nothing can verify
+    /// it, and the replay after the sync rebuilds every entry locally. A
+    /// response only settles a pending request. Returns whether one existed.
     async fn process_mergeable_entry(
         &self,
         resp: &MergeableEntryResponse,
-    ) -> Result<(), CasperError> {
-        let block_hash_str = format!("{:?}", resp.block_hash);
-        let was_pending = self
-            .st
-            .lock()
-            .map_err(|_| {
-                CasperError::StreamError(
-                    "Failed to acquire state lock for mergeable response".to_string(),
-                )
-            })?
-            .mergeable_d
-            .contains_key(&resp.block_hash);
-
-        if !was_pending {
-            tracing::debug!(
-                "Mergeable entry response for {} was unsolicited or late; ignoring.",
-                block_hash_str
-            );
-            return Ok(());
-        }
-
-        if resp.serialized_entry.is_empty() {
-            tracing::debug!(
-                "Mergeable entry response for {} is empty (peer has block, no entry); accepted as soft miss.",
-                block_hash_str
-            );
-        } else {
-            self.requester
-                .put_mergeable_entry(&resp.block_hash, resp.serialized_entry.as_ref())?;
-            tracing::debug!(
-                "Mergeable entry imported for block {} ({} bytes)",
-                block_hash_str,
-                resp.serialized_entry.len()
-            );
-        }
-
+    ) -> Result<bool, CasperError> {
         let mut state = self.st.lock().map_err(|_| {
             CasperError::StreamError(
                 "Failed to acquire state lock for mergeable_received".to_string(),
             )
         })?;
-        let (new_state, _) = state.mergeable_received(&resp.block_hash);
+        let (new_state, was_pending) = state.mergeable_received(&resp.block_hash);
         *state = new_state;
-        Ok(())
+        if !was_pending {
+            tracing::debug!(
+                "Mergeable entry response for {:?} was unsolicited or late; ignoring.",
+                resp.block_hash
+            );
+        }
+        Ok(was_pending)
     }
 
     /// Re-broadcast outstanding mergeable-entry requests on idle timeout.
@@ -1125,18 +1079,17 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                 }
 
                 Some(mergeable_resp) = mergeable_response_receiver.recv() => {
-                    // Apply the imported entry, mark per-block mergeable as done,
-                    // check termination. Errors here don't break the stream —
-                    // worst case the per-block mergeable stays Pending until
-                    // idle-retry re-issues it.
-                    if let Err(e) = processor.process_mergeable_entry(&mergeable_resp).await {
-                        tracing::warn!(
-                            "Failed to import mergeable entry for {:?}: {:?}",
-                            mergeable_resp.block_hash,
-                            e
-                        );
-                        continue;
-                    }
+                    let progress = match processor.process_mergeable_entry(&mergeable_resp).await {
+                        Ok(progress) => progress,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to process mergeable entry response for {:?}: {:?}",
+                                mergeable_resp.block_hash,
+                                e
+                            );
+                            continue;
+                        }
+                    };
 
                     let current_state = {
                         match processor.st.lock() {
@@ -1154,9 +1107,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         break;
                     }
 
-                    // Activity reset
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    if progress {
+                        current_timeout = request_timeout;
+                        idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    }
 
                     yield current_state;
                 }
@@ -1180,9 +1134,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         PrettyPrinter::build_string_block_message(&initial_block, true));
 
                     // Process initial block with same logic as regular response messages
-                    match processor.process_block(&initial_block).await {
-                        Ok(()) => {
+                    let progress = match processor.process_block(&initial_block).await {
+                        Ok(progress) => {
                             consecutive_errors = 0; // Reset error counter on success
+                            progress
                         }
                         Err(e) => {
                             consecutive_errors += 1;
@@ -1194,7 +1149,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                             }
                             continue;
                         }
-                    }
+                    };
 
                     // Emit current state after processing initial response
                     let current_state = {
@@ -1214,9 +1169,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         break;
                     }
 
-                    // Reset idle timeout and backoff due to activity (response received)
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    if progress {
+                        current_timeout = request_timeout;
+                        idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    }
 
                     // Emit state to stream
                     yield current_state;
@@ -1245,9 +1201,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                     // Process with bounded concurrency
                     let _permit = permit; // Hold permit during processing
 
-                    match processor.process_block(&block_message).await {
-                        Ok(()) => {
+                    let progress = match processor.process_block(&block_message).await {
+                        Ok(progress) => {
                             consecutive_errors = 0; // Reset error counter on success
+                            progress
                         }
                         Err(e) => {
                             consecutive_errors += 1;
@@ -1259,7 +1216,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                             }
                             continue;
                         }
-                    }
+                    };
 
                     // Emit current state after processing response
                     let current_state = {
@@ -1279,9 +1236,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         break;
                     }
 
-                    // Reset idle timeout and backoff due to activity (response received)
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    if progress {
+                        current_timeout = request_timeout;
+                        idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    }
 
                     // Emit state to stream
                     yield current_state;
@@ -1303,9 +1261,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
 
                     tracing::info!("Process existing {}", PrettyPrinter::build_string_block_message(&block, false));
 
-                    match processor.process_block(&block).await {
-                        Ok(()) => {
+                    let progress = match processor.process_block(&block).await {
+                        Ok(progress) => {
                             consecutive_errors = 0; // Reset error counter on success
+                            progress
                         }
                         Err(e) => {
                             consecutive_errors += 1;
@@ -1317,7 +1276,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                             }
                             continue;
                         }
-                    }
+                    };
 
                     // Emit current state after processing existing block
                     let current_state = {
@@ -1337,9 +1296,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         break;
                     }
 
-                    // Reset idle timeout and backoff due to activity (response received)
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    if progress {
+                        current_timeout = request_timeout;
+                        idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    }
 
                     // Emit state to stream
                     yield current_state;
