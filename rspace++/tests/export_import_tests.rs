@@ -119,6 +119,54 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 }
 
 #[tokio::test]
+async fn final_data_only_page_preserves_all_data_and_terminates() {
+    let (source, exporter, _, destination, _, importer) = test_setup().await;
+    source
+        .produce("channel".to_string(), "value".to_string(), false)
+        .await
+        .unwrap();
+    let checkpoint = source.create_checkpoint().await.unwrap();
+    let start = vec![(checkpoint.root.clone(), None)];
+    let (_, complete_data) =
+        RSpaceExporterItems::get_history_and_data(exporter.clone(), start.clone(), 0, 1024)
+            .unwrap();
+    let (first_history, first_data) =
+        RSpaceExporterItems::get_history_and_data(exporter.clone(), start, 0, 1).unwrap();
+    assert_eq!(first_history.items.len(), 1);
+    assert!(first_data.items.is_empty());
+    let continuation = first_history.last_path;
+    let (last_history, last_data) =
+        RSpaceExporterItems::get_history_and_data(exporter, continuation.clone(), 0, 1).unwrap();
+    assert!(last_history.items.is_empty());
+    assert_eq!(
+        last_data
+            .items
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashMap<_, _>>(),
+        complete_data.items.into_iter().collect()
+    );
+    assert_eq!(last_history.last_path, continuation);
+    assert_eq!(last_data.last_path, continuation);
+
+    importer.set_history_items(first_history.items);
+    importer.set_data_items(last_data.items);
+    importer.set_root(&checkpoint.root);
+    destination.reset(&checkpoint.root).await.unwrap();
+    let result = destination
+        .consume(
+            vec!["channel".to_string()],
+            vec![Pattern::Wildcard],
+            "continuation".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .unwrap();
+    assert!(result.is_some());
+}
+
+#[tokio::test]
 async fn corrupted_history_hash_returns_error() {
     let (_, _, importer, _, _, _) = test_setup().await;
     let root = Blake2b256Hash::from_bytes(vec![1; 32]);

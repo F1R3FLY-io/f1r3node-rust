@@ -104,7 +104,7 @@ impl RSpaceExporterItems {
         RadixTreeError,
     > {
         // Traverse and collect tuple space nodes
-        let nodes = exporter.get_nodes(start_path, skip, take)?;
+        let nodes = exporter.get_nodes(start_path.clone(), skip, take)?;
 
         let Some(last_entry) = nodes.last() else {
             return Err(RadixTreeError::KeyNotFound(
@@ -135,18 +135,21 @@ impl RSpaceExporterItems {
             .get_data_items(data_keys)
             .map_err(RadixTreeError::KvStoreError)?;
 
-        let mut history_last_path = last_entry.path.clone();
-        history_last_path.push((last_entry.hash.clone(), None));
+        let last_path = if last_entry.is_leaf {
+            start_path
+        } else {
+            let mut path = last_entry.path.clone();
+            path.push((last_entry.hash.clone(), None));
+            path
+        };
         let history = StoreItems {
             items: history_items,
-            last_path: history_last_path,
+            last_path: last_path.clone(),
         };
 
-        let mut data_last_path = last_entry.path.clone();
-        data_last_path.push((last_entry.hash.clone(), None));
         let data = StoreItems {
             items: data_items,
-            last_path: data_last_path,
+            last_path,
         };
 
         Ok((history, data))

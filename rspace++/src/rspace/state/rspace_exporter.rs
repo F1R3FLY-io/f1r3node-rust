@@ -156,10 +156,10 @@ impl RSpaceExporterInstance {
             } = data;
 
             let nodes = construct_nodes(leaf_keys, node_keys.clone());
-            let mut nodes_without_last = if !nodes.is_empty() {
+            let mut nodes_without_last = if !node_keys.is_empty() {
                 nodes[..nodes.len() - 1].to_vec()
             } else {
-                Vec::new()
+                nodes
             };
 
             let last_path = match new_last_prefix_opt {

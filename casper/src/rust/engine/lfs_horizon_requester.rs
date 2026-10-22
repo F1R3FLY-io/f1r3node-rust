@@ -108,11 +108,24 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     /// Returns the next batch of keys to request. Init keys always; if
     /// `resend` is true, also Requested keys (for timeout-driven retries).
     pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
+        self.get_next_with_limit(resend, usize::MAX)
+    }
+
+    fn get_next_with_limit(&self, resend: bool, max_in_flight: usize) -> (Self, Vec<Key>) {
         let mut new_d = self.d.clone();
         let mut requested_keys = Vec::new();
+        let in_flight = self
+            .d
+            .values()
+            .filter(|status| matches!(status, ReqStatus::Requested | ReqStatus::Received))
+            .count();
+        let mut available = max_in_flight.saturating_sub(in_flight);
         for (key, status) in &self.d {
             let should_request = match status {
-                ReqStatus::Init => true,
+                ReqStatus::Init if available > 0 => {
+                    available -= 1;
+                    true
+                }
                 ReqStatus::Requested if resend => true,
                 _ => false,
             };
@@ -189,6 +202,7 @@ pub type HasRootFn = Arc<dyn Fn(&Blake2b256Hash) -> Result<bool, CasperError> + 
 
 struct HorizonStreamProcessor<T: HorizonRequesterOps> {
     request_ops: T,
+    max_in_flight: usize,
     has_root: HasRootFn,
     state_importer: Arc<dyn RSpaceImporter>,
     st: Arc<Mutex<ST<StatePartPath>>>,
@@ -397,7 +411,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             if state.is_finished() {
                 (true, Vec::new())
             } else {
-                let (new_state, paths) = state.get_next(resend);
+                let (new_state, paths) = state.get_next_with_limit(resend, self.max_in_flight);
                 *state = new_state;
                 (false, paths)
             }
@@ -530,6 +544,7 @@ pub async fn stream<T: HorizonRequesterOps>(
 
     let processor = Arc::new(HorizonStreamProcessor {
         request_ops,
+        max_in_flight: store_items_message_receiver.max_capacity(),
         has_root,
         state_importer,
         st: st.clone(),
@@ -1269,6 +1284,80 @@ mod tests {
             sent_paths.contains(&cont_path),
             "continuation path (= response 1's last_path) was enqueued and sent"
         );
+    }
+
+    #[test]
+    fn bounded_requests_reuse_slots_only_after_completion() {
+        let (state, first) = ST::new(vec![1, 2, 3, 4]).get_next_with_limit(false, 2);
+        assert_eq!(first.len(), 2);
+        assert!(state.get_next_with_limit(false, 2).1.is_empty());
+        let (_, retry) = state.get_next_with_limit(true, 2);
+        assert_eq!(
+            retry.into_iter().collect::<HashSet<_>>(),
+            first.iter().copied().collect()
+        );
+
+        let (state, accepted) = state.received(first[0]);
+        assert!(accepted);
+        assert!(state.get_next_with_limit(false, 2).1.is_empty());
+        let state = state.done(first[0]);
+        let (_, next) = state.get_next_with_limit(false, 2);
+        assert_eq!(next.len(), 1);
+        assert!(!first.contains(&next[0]));
+        let (_, retry) = state.get_next_with_limit(true, 2);
+        assert_eq!(retry.len(), 2);
+        assert!(retry.contains(&first[1]));
+        assert!(!retry.contains(&first[0]));
+    }
+
+    #[tokio::test]
+    async fn stream_drains_bounded_responses_before_requesting_more_roots() {
+        struct RespondingOps(test_mpsc::Sender<StoreItemsMessage>);
+
+        #[async_trait]
+        impl HorizonRequesterOps for RespondingOps {
+            async fn request_for_horizon_chunk(
+                &self,
+                path: &StatePartPath,
+                _page_size: i32,
+            ) -> Result<(), CasperError> {
+                self.0
+                    .send(make_response(
+                        path.clone(),
+                        path.clone(),
+                        Some(path[0].0.clone()),
+                    ))
+                    .await
+                    .unwrap();
+                Ok(())
+            }
+        }
+
+        let roots: Vec<_> = (1..=8).map(hash_for).collect();
+        let (importer, recorded) = RecordingImporter::new();
+        let roots_present = recorded.clone();
+        let has_root: HasRootFn =
+            Arc::new(move |root| Ok(roots_present.lock().unwrap().contains(root)));
+        let (tx, rx) = test_mpsc::channel(2);
+        let (stream, error) = stream(
+            roots.clone(),
+            has_root,
+            Arc::new(importer),
+            RespondingOps(tx),
+            rx,
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+
+        let final_state = tokio::time::timeout(Duration::from_secs(1), drain(stream))
+            .await
+            .expect("request dispatch must permit response processing")
+            .unwrap();
+        assert!(error.lock().unwrap().is_none());
+        assert!(final_state.is_finished());
+        assert_eq!(*recorded.lock().unwrap(), roots.into_iter().collect());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
