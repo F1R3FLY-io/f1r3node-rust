@@ -5,17 +5,14 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::engine::multi_parent_casper::FinalizedBondCache;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::block_implicits::get_random_block;
-use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::bonding_util;
@@ -142,32 +139,9 @@ async fn bond_status_should_return_false_for_not_bonded_validators() {
     );
 }
 
-#[tokio::test]
-async fn cached_bond_status_rejects_a_stale_bonded_entry() {
-    let ctx = TestContext::new().await;
-    let node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
-    let dag = node.casper.block_dag().await.unwrap();
-    assert!(node.casper.finalized_bond_cache.is_bonded(&dag).unwrap());
-
-    let mut stale_dag = dag.clone();
-    let mut metadata = dag.lookup_unsafe(&dag.last_finalized_block()).unwrap();
-    metadata.block_hash = Bytes::from(vec![42; 32]);
-    metadata.weight_map.clear();
-    stale_dag
-        .block_metadata_index
-        .write()
-        .add(metadata.clone())
-        .unwrap();
-    stale_dag.dag_set.insert(metadata.block_hash.clone());
-    stale_dag.last_finalized_block_hash = metadata.block_hash;
-
-    assert!(!node
-        .casper
-        .finalized_bond_cache
-        .is_bonded(&stale_dag)
-        .unwrap());
-}
-
+/// An advance whose finalization effect failed leaves the bond cache stale;
+/// the next finalizer cycle refreshes it even though that cycle does not
+/// advance, and admission then rejects the deploy.
 #[tokio::test]
 async fn failed_finalization_after_lfb_advance_rejects_an_unbonded_deploy() {
     let ctx = TestContext::new().await;
@@ -195,14 +169,11 @@ async fn failed_finalization_after_lfb_advance_rejects_an_unbonded_deploy() {
     };
     let late_parent = make_block(1, vec![genesis_hash.clone()]);
     let new_lfb = make_block(2, vec![genesis_hash, late_parent.block_hash.clone()]);
+    for block in [&late_parent, &new_lfb] {
+        node.casper.block_store.put_block_message(block).unwrap();
+    }
     storage.insert(&new_lfb, InsertMode::Normal).unwrap();
-
-    let old_dag = storage.get_representation().unwrap();
-    assert!(node
-        .casper
-        .finalized_bond_cache
-        .is_bonded(&old_dag)
-        .unwrap());
+    assert!(node.casper.finalized_bond_cache.is_bonded());
 
     let mut effect_calls = 0;
     let result = storage
@@ -221,7 +192,16 @@ async fn failed_finalization_after_lfb_advance_rejects_an_unbonded_deploy() {
 
     let dag = storage.get_representation().unwrap();
     assert_eq!(dag.last_finalized_block(), new_lfb.block_hash);
-    assert!(!node.casper.finalized_bond_cache.is_bonded(&dag).unwrap());
+    assert!(
+        node.casper.finalized_bond_cache.is_bonded(),
+        "fixture precondition: no cycle has run since the advance"
+    );
+
+    node.casper.finalize().await.unwrap();
+    assert!(
+        !node.casper.finalized_bond_cache.is_bonded(),
+        "a cycle that does not advance must still refresh the bond cache"
+    );
 
     let deploy = construct_deploy::basic_deploy_data(4001, None, Some(shard_id.clone())).unwrap();
     let rejected = BlockAPI::deploy(&node.engine_cell, deploy.clone(), &None, false, &shard_id)
@@ -320,11 +300,6 @@ async fn bond_status_should_return_true_for_newly_bonded_validator() {
         .iter()
         .any(|bond| bond.validator == n4_pk.bytes));
 
-    let stale_cache = FinalizedBondCache::from_storage(
-        &nodes[3].casper.block_dag_storage,
-        nodes[3].casper.validator_id.as_ref(),
-    )
-    .unwrap();
     let shard_id = &ctx.genesis.genesis_block.shard_id;
     let deploy = construct_deploy::basic_deploy_data(1001, None, Some(shard_id.clone())).unwrap();
     let rejected = BlockAPI::deploy(
@@ -370,11 +345,7 @@ async fn bond_status_should_return_true_for_newly_bonded_validator() {
         .bonds
         .iter()
         .any(|bond| bond.validator == n4_pk.bytes));
-    let dag = nodes[3].casper.block_dag().await.unwrap();
-    assert!(stale_cache.is_bonded(&dag).unwrap());
-    let mut missing = dag.clone();
-    missing.last_finalized_block_hash = prost::bytes::Bytes::from(vec![42; 32]);
-    assert!(stale_cache.is_bonded(&missing).is_err());
+    assert!(nodes[3].casper.finalized_bond_cache.is_bonded());
 
     let accepted = BlockAPI::deploy(
         &nodes[3].engine_cell,

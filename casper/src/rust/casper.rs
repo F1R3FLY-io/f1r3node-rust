@@ -180,16 +180,8 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
 
-    fn is_local_validator_bonded(
-        &self,
-        dag: &KeyValueDagRepresentation,
-    ) -> Result<bool, CasperError> {
-        let metadata = dag.lookup_unsafe(&dag.last_finalized_block())?;
-        Ok(self
-            .get_validator()
-            .map(|id| metadata.weight_map.contains_key(&id.public_key.bytes))
-            .unwrap_or(false))
-    }
+    /// Whether this node's validator is bonded at the persisted LFB.
+    fn is_local_validator_bonded(&self) -> bool;
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
@@ -843,6 +835,8 @@ pub mod test_helpers {
         }
 
         fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+
+        fn is_local_validator_bonded(&self) -> bool { false }
 
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
             unimplemented!("get_history_exporter not needed for heartbeat tests")

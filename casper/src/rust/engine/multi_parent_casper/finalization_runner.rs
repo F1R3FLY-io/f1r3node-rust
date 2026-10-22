@@ -388,11 +388,12 @@ pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
     after(advanced).await;
 }
 
-/// The deploy-lifecycle work after one cycle, on the blocking pool. The
-/// settle and the release run every cycle, not only on an advance: both are
-/// idempotent, and an advance persisted by a cycle that then failed, timed
-/// out or crashed is otherwise never settled until the next advance. The
-/// carrier prune is retention only, so it waits for an advance.
+/// The work after one cycle that reads the persisted LFB, on the blocking
+/// pool: the bond-cache refresh, the deploy-verdict settle and the pool
+/// release. They run every cycle, not only on an advance: each is idempotent,
+/// and an advance persisted by a cycle that then failed, timed out or crashed
+/// is otherwise not seen until the next advance. The carrier prune is
+/// retention only, so it waits for an advance.
 async fn settle_after_cycle(ctx: FinalizationContext, advanced: bool) {
     match tokio::task::spawn_blocking(move || settle_blocking(&ctx, advanced)).await {
         Ok(Ok(())) => {}
@@ -412,6 +413,13 @@ async fn settle_after_cycle(ctx: FinalizationContext, advanced: bool) {
 fn settle_blocking(ctx: &FinalizationContext, advanced: bool) -> Result<(), CasperError> {
     use crate::rust::finality::deploy_lifecycle::{record_settle_timing, release_settled, settle};
 
+    if let Err(e) = ctx.finalized_bond_cache.refresh(&ctx.block_dag_storage) {
+        tracing::error!(
+            target: "f1r3fly.casper",
+            error = %e,
+            "finalized bond cache refresh failed; the next cycle retries"
+        );
+    }
     let dag = ctx.block_dag_storage.get_representation()?;
     let settle_started = std::time::Instant::now();
     let settled = settle(
@@ -610,7 +618,6 @@ async fn adopt(
         "record_directly_finalized_total_ms={}",
         effect_started.elapsed().as_millis()
     );
-    ctx.finalized_bond_cache.refresh(&ctx.block_dag_storage)?;
     ctx.divergence_monitor.on_advance();
     Ok(())
 }

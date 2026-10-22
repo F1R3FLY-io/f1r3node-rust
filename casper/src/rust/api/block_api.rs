@@ -666,7 +666,7 @@ impl BlockAPI {
                     message: "Deploy was rejected because node has no validator key.".to_string(),
                 })
             })?;
-            if !casper.is_local_validator_bonded(&dag)? {
+            if !casper.is_local_validator_bonded() {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: "Deploy was rejected because node's validator is not bonded."
                         .to_string(),
