@@ -254,7 +254,7 @@ tasks:
       - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
   - id: TASK-026-2
     title: "Declare the owner directories"
-    status: in_progress
+    status: done
     blocked_by: []
     acceptance:
       - "Each of the eleven owner directories of plan section 4 has a .gitattributes file after TASK-026-3."
@@ -263,7 +263,7 @@ tasks:
     decision: "2026-10-22: Option A. The owner files route proposals through the R1 nearest-ancestor rule. The shared tooling reads attribute_owners only from its own config."
   - id: TASK-026-3
     title: "Move the rules into the owner .gitattributes files"
-    status: in_progress
+    status: done
     progress:
       - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
       - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4 (710a9f309)."
@@ -271,7 +271,8 @@ tasks:
       - "2026-10-22 crypto/: 27 rules, 27 paths. Every tracked crypto/ file has a tag (f911c862b)."
       - "2026-10-22 rspace++/: 19 rules, 19 paths (570a35c7e)."
       - "2026-10-22 .github/: 17 rules, 16 paths, including both copies of the /workflows/slashing-tests.yml duplicate for TASK-026-4 (50a2fbd85)."
-      - "2026-10-22 block-storage/: 8 rules, 8 paths."
+      - "2026-10-22 block-storage/: 8 rules, 8 paths (e622ed516)."
+      - "2026-10-22 node/ (5 rules), shared/ (4), rholang/ (1), and docs/ (1) in one commit at the maintainer request. compare after each owner showed no change on an existing path. The empty root .gitattributes is removed. All 408 mandatory paths keep their values."
     blocked_by: []
     acceptance:
       - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
