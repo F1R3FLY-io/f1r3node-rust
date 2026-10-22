@@ -74,8 +74,8 @@ The first change let the cap follow the backlog without backpressure. A local `t
 
 ## Discharge plan
 
-Issue #711 reuses one decoded deploy pool set for statistics and selection during one proposal.
-The scope predicate uses `any` and keeps its signature membership rule.
+Issue #711 reuses one decoded deploy pool set for the scope predicate, statistics, and selection during one proposal.
+The scope predicate searches the captured set and keeps its signature membership rule.
 The two statistics functions borrow the captured set, and selection consumes the same set.
 On fixed inputs, candidate filters and S1 through S8 retain their current meaning.
 
@@ -84,6 +84,7 @@ This capture does not create a transaction across admission, the pool, and the r
 Regression tests must verify one full read per normal proposal, the capture boundary, and unchanged admission and cleanup rules.
 The refactor retains the pending status until the required evidence receives maintainer review.
 The [issue #711 evidence](../casper/cbc-evidence/runs/issue-711-snapshot-20261019/README.md) records the source identity and regression results.
+The [review follow-up](../casper/cbc-evidence/runs/issue-711-snapshot-20261019/review-follow-up.md) extends the capture boundary to the scope predicate.
 
 1. Each statement has a unit test in `block_creator.rs` (`mod tests`). The tests call the admission functions with fixed values. **Done 2026-10-10.**
    - S1: `non_leader_fresh_admission_cap_follows_its_backlog_without_backpressure`

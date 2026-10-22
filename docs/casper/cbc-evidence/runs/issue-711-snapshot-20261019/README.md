@@ -3,6 +3,7 @@
 Status: pending maintainer review.
 The base commit is `1ea5336848c392d73ee3cd831ffae34b1d3306c5`.
 The source hashes in `report.json` identify the tested implementation and regression tests.
+The [review follow-up](review-follow-up.md) records the scope predicate change after this original measurement.
 
 This record supports the preservation review for these pending claims:
 

@@ -1777,12 +1777,11 @@ fn branch_unfinalized_user_deploy_info(
 
 fn storage_has_unresolved_in_scope_deploys(
     casper_snapshot: &CasperSnapshot,
-    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    _rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-) -> Result<bool, CasperError> {
-    Ok(deploy_storage
-        .lock()
-        .any(|deploy| Ok(casper_snapshot.deploys_in_scope.contains(&deploy.sig)))?)
+    stored_deploys: &HashSet<Signed<DeployData>>,
+) -> bool {
+    stored_deploys
+        .iter()
+        .any(|deploy| casper_snapshot.deploys_in_scope.contains(&deploy.sig))
 }
 
 /// Pure-function filter extracted for unit testing. Keeps an
@@ -3005,11 +3004,9 @@ pub async fn create_with_progress(
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
-        let storage_deploys_in_scope = storage_has_unresolved_in_scope_deploys(
-            casper_snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer,
-        )?;
+        let stored_deploys = deploy_storage.lock().read_all()?;
+        let storage_deploys_in_scope =
+            storage_has_unresolved_in_scope_deploys(casper_snapshot, &stored_deploys);
         let stale_in_scope_work = user_deploys_in_scope || storage_deploys_in_scope;
         let user_work_in_flight = stale_in_scope_work;
         // Recovery admission is unconditional: the buffer is OWNER-SCOPED
@@ -3029,7 +3026,6 @@ pub async fn create_with_progress(
             finality_lag_stats(casper_snapshot, block_store)?,
             finality_progress,
         );
-        let stored_deploys = deploy_storage.lock().read_all()?;
         let fresh_local_stats = fresh_local_deploy_stats(
             casper_snapshot,
             next_block_num,
@@ -3963,12 +3959,14 @@ mod tests {
         )
         .expect("deploy");
 
+        let empty_capture = deploy_storage
+            .lock()
+            .read_all()
+            .expect("capture empty pool");
         assert!(!storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("empty storage"));
+            &empty_capture,
+        ));
 
         deploy_storage
             .lock()
@@ -3976,18 +3974,24 @@ mod tests {
             .expect("seed storage deploy");
         assert!(!storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("stored deploy not yet in scope"));
+            &deploy_storage
+                .lock()
+                .read_all()
+                .expect("capture deploy pool"),
+        ));
 
         snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        assert!(!storage_has_unresolved_in_scope_deploys(
+            &snapshot,
+            &empty_capture,
+        ));
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("stored deploy in scope"));
+            &deploy_storage
+                .lock()
+                .read_all()
+                .expect("capture deploy pool"),
+        ));
 
         rejected_deploy_buffer
             .lock()
@@ -3996,10 +4000,11 @@ mod tests {
             .expect("park deploy in rejected buffer");
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("stored deploy parked in rejected buffer remains unresolved while in scope"));
+            &deploy_storage
+                .lock()
+                .read_all()
+                .expect("capture deploy pool"),
+        ));
         rejected_deploy_buffer
             .lock()
             .expect("rejected buffer lock")
@@ -4009,20 +4014,18 @@ mod tests {
         snapshot.rejected_in_scope.insert(deploy.sig.clone());
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("stored rejected deploy in scope remains unresolved"));
+            &deploy_storage
+                .lock()
+                .read_all()
+                .expect("capture deploy pool"),
+        ));
     }
 
     #[tokio::test]
-    async fn storage_scope_check_stops_before_a_later_damaged_record() {
+    async fn pool_capture_quarantines_damaged_records_before_scope_check() {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
             KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
-        ));
-        let rejected_deploy_buffer = Arc::new(Mutex::new(
-            KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap(),
         ));
         let snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
@@ -4032,27 +4035,7 @@ mod tests {
             })
             .collect();
         deploy_storage.lock().add(deploys.clone()).unwrap();
-        let mut matching_key = None;
-        deploy_storage
-            .lock()
-            .store
-            .raw_store()
-            .iterate_while(&mut |key, _| {
-                matching_key = Some(key);
-                Ok(false)
-            })
-            .unwrap();
-        let matching_sig = deploy_storage
-            .lock()
-            .store
-            .decode_key(&matching_key.unwrap())
-            .unwrap();
-        let damaged_sig = deploys
-            .iter()
-            .find(|deploy| deploy.sig.as_ref() != matching_sig.as_slice())
-            .unwrap()
-            .sig
-            .to_vec();
+        let damaged_sig = deploys[1].sig.to_vec();
         let damaged_key = deploy_storage
             .lock()
             .store
@@ -4064,29 +4047,13 @@ mod tests {
             .raw_store()
             .put_one(damaged_key.clone(), vec![0xff])
             .unwrap();
-        snapshot.deploys_in_scope.insert(Bytes::from(matching_sig));
+        snapshot.deploys_in_scope.insert(deploys[0].sig.clone());
 
+        let captured = deploy_storage.lock().read_all().unwrap();
+        assert_eq!(captured, HashSet::from([deploys[0].clone()]));
         assert!(storage_has_unresolved_in_scope_deploys(
-            &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer,
-        )
-        .unwrap());
-        assert!(deploy_storage
-            .lock()
-            .store
-            .raw_store()
-            .get_one(&damaged_key)
-            .unwrap()
-            .is_some());
-
-        snapshot.deploys_in_scope.clear();
-        assert!(!storage_has_unresolved_in_scope_deploys(
-            &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer,
-        )
-        .unwrap());
+            &snapshot, &captured,
+        ));
         assert!(deploy_storage
             .lock()
             .store
@@ -4094,6 +4061,11 @@ mod tests {
             .get_one(&damaged_key)
             .unwrap()
             .is_none());
+
+        snapshot.deploys_in_scope.clear();
+        assert!(!storage_has_unresolved_in_scope_deploys(
+            &snapshot, &captured,
+        ));
     }
 
     #[tokio::test]

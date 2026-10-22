@@ -1229,7 +1229,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     assert_eq!(
         decoded_pool_deploys(&snapshotter),
         2,
-        "one read decodes both stored deploys"
+        "scope, statistics, and selection share one decode of both stored deploys"
     );
     drop(recorder_guard);
 
