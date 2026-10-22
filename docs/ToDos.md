@@ -254,10 +254,10 @@ tasks:
       - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
   - id: TASK-026-2
     title: "Declare the owner directories"
-    status: pending
+    status: in_progress
     blocked_by: []
     acceptance:
-      - "Each of the nine owner directories of plan section 4 has a .gitattributes file after TASK-026-3."
+      - "Each of the eleven owner directories of plan section 4 has a .gitattributes file after TASK-026-3."
       - "cbc.sh attributes route sends a candidate path in each owner directory to that owner file."
       - "This repository adds no owner configuration. The snapshot diff stays empty."
     decision: "2026-10-22: Option A. The owner files route proposals through the R1 nearest-ancestor rule. The shared tooling reads attribute_owners only from its own config."
@@ -267,13 +267,13 @@ tasks:
     progress:
       - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
       - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4 (710a9f309)."
-      - "2026-10-22 casper/: 64 rules, 68 paths."
-    blocked_by: [TASK-026-1, TASK-026-2]
+      - "2026-10-22 casper/: 64 rules, 68 paths (e0f236bdf)."
+    blocked_by: []
     acceptance:
       - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
       - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
       - "No owner file uses an [attr] macro."
-      - "The snapshot diff against the previous commit is empty after each commit."
+      - "After each commit, compare reports no change on an existing path, for the working tree and the index. The only new paths are the owner .gitattributes files."
       - "rholang/.gitattributes holds /src/rust/interpreter/reduce.rs and docs/.gitattributes holds /crypto/README.md."
       - "The root file keeps no cbc rule."
   - id: TASK-026-4
@@ -281,12 +281,12 @@ tasks:
     status: pending
     blocked_by: [TASK-026-3]
     acceptance:
-      - "A separate commit removes the second copy of .github/workflows/slashing-tests.yml and scripts/ci/check-tla-invariants.sh."
-      - "The snapshot diff is empty."
+      - "A separate commit removes the second copy of /workflows/slashing-tests.yml in .github/.gitattributes and /ci/check-tla-invariants.sh in scripts/.gitattributes."
+      - "compare reports no change on an existing path."
   - id: TASK-026-5
     title: "Prove that the migration is exact"
     status: pending
-    blocked_by: [TASK-026-4, "shared R5 snapshot command"]
+    blocked_by: [TASK-026-4]
     acceptance:
       - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work and the new owner .gitattributes files. Each such path is recorded with its commit. A new owner file is a new tracked path with no cbc attribute."
       - "Both working-tree and index snapshots are compared against their respective baselines. The index comparison uses --cached for both snapshot and compare commands."
