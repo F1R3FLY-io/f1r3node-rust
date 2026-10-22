@@ -584,31 +584,21 @@ where
     }
 
     fn produce_counters(&self, produce_refs: &[Produce]) -> BTreeMap<Produce, i32> {
+        let counter = self.produce_counter.lock().expect("produce counter lock");
         produce_refs
             .iter()
-            .cloned()
-            .map(|p| {
-                (
-                    p.clone(),
-                    self.produce_counter
-                        .lock()
-                        .expect("produce counter lock")
-                        .get(&p)
-                        .unwrap_or(&0)
-                        .clone(),
-                )
-            })
+            .map(|p| (p.clone(), Self::count_in(&counter, p)))
             .collect()
     }
 
     #[inline]
     fn get_produce_count(&self, produce_ref: &Produce) -> i32 {
-        *self
-            .produce_counter
-            .lock()
-            .expect("produce counter lock")
-            .get(produce_ref)
-            .unwrap_or(&0)
+        Self::count_in(&self.produce_counter.lock().expect("produce counter lock"), produce_ref)
+    }
+
+    /// A produce the counter has not seen has fired zero times.
+    fn count_in(counter: &BTreeMap<Produce, i32>, produce_ref: &Produce) -> i32 {
+        counter.get(produce_ref).copied().unwrap_or(0)
     }
 
     fn locked_consume(
@@ -941,8 +931,10 @@ where
         comm.produces.contains(source) && self.was_repeated_enough_times(comm, source, persist)
     }
 
+    /// A recorded COMM counts every produce it lists, so a listed produce
+    /// without a count is a malformed record and does not match.
     fn was_repeated_enough_times(&self, comm: &COMM, source: &Produce, persist: bool) -> bool {
-        persist || *comm.times_repeated.get(source).unwrap_or(&0) == self.get_produce_count(source)
+        persist || comm.times_repeated.get(source) == Some(&self.get_produce_count(source))
     }
 
     fn handle_match(
@@ -1404,5 +1396,22 @@ mod tests {
             elapsed.as_secs_f64(),
             MAX_WALL_CLOCK.as_secs_f64(),
         );
+    }
+
+    #[tokio::test]
+    async fn a_linear_produce_matches_a_comm_only_at_its_recorded_count() {
+        let rspace = make_replay_rspace().await;
+        let source = Produce::default();
+        let comm = |count: Option<i32>| COMM {
+            consume: Consume::default(),
+            produces: vec![source.clone()],
+            peeks: BTreeSet::new(),
+            times_repeated: count.map(|c| (source.clone(), c)).into_iter().collect(),
+        };
+
+        assert!(rspace.matches(&comm(Some(0)), &source, false));
+        assert!(!rspace.matches(&comm(Some(1)), &source, false));
+        assert!(!rspace.matches(&comm(None), &source, false));
+        assert!(rspace.matches(&comm(None), &source, true));
     }
 }
