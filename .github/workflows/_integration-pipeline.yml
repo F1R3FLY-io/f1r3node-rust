@@ -167,7 +167,10 @@ jobs:
             exit 1
           fi
           NODE_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' node/Cargo.toml | head -n 1)"
-          test -n "$NODE_VERSION"
+          if [ -z "$NODE_VERSION" ]; then
+            echo "::error::Cannot read the node package version from node/Cargo.toml."
+            exit 1
+          fi
           echo "build_id=$VERSION" >> "$GITHUB_OUTPUT"
           echo "node_version=$NODE_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -184,6 +187,14 @@ jobs:
             --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
             --load \
             .
+
+      - name: Verify image build identity
+        env:
+          IMAGE_NAME: ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }}
+          EXPECTED_BUILD_ID: ${{ steps.identity.outputs.build_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          bash .github/scripts/check-image-build-identity.sh "$IMAGE_NAME" "$EXPECTED_BUILD_ID"
 
       - name: Export Docker Image
         shell: bash -ex {0}

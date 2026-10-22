@@ -68,19 +68,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=F1R3NODE_BUILD_ID");
     println!("cargo:rerun-if-changed=build_identity.rs");
 
-    for name in ["HEAD", "refs", "packed-refs"] {
-        let path = Command::new("git")
-            .current_dir(&manifest_dir)
-            .args(["rev-parse", "--path-format=absolute", "--git-path", name])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok());
-        if let Some(path) = path {
-            let path = Path::new(path.trim());
-            if path.exists() {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
+    if explicit
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        for path in build_identity::git_metadata_paths(&manifest_dir, |args| {
+            Command::new("git")
+                .current_dir(&manifest_dir)
+                .args(args)
+                .output()
+        }) {
+            println!("cargo:rerun-if-changed={}", path.display());
         }
     }
 }

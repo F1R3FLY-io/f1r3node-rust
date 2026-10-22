@@ -23,6 +23,7 @@ fail() {
 
 extract_run 'Resolve build identity' "$TMP/resolve.sh"
 extract_run 'Verify node build identity' "$TMP/verify.sh"
+extract_run 'Verify image build identity' "$TMP/verify-image.sh"
 cd "$ROOT"
 
 REQUESTED_BUILD_ID=v0.4.46-ci-selected GITHUB_OUTPUT="$TMP/explicit" bash -euo pipefail "$TMP/resolve.sh"
@@ -37,6 +38,13 @@ for invalid in unknown '   ' $'build\ncargo=value' $'build\tvalue'; do
 	fi
 done
 
+mkdir -p "$TMP/workspace/node"
+printf 'version.workspace = true\n' >"$TMP/workspace/node/Cargo.toml"
+if (cd "$TMP/workspace" && REQUESTED_BUILD_ID=explicit GITHUB_OUTPUT="$TMP/no-version" bash -euo pipefail "$TMP/resolve.sh") >"$TMP/no-version.log" 2>&1; then
+	fail 'A missing package version was accepted.'
+fi
+grep -Fq 'Cannot read the node package version' "$TMP/no-version.log" || fail 'The package version error is not explicit.'
+
 mkdir "$TMP/bin"
 cat >"$TMP/bin/curl" <<'BASH'
 #!/usr/bin/env bash
@@ -49,6 +57,9 @@ BASH
 cat >"$TMP/bin/docker" <<'BASH'
 #!/usr/bin/env bash
 case "$*" in
+	create\ *) printf '%s\n' test-container ;;
+	cp\ *) printf '\177ELF\000%s\000' "$BINARY_IDENTITY" >"$3" ;;
+	rm\ *) printf '%s\n' "$*" >>"$DOCKER_CLEANUP_LOG" ;;
 	*grpcurl*) printf '{"status":{"version":{"node":"%s"}}}\n' "$GRPC_VERSION_VALUE" ;;
 	*logs*) printf '%s\n' "$STARTUP_VERSION" ;;
 	*) exit 1 ;;
@@ -70,5 +81,20 @@ done
 if EXPECTED_BUILD_ID= bash -euo pipefail "$TMP/verify.sh" >"$TMP/missing.log" 2>&1; then
 	fail 'The smoke check accepted a missing expected identity.'
 fi
+
+export BINARY_IDENTITY="$EXPECTED_BUILD_ID" DOCKER_CLEANUP_LOG="$TMP/cleanup.log"
+for arch in amd64 arm64; do
+	export IMAGE_NAME="test-node:$arch"
+	bash -euo pipefail "$TMP/verify-image.sh" >"$TMP/image-valid.log" 2>&1 || fail "$arch rejected the expected binary identity."
+	if BINARY_IDENTITY=other-build bash -euo pipefail "$TMP/verify-image.sh" >"$TMP/image-invalid.log" 2>&1; then
+		fail "$arch accepted an incorrect binary identity."
+	fi
+done
+test "$(wc -l <"$DOCKER_CLEANUP_LOG")" -eq 4 || fail 'Image checks did not remove their containers.'
+for invalid in '' unknown 'source build'; do
+	if bash "$ROOT/.github/scripts/check-image-build-identity.sh" test-node "$invalid" >"$TMP/image-input.log" 2>&1; then
+		fail 'The image check accepted an invalid expected identity.'
+	fi
+done
 
 printf '%s\n' 'PASS: CI preserves the selected identity and rejects invalid identities and inconsistent node version output.'

@@ -1,24 +1,21 @@
 ---
 issue: 428
-date: 2026-10-21
+date: 2026-10-22
 status: implemented
 language: en
 ---
 
 # Issue #428: Node Build Identity
 
-The node must identify its source build through its version output.
+The node must report its [build identity](../Glossary.md#build-identity) through its version output.
 [Issue #428](https://github.com/F1R3FLY-io/f1r3node-rust/issues/428) reports empty parentheses in `/api/status` on development images.
 The image publication job knows the build identity, but the binary does not receive it.
 
 ## Baseline
 
-The investigation used `dev` at `98eb647e6cfd864e4765f22e1fe97d84cac713fe`.
-GitHub reported `master` at `66258ba258728f02552bd4e6643bfb183321aa1e` during the investigation.
-The two branches contained identical versions of `node/build.rs`, `node/Dockerfile`, and `version_info.rs`.
-
-[PR #743](https://github.com/F1R3FLY-io/f1r3node-rust/pull/743) proposes status and versioning documentation.
-That draft contains no implementation of this fix.
+The review baseline is merge commit `a4ad96fd318e5cb6660cf73a0f03b306bf04f086` in [PR #810](https://github.com/F1R3FLY-io/f1r3node-rust/pull/810).
+Its merge base with `dev` is `f9340ed6115c5d7101c7edddc4a4400abc5881e5`.
+These references identify fixed snapshots rather than the current branch tips.
 
 ## Cause
 
@@ -49,7 +46,9 @@ Select the identity in this order:
 2. Otherwise, run `git describe --tags --always` in the source checkout.
 3. If Git fails or returns no valid identity, use `unknown`.
 
-Reject an explicit identity that contains control characters.
+After trimming surrounding whitespace, reject an explicit identity that contains control characters.
+The Rust selection function permits ordinary spaces inside an explicit identity.
+CI applies a stricter rule and rejects all whitespace.
 Accept Git output only after a successful exit and valid UTF-8 decoding.
 Reject empty Git output and embedded control characters.
 
@@ -58,16 +57,44 @@ The [version module](../../node/src/rust/web/version_info.rs) reads that value a
 HTTP status, `/version`, gRPC status, and the startup log retain their common version function.
 
 Cargo tracks the input environment variable and the actual Git metadata paths.
-The paths include `HEAD`, `refs`, and `packed-refs` when those paths exist.
+The paths include `HEAD`, the current branch ref, `refs/tags`, and an existing `packed-refs` file.
+For a packed branch, track its nearest existing directory under `refs/heads` until Git creates the loose ref.
+Remote refs do not trigger a rebuild through a recursive watch of `refs`.
+Resolve relative Git paths against the package directory without `--path-format=absolute`.
+An explicit identity does not depend on Git metadata.
 This replaces the old `.git/HEAD` path relative to the `node` package.
 
 The Docker builder declares `ARG VERSION` immediately before the compilation layer.
 That layer passes the value to Cargo as `F1R3NODE_BUILD_ID`.
 A changed build argument invalidates the compilation layer without copying `.git` into the image.
+This fix accepts that compilation cost to prevent reuse of a binary with an incorrect identity.
+The compilation step has no persistent Cargo target cache.
+The pinned Buildx setup action creates a builder and removes its state during cleanup with the current default inputs.
+A cache mount alone does not establish reuse between jobs with that lifecycle.
+Any cache change needs a separate lifecycle design and a controlled build-time comparison.
+No controlled comparison of documentation-only commits has been completed.
+
+For a manual image build with a known identity, use:
+
+```bash
+docker build -f node/Dockerfile --build-arg VERSION="$(git describe --tags --always)" -t f1r3fly-rust:local .
+```
+
+A manual build without `VERSION` uses `unknown` because the build context does not include Git metadata.
 
 The main workflow passes `build_base.outputs.VERSION` to the reusable pipeline through its optional `build_id` input.
 Other callers calculate the fallback from a complete checkout of their selected source.
 CI rejects an empty identity, `unknown`, whitespace, or control characters before building the image.
+CI reports an explicit error if it cannot read the package version from `node/Cargo.toml`.
+
+Each architecture job checks the identity inside its image before export.
+The check copies the node binary from a stopped container and searches for the expected identity.
+The check does not execute the binary.
+The amd64 smoke test checks the complete version string through HTTP, gRPC, and the startup log.
+
+The matrix exports only architecture-independent values: the source identity and the package version.
+Both jobs use the same checkout and identity input, so either completed job supplies the same outputs.
+Keep architecture-specific values outside these shared outputs.
 
 Image tag prefixes and the publication conversion from `+` to `__` remain separate from the source identity.
 Later canary or stable tags retain the original build identity when they reuse a tested binary.
@@ -83,8 +110,10 @@ Later canary or stable tags retain the original build identity when they reuse a
 | Control characters | Input cannot create additional Cargo directives. |
 | Repeated Cargo builds with a shared target | Changing identity A to B changes the binary output. |
 | Repeated Docker builds with a shared cache | Changing `VERSION` changes the binary output. |
-| amd64 and arm64 | Both images report the expected source identity. |
-| HTTP, gRPC, and startup log | Each output matches the expected complete version string. |
+| Git metadata | Track the current branch and tags, including packed refs, without tracking remote refs. |
+| Relative and absolute Git paths | Both path forms resolve without requiring `--path-format=absolute`. |
+| amd64 and arm64 | Each image contains the expected source identity in its node binary. |
+| HTTP, gRPC, and startup log on amd64 | Each output matches the expected complete version string. |
 | Publication | The embedded identity uses the same source value as the immutable image tag. |
 | Fork or explicit target | The identity describes the selected source checkout. |
 
@@ -92,7 +121,8 @@ Later canary or stable tags retain the original build identity when they reuse a
 
 The following checks passed:
 
-- Seven Rust regression tests in [build_identity.rs](../../node/tests/build_identity.rs), compiled directly with `rustc --test`.
+- Fourteen Rust regression tests in [build_identity.rs](../../node/tests/build_identity.rs), compiled directly with `rustc --test`.
+- `cargo check --locked -p node --tests` after the review changes.
 - Clippy for the new identity module and regression tests, with `-D warnings`.
 - Rust formatting checks for the changed Rust files.
 - [Workflow behavior tests](../../.github/scripts/test-build-identity-workflow.sh) for selected identities, invalid inputs, and inconsistent node output.
@@ -105,8 +135,17 @@ The following checks passed:
 An isolated Cargo package compiled copies of the actual build script, identity module, and version module.
 Repeated builds with the same target directory changed the output from identity A to identity B.
 Without an explicit identity or Git repository, the package returned `F1r3node Rust 0.4.46 (unknown)`.
+After the review changes, the package refreshed its identity after branch, tag, and packed-ref changes.
+A remote-ref change did not rebuild the package.
 
-Full node compilation, the Docker smoke test, and both architecture builds remain pending.
+At the review baseline, `cargo check --locked -p node --tests` passed.
+[CI run 39772729981](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/39772729981) passed both native Docker builds and all three smoke tests.
+The node test and coverage jobs also passed.
+Both integration gates failed because OCI rejected runner creation at its daily resource creation limit.
+The integration test matrices did not run.
+
+The review changes require a new CI run, including the new image identity checks on both architectures.
+The `implemented` status describes the code changes and does not mean that all CI gates passed.
 
 ## Scope
 
