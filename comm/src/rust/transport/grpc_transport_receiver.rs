@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 
+use super::f1r3fly_server::F1r3flyConnectInfo;
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
 use super::messages::{Send as CommSend, StreamMessage};
 use super::packet_ops::StreamCache;
@@ -147,6 +148,20 @@ fn admit_queued_send(chain_id: &ChainIdCell, send: &CommSend) -> bool {
         &header.chain_id,
         type_id,
     )
+}
+
+fn verify_stream_sender(streamed: &Streamed, sender_id: &[u8]) -> Circuit {
+    match &streamed.header {
+        Some(header) if header.sender.id.key.as_ref() != sender_id => {
+            tracing::warn!(
+                "Stream sender verification failed. Header: {}, certificate: {}",
+                hex::encode(&header.sender.id.key),
+                hex::encode(sender_id)
+            );
+            Circuit::opened(StreamError::sender_mismatch())
+        }
+        _ => Circuit::closed(),
+    }
 }
 
 /// Type alias for message buffers using Arc for shared access
@@ -485,16 +500,30 @@ impl TransportLayerService {
     }
 
     /// Collect an incoming stream, checking it against this node's network,
-    /// chain identity, and stream size limit
-    async fn handle_validated_stream<S>(&self, stream: S) -> Result<StreamMessage, StreamError>
-    where S: futures::stream::Stream<Item = Chunk> + Unpin {
+    /// chain identity, and stream size limit, and its header sender against
+    /// the TLS certificate of the connection
+    async fn handle_validated_stream<S>(
+        &self,
+        stream: S,
+        sender_id: &[u8],
+    ) -> Result<StreamMessage, StreamError>
+    where
+        S: futures::stream::Stream<Item = Chunk> + Unpin,
+    {
         let validation = StreamValidation {
             network_id: self.network_id.clone(),
             chain_id: self.rp_config.chain_id.clone(),
             max_size: self.max_stream_message_size,
         };
-        StreamHandler::handle_stream(stream, |streamed| validation.check(streamed), &self.cache)
-            .await
+        StreamHandler::handle_stream(
+            stream,
+            |streamed: &Streamed| match validation.check(streamed) {
+                Circuit::Closed => verify_stream_sender(streamed, sender_id),
+                opened => opened,
+            },
+            &self.cache,
+        )
+        .await
     }
 }
 
@@ -619,10 +648,11 @@ impl TransportLayer for TransportLayerService {
         &self,
         request: Request<tonic::Streaming<Chunk>>,
     ) -> Result<Response<TlResponse>, Status> {
-        // Validate the request using SSL session server interceptor
-        // Note: For streaming requests, we validate the TLS session context
-        // The actual message content validation happens in StreamHandler
-        SslSessionServerInterceptor::validate_stream_request(&request)?;
+        let sender_id = SslSessionServerInterceptor::validate_stream_request(&request)?;
+        let connection = request
+            .extensions()
+            .get::<F1r3flyConnectInfo>()
+            .map(|info| (info.closer.clone(), info.tcp_info.remote_addr));
 
         let stream = request.into_inner();
 
@@ -635,7 +665,7 @@ impl TransportLayer for TransportLayerService {
             }
         });
 
-        let stream_result = self.handle_validated_stream(chunk_stream).await;
+        let stream_result = self.handle_validated_stream(chunk_stream, &sender_id).await;
 
         if let Err(error) = &stream_result {
             if let Some(status) = refusal_status(error) {
@@ -648,6 +678,17 @@ impl TransportLayer for TransportLayerService {
             Err(StreamError::Unexpected { ref error }) => {
                 tracing::error!(error = %error, "blob stream processing failed");
                 self.create_internal_server_error_response(error.clone())
+            }
+            Err(ref error @ StreamError::SenderMismatch) => {
+                if let Some((closer, remote_addr)) = &connection {
+                    tracing::warn!(
+                        peer = ?remote_addr,
+                        "Closing the connection: {}",
+                        error.message()
+                    );
+                    closer.close();
+                }
+                self.create_internal_server_error_response(error.message())
             }
             Err(ref error) => {
                 tracing::warn!("Stream error: {}", error.message());
@@ -1006,7 +1047,7 @@ mod tests {
             .set_once(Bytes::from_static(b"our-chain"))
             .unwrap();
         let (tx, rx) = futures::channel::mpsc::unbounded::<Chunk>();
-        let mut stream = Box::pin(service.handle_validated_stream(rx));
+        let mut stream = Box::pin(service.handle_validated_stream(rx, b"sender"));
 
         std::thread::scope(|scope| {
             scope
@@ -1037,7 +1078,7 @@ mod tests {
         let service = service(Arc::new(Mutex::new(HashMap::new())));
         let mut chunks = chunks(b"old-chain", "BlockMessage").into_iter();
         let (tx, rx) = futures::channel::mpsc::unbounded::<Chunk>();
-        let mut stream = Box::pin(service.handle_validated_stream(rx));
+        let mut stream = Box::pin(service.handle_validated_stream(rx, b"sender"));
 
         tx.unbounded_send(chunks.next().unwrap()).unwrap();
         assert!(
@@ -1066,7 +1107,7 @@ mod tests {
     fn a_chain_identity_learned_before_the_stream_ends_is_checked() {
         let service = service(Arc::new(Mutex::new(HashMap::new())));
         let (tx, rx) = futures::channel::mpsc::unbounded::<Chunk>();
-        let mut stream = Box::pin(service.handle_validated_stream(rx));
+        let mut stream = Box::pin(service.handle_validated_stream(rx, b"sender"));
 
         for chunk in chunks(b"old-chain", "BlockMessage") {
             tx.unbounded_send(chunk).unwrap();

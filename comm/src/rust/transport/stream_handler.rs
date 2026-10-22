@@ -87,13 +87,20 @@ pub enum StreamError {
     WrongNetworkId,
     /// The sender belongs to a different chain, or pushed chain data without
     /// naming a chain.
-    WrongChainId { reason: String },
+    WrongChainId {
+        reason: String,
+    },
     /// Maximum size reached
     MaxSizeReached,
+    SenderMismatch,
     /// Incomplete message received
-    NotFullMessage { streamed: String },
+    NotFullMessage {
+        streamed: String,
+    },
     /// Unexpected error occurred
-    Unexpected { error: String },
+    Unexpected {
+        error: String,
+    },
 }
 
 impl StreamError {
@@ -107,6 +114,9 @@ impl StreamError {
                 format!("Could not receive stream! {}", reason)
             }
             StreamError::MaxSizeReached => "Max message size was reached.".to_string(),
+            StreamError::SenderMismatch => {
+                "Could not receive stream! Sender does not match the TLS certificate.".to_string()
+            }
             StreamError::NotFullMessage { streamed } => {
                 format!(
                     "Received not full stream message, will not process. {}",
@@ -127,6 +137,8 @@ impl StreamError {
 
     /// Create a MaxSizeReached error (circuit opened)
     pub fn circuit_opened() -> Self { StreamError::MaxSizeReached }
+
+    pub fn sender_mismatch() -> Self { StreamError::SenderMismatch }
 
     /// Create a NotFullMessage error
     pub fn not_full_message(streamed: String) -> Self { StreamError::NotFullMessage { streamed } }

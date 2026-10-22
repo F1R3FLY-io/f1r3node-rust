@@ -1,14 +1,15 @@
 // See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerSpec.scala
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Packet;
 use prost::bytes::Bytes;
 
 use crate::transport::transport_layer_runtime::{
-    broadcast_heartbeat, send_heartbeat, TestProtocolDispatcher, TestStreamDispatcher,
-    TransportLayerTestRuntime,
+    broadcast_heartbeat, get_free_port, send_heartbeat, TestProtocolDispatcher,
+    TestStreamDispatcher, TransportLayerTestRuntime,
 };
 
 fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
@@ -783,4 +784,114 @@ async fn stream_of_a_push_that_names_no_chain_is_refused_and_a_pull_is_delivered
         vec!["BlockRequest".to_string()],
         "a push that names no chain must not reach the stream handler"
     );
+}
+
+#[derive(Clone)]
+struct SingleConnection {
+    connector: comm::rust::transport::f1r3fly_connector::F1r3flyConnector,
+    used: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl tower::Service<http::Uri> for SingleConnection {
+    type Response = <comm::rust::transport::f1r3fly_connector::F1r3flyConnector as tower::Service<
+        http::Uri,
+    >>::Response;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.connector.poll_ready(cx)
+    }
+
+    fn call(&mut self, uri: http::Uri) -> Self::Future {
+        if self.used.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Box::pin(async { Err("reconnection is not allowed".into()) });
+        }
+        self.connector.call(uri)
+    }
+}
+
+#[tokio::test]
+async fn stream_with_spoofed_sender_should_close_the_connection() {
+    use models::routing::transport_layer_client::TransportLayerClient;
+    use models::routing::TlRequest;
+
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let local_port = get_free_port().await.unwrap();
+    let remote_port = get_free_port().await.unwrap();
+    let local = runtime.create_environment(local_port).await.unwrap();
+    let remote = runtime.create_environment(remote_port).await.unwrap();
+
+    let server = runtime.create_transport_layer_server(&remote);
+    let stream_dispatcher = TestStreamDispatcher::new();
+    server
+        .start(
+            TestProtocolDispatcher::new().to_handler(remote.peer.clone(), None),
+            stream_dispatcher.to_handler(remote.peer.clone(), None),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let connector = comm::rust::transport::f1r3fly_connector::F1r3flyConnector::new(
+        "test".to_string(),
+        &local.cert,
+        &local.key,
+        hex::encode(&remote.peer.id.key),
+    )
+    .unwrap();
+    let channel =
+        tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{}/", remote_port))
+            .unwrap()
+            .connect_with_connector(SingleConnection {
+                connector,
+                used: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })
+            .await
+            .unwrap();
+    let mut client = TransportLayerClient::new(channel);
+    let heartbeat = || TlRequest {
+        protocol: Some(comm::rust::rp::protocol_helper::heartbeat(
+            &local.peer,
+            "test",
+            Bytes::new(),
+        )),
+    };
+
+    assert!(client.send(heartbeat()).await.is_ok());
+
+    let spoofed = Blob {
+        sender: comm::rust::peer_node::PeerNode {
+            id: comm::rust::peer_node::NodeIdentifier {
+                key: Bytes::from(vec![0xAB; 20]),
+            },
+            endpoint: local.peer.endpoint.clone(),
+        },
+        packet: Packet {
+            type_id: "Spoofed".to_string(),
+            content: Bytes::from(vec![1u8; 1024]),
+        },
+    };
+    let chunks = comm::rust::transport::chunker::Chunker::chunk_it(
+        "test",
+        Bytes::new(),
+        &spoofed,
+        runtime.max_message_size as usize,
+    );
+    let _ = client.stream(tokio_stream::iter(chunks)).await;
+
+    let after_spoofed_stream =
+        tokio::time::timeout(Duration::from_secs(5), client.send(heartbeat())).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    server.stop().await.unwrap();
+
+    assert!(matches!(after_spoofed_stream, Ok(Err(_))));
+    assert!(stream_dispatcher.received().is_empty());
 }

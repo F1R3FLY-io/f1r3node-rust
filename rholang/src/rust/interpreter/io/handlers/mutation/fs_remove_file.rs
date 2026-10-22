@@ -163,11 +163,19 @@ impl FsHandler for FsRemoveFileHandler {
         args: FsRemoveFileArgs,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
-            // BACKLOG: migrate to resolve_or_identity_gated_for_consensus
-            // (coordinated with fs_chmod / fs_rename / fs_chown).
+            // Shape-A gating: Consensus-mode unlink on an unregistered
+            // `/@bundle/<X>` short-circuits with FSERR_UNSUPPORTED
+            // before any lock probe or dirfd walk.  Oracular unlinks
+            // pass through to identity.
             let logical = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let lock_registry = ctx.handles.lock_registry.clone();
             let rel = args.rel;
             let cmode = args.cmode;
