@@ -330,10 +330,11 @@ tasks:
       - "2026-10-22 adoption review: the interpreter_util.rs ledger and the three C1 ledger pairs record two independent claims per artifact, not duplicate records. Keeping one ledger would drop a claim. The default selection hides a pending claim on scripts/ci/check-tla-invariants.sh."
       - "2026-10-22 adoption review: check-casper-claims.rs derives ledger names with case kept and has a lowercase exception for scripts/casper-soak/Cargo.toml. The C2 renames therefore change CbC-mandatory code and need a CbC review package and acceptance."
       - "2026-10-22 C2 done, pending acceptance: ten Casper ledgers and their docs/cbc-evidence symlinks use the tooling slug with case kept. check-casper-claims.rs uses the shared slug rule without the Cargo.toml exception (126 of 127 audited slugs unchanged). The claim audit, the regression tests, and the cbc-r7-bb830b2 strict discharge give unchanged results. Review package: docs/casper/cbc-evidence/runs/casper-claims-ledger-slug-20261022-01/report.json."
+      - "2026-10-22 C2 accepted: jltatbeach accepted the review package on PR #700 (comment 6351702378) at revision 56ff30370. The check-casper-claims.rs ledger records digest 67408ac6 with acceptance record runs/casper-claims-ledger-slug-acceptance-20261022-01."
     acceptance:
       - "Adoption runs use an immutable checkout of the R7 tag with no tracked changes, and the full tooling commit ID is recorded."
       - "interpreter_util.rs and the three C1 artifacts keep both claims in one ledger, in the multi-claim format of the shared tooling. No claim is dropped, and each artifact status is its weakest claim."
-      - "C2: each Casper ledger and docs/cbc-evidence symlink uses the tooling slug, including its case. A discharge run on a case-sensitive filesystem gives the same statuses as on macOS."
+      - "C2 (complete, accepted 2026-10-22): each Casper ledger and docs/cbc-evidence symlink uses the tooling slug, including its case. A discharge run on a case-sensitive filesystem gives the same statuses as on macOS."
       - "The tooling pin moves to the tag that contains R7."
       - "The owner files set cbc-evidence=docs/casper/cbc-evidence on the Casper claim paths. compare reports only cbc-evidence changes on those paths."
       - "cbc discharge --strict gives the same per-file statuses as before the change, without CBC_EVIDENCE_DIR."
