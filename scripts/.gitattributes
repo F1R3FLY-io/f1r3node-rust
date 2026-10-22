@@ -8,7 +8,6 @@
 /bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high
 /bench/test-soak-disk-admission-timing.sh cbc=mandatory cbc-weight=high
 /bench/write-soak-summary.sh cbc=mandatory cbc-weight=high
-/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
 /casper-soak/** cbc=mandatory cbc-weight=high
 /bench/casper-soak.sh cbc=mandatory cbc-weight=high
 /bench/fixtures/casper-lifecycle-executor.sh cbc=mandatory cbc-weight=high

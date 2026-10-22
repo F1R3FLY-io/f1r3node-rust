@@ -283,7 +283,9 @@ tasks:
       - "The root file keeps no cbc rule."
   - id: TASK-026-4
     title: "Remove the duplicate lines"
-    status: pending
+    status: done
+    progress:
+      - "2026-10-22: removed line 8 of .github/.gitattributes and line 11 of scripts/.gitattributes. Both paths keep cbc=mandatory and cbc-weight=high. compare shows no change on an existing path, and lint reports no diagnostic."
     blocked_by: [TASK-026-3]
     acceptance:
       - "A separate commit removes the second copy of /workflows/slashing-tests.yml in .github/.gitattributes and /ci/check-tla-invariants.sh in scripts/.gitattributes."

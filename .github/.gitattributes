@@ -5,7 +5,6 @@
 /scripts/report-soak-gate.sh cbc=mandatory cbc-weight=high
 /scripts/test-soak-gate.sh cbc=mandatory cbc-weight=high
 /scripts/test-ca-soak-dispatch.sh cbc=mandatory cbc-weight=high
-/workflows/slashing-tests.yml cbc=mandatory cbc-weight=high
 /workflows/casper-carrier-index.yml cbc=mandatory cbc-weight=high
 /workflows/casper-authority-finality.yml cbc=mandatory cbc-weight=high
 /workflows/casper-authority-adapter.yml cbc=mandatory cbc-weight=high
