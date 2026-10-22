@@ -428,6 +428,24 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             block_number
         );
 
+        let is_requested = {
+            let state = self.st.lock().map_err(|_| {
+                CasperError::StreamError("Failed to acquire state lock for validation".to_string())
+            })?;
+            state.d.get(&block.block_hash) == Some(&ReqStatus::Requested)
+        };
+        if !is_requested {
+            tracing::debug!("Block {} was not requested, ignored", block_hash_str);
+            return Ok(false);
+        }
+        if !self.requester.validate_block(block) {
+            tracing::warn!(
+                "Received {} with invalid hash or signature. Ignored block.",
+                PrettyPrinter::build_string_block_message(block, false)
+            );
+            return Ok(false);
+        }
+
         // Mark block as received and calculate minimum height (if latest)
         let received_result = {
             let mut state = self.st.lock().map_err(|_| {
@@ -478,37 +496,8 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             is_last_latest
         );
 
-        // Validate block hash if it was requested
-        let hash_validation_start = std::time::Instant::now();
-        let block_hash_is_valid = if is_received {
-            let is_valid = self.requester.validate_block(block);
-            let hash_validation_duration = hash_validation_start.elapsed();
-            tracing::debug!(
-                "Block {} hash validation completed in {:?}: {}",
-                block_hash_str,
-                hash_validation_duration,
-                is_valid
-            );
-            is_valid
-        } else {
-            tracing::debug!(
-                "Block {} was not requested, skipping hash validation",
-                block_hash_str
-            );
-            false
-        };
-
-        // Log invalid block if block is requested but hash is invalid
-        if is_received && !block_hash_is_valid {
-            let invalid_block_msg = format!(
-                "Received {} with invalid hash. Ignored block.",
-                PrettyPrinter::build_string_block_message(block, false)
-            );
-            tracing::warn!("{}", invalid_block_msg);
-        }
-
         // Try accept received block if it has valid hash
-        let is_received_and_valid = if block_hash_is_valid {
+        let is_received_and_valid = if is_received {
             // Log minimum height when last latest block is received
             if is_last_latest {
                 let minimum_height = {

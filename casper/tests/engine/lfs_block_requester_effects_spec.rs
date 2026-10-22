@@ -921,6 +921,53 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
+    #[tokio::test]
+    async fn should_accept_requested_block_after_an_invalid_copy() {
+        init_logger();
+
+        let (b9, b8, ..) = get_blocks();
+
+        dag_from_block(
+            b9,
+            true,
+            std::time::Duration::from_secs(10 * 24 * 3600),
+            |mut mock| async move {
+                let (_, hash8, ..) = get_hashes();
+                assert_eq!(mock.next_request().await, Some(hash8.clone()));
+
+                mock.setup()
+                    .lock()
+                    .expect("Lock should work")
+                    .set_invalid(std::collections::HashSet::from([hash8.clone()]));
+                mock.receive_block(std::slice::from_ref(&b8))
+                    .await
+                    .expect("Should receive the invalid copy");
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_save())
+                        .await
+                        .is_err(),
+                    "The invalid copy must not be saved"
+                );
+
+                mock.setup()
+                    .lock()
+                    .expect("Lock should work")
+                    .set_invalid(std::collections::HashSet::new());
+                mock.receive_block(&[b8]).await.expect("Should receive b8");
+                let saved =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), mock.next_save())
+                        .await
+                        .expect("The original block must be saved")
+                        .expect("Should save b8");
+                assert_eq!(saved.0, hash8, "The original block must be accepted");
+
+                Ok(())
+            },
+        )
+        .await
+        .expect("Test should complete successfully");
+    }
+
     /// Tests comprehensive end-to-end dependency resolution through multiple rounds of block requests and saves
     #[tokio::test]
     async fn should_request_and_save_all_blocks() {
