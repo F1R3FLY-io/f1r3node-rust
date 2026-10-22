@@ -319,7 +319,13 @@ env:
   #   instead of reading once. The only other changes since 37e8c84 are
   #   .mergify.yml and docs/ToDos.md, neither of which the suite runs.
   #   Verified: descends from 37e8c84 (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 942de7b7ead62cb215fc162efce7ae1b6206e261
+  # 2026-10-15: 942de7b -> 2087398 (system-integration MAIN — the #159 merge
+  #   commit): the pre-bond and post-withdrawal tests expect a deploy to an
+  #   unbonded validator to be rejected, and the joiner's activation wait
+  #   requires its own LFB to list it as bonded. Companion to f1r3node-rust
+  #   #718. No other changes since 942de7b. Verified: descends from 942de7b
+  #   (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: 20873986abe42d896efbf780bca2b1da188d06a1
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

@@ -211,6 +211,7 @@ pub(crate) struct FinalizationContext {
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
     pub(crate) divergence_monitor: Arc<DivergenceMonitor>,
+    pub(crate) finalized_bond_cache: super::bond_cache::FinalizedBondCache,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -236,6 +237,7 @@ pub(crate) fn build_finalization_context<
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
         divergence_monitor: this.divergence_monitor.clone(),
+        finalized_bond_cache: this.finalized_bond_cache.clone(),
     }
 }
 
@@ -358,6 +360,7 @@ pub(crate) async fn compute_last_finalized_block(
         enable_mergeable_channel_gc,
         ftt,
         divergence_monitor,
+        finalized_bond_cache,
     } = ctx;
     let observation_operation = observer.as_ref().and_then(|observer| observer.operation());
     let lfb_lookup_started = std::time::Instant::now();
@@ -611,6 +614,7 @@ pub(crate) async fn compute_last_finalized_block(
             );
         }
         effect_result.map_err(CasperError::KvStoreError)?;
+        finalized_bond_cache.refresh(&block_dag_storage)?;
         divergence_monitor.on_advance();
         new_lfb.hash
     } else {

@@ -52,7 +52,7 @@ pub trait ActiveValidatorChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult;
+    ) -> Result<CheckProposeConstraintsResult, CasperError>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -364,7 +364,7 @@ where
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
         match self
             .active_validator_checker
-            .check_active_validator(casper_snapshot, &self.validator)
+            .check_active_validator(casper_snapshot, &self.validator)?
         {
             CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded) => {
                 Ok(CheckProposeConstraintsResult::not_bonded())
@@ -693,20 +693,11 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult {
-        let in_committee = casper_snapshot
-            .parents
-            .first()
-            .map(|parent| {
-                parent.body.state.bonds.iter().any(|bond| {
-                    bond.validator == validator_identity.public_key.bytes && bond.stake > 0
-                })
-            })
-            .unwrap_or(false);
-        if in_committee {
-            CheckProposeConstraintsResult::success()
+    ) -> Result<CheckProposeConstraintsResult, CasperError> {
+        if casper_snapshot.is_validator_bonded(&validator_identity.public_key.bytes)? {
+            Ok(CheckProposeConstraintsResult::success())
         } else {
-            CheckProposeConstraintsResult::not_bonded()
+            Ok(CheckProposeConstraintsResult::not_bonded())
         }
     }
 }
