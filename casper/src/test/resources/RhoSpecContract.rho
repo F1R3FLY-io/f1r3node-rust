@@ -23,6 +23,7 @@ new
   stdlog(`rho:io:stdlog`),
   ListOpsCh,
   assert(`rho:test:assertAck`),
+  testFilter(`rho:test:filter`),
   testSuiteCompleted(`rho:test:testSuiteCompleted`),
   uriOut
 in {
@@ -131,14 +132,23 @@ in {
 
         // This contract takes a tuple containing the test name, test body, and the number of attempts, along with an acknowledgment channel ackCh.
         contract runTest(@(testName, testBody, attempts), ackCh) = {
-          new retCh, runTestImpl in {
-            contract runTestImpl(@attempt, retCh) = {
-              runTestOnce!((testName, testBody), attempt, *retCh)
-            } |
+          new filterCh in {
+            testFilter!(testName, *filterCh) |
+            for (@include <- filterCh) {
+              if (include) {
+                new retCh, runTestImpl in {
+                  contract runTestImpl(@attempt, retCh) = {
+                    runTestOnce!((testName, testBody), attempt, *retCh)
+                  } |
 
-            @ListOps!("range", 1, attempts + 1, *retCh) | // Uses the ListOps contract to generate a range of numbers from 1 to attempts + 1 and sends it to retCh.
-            for(@range <- retCh) {
-              @ListOps!("foreach", range, *runTestImpl, *ackCh) // Uses the ListOps contract to iterate over each number in the range, calling runTestImpl for each attempt and sending the result to ackCh.
+                  @ListOps!("range", 1, attempts + 1, *retCh) | // Uses the ListOps contract to generate a range of numbers from 1 to attempts + 1 and sends it to retCh.
+                  for(@range <- retCh) {
+                    @ListOps!("foreach", range, *runTestImpl, *ackCh) // Uses the ListOps contract to iterate over each number in the range, calling runTestImpl for each attempt and sending the result to ackCh.
+                  }
+                }
+              } else {
+                ackCh!(true)
+              }
             }
           }
         } |

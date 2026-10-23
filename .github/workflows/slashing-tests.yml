@@ -274,7 +274,8 @@ jobs:
         run: bash scripts/ci/test-check-formal-gate.sh
       - name: Record TLA verification inputs
         run: bash scripts/ci/check-formal-gate.sh record tla-model-check target/formal-provenance-tla
-      - name: Install Java + TLC
+      - name: Prepare Java and TLC
+        timeout-minutes: 3
         # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
         # installer pin in _integration-pipeline.yml): a moved or compromised
         # jar fails the checksum instead of running altered code, and TLC
@@ -283,11 +284,13 @@ jobs:
           TLA_TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
           TLA_TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
         run: |
-          sudo apt-get update
-          sudo apt-get install -y default-jre wget
-          mkdir -p ~/.tla
-          wget -qO ~/.tla/tla2tools.jar "$TLA_TOOLS_URL"
-          echo "$TLA_TOOLS_SHA256  $HOME/.tla/tla2tools.jar" | sha256sum -c -
+          java -version
+          mkdir -p "$HOME/.tla"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 60 --retry 2 --retry-max-time 120 \
+            "$TLA_TOOLS_URL" -o "$HOME/.tla/tla2tools.jar"
+          printf '%s  %s\n' "$TLA_TOOLS_SHA256" "$HOME/.tla/tla2tools.jar" | sha256sum -c -
       - name: Run TLA+ invariant suite
         env:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
