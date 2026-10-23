@@ -238,6 +238,10 @@ Each queue lists its checks in both condition lists. A pull request therefore en
 
 Mergify adds the `ci-heavy` label to an approved pull request of this repository. It also adds the label to a pull request into `dev` or `ca-canary` from a member of `@F1R3FLY-io/ci-maintainers`. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
 
+CI does not run on a `labeled` event. A run for a label replaces the checks of the pull request head with pending checks. The merge queue adds the `queued` label when it queues a pull request, so the required checks became pending and the merge failed (pull request #826).
+
+The **CI Heavy Label** workflow reruns the newest CI run of the head only when the `ci-heavy` label is added. The rerun keeps the `pull_request` event, and Resolve Target reads the current labels to start the heavy pipeline. Other labels, for example `queued` and `dequeued`, do not start CI. An edit of the pull request still starts CI, because a base change arrives as an edit.
+
 | Queue | Pull requests | Queue and merge conditions |
 |---|---|---|
 | `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, reviews from requested reviewers, no requested changes, `ci-heavy`, the `devProtect` checks, Promotion Source, and the Integration Gates |
