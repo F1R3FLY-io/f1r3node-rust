@@ -26,6 +26,7 @@ pub mod retry_gate_spec;
 pub mod settled_membership_spec;
 pub mod rholang_build_test;
 pub mod rnode_key_value_store_manager_spec;
+pub mod scope_walk_metadata_reads_spec;
 pub mod single_parent_casper_spec;
 pub mod slash_recovery_spec;
 pub mod staging;
