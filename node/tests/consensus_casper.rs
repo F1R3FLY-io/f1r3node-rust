@@ -591,10 +591,14 @@ async fn casper_adapter_owns_observer_preparation_and_shutdown() {
     let mut hello = vec![0; hello_length as usize];
     stream.read_exact(&mut hello).await.unwrap();
     assert!(serde_json::from_slice::<serde_json::Value>(&hello).is_ok());
-    tokio::time::timeout(Duration::from_secs(5), runtime.shutdown())
-        .await
-        .unwrap()
-        .unwrap();
+    let budget = consensus_runtime::RuntimeConfig::default();
+    tokio::time::timeout(
+        budget.drain_timeout + budget.cleanup_timeout + Duration::from_secs(5),
+        runtime.shutdown(),
+    )
+    .await
+    .expect("Observer shutdown must complete within the runtime shutdown budget")
+    .unwrap();
     prepared.application.close().await;
     assert_eq!(handle.status().phase, Phase::Stopped);
     assert!(!socket.exists());
