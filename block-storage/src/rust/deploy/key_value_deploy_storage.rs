@@ -81,6 +81,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             quarantine: DeployRecordQuarantine::new(N::NAME, quarantine),
             _name: PhantomData,
         };
+        storage.quarantine.verify_on_open(&storage.store)?;
         storage.quarantine.restore_readable(&storage.store)?;
         Ok(storage)
     }

@@ -107,7 +107,10 @@ impl DeployRecordQuarantine {
         let live = store.raw_store();
         let (mut restored, mut duplicates, mut conflicts) = (0usize, 0usize, 0usize);
         for (key, value) in quarantined {
-            if decode_record(store, &key, &value).is_err() {
+            if decode_record(store, &key, &value)
+                .and_then(super::deploy_codec::verify_signature)
+                .is_err()
+            {
                 continue;
             }
             if live.put_one_if_absent(key.clone(), value.clone())? {
@@ -132,6 +135,31 @@ impl DeployRecordQuarantine {
             remaining = total - restored - duplicates,
             "Deploy store opened with quarantined records"
         );
+        Ok(())
+    }
+
+    pub(super) fn verify_on_open(&self, store: &DeployTypedStore) -> Result<(), KvStoreError> {
+        let mut damaged = Vec::new();
+        let mut unverified_keys = Vec::new();
+        store.raw_store().iterate_while(&mut |key, value| {
+            match decode_record(store, &key, &value) {
+                Ok(deploy) => {
+                    if let Err(error) = super::deploy_codec::verify_signature(deploy) {
+                        unverified_keys.push(key.clone());
+                        damaged.push(DamagedRecord { key, value, error });
+                    }
+                }
+                Err(error) => damaged.push(DamagedRecord { key, value, error }),
+            }
+            Ok(true)
+        })?;
+        self.isolate(store, damaged)?;
+        for key in unverified_keys {
+            if let Some(value) = store.raw_store().get_one(&key)? {
+                let deploy = decode_record(store, &key, &value)?;
+                super::deploy_codec::verify_signature(deploy)?;
+            }
+        }
         Ok(())
     }
 
@@ -390,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn read_all_quarantines_a_versioned_record_with_an_invalid_signature() {
+    fn open_quarantines_a_versioned_record_with_an_invalid_signature() {
         for name in POOLS {
             let (live, quarantine) = (in_memory(), in_memory());
             let mut pool = Pool::open(name, &live, &quarantine);
@@ -399,11 +427,17 @@ mod tests {
             let mut tampered = deploy(2);
             let tampered_key = key_for(&tampered.sig);
             tampered.data.phlo_limit += 1;
-            let tampered_bytes = crate::rust::deploy::deploy_codec::encode(&tampered).unwrap();
+            let tampered_bytes = versioned_bytes_unchecked(&tampered);
             live.put_one(tampered_key.clone(), tampered_bytes.clone())
                 .unwrap();
 
-            assert_eq!(pool.read_all().unwrap(), HashSet::from([valid]), "{name}");
+            drop(pool);
+            let reopened = Pool::open(name, &live, &quarantine);
+            assert_eq!(
+                reopened.read_all().unwrap(),
+                HashSet::from([valid]),
+                "{name}"
+            );
             assert_eq!(
                 quarantine.get_one(&tampered_key).unwrap(),
                 Some(tampered_bytes),
@@ -772,4 +806,6 @@ mod tests {
             MAX_LOGGED_ERROR_CHARS
         );
     }
+
+    include!("deploy_record_verified_tests.rs");
 }
