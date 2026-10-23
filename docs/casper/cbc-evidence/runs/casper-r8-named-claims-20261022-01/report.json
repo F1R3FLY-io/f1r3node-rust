@@ -120,15 +120,18 @@
     "test": {
       "file": "scripts/casper-soak/tests/claims.rs",
       "change": "New test named_claim_ledgers_select_only_the_audited_claim: the audited claim passes when another claim comes first. A missing, duplicate, unidentified, untyped, or pending selected record fails."
-    }
+    },
+    "binding_script": "scripts/ci/check-casper-soak-bindings.sh pins the claims suite to 4 passed, for the new auditor test. The exact pins of the bindings, interruption, and claims suites stay. A mismatch now prints the suite, the expected result line, and the found result line, and a failed container run prints the end of its output to the job log."
   },
   "source_digests_before_change": {
     "scripts/casper-soak/src/bin/check-casper-claims.rs": "67408ac6b96424495fd86ddb2f2a69c3ec16a9087f548aaf0c50cb1fe9c0701b",
-    "scripts/casper-soak/tests/claims.rs": "8813eba982f56f4fd45e339e61f5ee4b70c29e67bc28b1b2e85c0633b5eeb7d2"
+    "scripts/casper-soak/tests/claims.rs": "8813eba982f56f4fd45e339e61f5ee4b70c29e67bc28b1b2e85c0633b5eeb7d2",
+    "scripts/ci/check-casper-soak-bindings.sh": "2077865b8f68e8dfde219c54548b528fbf318eeb24143765294f890aa4432a76"
   },
   "source_digests": {
     "scripts/casper-soak/src/bin/check-casper-claims.rs": "ba7301dd0bdd1e8b2e93c04e12dbd44665196d0a5c680b731c9ae951ba83be24",
-    "scripts/casper-soak/tests/claims.rs": "fc5de1960d83db4c8ed1959442fdcd6b9601ce0d3a7d44fbcab466025d39189e"
+    "scripts/casper-soak/tests/claims.rs": "fc5de1960d83db4c8ed1959442fdcd6b9601ce0d3a7d44fbcab466025d39189e",
+    "scripts/ci/check-casper-soak-bindings.sh": "5e5f5c90edd18e6ec380d513b970ab8cac4a82bb7b84ec9d7f0ad4c2f897493a"
   },
   "evidence_before_change": {
     "scripts/casper-soak/src/bin/check-casper-claims.rs": {
@@ -164,7 +167,63 @@
     "regression_tests": "cargo test --locked -p casper-soak --test models --test claims --test interruption: 4, 4, and 2 passed",
     "static": "cargo fmt --check and cargo clippy -D warnings (bin and tests) passed"
   },
-  "hosted": "pending",
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "d5d258bc40974400230302288eb128dfefb90539",
+    "ci": {
+      "run_id": 39873743517,
+      "conclusion": "success",
+      "jobs": {
+        "Static Checks": {
+          "job_id": 120154859198,
+          "conclusion": "success"
+        },
+        "Script Tests": {
+          "job_id": 120154859133,
+          "conclusion": "success"
+        },
+        "Soak Harness Tests": {
+          "job_id": 120154859164,
+          "conclusion": "success"
+        },
+        "Markdown Link Check": {
+          "job_id": 120154859172,
+          "conclusion": "success"
+        },
+        "Commit Policy": {
+          "job_id": 120154859208,
+          "conclusion": "success"
+        },
+        "cargo-deny": {
+          "job_id": 120154859237,
+          "conclusion": "success"
+        },
+        "Test Gate (casper)": {
+          "job_id": 120173675927,
+          "conclusion": "success"
+        },
+        "Integration Gate (amd64)": {
+          "job_id": 120159730637,
+          "conclusion": "skipped",
+          "note": "the pull request had no ci-heavy label"
+        },
+        "Integration Gate (arm64)": {
+          "job_id": 120159730164,
+          "conclusion": "skipped",
+          "note": "the pull request had no ci-heavy label"
+        }
+      }
+    },
+    "slashing_test_suite": {
+      "run_id": 39873743499,
+      "conclusion": "failure",
+      "failed_job": {
+        "name": "Casper driver binding fixtures",
+        "job_id": 120155555714
+      },
+      "cause": "The casper-soak claims tests passed (4 passed) and check-casper-claims passed. scripts/ci/check-casper-soak-bindings.sh then failed, because line 94 requires the claims suite to report exactly 3 passed. This change added named_claim_ledgers_select_only_the_audited_claim, so the suite reports 4 passed."
+    }
+  },
   "acceptance_request": {
     "acceptor": "jltatbeach",
     "where": "PR #700 comment",
@@ -175,5 +234,13 @@
   "node_execution": false,
   "waiver": null,
   "soak": "pending",
-  "verified_at": "2026-10-22"
+  "verified_at": "2026-10-22",
+  "review_findings": [
+    {
+      "source": "Slashing test suite run 39873743499, job Casper driver binding fixtures",
+      "severity": "failure",
+      "finding": "check-casper-soak-bindings.sh required the claims suite to report exactly 3 passed. The new test named_claim_ledgers_select_only_the_audited_claim makes it 4. The grep failed under set -e with no message, and the container output stayed in run.txt, so the job log showed only exit code 1.",
+      "resolution": "The pin is 4. A helper prints the suite, the expected line, and the found line. The host prints the last 20 lines of run.txt when the container fails. The helper was tested with a matching count, a wrong count, and a missing result line."
+    }
+  ]
 }
