@@ -10,26 +10,31 @@
 // panics or returns without calling the matching release
 // operations.  Without a guard the leaks accumulate across the
 // block.  The Drop impl here fires at the end of every deploy
-// scope and sweeps three per-deploy surfaces:
+// scope and sweeps five per-deploy surfaces in order:
 //
-//   1. Lock registry: `release_all_for_deploy(&deploy_scope)`
-//      drops every range lock the deploy acquired.  Pairs with
-//      [`cancel_all_waiters_for_deploy`](super::super::super::rholang::super::rust::interpreter::io::lock::LockRegistry::cancel_all_waiters_for_deploy)
-//      which drains PARKED waiters first — ordering matters so
-//      the X-2/G-02 defense-in-depth chain holds (see
-//      `lock.rs::wake_waiters` docstring).
-//   2. WAL truncation: on uncommitted drop, `wal.truncate_to(mark)`
+//   1. WAL truncation: on uncommitted drop, `wal.truncate_to(mark)`
 //      drops entries the deploy appended past its begin mark.
 //      A deploy that succeeds calls `commit()` to flip the flag
 //      and skip the truncation.
-//   3. Handle-table sweep: `set_current_deploy([0;32], Vec::new())`
-//      clears the per-runtime deploy cells back to sentinel, and
-//      `close_all_for_deploy(&deploy_scope)` is spawned fire-and-
-//      forget to close every fd + dir-stream the deploy left
-//      open.  Fire-and-forget is sound under the sequential-
-//      deploy execution model triage uses: the next deploy's
-//      fs_open calls allocate fresh monotonic fds, so stale
-//      close_all_for_deploy sweeps can't race against them.
+//   2. Waiter drain: `cancel_all_waiters_for_deploy(&deploy_scope)`
+//      removes any waiter THIS deploy parked on a conflicting
+//      acquire — `release_all_for_deploy` only touches HOLDERS,
+//      so this step completes the X-2/G-02 three-step chain
+//      documented in `lock.rs::wake_waiters`.
+//   3. Lock release: `release_all_for_deploy(&deploy_scope)` drops
+//      every range lock the deploy acquired.  Internally runs
+//      `wake_waiters` which admits OTHER-deploy waiters.
+//   4. Handle-table deploy-cell reset:
+//      `set_current_deploy([0;32], Vec::new())` clears the
+//      per-runtime deploy cells back to sentinel in a single
+//      compound write.
+//   5. Handle-table fd/dir-stream sweep: `close_all_for_deploy(
+//      &deploy_scope)` is spawned fire-and-forget to close every
+//      fd + dir-stream the deploy left open.  Fire-and-forget is
+//      sound under the sequential-deploy execution model triage
+//      uses: the next deploy's fs_open calls allocate fresh
+//      monotonic fds, so stale close_all_for_deploy sweeps can't
+//      race against them.
 //
 // # Sentinel guard
 //
@@ -133,7 +138,17 @@ impl Drop for WalDeployScope {
         if !self.committed {
             self.wal.truncate_to(self.mark);
         }
-        // 2. Lock sweep.  Snapshot the registry out of the
+        // 2. Waiter drain.  Any waiter THIS deploy parked on a
+        //    conflicting acquire survives `release_all_for_deploy`
+        //    (which only reaches HOLDERS) unless cancelled first.
+        //    This call drops them deterministically so a Drop that
+        //    fires with parked-under-same-scope waiters doesn't
+        //    leak them.  Completes the X-2/G-02 three-step chain
+        //    documented in `lock.rs::wake_waiters`.
+        let _cancelled = self
+            .lock_registry
+            .cancel_all_waiters_for_deploy(&self.deploy_scope);
+        // 3. Lock sweep.  Snapshot the registry out of the
         //    Shared slot so a concurrent `share_from` on the
         //    manager side can't swap the backing mid-sweep.
         //    `release_all_for_deploy` internally calls
@@ -143,10 +158,10 @@ impl Drop for WalDeployScope {
         let _released = self
             .lock_registry
             .release_all_for_deploy(&self.deploy_scope);
-        // 3. Clear the per-runtime deploy cells back to sentinel
+        // 4. Clear the per-runtime deploy cells back to sentinel
         //    (compound write under a single guard).
         self.fs_handles.set_current_deploy([0u8; 32], Vec::new());
-        // 4. Fire-and-forget fd + dir-stream sweep.  Spawn a
+        // 5. Fire-and-forget fd + dir-stream sweep.  Spawn a
         //    detached tokio task holding Arc-clones of the
         //    handle table; the sweep runs on the shared
         //    runtime pool.  Within a block, deploys run
@@ -340,6 +355,61 @@ mod tests {
         assert!(
             !lock_registry.is_locked((1u64, 1u64), (0, 1024)),
             "lock released on scope drop"
+        );
+    }
+
+    /// Dropping a scope that has a PARKED waiter under its own
+    /// deploy scope cancels that waiter via
+    /// `cancel_all_waiters_for_deploy`.  Pins step 2 of the Drop
+    /// sweep — without this call, parked-under-same-scope
+    /// waiters would survive `release_all_for_deploy` (which only
+    /// touches holders).  Completes the X-2/G-02 three-step chain
+    /// documented in `lock.rs::wake_waiters`.
+    #[tokio::test]
+    async fn drop_scope_cancels_parked_waiters() {
+        use rholang::rust::interpreter::io::lock::{AcquireOutcome, HolderId, LockMode};
+
+        let wal = Wal::new();
+        let lock_registry = SharedLockRegistry::new();
+        let fs_handles = FileHandleTable::new();
+
+        let scope_b = mk_scope(0x55);
+        let scope_a = mk_scope(0xAA);
+        let holder_a = HolderId::from_bytes([0xAA; 32]);
+        let holder_b = HolderId::from_bytes([0x55; 32]);
+        let dev_inode = (1u64, 1u64);
+
+        // External holder A takes a Write lock under a DIFFERENT
+        // scope so B's acquire conflicts and parks.
+        let _lock_a = lock_registry
+            .try_acquire_range(dev_inode, 0, 1024, LockMode::Write, holder_a, scope_a)
+            .expect("A acquires");
+
+        let admit = {
+            let _guard = WalDeployScope::new_with_lock_sweep(
+                wal,
+                lock_registry.clone(),
+                scope_b,
+                b"sig-b".to_vec(),
+                fs_handles,
+            );
+            // Under scope_b, holder B tries a conflicting Write — parks.
+            match lock_registry
+                .try_acquire_range_wait(dev_inode, 0, 1024, LockMode::Write, holder_b, scope_b)
+                .expect("B parks")
+            {
+                AcquireOutcome::Parked { admit, .. } => admit,
+                AcquireOutcome::Immediate(_) => panic!("expected Parked, got Immediate"),
+            }
+            // _guard drops here -> step 2 cancels B's parked waiter.
+        };
+
+        // Parked waiter resolves to Cancelled (via oneshot sender send).
+        let resolved = admit.await.expect("sender present");
+        assert!(
+            matches!(resolved, Err(_)),
+            "parked waiter cancelled on scope drop: {:?}",
+            resolved
         );
     }
 }
