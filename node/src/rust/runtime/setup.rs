@@ -368,6 +368,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager).await?
     };
 
+    block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::ensure_metadata_schema(
+        &mut rnode_store_manager,
+    ).await?;
+
     // Last finalized Block storage
     let last_finalized_storage = {
         use block_storage::rust::finality::LastFinalizedKeyValueStorage;

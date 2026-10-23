@@ -508,6 +508,7 @@ message PeekProto {
 message BondProto {
   bytes validator = 1;
   int64 stake     = 2;
+  bytes stakeBigInt = 3;
 }
 // --------- End Core Protocol  --------
 

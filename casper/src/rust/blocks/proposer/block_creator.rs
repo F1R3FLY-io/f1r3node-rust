@@ -23,6 +23,7 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -947,7 +948,8 @@ async fn prepare_user_deploys_with_policy(
     let valid: HashSet<Signed<DeployData>> = unfinalized
         .iter()
         .filter(|deploy| {
-            not_future_deploy(block_number, &deploy.data)
+            deploy.data.total_phlo_charge().is_ok()
+                && not_future_deploy(block_number, &deploy.data)
                 && not_expired_deploy(block_expiry_bound(deploy), &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })
@@ -1715,13 +1717,13 @@ fn storage_has_unresolved_in_scope_deploys(
 #[cfg(test)]
 fn filter_slashable_invalid_messages(
     invalid_latest_messages: HashMap<Validator, BlockHash>,
-    bonds_map: &HashMap<Validator, i64>,
+    bonds_map: &HashMap<Validator, BigInt>,
     active_validators: &[Validator],
 ) -> Vec<(Validator, BlockHash)> {
     invalid_latest_messages
         .into_iter()
         .filter(|(validator, _)| {
-            bonds_map.get(validator).copied().unwrap_or(0) > 0
+            bonds_map.get(validator).cloned().unwrap_or_default() > 0.into()
                 && active_validators.contains(validator)
         })
         .collect()
@@ -1788,9 +1790,9 @@ async fn prepare_slashing_deploys(
         .on_chain_state
         .bonds_map
         .get(&self_id)
-        .copied()
-        .unwrap_or(0);
-    if proposer_bond <= 0 {
+        .cloned()
+        .unwrap_or_default();
+    if proposer_bond <= BigInt::from(0) {
         return Ok(Vec::new());
     }
 
@@ -2024,7 +2026,7 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
                 .on_chain_state
                 .bonds_map
                 .iter()
-                .filter(|(_, stake)| **stake > 0)
+                .filter(|(_, stake)| **stake > BigInt::from(0))
                 .map(|(validator, _)| validator.clone())
                 .collect()
         };
@@ -5583,7 +5585,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block.clone());
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 5);
+        bonds_map.insert(equivocator.clone(), 5.into());
 
         let active_validators = vec![equivocator.clone()];
 
@@ -5609,7 +5611,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block);
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 0);
+        bonds_map.insert(equivocator.clone(), 0.into());
 
         let active_validators = vec![equivocator];
 
@@ -5637,7 +5639,7 @@ mod tests {
 
         // Bond floor > 0 — equivocator's stake stays at 1 after slash.
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 1);
+        bonds_map.insert(equivocator.clone(), 1.into());
 
         // PoS has removed the slashed validator from the active set.
         let active_validators: Vec<Validator> = vec![];

@@ -91,7 +91,8 @@ async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
         .iter()
         .find(|bond| bond.validator.as_ref() == target_validator.bytes.as_ref())
         .expect("Target validator should be bonded at genesis")
-        .stake;
+        .stake
+        .clone();
 
     let deploy = construct_deploy::source_deploy_now_full(
         format!(
@@ -146,7 +147,8 @@ async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
         .iter()
         .find(|bond| bond.validator.as_ref() == target_validator.bytes.as_ref())
         .expect("Target validator should remain in effective bonds")
-        .stake;
+        .stake
+        .clone();
     assert_eq!(effective_stake, initial_stake + delegation_amount);
 
     let query = format!(

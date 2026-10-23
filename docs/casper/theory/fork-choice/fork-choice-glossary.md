@@ -75,7 +75,7 @@ is identical on every node — **T-DET(b)**. Slashed validators are filtered fir
 ⟨ *For each surviving validator, walk its supporting chain down to the LCA, adding its
 weight to every block on the way.* ⟩
 ```
-scores ← empty map (block → i64, default 0)
+scores ← empty map (block → BigInt, default 0)
 for (v, lm) in filtered_latest_messages:        ⟨ order-independent: sum is commutative ⟩
     frontier ← { lm }                            ⟨ BFS from the validator's latest block ⟩
     visited  ← {}
@@ -83,15 +83,15 @@ for (v, lm) in filtered_latest_messages:        ⟨ order-independent: sum is co
         b ← take from frontier
         if b already in visited: continue        ⟨ dedup ⟹ each block counted once per v ⟩
         visited ← visited ∪ { b }
-        scores[b] ← checked_add(scores[b], w(v, b))   ⟨ B3: fail loudly on overflow ⟩
+        scores[b] ← scores[b] + w(v, b)   ⟨ B3: exact BigInt addition ⟩
         for p in parents(b) with num(p) ≥ num(LCA):   ⟨ bounded by the LCA height ⟩
             frontier ← frontier ∪ { p }
 return scores
 ```
 
-The `checked_add` (fix **B3**) can only reject if the cumulative weight exceeds
-`i64::MAX` — a supply-cap violation, i.e. an already-invalid state. (Rocq
-`Score.score_perm_invariant`, `score_eq_support_sum`; Z3 `score_supply_cap_bitvec.py`.)
+BigInt addition preserves the exact sum above `i64::MAX` (**B3**).
+Rocq `Score.score_perm_invariant` and `score_eq_support_sum` model exact sums.
+The Z3 `score_supply_cap_bitvec.py` artifact describes the previous 64-bit implementation.
 
 ### 2.2 Heaviest-subtree descent (`rank_forkchoices`)
 

@@ -13,8 +13,12 @@ use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_VALIDATOR_KEY_PAIRS};
 
-fn equal_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    validators.into_iter().map(|pk| (pk, 10)).collect()
+fn equal_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+    validators
+        .into_iter()
+        .map(|pk| (pk, 10))
+        .map(|(key, stake)| (key, stake.into()))
+        .collect()
 }
 
 /// Four validators with equal stake are bonded at genesis, but only `running`
@@ -104,11 +108,12 @@ async fn network_with_newcomer_stake(
         DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
         (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
     ];
-    let bonds: HashMap<PublicKey, i64> = validator_key_pairs
+    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_key_pairs
         .iter()
         .take(3)
         .enumerate()
         .map(|(i, (_, pk))| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(key, stake)| (key, stake.into()))
         .collect();
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
     parameters.2.proof_of_stake.epoch_length = 4;

@@ -72,7 +72,7 @@ fn snapshot_from_fixture(
 ) -> CasperSnapshot {
     let bonds_map = bonded
         .iter()
-        .map(|validator| (validator.clone(), 100))
+        .map(|validator| (validator.clone(), 100.into()))
         .collect::<HashMap<_, _>>();
 
     CasperSnapshot {

@@ -980,11 +980,35 @@ impl BlockDagKeyValueStorage {
         metadata_guard.delete_kv_row_for_tests(hash)
     }
 
-    pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
+    pub async fn ensure_metadata_schema(
+        kvm: &mut impl KeyValueStoreManager,
+    ) -> Result<(), KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
+        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
+        let schema_store = kvm.store("block-metadata-schema".to_string()).await?;
+        let schema_key = b"version".to_vec();
+        let expected_schema = b"bigint-v1".to_vec();
+        if schema_store.get_one(&schema_key)?.is_none()
+            && !block_metadata_kv_store.non_empty()?
+            && !invalid_blocks_kv_store.non_empty()?
+        {
+            schema_store.put_one_if_absent(schema_key.clone(), expected_schema.clone())?;
+        }
+        if schema_store.get_one(&schema_key)? != Some(expected_schema) {
+            return Err(KvStoreError::InvalidArgument(
+                "Incompatible block metadata schema. Use an explicitly migrated or fresh data directory for BigInt staking.".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
+        Self::ensure_metadata_schema(kvm).await?;
+        let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
+        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(block_metadata_kv_store);
-        let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
+        let block_metadata_store = BlockMetadataStore::try_new(block_metadata_db)?;
 
         let equivocation_tracker_kv_store = kvm.store("equivocation-tracker".to_string()).await?;
         let equivocation_tracker_db: KeyValueTypedStoreImpl<
@@ -997,7 +1021,6 @@ impl BlockDagKeyValueStorage {
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store);
 
-        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 

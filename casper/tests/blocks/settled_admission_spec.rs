@@ -193,11 +193,11 @@ impl Fixture {
         let bonds = vec![
             Bond {
                 validator: sender.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: citer_sender.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
         ];
 

@@ -40,7 +40,7 @@ fn metadata(value: &BlockMetadata) -> String {
         list(&value.parents, |v| bytes(v)),
         bytes(&value.sender),
         list(&value.justifications, |j| format!("({}, {})", bytes(&j.validator), bytes(&j.latest_block_hash))),
-        list(&value.weight_map, |(key, n)| format!("({}, {})", bytes(key), *n as u64)),
+        list(&value.weight_map, |(key, n)| format!("({}, {})", bytes(key), bytes(&n.to_signed_bytes_be()))),
         value.block_number as u64,
         value.sequence_number as u32,
         value.invalid,
@@ -207,7 +207,7 @@ fn fixture() -> SnapshotData {
                 latest_block_hash: hash(3),
             },
         ],
-        weight_map: [(hash(7), i64::MAX), (hash(6), i64::MIN)]
+        weight_map: [(hash(7), i64::MAX.into()), (hash(6), i64::MIN.into())]
             .into_iter()
             .collect(),
         block_number: -1,

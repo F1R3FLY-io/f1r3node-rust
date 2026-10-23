@@ -51,6 +51,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
@@ -243,7 +244,7 @@ impl Validate {
             Ok(true)
         } else {
             proto_util::weight_from_sender(block_store, b).map(|weight| {
-                if weight > 0 {
+                if weight > BigInt::from(0) {
                     true
                 } else {
                     tracing::warn!(
@@ -448,7 +449,7 @@ impl Validate {
                 ..
             })
         }) {
-            let mut parent_bonds: std::collections::HashMap<Validator, i64> =
+            let mut parent_bonds: std::collections::HashMap<Validator, BigInt> =
                 std::collections::HashMap::new();
             for parent_hash in &block.header.parents_hash_list {
                 let parent_block = match block_store.get(parent_hash) {
@@ -465,10 +466,10 @@ impl Validate {
                         .entry(bond.validator.clone())
                         .and_modify(|existing| {
                             if bond.stake > *existing {
-                                *existing = bond.stake;
+                                *existing = bond.stake.clone();
                             }
                         })
-                        .or_insert(bond.stake);
+                        .or_insert_with(|| bond.stake.clone());
                 }
             }
             if parent_bonds.is_empty() {
@@ -1689,9 +1690,9 @@ impl Validate {
                 }
             };
         let bonds = proto_util::bonds(block);
-        let bonds_by_validator: HashMap<&Validator, i64> = bonds
+        let bonds_by_validator: HashMap<&Validator, BigInt> = bonds
             .iter()
-            .map(|bond| (&bond.validator, bond.stake))
+            .map(|bond| (&bond.validator, bond.stake.clone()))
             .collect();
         let mut slash_targets = HashSet::new();
 
@@ -1724,8 +1725,8 @@ impl Validate {
             let target_activation_epoch = (*target_activation_epoch).into();
             let bond = bonds_by_validator
                 .get(&metadata.sender)
-                .copied()
-                .unwrap_or(0);
+                .cloned()
+                .unwrap_or_default();
             let authorized = match received_slash_deploy_authorized(
                 block.body.state.block_number,
                 metadata.block_number,
@@ -1763,8 +1764,8 @@ impl Validate {
             let bond = bonds_by_validator
                 .get(&metadata.sender)
                 .or_else(|| bonds_by_validator.get(&justification.validator))
-                .copied()
-                .unwrap_or(0);
+                .cloned()
+                .unwrap_or_default();
             let slash_required = match received_slash_deploy_authorized(
                 block.body.state.block_number,
                 metadata.block_number,
@@ -1859,11 +1860,11 @@ impl Validate {
             Ok(committee) => {
                 let bonds_set: HashSet<_> = proto_util::bonds(b)
                     .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
                     .collect();
                 let committee_set: HashSet<_> = committee
                     .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
                     .collect();
 
                 if bonds_set == committee_set {
@@ -1893,11 +1894,11 @@ impl Validate {
             Ok(computed_bonds) => {
                 let bonds_set: HashSet<_> = bonds
                     .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
+                    .map(|bond| (&bond.validator, bond.stake.clone()))
                     .collect();
                 let computed_bonds_set: HashSet<_> = computed_bonds
                     .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
+                    .map(|bond| (&bond.validator, bond.stake.clone()))
                     .collect();
 
                 if bonds_set == computed_bonds_set {
@@ -1913,6 +1914,18 @@ impl Validate {
                 tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
                 Either::Left(BlockError::from_validation_error(ex))
             }
+        }
+    }
+
+    pub fn deploy_costs(b: &BlockMessage) -> ValidBlockProcessing {
+        if b.body.deploys.iter().all(|deploy| {
+            deploy.deploy.data.total_phlo_charge().is_ok()
+                && (deploy.system_deploy_error.is_none()
+                    || (deploy.is_failed && deploy.cost.cost == 0))
+        }) {
+            Either::Right(ValidBlock::Valid)
+        } else {
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidDeployCost))
         }
     }
 
@@ -1997,11 +2010,11 @@ mod merge_recovery_validation_tests {
                     bonds: vec![
                         Bond {
                             validator: offender.clone(),
-                            stake: 1000,
+                            stake: 1000.into(),
                         },
                         Bond {
                             validator: sender.clone(),
-                            stake: 1000,
+                            stake: 1000.into(),
                         },
                     ],
                     block_number,
@@ -2089,5 +2102,79 @@ mod merge_recovery_validation_tests {
             Validate::neglected_invalid_block(&block, &mut snapshot),
             Either::Right(ValidBlock::Valid)
         ));
+    }
+}
+
+#[cfg(test)]
+mod deploy_cost_tests {
+    use models::rust::block_implicits::get_random_block_default;
+    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+
+    use super::*;
+
+    #[test]
+    fn failed_precharge_requires_zero_cost_and_failed_status() {
+        let deploy = crate::rust::util::construct_deploy::source_deploy(
+            "Nil".to_string(),
+            1,
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut block = get_random_block_default();
+        let mut processed = ProcessedDeploy::empty(deploy);
+        processed.system_deploy_error = Some("payment failed".to_string());
+        for (failed, cost, valid) in [
+            (true, 0, true),
+            (false, 0, false),
+            (true, 1, false),
+            (true, u64::MAX, false),
+        ] {
+            processed.is_failed = failed;
+            processed.cost.cost = cost;
+            block.body.deploys = vec![processed.clone()];
+            assert_eq!(
+                matches!(Validate::deploy_costs(&block), Either::Right(_)),
+                valid
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_fee_metadata_has_a_specific_block_verdict() {
+        for (limit, price, valid) in [
+            (i64::MAX, 1, true),
+            (1, 0, true),
+            (i64::MAX, 2, false),
+            (5_000_000_000, 10_000_000_000, false),
+            (0, 1, false),
+            (-1, 1, false),
+            (1, -1, false),
+        ] {
+            let deploy = crate::rust::util::construct_deploy::source_deploy(
+                "Nil".to_string(),
+                1,
+                Some(limit),
+                Some(price),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let mut block = get_random_block_default();
+            block.body.deploys = vec![ProcessedDeploy::empty(deploy)];
+            let result = Validate::deploy_costs(&block);
+            if valid {
+                assert_eq!(result, Either::Right(ValidBlock::Valid));
+            } else {
+                assert_eq!(
+                    result,
+                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidDeployCost))
+                );
+            }
+        }
     }
 }

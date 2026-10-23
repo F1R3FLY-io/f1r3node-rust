@@ -64,7 +64,7 @@ async fn selected_parent_metadata_matches_block_bonds_after_admission() {
             .state
             .bonds
             .iter()
-            .map(|bond| (bond.validator.clone(), bond.stake))
+            .map(|bond| (bond.validator.clone(), bond.stake.clone()))
             .collect();
         assert_eq!(metadata.weight_map, bonds);
     }
@@ -87,7 +87,7 @@ async fn selected_parent_metadata_matches_block_bonds_after_admission() {
 
 #[tokio::test]
 async fn block_api_rejects_deploy_from_unbonded_validator() {
-    fn bonds_without_first(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+    fn bonds_without_first(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
         GenesisBuilder::create_bonds(validators.into_iter().skip(1).collect())
     }
 
@@ -511,4 +511,113 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
         expected_message,
         error_message
     );
+}
+
+#[tokio::test]
+async fn fee_overflow_is_rejected_before_deploy_storage() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    for (limit, price, expected) in [
+        (
+            i64::MAX,
+            2,
+            "Deploy precharge exceeds the signed 64-bit fee range",
+        ),
+        (
+            5_000_000_000,
+            10_000_000_000,
+            "Deploy precharge exceeds the signed 64-bit fee range",
+        ),
+        (0, 1, "Deploy phloLimit must be positive"),
+        (-1, 1, "Deploy phloLimit must be positive"),
+        (1, -1, "Deploy phloPrice must be nonnegative"),
+    ] {
+        let deploy = construct_deploy::source_deploy(
+            "Nil".to_string(),
+            1,
+            Some(limit),
+            Some(price),
+            None,
+            None,
+            Some(genesis.genesis_block.shard_id.clone()),
+        )
+        .unwrap();
+        assert!(matches!(
+            node.casper.deploy(deploy.clone()).unwrap(),
+            Either::Left(DeployError::InvalidCost(message)) if message == expected
+        ));
+        assert!(!node
+            .deploy_storage
+            .lock()
+            .contains_sig(&deploy.sig)
+            .unwrap());
+        let api_error = BlockAPI::deploy(
+            &node.engine_cell,
+            deploy,
+            &None,
+            false,
+            &genesis.genesis_block.shard_id,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(api_error.to_string(), expected);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
+    use casper::rust::casper::CASPER_PROTOCOL_VERSION;
+    use casper::rust::util::proto_util;
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    for validator in &mut parameters.2.proof_of_stake.validators {
+        validator.stake = "100000000000000000000".parse().unwrap();
+    }
+    parameters.2.proof_of_stake.maximum_bond = "100000000000000000000000".parse().unwrap();
+    parameters.2.native_token_decimals = 18;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    assert_eq!(
+        genesis.genesis_block.header.version,
+        CASPER_PROTOCOL_VERSION
+    );
+    assert!(genesis
+        .genesis_block
+        .body
+        .state
+        .bonds
+        .iter()
+        .all(|bond| bond.stake > i64::MAX.into()));
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let block = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy])
+        .await
+        .unwrap();
+    assert_eq!(block.header.version, CASPER_PROTOCOL_VERSION);
+    assert_eq!(proto_util::hash_block(&block), block.block_hash);
+    assert_eq!(
+        block.body.state.bonds,
+        genesis.genesis_block.body.state.bonds
+    );
+    for node in &nodes {
+        assert!(node.casper.dag_contains(&block.block_hash));
+        let metadata = node
+            .block_dag_storage
+            .get_representation()
+            .unwrap()
+            .lookup(&block.block_hash)
+            .unwrap()
+            .unwrap();
+        for bond in &block.body.state.bonds {
+            assert_eq!(metadata.weight_map[&bond.validator], bond.stake);
+        }
+    }
 }

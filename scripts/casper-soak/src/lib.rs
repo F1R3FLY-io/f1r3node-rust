@@ -9,6 +9,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
 use eyre::{ensure, eyre, Result};
+use num_bigint::BigInt;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
@@ -33,6 +34,16 @@ pub const CORE: &[&str] = &[
 pub fn text(value: &Value) -> Result<&str> {
     value.as_str().ok_or_else(|| eyre!("A string is required."))
 }
+pub fn stake(value: &Value) -> Result<BigInt> {
+    let decimal = text(value)?;
+    let amount: BigInt = decimal.parse()?;
+    ensure!(
+        amount.to_string() == decimal,
+        "A canonical decimal stake is required."
+    );
+    Ok(amount)
+}
+
 pub fn number(value: &Value) -> Result<u64> {
     value
         .as_u64()
