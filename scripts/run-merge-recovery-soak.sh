@@ -2383,10 +2383,19 @@ fi
 # one with its environment and owner state, which shows why the owner stop
 # missed it. A writer that remains fails the soak like a failed owner stop.
 SUBPROCESS_DATA_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
+# After a host protection breach the soak already fails and must publish that
+# failure promptly, so the stop kills and records within the disk stop budget
+# and skips the 2 s write check.
 if [ "$CASPER_RUNTIME" -eq 0 ] && [ -d "$SUBPROCESS_DATA_DIR" ]; then
 	residual_status=0
-	residual_lines="$(timeout --signal=KILL 30 "$SOAK_HARNESS_BIN" host-control stop-under \
-		--owner "$SOAK_WRITER_OWNER" "$SUBPROCESS_DATA_DIR" 2>/dev/null)" || residual_status=$?
+	residual_quiet_ms=2000
+	residual_budget=30
+	if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
+		residual_quiet_ms=0
+		residual_budget="$DISK_STOP_SECONDS"
+	fi
+	residual_lines="$(timeout --signal=KILL "$residual_budget" "$SOAK_HARNESS_BIN" host-control stop-under \
+		--owner "$SOAK_WRITER_OWNER" --quiet-ms "$residual_quiet_ms" "$SUBPROCESS_DATA_DIR" 2>/dev/null)" || residual_status=$?
 	[ -z "$residual_lines" ] || printf '%s\n' "$residual_lines" | sed "s/^/segment=$SEGMENT /" >>"$OUTPUT_DIR/residual-writers.txt"
 	if [ "$residual_status" -ne 0 ]; then
 		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"

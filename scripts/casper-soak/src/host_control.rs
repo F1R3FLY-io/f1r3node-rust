@@ -18,6 +18,8 @@ enum Action {
     StopUnder {
         #[arg(long)]
         owner: String,
+        #[arg(long, default_value_t = 2000)]
+        quiet_ms: u64,
         directory: PathBuf,
     },
     PreferOom {
@@ -479,7 +481,12 @@ mod linux {
         Ok((result, failed))
     }
 
-    fn stop_under(root: &Path, owner: &str, output: &mut impl Write) -> Result<()> {
+    fn stop_under(
+        root: &Path,
+        owner: &str,
+        window: Duration,
+        output: &mut impl Write,
+    ) -> Result<()> {
         ensure!(
             !owner.is_empty() && owner.len() <= 256 && !owner.chars().any(char::is_control),
             "The owner marker is invalid."
@@ -508,14 +515,12 @@ mod linux {
         if !reaped(stopped.into_iter()) {
             failed = true;
         }
-        if !quiet(root, QUIET_WINDOW)? {
+        if !quiet(root, window)? {
             failed = true;
         }
         ensure!(!failed, "Writer termination is unconfirmed.");
         Ok(())
     }
-
-    const QUIET_WINDOW: Duration = Duration::from_secs(2);
 
     type Entry = (u64, u64, i64, i64, i64, i64);
 
@@ -620,9 +625,16 @@ mod linux {
                 "The exit marker is invalid."
             ),
             Action::StopOwned { owner } => stop(&owner)?,
-            Action::StopUnder { owner, directory } => {
-                stop_under(&directory, &owner, &mut io::stdout().lock())?
-            }
+            Action::StopUnder {
+                owner,
+                quiet_ms,
+                directory,
+            } => stop_under(
+                &directory,
+                &owner,
+                Duration::from_millis(quiet_ms),
+                &mut io::stdout().lock(),
+            )?,
             Action::PreferOom { owner } => prefer_oom(&owner)?,
             Action::VerifyDomain { record } => check_domain(
                 &domain_record(&record)?,
@@ -646,6 +658,8 @@ mod linux {
         use std::time::SystemTime;
 
         use super::*;
+
+        const QUIET_WINDOW: Duration = Duration::from_secs(2);
 
         struct Process(Child);
         impl Drop for Process {
@@ -1015,7 +1029,7 @@ mod linux {
             assert_eq!(state(&unrelated), None);
             assert_eq!(found.len(), 3);
             let mut record = Vec::new();
-            stop_under(&root, &owner, &mut record).unwrap();
+            stop_under(&root, &owner, QUIET_WINDOW, &mut record).unwrap();
             let record = String::from_utf8(record).unwrap();
             assert_eq!(record.lines().count(), 3);
             assert!(record.contains(&format!(
@@ -1086,7 +1100,7 @@ mod linux {
             let hidden = hidden_writer(&root);
             let inspectable = fs::read_link(format!("/proc/{}/cwd", hidden.0)).is_ok();
             let mut record = Vec::new();
-            let result = stop_under(&root, &marker(), &mut record);
+            let result = stop_under(&root, &marker(), QUIET_WINDOW, &mut record);
             let record = String::from_utf8(record).unwrap();
             if inspectable {
                 result.unwrap();
@@ -1123,7 +1137,7 @@ mod linux {
                 return;
             }
             let mut record = Vec::new();
-            assert!(stop_under(&root, &marker(), &mut record).is_err());
+            assert!(stop_under(&root, &marker(), QUIET_WINDOW, &mut record).is_err());
         }
 
         #[test]
@@ -1140,7 +1154,7 @@ mod linux {
                 .set_modified(SystemTime::now() + Duration::from_secs(365 * 24 * 3600))
                 .unwrap();
             let mut record = Vec::new();
-            stop_under(&root, &marker(), &mut record).unwrap();
+            stop_under(&root, &marker(), QUIET_WINDOW, &mut record).unwrap();
         }
 
         #[test]
@@ -1152,11 +1166,30 @@ mod linux {
             fs::create_dir_all(root.join("session")).unwrap();
             fs::write(root.join("session/validator1.log"), b"old").unwrap();
             let mut record = Vec::new();
-            stop_under(&root, &marker(), &mut record).unwrap();
+            stop_under(&root, &marker(), QUIET_WINDOW, &mut record).unwrap();
             assert_eq!(
                 unsafe { libc::waitpid(hidden.0, std::ptr::null_mut(), libc::WNOHANG) },
                 0
             );
+        }
+
+        #[test]
+        fn residual_stop_without_a_quiet_window_still_kills_and_returns_promptly() {
+            let owner = marker();
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("data");
+            fs::create_dir_all(root.join("session")).unwrap();
+            let mut node = named(
+                None,
+                root.join("session/validator1").to_str().unwrap(),
+                Path::new("/"),
+            );
+            let started = Instant::now();
+            let mut record = Vec::new();
+            stop_under(&root, &owner, Duration::ZERO, &mut record).unwrap();
+            assert!(started.elapsed() < Duration::from_millis(1500));
+            assert!(node.0.wait().unwrap().code().is_none());
+            assert_eq!(String::from_utf8(record).unwrap().lines().count(), 1);
         }
 
         #[test]
@@ -1166,7 +1199,13 @@ mod linux {
             assert!(chain.contains(&(unsafe { libc::getppid() })));
             let temp = tempfile::tempdir().unwrap();
             let mut record = Vec::new();
-            stop_under(&temp.path().join("absent"), &marker(), &mut record).unwrap();
+            stop_under(
+                &temp.path().join("absent"),
+                &marker(),
+                QUIET_WINDOW,
+                &mut record,
+            )
+            .unwrap();
             assert!(record.is_empty());
         }
     }
