@@ -14,11 +14,13 @@ CONFIG="${1:-$ROOT/.mergify.yml}"
 DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
 MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|cargo-deny|Commit Policy|Promotion Source'
 
-DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
+CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
   doc = YAML.load_file(ARGV[0])
   repo = "F1R3FLY-io/f1r3node-rust"
   heavy = ["Integration Gate (amd64)", "Integration Gate (arm64)"]
   review = ["#approved-reviews-by>=1", "#changes-requested-reviews-by=0"]
+  maintainer = {"or" => ["#approved-reviews-by>=1", "author=@F1R3FLY-io/ci-maintainers"]}
+  maintained = ["#review-requested=0", "#changes-requested-reviews-by=0"]
   queues = doc.fetch("queue_rules").to_h { |q| [q.fetch("name"), q] }
   rules = doc.fetch("pull_request_rules")
   errors = []
@@ -54,7 +56,43 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
     (heavy - checks.(q)).each { |h| errors << "queue #{name} does not require #{h}" }
     errors << "queue #{name} does not require the ci-heavy label" unless c.include?("label=ci-heavy")
     errors << "queue #{name} accepts a fork head" unless c.include?("head-repo-full-name=#{repo}")
-    (review - c).each { |r| errors << "queue #{name} does not require #{r}" }
+    if %w[dev ca-item].include?(name)
+      raw = Array(q["queue_conditions"])
+      errors << "queue #{name} does not require an approval or a ci-maintainers author" unless raw.include?(maintainer)
+      errors << "queue #{name} accepts a ci-maintainers author without the any-of block" if c.include?("author=@F1R3FLY-io/ci-maintainers")
+      (maintained - c).each { |r| errors << "queue #{name} does not require #{r}" }
+    else
+      (review - c).each { |r| errors << "queue #{name} does not require #{r}" }
+      errors << "queue #{name} accepts a merge without an approval" if Array(q["queue_conditions"]).any? { |x| x.is_a?(Hash) }
+    end
+  end
+
+  if (q = queues["dev"])
+    owners = Array(q["queue_conditions"]).find do |x|
+      x.is_a?(Hash) && x["or"].is_a?(Array) && x["or"].any? { |y| y.to_s.start_with?("-files~=") }
+    end
+    if owners.nil?
+      errors << "queue dev does not enforce the CODEOWNERS paths"
+    else
+      %w[author=@F1R3FLY-io/ci-maintainers approved-reviews-by=@F1R3FLY-io/ci-maintainers].each do |x|
+        errors << "the dev code-owner condition does not accept #{x}" unless owners["or"].include?(x)
+      end
+      errors << "the dev code-owner condition has #{owners["or"].size} alternatives, not 3" unless owners["or"].size == 3
+      re = Regexp.new(owners["or"].find { |y| y.to_s.start_with?("-files~=") }.delete_prefix("-files~="))
+      File.readlines(ENV.fetch("CODEOWNERS")).each do |line|
+        pattern = line.strip.split(/\s+/).first
+        next if pattern.nil? || pattern.start_with?("#")
+        samples = if pattern.start_with?("/")
+          pattern.end_with?("/") ? [pattern[1..] + "x"] : [pattern[1..]]
+        else
+          [pattern, "casper/#{pattern}"]
+        end
+        samples.each { |p| errors << "the dev code-owner pattern misses #{p} (CODEOWNERS #{pattern})" unless re.match?(p) }
+      end
+      %w[casper/src/lib.rs docs/ci.md scripts/bench/run.sh .github/dependabot.yml README.md].each do |p|
+        errors << "the dev code-owner pattern matches #{p}, which CODEOWNERS does not own" if re.match?(p)
+      end
+    end
   end
 
   {"dev" => "base=dev", "master" => "base=master", "ca-item" => "base=ca-canary",
@@ -102,9 +140,11 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
       %w[dev master ca-canary ca-release].each { |b| errors << "the ci-heavy rule skips #{b}" unless re.match?(b) }
       %w[staging feature/x].each { |b| errors << "the ci-heavy rule labels #{b}" if re.match?(b) }
     end
-    ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-draft", "-head~=^backmerge/ca-release-", *review].each do |x|
+    ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-draft", "-head~=^backmerge/ca-release-", "#changes-requested-reviews-by=0"].each do |x|
       errors << "the ci-heavy rule does not require #{x}" unless c.include?(x)
     end
+    approval = {"or" => ["#approved-reviews-by>=1", {"and" => ["base~=^(dev|ca-canary)$", "author=@F1R3FLY-io/ci-maintainers"]}]}
+    errors << "the ci-heavy rule does not require an approval or a ci-maintainers author into dev or ca-canary" unless Array(label.first["conditions"]).include?(approval)
   end
 
   abort errors.map { |e| "FAIL: #{e}" }.join("\n") unless errors.empty?
