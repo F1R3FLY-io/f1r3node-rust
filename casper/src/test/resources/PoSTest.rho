@@ -19,6 +19,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_delegation_succeeds,
       test_undelegation_succeeds,
       test_delegator_rewards_claim_succeeds,
+      test_bigint_delegator_rewards_claim_succeeds,
+      test_delegator_rewards_claim,
       test_withdraw_converts_active_delegations_to_pending,
       test_withdraw_succeeds,
       test_validator_is_paid_after_withdraw,
@@ -69,6 +71,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("delegation success", *test_delegation_succeeds),
               ("undelegation success", *test_undelegation_succeeds),
               ("delegator rewards can be claimed", *test_delegator_rewards_claim_succeeds),
+              ("delegator rewards above Int range can be claimed", *test_bigint_delegator_rewards_claim_succeeds),
               ("withdraw succeeds", *test_withdraw_succeeds),
               ("validator is paid after withdraw", *test_validator_is_paid_after_withdraw),
               ("withdraw converts active delegations to pending undelegations", *test_withdraw_converts_active_delegations_to_pending),
@@ -259,8 +262,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                 ((delegationAmt, "==", delegations.getOrElse(delegatorPubKey, {}).getOrElse(validatorPubKey, 0)), "delegation map tracks delegated stake"),
                                 ((true, "==", validatorDelegators.getOrElse(validatorPubKey, {}).contains(delegatorPubKey)), "validator delegator index tracks delegation ownership"),
                                 ((delegationAmt, "==", delegatedTotals.getOrElse(validatorPubKey, 0)), "delegated total tracks delegated stake per validator"),
-                                ((delegationAmt, "==", finalPosBalance - initialPosBalance), "PoS vault receives delegated amount"),
-                                ((delegationAmt, "==", initialDelegatorBalance - finalDelegatorBalance), "delegator vault pays delegated amount")
+                                (((delegationAmt).toBigInt(), "==", finalPosBalance - initialPosBalance), "PoS vault receives delegated amount"),
+                                (((delegationAmt).toBigInt(), "==", initialDelegatorBalance - finalDelegatorBalance), "delegator vault pays delegated amount")
                               ],
                               *ackCh
                             )
@@ -342,8 +345,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                               ((requestPosBalance, "==", initialPosBalance), "PoS vault does not transfer principal before cooldown completion"),
                                               ((requestDelegatorBalance, "==", initialDelegatorBalance), "delegator does not receive principal before cooldown completion"),
                                               (("Undelegation cooldown not finished.", "==", earlyMsg), "early undelegation completion is rejected"),
-                                              ((undelegationAmt, "==", initialPosBalance - finalPosBalance), "PoS vault sends undelegated amount after cooldown"),
-                                              ((undelegationAmt, "==", finalDelegatorBalance - initialDelegatorBalance), "delegator receives undelegated amount after cooldown"),
+                                              (((undelegationAmt).toBigInt(), "==", initialPosBalance - finalPosBalance), "PoS vault sends undelegated amount after cooldown"),
+                                              (((undelegationAmt).toBigInt(), "==", finalDelegatorBalance - initialDelegatorBalance), "delegator receives undelegated amount after cooldown"),
                                               ((false, "==", finalPendingUndelegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation is cleared after completion")
                                             ],
                                             *ackCh
@@ -366,6 +369,14 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
           } |
           // Tests that delegator rewards accrue on-chain and can be claimed.
           contract test_delegator_rewards_claim_succeeds(rhoSpec, _, ackCh) = {
+            test_delegator_rewards_claim!(*rhoSpec, 100, 100n, 0n, *ackCh)
+          } |
+
+          contract test_bigint_delegator_rewards_claim_succeeds(rhoSpec, _, ackCh) = {
+            test_delegator_rewards_claim!(*rhoSpec, 5000, 10000000000000000000n, 9223372036854775807n, *ackCh)
+          } |
+
+          contract test_delegator_rewards_claim(rhoSpec, @delegationAmt, @chargeAmt, @minimumReward, ackCh) = {
             new delegatorSetupCh, payerSetupCh, activeValidatorsCh,
                 delegateCh, chargeCh, refundCh, closeBlockCh, claimCh,
                 rewardsBeforeClaimCh, rewardsAfterClaimCh,
@@ -379,12 +390,12 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 @PoS!("getActiveValidators", *activeValidatorsCh) |
                 @PoS!("getEpochLength", *epochCh) |
                 for (@activeValidators <- activeValidatorsCh) {
-                  match (activeValidators.toList().nth(0), 100, 100, 0) {
-                    (targetValidator, delegationAmt, chargeAmt, refundAmt) => {
+                  match activeValidators.toList().nth(0) {
+                    targetValidator => {
                       @PoS!("delegate", delegatorDeployerId, targetValidator, delegationAmt, *delegateCh) |
                       for (@(true, _) <- delegateCh) {
                         @PoS!("chargeDeploy", payerDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
-                        @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
+                        @PoS!("refundDeploy", 0, sysAuthToken, *refundCh) |
                         for (@(true, _) <- chargeCh &
                              @(true, _) <- refundCh) {
                           for (@epochLength <- epochCh) {
@@ -404,9 +415,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                          @rewardsAfterClaim <- rewardsAfterClaimCh) {
                                       rhoSpec!("assertMany",
                                         [
-                                          ((true, "==", rewardsBeforeClaim.getOrElse(delegatorPubKey, 0) > 0), "delegator rewards accrue after reward distribution"),
-                                          ((rewardsBeforeClaim.getOrElse(delegatorPubKey, 0), "==", finalDelegatorBalance - initialDelegatorBalance), "claimed rewards are transferred to delegator vault"),
-                                          ((0, "==", rewardsAfterClaim.getOrElse(delegatorPubKey, 0)), "delegator rewards are cleared after claim")
+                                          ((true, "==", rewardsBeforeClaim.getOrElse(delegatorPubKey, 0n) > minimumReward), "delegator rewards exceed the expected threshold without overflow"),
+                                          ((rewardsBeforeClaim.getOrElse(delegatorPubKey, 0n), "==", finalDelegatorBalance - initialDelegatorBalance), "claimed rewards are transferred to delegator vault"),
+                                          ((0n, "==", rewardsAfterClaim.getOrElse(delegatorPubKey, 0n)), "delegator rewards are cleared after claim")
                                         ],
                                         *ackCh
                                       )
@@ -802,16 +813,16 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                   resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0n)))
                                 } |
                                 contract computeDelegatorDelta(@(pk, finalReward), @acc, resultCh) = {
-                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0)))
+                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0n)))
                                 } |
                                 for (@deltaRewards <- deltaRewardsCh &
                                      @deltaDelegatorRewards <- deltaDelegatorRewardsCh) {
                                   @ListOps!("forall", deltaRewards, *isNonNegative, *allRewardsPositiveCh) |
                                   contract isNonNegative(@n, resultCh) = {
-                                    resultCh!(n >= 0)
+                                    resultCh!(n >= 0n)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *validatorDeltaSumCh) |
-                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0, *sumDelta, *delegatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *validatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0n, *sumDelta, *delegatorDeltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
@@ -820,10 +831,10 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                     totalDeltaSumCh!(validatorDeltaSum + delegatorDeltaSum) |
                                     rhoSpec!("assertMany",
                                       [
-                                        ((userCharge - userRefund, "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
-                                        ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0) > initialRewards.getOrElse(validatorPubKey, 0)), "the validator's finalRewards grows"),
-                                        ((98, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment less rounding"),
+                                        (((userCharge - userRefund).toBigInt(), "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
+                                        (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0n) > initialRewards.getOrElse(validatorPubKey, 0n)), "the validator's finalRewards grows"),
+                                        ((98n, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment less rounding"),
                                         ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
                                       ],
                                       *ackCh
@@ -894,16 +905,16 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                   resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0n)))
                                 } |
                                 contract computeDelegatorDelta(@(pk, finalReward), @acc, resultCh) = {
-                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0)))
+                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0n)))
                                 } |
                                 for (@deltaRewards <- deltaRewardsCh &
                                      @deltaDelegatorRewards <- deltaDelegatorRewardsCh) {
                                   @ListOps!("forall", deltaRewards, *isNonNegative, *allRewardsPositiveCh) |
                                   contract isNonNegative(@n, resultCh) = {
-                                    resultCh!(n >= 0)
+                                    resultCh!(n >= 0n)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *validatorDeltaSumCh) |
-                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0, *sumDelta, *delegatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *validatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0n, *sumDelta, *delegatorDeltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
@@ -912,10 +923,10 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                     totalDeltaSumCh!(validatorDeltaSum + delegatorDeltaSum) |
                                     rhoSpec!("assertMany",
                                       [
-                                        ((userCharge - userRefund, "==", initialUserBalance - finalUserBalance), "the user account decreases"),
-                                        ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0) > initialRewards.getOrElse(validatorPubKey, 0)), "the validator's finalRewards grows"),
-                                        ((50, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment"),
+                                        (((userCharge - userRefund).toBigInt(), "==", initialUserBalance - finalUserBalance), "the user account decreases"),
+                                        (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0n) > initialRewards.getOrElse(validatorPubKey, 0n)), "the validator's finalRewards grows"),
+                                        ((50n, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment"),
                                         ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
                                       ],
                                       *ackCh
@@ -1175,9 +1186,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                               [
                                 ((finalBonds, "==", initialBonds.delete(slashedValidator)), "Slashed validator's bond entry is removed"),
                                 ((false, "==", finalEffectiveBonds.contains(slashedValidator)), "Slashed validator is excluded from effective bonds"),
-                                ((0, "==", finalRewards.getOrElse(slashedValidator, 0)), "Slashed validator's rewards are reduced to 0"),
-                                ((finalPosBalance, "==", initialPosBalance - initialBonds.getOrElse(slashedValidator, 0)), "Slashed validator's funds are transferred out of the PoS vault"),
-                                ((finalCoopBalance, "==", initialCoopBalance + initialBonds.getOrElse(slashedValidator, 0)), "Slashed validator's funds are transferred to the Coop vault")
+                                ((0n, "==", finalRewards.getOrElse(slashedValidator, 0n)), "Slashed validator's rewards are reduced to 0"),
+                                ((finalPosBalance, "==", initialPosBalance - initialBonds.getOrElse(slashedValidator, 0).toBigInt()), "Slashed validator's funds are transferred out of the PoS vault"),
+                                ((finalCoopBalance, "==", initialCoopBalance + initialBonds.getOrElse(slashedValidator, 0).toBigInt()), "Slashed validator's funds are transferred to the Coop vault")
                               ],
                               *ackCh
                             )
@@ -1262,8 +1273,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                                 (("Validator has pending slash evidence.", "==", preSlashCompleteMsg), "completeUndelegate cannot escape known slash evidence"),
                                                 (((delegationAmt, requestBlock + epochLength), "==", pendingDuringEvidence.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation remains escrowed when slash evidence is pending"),
                                                 ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation is removed by slash"),
-                                                ((validatorBond + delegationAmt, "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates self-bond plus pending undelegation"),
-                                                ((validatorBond + delegationAmt, "==", postSlashCoopBalance - preSlashCoopBalance), "slash transfers confiscated pending stake to Coop vault"),
+                                                (((validatorBond + delegationAmt).toBigInt(), "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates self-bond plus pending undelegation"),
+                                                (((validatorBond + delegationAmt).toBigInt(), "==", postSlashCoopBalance - preSlashCoopBalance), "slash transfers confiscated pending stake to Coop vault"),
                                                 (("No pending undelegation for validator.", "==", completeMsg), "completeUndelegate cannot claim slashed pending stake")
                                               ],
                                               *ackCh
@@ -1341,8 +1352,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                       for (@(false, completeMsg) <- completeCh) {
                                         rhoSpec!("assertMany",
                                           [
-                                            ((validatorBond + delegationAmt, "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates validator self-bond and full delegated exposure"),
-                                            ((validatorBond + delegationAmt, "==", postSlashCoopBalance - preSlashCoopBalance), "slash moves active+pending delegated exposure to Coop vault"),
+                                            (((validatorBond + delegationAmt).toBigInt(), "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates validator self-bond and full delegated exposure"),
+                                            (((validatorBond + delegationAmt).toBigInt(), "==", postSlashCoopBalance - preSlashCoopBalance), "slash moves active+pending delegated exposure to Coop vault"),
                                             ((false, "==", delegationsAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "active delegation is removed after slash"),
                                             ((false, "==", totalsAfter.contains(validatorPubKey)), "delegated total for slashed validator is removed"),
                                             ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation claim is removed after slash"),
@@ -1421,8 +1432,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                        @pendingAfter <- pendingAfterCh) {
                                     rhoSpec!("assertMany",
                                       [
-                                        ((validatorBond + delegation1Amt + delegation2Amt, "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates all delegated exposure for target validator"),
-                                        ((validatorBond + delegation1Amt + delegation2Amt, "==", postSlashCoopBalance - preSlashCoopBalance), "all confiscated stake is moved to Coop vault"),
+                                        (((validatorBond + delegation1Amt + delegation2Amt).toBigInt(), "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates all delegated exposure for target validator"),
+                                        (((validatorBond + delegation1Amt + delegation2Amt).toBigInt(), "==", postSlashCoopBalance - preSlashCoopBalance), "all confiscated stake is moved to Coop vault"),
                                         ((false, "==", delegationsAfter.getOrElse(delegator1PubKey, {}).contains(validatorPubKey)), "delegator1 exposure to slashed validator is removed"),
                                         ((false, "==", delegationsAfter.getOrElse(delegator2PubKey, {}).contains(validatorPubKey)), "delegator2 exposure to slashed validator is removed"),
                                         ((false, "==", validatorDelegatorsAfter.contains(validatorPubKey)), "validator delegator index is removed for slashed validator"),
@@ -1563,9 +1574,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                       for (@rewardsAfterSlash <- rewardsAfterSlashCh) {
                                         rhoSpec!("assertMany",
                                           [
-                                            ((true, "==", rewardsBeforeSlash.getOrElse(delegatorPubKey, 0) > 0), "delegator rewards accrue before slash"),
-                                            ((true, "==", rewardsAfterSlash.getOrElse(delegatorPubKey, 0) > 0), "delegator rewards for unslashed validators remain claimable"),
-                                            ((true, "==", rewardsAfterSlash.getOrElse(delegatorPubKey, 0) < rewardsBeforeSlash.getOrElse(delegatorPubKey, 0)), "slash removes rewards attributed to the slashed validator")
+                                            ((true, "==", rewardsBeforeSlash.getOrElse(delegatorPubKey, 0n) > 0n), "delegator rewards accrue before slash"),
+                                            ((true, "==", rewardsAfterSlash.getOrElse(delegatorPubKey, 0n) > 0n), "delegator rewards for unslashed validators remain claimable"),
+                                            ((true, "==", rewardsAfterSlash.getOrElse(delegatorPubKey, 0n) < rewardsBeforeSlash.getOrElse(delegatorPubKey, 0n)), "slash removes rewards attributed to the slashed validator")
                                           ],
                                           *ackCh
                                         )

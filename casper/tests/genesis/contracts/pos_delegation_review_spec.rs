@@ -12,7 +12,7 @@ use crate::util::genesis_builder::GenesisBuilder;
 const VALIDATOR_PK: &str = "6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a";
 const DELEGATOR_PK: &str = "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b";
 
-fn prepare_vault(hex_string: &str, balance: u64) -> Vault {
+fn prepare_vault(hex_string: &str, balance: u128) -> Vault {
     let pk_bytes = hex::decode(hex_string).expect("Failed to decode hex string");
     let pk = PublicKey::from_bytes(&pk_bytes);
 

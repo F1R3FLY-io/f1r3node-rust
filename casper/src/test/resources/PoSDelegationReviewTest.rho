@@ -52,6 +52,8 @@ in {
           bondCh,
           minimumBondCh,
           dustDelegateCh,
+          invalidDelegateCh,
+          invalidUndelegateCh,
           delegateCh,
           rebondCh,
           undelegateCh,
@@ -74,7 +76,11 @@ in {
                 @PoS!("getMinimumBond", *minimumBondCh) |
                 for (@minimumBond <- minimumBondCh) {
                   @PoS!("delegate", delegatorDeployerId, validatorPubKey, minimumBond - 1, *dustDelegateCh) |
-                  for (@(false, dustMsg) <- dustDelegateCh) {
+                  @PoS!("delegate", delegatorDeployerId, validatorPubKey, 2n, *invalidDelegateCh) |
+                  @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 2n, *invalidUndelegateCh) |
+                  for (@(false, dustMsg) <- dustDelegateCh &
+                       @(false, invalidDelegateMsg) <- invalidDelegateCh &
+                       @(false, invalidUndelegateMsg) <- invalidUndelegateCh) {
                     @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
                     for (@(true, _) <- delegateCh) {
                       @PoS!("bond", validatorDeployerId, 50, *rebondCh) |
@@ -96,6 +102,8 @@ in {
                                 rhoSpec!("assertMany",
                                   [
                                     ((2, "==", minimumBond), "minimum bond getter exposes genesis parameter"),
+                                    (("Delegation amount must be an Int.", "==", invalidDelegateMsg), "BigInt delegation cannot change consensus stake type"),
+                                    (("Undelegation amount must be an Int.", "==", invalidUndelegateMsg), "BigInt undelegation cannot change consensus stake type"),
                                     (("Delegation is less than minimum.", "==", dustMsg), "delegation below minimumBond is rejected"),
                                     (("Public key is already bonded.", "==", rebondMsg), "bond cannot mutate an already bonded validator after delegation"),
                                     (("Pending undelegation already exists for validator.", "==", secondMsg), "a second pending undelegation for the pair is rejected"),

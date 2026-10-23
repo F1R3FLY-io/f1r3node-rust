@@ -222,10 +222,10 @@ in {
                   @posVault!("balance", *posBalanceCh) |
                   computeEffectiveBonds!(state, *effectiveBondsCh) |
                   new sumOneDelegatorReward, sumOneValidatorReward in {
-                    @ListOps!("fold", state.get("delegatorRewards").toList(), 0, *sumOneDelegatorReward, *delegatorRewardsCh) |
+                    @ListOps!("fold", state.get("delegatorRewards").toList(), 0n, *sumOneDelegatorReward, *delegatorRewardsCh) |
                     contract sumOneDelegatorReward(@(_, validatorRewards), @acc, resultCh) = {
                       new delegatorRewardTotalCh in {
-                        @ListOps!("fold", validatorRewards.toList(), 0, *sumOneValidatorReward, *delegatorRewardTotalCh) |
+                        @ListOps!("fold", validatorRewards.toList(), 0n, *sumOneValidatorReward, *delegatorRewardTotalCh) |
                         contract sumOneValidatorReward(@(_, rewardAmount), @innerAcc, innerResultCh) = {
                           innerResultCh!(innerAcc + rewardAmount)
                         } |
@@ -236,10 +236,10 @@ in {
                     }
                   } |
                   for (@effectiveBonds <- effectiveBondsCh) {
-                    @ListOps!("fold", effectiveBonds.toList(), 0, *accumulateSndNum, *totalBondCh) |
+                    @ListOps!("fold", effectiveBonds.toList(), 0n, *accumulateSndNum, *totalBondCh) |
                     calTotalActiveBonds!(state, effectiveBonds, *totalActiveBondCh) |
-                    @ListOps!("fold", state.get("withdrawers").toList(), 0, *accumulateFstOfSndArg, *totalWithdrawCh) |
-                    @ListOps!("fold", state.get("committedRewards").toList(), 0, *accumulateSndNum, *committedRewardsCh) |
+                    @ListOps!("fold", state.get("withdrawers").toList(), 0n, *accumulateFstOfSndArg, *totalWithdrawCh) |
+                    @ListOps!("fold", state.get("committedRewards").toList(), 0n, *accumulateSndNum, *committedRewardsCh) |
                     sumPendingUndelegations!(state, *pendingUndelegationsCh) |
                     for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
                          @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh;
@@ -261,10 +261,10 @@ in {
               } |
               contract calTotalActiveBonds(@state, @effectiveBonds, returnCh) = {
                 new computeSum in {
-                  @ListOps!("fold", effectiveBonds.toList(), 0, *computeSum, *returnCh) |
+                  @ListOps!("fold", effectiveBonds.toList(), 0n, *computeSum, *returnCh) |
                   contract computeSum(@(pk, bondAmount), @acc, resultCh) = {
                     if (state.get("activeValidators").contains(pk)){
-                      resultCh!(acc + bondAmount)
+                      resultCh!(acc + bondAmount.toBigInt())
                     } else {
                       resultCh!(acc)
                     }
@@ -368,12 +368,12 @@ in {
               // Sums all pending undelegation principal amounts.
               contract sumPendingUndelegations(@state, returnCh) = {
                 new sumDelegatorPending, sumValidatorPending in {
-                  @ListOps!("fold", state.get("pendingUndelegations").toList(), 0, *sumDelegatorPending, *returnCh) |
+                  @ListOps!("fold", state.get("pendingUndelegations").toList(), 0n, *sumDelegatorPending, *returnCh) |
                   contract sumDelegatorPending(@(_, validatorMap), @acc, resultCh) = {
                     new delegatorPendingTotalCh in {
-                      @ListOps!("fold", validatorMap.toList(), 0, *sumValidatorPending, *delegatorPendingTotalCh) |
+                      @ListOps!("fold", validatorMap.toList(), 0n, *sumValidatorPending, *delegatorPendingTotalCh) |
                       contract sumValidatorPending(@(_, (pendingAmount, _)), @innerAcc, innerResultCh) = {
-                        innerResultCh!(innerAcc + pendingAmount)
+                        innerResultCh!(innerAcc + pendingAmount.toBigInt())
                       } |
                       for (@delegatorPendingTotal <- delegatorPendingTotalCh) {
                         resultCh!(acc + delegatorPendingTotal)
@@ -386,7 +386,7 @@ in {
               // (updatedPendingUndelegations, totalRemovedAmount).
               contract stripPendingUndelegationsForValidator(@pendingUndelegations, @validatorPk, returnCh) = {
                 new stripOne in {
-                  @ListOps!("fold", pendingUndelegations.toList(), ({}, 0), *stripOne, *returnCh) |
+                  @ListOps!("fold", pendingUndelegations.toList(), ({}, 0n), *stripOne, *returnCh) |
                   contract stripOne(@(delegatorPk, validatorMap), @(accPending, accAmount), resultCh) = {
                     if (validatorMap.contains(validatorPk)) {
                       match validatorMap.get(validatorPk) {
@@ -394,9 +394,9 @@ in {
                           match validatorMap.delete(validatorPk) {
                             updatedValidatorMap => {
                               if (updatedValidatorMap.size() == 0) {
-                                resultCh!((accPending.delete(delegatorPk), accAmount + pendingAmount))
+                                resultCh!((accPending.delete(delegatorPk), accAmount + pendingAmount.toBigInt()))
                               } else {
-                                resultCh!((accPending.set(delegatorPk, updatedValidatorMap), accAmount + pendingAmount))
+                                resultCh!((accPending.set(delegatorPk, updatedValidatorMap), accAmount + pendingAmount.toBigInt()))
                               }
                             }
                           }
@@ -469,7 +469,7 @@ in {
                 new computeOneValidator in {
                   @ListOps!("fold", currentRewards.toList(), {}, *computeOneValidator, *returnCh) |
                   contract computeOneValidator(@(validatorPk, validatorReward), @acc, resultCh) = {
-                    if (validatorReward <= 0) {
+                    if (validatorReward <= 0n) {
                       resultCh!(acc)
                     } else {
                       match state.get("allBonds").getOrElse(validatorPk, 0) + state.get("delegatedTotals").getOrElse(validatorPk, 0) {
@@ -485,9 +485,9 @@ in {
                                     if (delegatedAmount <= 0) {
                                       delegatorResultCh!(delegatorAcc)
                                     } else {
-                                      match validatorReward * delegatedAmount / effectiveBond {
+                                      match validatorReward * delegatedAmount.toBigInt() / effectiveBond.toBigInt() {
                                         rewardDelta => {
-                                          if (rewardDelta > 0) {
+                                          if (rewardDelta > 0n) {
                                             delegatorResultCh!(
                                               delegatorAcc.set(
                                                 delegatorPk,
@@ -495,7 +495,7 @@ in {
                                                   .getOrElse(delegatorPk, {})
                                                   .set(
                                                     validatorPk,
-                                                    delegatorAcc.getOrElse(delegatorPk, {}).getOrElse(validatorPk, 0) + rewardDelta
+                                                    delegatorAcc.getOrElse(delegatorPk, {}).getOrElse(validatorPk, 0n) + rewardDelta
                                                   )
                                               )
                                             )
@@ -577,7 +577,7 @@ in {
                             match selfBond + state.get("delegatedTotals").getOrElse(pk, 0) {
                               effectiveBond => {
                                 if (effectiveBond > 0) {
-                                  outCh!(acc.set(pk, acc.getOrElse(pk, 0) + reward * selfBond / effectiveBond))
+                                  outCh!(acc.set(pk, acc.getOrElse(pk, 0n) + reward * selfBond.toBigInt() / effectiveBond.toBigInt()))
                                 } else {
                                   outCh!(acc)
                                 }
@@ -626,12 +626,12 @@ in {
                     @ListOps!("fold", state.get("delegatorRewards").toList(), {}, *flattenOneDelegator, *returnCh) |
                     contract flattenOneDelegator(@(delegatorPk, validatorRewards), @acc, resultCh) = {
                       new totalCh in {
-                        @ListOps!("fold", validatorRewards.toList(), 0, *sumOneValidator, *totalCh) |
+                        @ListOps!("fold", validatorRewards.toList(), 0n, *sumOneValidator, *totalCh) |
                         contract sumOneValidator(@(_, rewardAmount), @innerAcc, innerResultCh) = {
                           innerResultCh!(innerAcc + rewardAmount)
                         } |
                         for (@total <- totalCh) {
-                          if (total > 0) {
+                          if (total > 0n) {
                             resultCh!(acc.set(delegatorPk, total))
                           } else {
                             resultCh!(acc)
@@ -770,7 +770,9 @@ in {
                   getUser!(deployerId, *userCh) |
                   for (@state, resultCh <- processCh &
                        @delegatorPk      <- userCh) {
-                    if (amount <= 0) {
+                    if (not (amount matches Int)) {
+                      resultCh!(state, (false, "Delegation amount must be an Int."))
+                    } else if (amount <= 0) {
                       resultCh!(state, (false, "Delegation amount must be positive."))
                     } else if (amount < $$minimumBond$$) {
                       resultCh!(state, (false, "Delegation is less than minimum."))
@@ -870,7 +872,9 @@ in {
                   for (@state, resultCh <- processCh &
                        @delegatorPk      <- userCh &
                        @blockNumber, _, _ <- blockDataCh) {
-                    if (amount <= 0) {
+                    if (not (amount matches Int)) {
+                      resultCh!(state, (false, "Undelegation amount must be an Int."))
+                    } else if (amount <= 0) {
                       resultCh!(state, (false, "Undelegation amount must be positive."))
                     } else if (state.get("pendingWithdrawers").contains(validatorPk)) {
                       resultCh!(state, (false, "Validator is pending withdrawal."))
@@ -1017,12 +1021,12 @@ in {
                   for (@state, resultCh <- processCh &
                        @delegatorPk      <- userCh) {
                     new rewardAmountCh in {
-                      @ListOps!("fold", state.get("delegatorRewards").getOrElse(delegatorPk, {}).toList(), 0, *sumValidatorReward, *rewardAmountCh) |
+                      @ListOps!("fold", state.get("delegatorRewards").getOrElse(delegatorPk, {}).toList(), 0n, *sumValidatorReward, *rewardAmountCh) |
                       contract sumValidatorReward(@(_, validatorReward), @acc, resultCh) = {
                         resultCh!(acc + validatorReward)
                       } |
                       for (@rewardAmount <- rewardAmountCh) {
-                        if (rewardAmount <= 0) {
+                        if (rewardAmount <= 0n) {
                           resultCh!(state, (false, "No delegator rewards available."))
                         } else {
                           vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
@@ -1185,7 +1189,7 @@ in {
                                            @(updatedPendingUndelegations, slashedPending) <- strippedPendingCh) {
                                         match state.get("withdrawers").getOrElse(validator, (0, 0)) {
                                           (withdrawingBond, _) => {
-                                            if (valBond + withdrawingBond + valDelegated + slashedPending <= 0) {
+                                            if (valBond.toBigInt() + withdrawingBond.toBigInt() + valDelegated.toBigInt() + slashedPending <= 0n) {
                                               stateUpdateCh!({
                                                 "allBonds"        : state.get("allBonds").delete(validator),
                                                 "delegations"     : cleanedDelegations,
@@ -1206,7 +1210,7 @@ in {
                                                 @posVault!(
                                                   "transfer",
                                                   coopMultiVaultAddr,
-                                                  valBond + withdrawingBond + valDelegated + slashedPending,
+                                                  valBond.toBigInt() + withdrawingBond.toBigInt() + valDelegated.toBigInt() + slashedPending,
                                                   posAuthKey,
                                                   *transferDoneCh
                                                 ) |
@@ -1333,7 +1337,7 @@ in {
                                                       .get("committedRewards")
                                                       .set(
                                                         validatorPk,
-                                                        updatedState.get("committedRewards").getOrElse(validatorPk, 0) + validatorReward * selfBond / effectiveBond
+                                                        updatedState.get("committedRewards").getOrElse(validatorPk, 0n) + validatorReward * selfBond.toBigInt() / effectiveBond.toBigInt()
                                                       )
                                                   )
                                                 )
@@ -1353,8 +1357,8 @@ in {
                                         new accumulateValidatorShare, updatedValidatorRewardsCh in {
                                           @ListOps!("fold", validatorRewards.toList(), accState.get("delegatorRewards").getOrElse(delegatorPk, {}), *accumulateValidatorShare, *updatedValidatorRewardsCh) |
                                           contract accumulateValidatorShare(@(validatorPk, rewardDelta), @accValidatorRewards, validatorResultCh) = {
-                                            if (rewardDelta > 0) {
-                                              validatorResultCh!(accValidatorRewards.set(validatorPk, accValidatorRewards.getOrElse(validatorPk, 0) + rewardDelta))
+                                            if (rewardDelta > 0n) {
+                                              validatorResultCh!(accValidatorRewards.set(validatorPk, accValidatorRewards.getOrElse(validatorPk, 0n) + rewardDelta))
                                             } else {
                                               validatorResultCh!(accValidatorRewards)
                                             }

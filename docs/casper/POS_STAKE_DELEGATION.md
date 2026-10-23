@@ -30,9 +30,9 @@ PoS state now includes:
   - Reverse index used to bound and localize validator delegation operations.
 - `delegatedTotals : Map[ValidatorPk, Int]`
   - Aggregated delegated stake per validator.
-- `delegatorRewards : Map[DelegatorPk, Map[ValidatorPk, Int]]`
+- `delegatorRewards : Map[DelegatorPk, Map[ValidatorPk, BigInt]]`
   - Accrued rewards claimable by delegators, bucketed by validator internally.
-  - `getDelegatorRewards` returns the legacy flattened `Map[DelegatorPk, Int]` view.
+  - `getDelegatorRewards` returns the flattened `Map[DelegatorPk, BigInt]` view.
 - `pendingUndelegations : Map[DelegatorPk, Map[ValidatorPk, (Int, Int)]]`
   - Pending undelegation principal by delegator/validator as `(amount, unlockBlock)`.
   - Unlocking principal is excluded from future effective stake, but remains slashable escrow until `completeUndelegate`.
@@ -44,6 +44,11 @@ Effective stake is computed as:
 Slashing deletes the validator from `allBonds`, so slashed validators do not leave permanent zero-bond entries. `computeEffectiveBonds` also ignores stale `delegatedTotals` entries for validators missing from positive `allBonds`.
 
 ## Public Contract API
+
+Stake amounts remain `Int`. The `bond`, `delegate`, and `undelegate` methods reject other numeric types.
+Vault balances and accrued rewards use `BigInt`.
+The REST endpoints `/api/delegations` and `/api/delegations/{pubkey}` return `delegatorRewards` values and `claimableRewards` as decimal strings.
+This format preserves reward amounts above the signed 64-bit range.
 
 ### Existing method with changed semantics
 
@@ -245,7 +250,7 @@ new ret, PoSCh, rl(\`rho:registry:lookup\`), bondsCh, effBondsCh, delCh, totalsC
         e.getOrElse("${validatorPkHex}".hexToBytes(), 0),
         d.getOrElse("${delegatorPkHex}".hexToBytes(), {}).getOrElse("${validatorPkHex}".hexToBytes(), 0),
         t.getOrElse("${validatorPkHex}".hexToBytes(), 0),
-        r.getOrElse("${delegatorPkHex}".hexToBytes(), 0),
+        r.getOrElse("${delegatorPkHex}".hexToBytes(), 0n),
         p.getOrElse("${delegatorPkHex}".hexToBytes(), {}).getOrElse("${validatorPkHex}".hexToBytes(), Nil)
       ))
     }
@@ -269,12 +274,14 @@ Interpretation in wallet UI:
 Map these contract errors to stable SDK/user-facing codes:
 
 - `Delegation amount must be positive.`
+- `Delegation amount must be an Int.`
 - `Delegation is less than minimum.`
 - `Validator is not bonded.`
 - `Validator has no active bond.`
 - `Validator is pending withdrawal.`
 - `Delegated total mismatch.`
 - `Undelegation amount must be positive.`
+- `Undelegation amount must be an Int.`
 - `Undelegation amount exceeds delegated stake.`
 - `Pending undelegation already exists for validator.`
 - `No pending undelegation for validator.`

@@ -48,12 +48,17 @@ const POS_SPEC_SHARDS: &[PosSpecShard] = &[
         ],
     },
     PosSpecShard {
+        name: "bigint-rewards",
+        tests: &["delegator rewards above Int range can be claimed"],
+    },
+    PosSpecShard {
         name: "bond-validation-and-random",
         tests: &[
             "bonding fails if deposit fails",
             "bonding fails if already bonded",
             "bonding fails if bond is too small",
             "bonding fails if bond is not positive",
+            "bonding fails if bond is not an Int",
             "bonding fails if bond is too large",
             "commited random matches its image",
         ],
@@ -90,6 +95,7 @@ const POS_SPEC_ALL_TESTS: &[&str] = &[
     "delegation success",
     "undelegation success",
     "delegator rewards can be claimed",
+    "delegator rewards above Int range can be claimed",
     "withdraw converts active delegations to pending undelegations",
     "withdraw succeeds",
     "validator is paid after withdraw",
@@ -100,6 +106,7 @@ const POS_SPEC_ALL_TESTS: &[&str] = &[
     "bonding fails if already bonded",
     "bonding fails if bond is too small",
     "bonding fails if bond is not positive",
+    "bonding fails if bond is not an Int",
     "bonding fails if bond is too large",
     "payment is not distributed to inactive validators",
     "commited random matches its image",
@@ -153,7 +160,14 @@ fn test_vaults() -> Vec<Vault> {
         .into_iter()
         .map(|token| token.repeat(65)),
     )
-    .map(|pk| prepare_vault((&pk, 10000)))
+    .map(|pk| {
+        let balance = if pk == "de".repeat(65) {
+            u64::MAX
+        } else {
+            10_000
+        };
+        prepare_vault((&pk, balance))
+    })
     .collect()
 }
 
