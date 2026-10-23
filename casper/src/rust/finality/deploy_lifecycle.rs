@@ -393,6 +393,9 @@ impl DeployLifecycle {
         for rd in &block.body.rejected_deploys {
             due.insert(rd.sig.clone());
         }
+        for sig in dag.take_dropped_lifecycle_sigs() {
+            due.insert(Bytes::from(sig));
+        }
         let floor_height = schedule
             .max_floor
             .as_ref()
@@ -415,16 +418,23 @@ impl DeployLifecycle {
         let due_count = due.len();
         let evaluate_start = std::time::Instant::now();
         let mut terminalized: Vec<Bytes> = Vec::new();
-        for sig in due {
-            evaluate(
+        for (index, sig) in due.iter().enumerate() {
+            if let Err(error) = evaluate(
                 &mut schedule,
                 dag,
                 block_store,
-                &sig,
+                sig,
                 deploy_lifespan,
                 citability_horizon,
                 &mut terminalized,
-            )?;
+            ) {
+                schedule
+                    .floor_thresholds
+                    .entry(0)
+                    .or_default()
+                    .extend(due[index..].iter().cloned());
+                return Err(error);
+            }
         }
         let evaluate_ms = evaluate_start.elapsed().as_millis();
         let total_ms = observe_start.elapsed().as_millis();
@@ -473,6 +483,23 @@ fn evaluate(
     let Some(valid_after) = row.valid_after else {
         return Ok(());
     };
+
+    if row.events.is_empty() {
+        let Some(bound) = citability_horizon else {
+            return Ok(());
+        };
+        let decide_at = valid_after
+            .saturating_add(deploy_lifespan)
+            .saturating_add(bound);
+        if floor_height <= decide_at {
+            schedule
+                .floor_thresholds
+                .entry(decide_at.saturating_add(1))
+                .or_default()
+                .insert(sig.clone());
+            return Ok(());
+        }
+    }
 
     // FINALIZED AT COVERAGE. Membership at the floor is monotone (a
     // floor-covered effect is in every future merge base), so the first
@@ -703,6 +730,128 @@ mod tests {
         KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store")
+    }
+
+    async fn dropped_deploy_verdict(
+        carry_at: Option<i64>,
+        restart: bool,
+        horizon: Option<i64>,
+    ) -> (Vec<Bytes>, Vec<Bytes>, Option<TerminalState>) {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        let (sig, processed) = processed(1, false);
+        let genesis = block_at(0, Vec::new(), 0);
+        block_store.put_block_message(&genesis).unwrap();
+        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let mut register = DeployLifecycle::default();
+        let dag = storage.get_representation().unwrap();
+        register
+            .observe_block(&dag, &block_store, &genesis, 2, horizon)
+            .await
+            .unwrap();
+        dag.open_dropped_deploy_lifecycle_row(&sig, processed.deploy.data.valid_after_block_number)
+            .unwrap();
+
+        let mut chain = vec![genesis];
+        for height in 1..=6 {
+            let deploys = if carry_at == Some(height) {
+                vec![processed.clone()]
+            } else {
+                Vec::new()
+            };
+            let block = get_random_block(
+                Some(height),
+                Some(height as i32),
+                None,
+                None,
+                None,
+                None,
+                Some(height),
+                Some(vec![chain.last().unwrap().block_hash.clone()]),
+                Some(Vec::new()),
+                Some(deploys),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some("test-shard".to_string()),
+                None,
+            );
+            block_store.put_block_message(&block).unwrap();
+            storage.insert(&block, InsertMode::Normal).unwrap();
+            chain.push(block);
+        }
+        storage
+            .record_directly_finalized(chain[3].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        let before_bound = register
+            .observe_block(&dag, &block_store, &chain[4], 2, horizon)
+            .await
+            .unwrap();
+        if restart {
+            register = DeployLifecycle::default();
+        }
+        storage
+            .record_directly_finalized(chain[4].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        assert!(register
+            .observe_block(&dag, &block_store, &chain[5], 2, horizon)
+            .await
+            .unwrap()
+            .is_empty());
+        storage
+            .record_directly_finalized(chain[5].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        let past_bound = register
+            .observe_block(&dag, &block_store, &chain[6], 2, horizon)
+            .await
+            .unwrap();
+        let verdict = dag
+            .deploy_terminal(&sig)
+            .unwrap()
+            .map(|record| record.state);
+        (before_bound, past_bound, verdict)
+    }
+
+    #[tokio::test]
+    async fn a_warm_register_expires_a_drop_only_past_the_bound() {
+        let (before, after, verdict) = dropped_deploy_verdict(None, false, Some(2)).await;
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 1);
+        assert_eq!(verdict, Some(TerminalState::Expired));
+    }
+
+    #[tokio::test]
+    async fn a_restarted_register_recovers_a_drop() {
+        let (before, after, verdict) = dropped_deploy_verdict(None, true, Some(2)).await;
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 1);
+        assert_eq!(verdict, Some(TerminalState::Expired));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_deploy_in_another_block_finalizes() {
+        let (before, after, verdict) = dropped_deploy_verdict(Some(2), false, Some(2)).await;
+        assert_eq!(before.len(), 1);
+        assert!(after.is_empty());
+        assert_eq!(verdict, Some(TerminalState::Finalized));
+    }
+
+    #[tokio::test]
+    async fn disabled_depth_checks_preserve_pending_for_a_drop() {
+        let (before, after, verdict) = dropped_deploy_verdict(None, false, None).await;
+        assert!(before.is_empty());
+        assert!(after.is_empty());
+        assert_eq!(verdict, None);
     }
 
     /// The register's clock is the node's ADOPTED LFB, never an admitted

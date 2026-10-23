@@ -85,6 +85,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
+        deploy_admission: node.casper.deploy_admission.clone(),
         rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
         deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),

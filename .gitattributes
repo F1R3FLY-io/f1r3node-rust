@@ -163,4 +163,5 @@ block-storage/src/rust/dag/buffer_dag_transition.rs cbc=mandatory cbc-weight=hig
 casper/src/rust/engine/multi_parent_casper/block_admission.rs cbc=mandatory cbc-weight=high
 node/src/rust/instances/release_queue.rs cbc=mandatory cbc-weight=medium
 casper/src/rust/casper.rs cbc=mandatory cbc-weight=medium
+casper/src/rust/deploy_admission.rs cbc=mandatory cbc-weight=high
 casper/src/rust/engine/block_retriever.rs cbc=mandatory cbc-weight=medium

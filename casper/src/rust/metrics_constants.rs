@@ -524,3 +524,8 @@ pub const PROPOSER_EFFECT_TIME_METRIC: &str = "proposer.effect.time";
 // inside it when the adopted floor advances.
 pub const DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC: &str = "deploy-lifecycle.observe.time";
 pub const DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC: &str = "deploy-lifecycle.carrier-prune.time";
+pub const DEPLOY_ADMISSION_ACCEPTED_METRIC: &str = "deploy-admission.accepted";
+pub const DEPLOY_ADMISSION_REFUSED_METRIC: &str = "deploy-admission.refused";
+pub const DEPLOY_ADMISSION_PENDING_AHEAD_METRIC: &str = "deploy-admission.pending-ahead";
+pub const DEPLOY_ADMISSION_CAPACITY_METRIC: &str = "deploy-admission.capacity";
+pub const DEPLOY_ADMISSION_INCLUDED_METRIC: &str = "deploy-admission.first-inclusions";

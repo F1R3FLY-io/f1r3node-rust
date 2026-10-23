@@ -16,6 +16,287 @@ use rspace_plus_plus::rspace::history::Either;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
+fn queued_deploy(
+    timestamp: i64,
+    shard: &str,
+) -> crypto::rust::signatures::signed::Signed<
+    models::rust::casper::protocol::casper_message::DeployData,
+> {
+    construct_deploy::source_deploy(
+        format!("@{}!({})", timestamp, timestamp),
+        timestamp,
+        None,
+        None,
+        None,
+        None,
+        Some(shard.to_string()),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn admission_refuses_position_twenty_five_without_a_proposal_and_recovers_after_drain() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let mut admitted = Vec::new();
+    for timestamp in 0..24 {
+        let deploy = queued_deploy(timestamp, &genesis.genesis_block.shard_id);
+        assert!(matches!(
+            node.casper.deploy(deploy.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        admitted.push(deploy);
+    }
+    let refused = queued_deploy(100, &genesis.genesis_block.shard_id);
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_calls = calls.clone();
+    let trigger: std::sync::Arc<ProposeFunction> = std::sync::Arc::new(move |_, _| {
+        observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(ProposerResult::Empty) })
+    });
+    let error = BlockAPI::deploy(
+        &node.engine_cell,
+        refused.clone(),
+        &Some(trigger),
+        false,
+        &genesis.genesis_block.shard_id,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<DeployError>(),
+        Some(DeployError::PoolBusy {
+            pending_ahead: 24,
+            capacity: 24
+        })
+    ));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!node
+        .deploy_storage
+        .lock()
+        .contains_sig(&refused.sig)
+        .unwrap());
+    node.deploy_storage
+        .lock()
+        .remove(vec![admitted.remove(0)])
+        .unwrap();
+    assert!(matches!(
+        node.casper.deploy(refused).unwrap(),
+        Either::Right(_)
+    ));
+}
+
+#[tokio::test]
+async fn parallel_reservations_preserve_the_last_position_and_duplicate_priority() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    for timestamp in 0..23 {
+        let deploy = queued_deploy(timestamp, &genesis.genesis_block.shard_id);
+        assert!(matches!(
+            node.casper.deploy(deploy).unwrap(),
+            Either::Right(_)
+        ));
+    }
+    let deploy = queued_deploy(100, &genesis.genesis_block.shard_id);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
+    let handles: Vec<_> = (0..32)
+        .map(|_| {
+            let casper = node.casper.clone();
+            let deploy = deploy.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                casper.deploy(deploy).unwrap()
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Either::Right(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Either::Left(DeployError::DuplicateDeploy(_))))
+            .count(),
+        31
+    );
+    let next = queued_deploy(101, &genesis.genesis_block.shard_id);
+    assert!(matches!(
+        node.casper.deploy(next).unwrap(),
+        Either::Left(DeployError::PoolBusy { .. })
+    ));
+}
+
+#[tokio::test]
+async fn included_pool_copies_do_not_block_fresh_admission() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let mut included = Vec::new();
+    for timestamp in 0..8 {
+        let deploy = queued_deploy(timestamp, &genesis.genesis_block.shard_id);
+        assert!(matches!(
+            node.casper.deploy(deploy.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        included.push(deploy);
+    }
+    node.add_block_from_deploys(&included).await.unwrap();
+    for timestamp in 100..124 {
+        let deploy = queued_deploy(timestamp, &genesis.genesis_block.shard_id);
+        assert!(matches!(
+            node.casper.deploy(deploy).unwrap(),
+            Either::Right(_)
+        ));
+    }
+    let deploy = queued_deploy(124, &genesis.genesis_block.shard_id);
+    assert!(matches!(
+        node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::PoolBusy {
+            pending_ahead: 24,
+            capacity: 24
+        })
+    ));
+}
+
+#[tokio::test]
+async fn expired_terminal_and_buffered_pool_copies_do_not_consume_admission_capacity() {
+    use block_storage::rust::dag::deploy_lifecycle_types::{TerminalRecord, TerminalState};
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signed::Signed;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let dag = node.block_dag_storage.get_representation().unwrap();
+    let mut stored = Vec::new();
+    let mut buffered = Vec::new();
+    for index in 0..24 {
+        let mut expired = queued_deploy(index, &genesis.genesis_block.shard_id).data;
+        expired.expiration_timestamp = Some(1);
+        stored.push(
+            Signed::create(
+                expired,
+                Box::new(Secp256k1),
+                construct_deploy::DEFAULT_SEC.clone(),
+            )
+            .unwrap(),
+        );
+        let terminal = queued_deploy(index + 100, &genesis.genesis_block.shard_id);
+        dag.put_deploy_terminal_if_absent(&terminal.sig, TerminalRecord {
+            state: TerminalState::Expired,
+            rejection_count: 0,
+            latest_height: 0,
+            latest_block_hash: Vec::new(),
+        })
+        .unwrap();
+        stored.push(terminal);
+        let retry = queued_deploy(index + 200, &genesis.genesis_block.shard_id);
+        buffered.push(retry.clone());
+        stored.push(retry);
+    }
+    node.deploy_storage.lock().add(stored).unwrap();
+    node.casper
+        .rejected_deploy_buffer
+        .lock()
+        .unwrap()
+        .add(buffered)
+        .unwrap();
+    let fresh = queued_deploy(1000, &genesis.genesis_block.shard_id);
+    let result = node.casper.deploy(fresh).unwrap();
+    assert!(matches!(result, Either::Right(_)), "{result:?}");
+}
+
+#[tokio::test]
+async fn future_entries_respect_selection_order_without_blocking_ready_work() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    for timestamp in 0..25 {
+        let deploy = construct_deploy::source_deploy(
+            "Nil".to_string(),
+            timestamp,
+            None,
+            None,
+            None,
+            Some(1000),
+            Some(genesis.genesis_block.shard_id.clone()),
+        )
+        .unwrap();
+        let result = node.casper.deploy(deploy).unwrap();
+        if timestamp < 24 {
+            assert!(matches!(result, Either::Right(_)));
+        } else {
+            assert!(matches!(
+                result,
+                Either::Left(DeployError::PoolBusy {
+                    pending_ahead: 24,
+                    capacity: 24
+                })
+            ));
+        }
+    }
+    assert!(matches!(
+        node.casper
+            .deploy(queued_deploy(100, &genesis.genesis_block.shard_id))
+            .unwrap(),
+        Either::Right(_)
+    ));
+}
+
+#[tokio::test]
+async fn peer_blocks_do_not_reduce_local_admission_capacity() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let peer_deploy = queued_deploy(0, &genesis.genesis_block.shard_id);
+    let (peer, local) = nodes.split_at_mut(1);
+    peer[0]
+        .propagate_block(&[peer_deploy], &mut [&mut local[0]])
+        .await
+        .unwrap();
+    for timestamp in 100..124 {
+        assert!(matches!(
+            local[0]
+                .casper
+                .deploy(queued_deploy(timestamp, &genesis.genesis_block.shard_id))
+                .unwrap(),
+            Either::Right(_)
+        ));
+    }
+    assert!(matches!(
+        local[0]
+            .casper
+            .deploy(queued_deploy(124, &genesis.genesis_block.shard_id))
+            .unwrap(),
+        Either::Left(DeployError::PoolBusy { capacity: 24, .. })
+    ));
+}
+
 #[tokio::test]
 async fn validator_bond_check_uses_selected_parent_metadata() {
     let genesis = GenesisBuilder::new()

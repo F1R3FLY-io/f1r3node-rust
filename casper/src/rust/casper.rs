@@ -55,6 +55,10 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    PoolBusy {
+        pending_ahead: usize,
+        capacity: usize,
+    },
 }
 
 impl DeployError {
@@ -82,6 +86,12 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::PoolBusy { pending_ahead, capacity } => write!(
+                f,
+                "deploy_pool_busy: queue position is at least {} and exceeds the three-block capacity {}. Retry later or submit to another validator.",
+                pending_ahead.saturating_add(1),
+                capacity
+            ),
         }
     }
 }
@@ -392,6 +402,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
+        deploy_admission: Arc::new(crate::rust::deploy_admission::DeployAdmission::default()),
         rejected_deploy_buffer,
         deploy_lifecycle: Arc::new(
             crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
