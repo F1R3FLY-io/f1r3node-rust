@@ -3579,6 +3579,7 @@ pub async fn create_with_progress(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves,
     } = checkpoint_data;
 
     let block_bonds = {
@@ -3633,6 +3634,7 @@ pub async fn create_with_progress(
         merge_base,
         shard_id,
         casper_version,
+        &block_hash_leaves,
     );
     let package_ms = package_started.elapsed().as_millis();
     metrics::histogram!(
@@ -3642,9 +3644,12 @@ pub async fn create_with_progress(
     .record(package_started.elapsed().as_secs_f64());
 
     tracing::event!(tracing::Level::DEBUG, mark = "block-created");
-    // Sign the block
+    // Sign the block.  Reuse the leaves computed during replay — a
+    // 32-deploy block skips ~200 µs of leaf re-hashing on the propose
+    // critical path.
     let sign_started = std::time::Instant::now();
-    let signed_block = validator_identity.sign_block(&unsigned_block);
+    let signed_block =
+        validator_identity.sign_block_with_leaves(&unsigned_block, &block_hash_leaves);
     let sign_ms = sign_started.elapsed().as_millis();
     let signed_block_bytes = signed_block.to_proto().encoded_len();
     metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -3738,6 +3743,7 @@ fn package_block(
     merge_base: Option<BlockHash>,
     shard_id: String,
     version: i64,
+    block_hash_leaves: &[[u8; 32]],
 ) -> BlockMessage {
     let state = F1r3flyState {
         pre_state_hash,
@@ -3765,12 +3771,13 @@ fn package_block(
         extra_bytes: Bytes::new(),
     };
 
-    proto_util::unsigned_block_proto(
+    proto_util::unsigned_block_proto_with_leaves(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
+        block_hash_leaves,
     )
 }
 
@@ -3827,6 +3834,7 @@ mod tests {
             None,
             "test".to_string(),
             1,
+            &[],
         );
         block.sender = sender;
         block.block_hash = hash;

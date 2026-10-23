@@ -412,7 +412,7 @@ async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
             let deploys = three_budget_probe_deploys();
             let time_stamp = deploys[0].data.time_stamp;
 
-            let (_state, processed, _sys, _bonds) = runtime_manager
+            let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
                 .compute_state_with_bonds(
                     &gen_post_state,
                     deploys,
@@ -450,7 +450,7 @@ async fn an_ample_play_budget_carries_the_whole_pool() {
             let deploys = three_budget_probe_deploys();
             let time_stamp = deploys[0].data.time_stamp;
 
-            let (_state, processed, _sys, _bonds) = runtime_manager
+            let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
                 .compute_state_with_bonds(
                     &gen_post_state,
                     deploys,
