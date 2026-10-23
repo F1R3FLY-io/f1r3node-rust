@@ -101,7 +101,7 @@ convergence-test envelope, so a green gate would miss them):
 |---|---|---|---|
 | **B1** | Med | `proto_util.rs:168,176` `.expect(...)` | Panics on the fork-choice BFS when a traversed block or its main parent is momentarily absent (sync/prune window). |
 | **B2** | Low | `estimator.rs:120-127` `take(.. as usize)`; `casper.rs:56` | The `-1` config "unlimited" sentinel reaches the estimator and only worked via `-1 as usize` wrap; two sentinels (`-1`, `i32::MAX`) silently conflated. |
-| **B3** | Low | `estimator.rs:267-268` (now `checked_add`; was `+=`) | Unchecked score accumulation; wraps only above `i64::MAX` (a supply-cap violation). |
+| **B3** | Low | `Estimator::build_scores_map` now adds BigInt weights | The previous fixed-width sum could overflow above `i64::MAX`. |
 | **B4** | — | `estimator.rs:144-150` | Already hardened (P2-8 typed `Err` on empty tips); modeled, not re-fixed. |
 
 ---
@@ -117,8 +117,8 @@ convergence-test envelope, so a green gate would miss them):
   "unlimited" sentinels explicitly (`self.max_number_of_parents < 0`, and `== i32::MAX`)
   → take all; a genuine positive cap truncates. Behaviour-preserving; removes the
   two's-complement reliance.
-- **B3 — checked accumulation.** `build_scores_map` uses `checked_add` → typed `Err` on
-  overflow (only reachable on a supply-cap violation).
+- **B3 — exact accumulation.** `build_scores_map` adds BigInt weights without fixed-width overflow.
+  The regression `b3_score_above_int64_preserves_the_exact_sum` checks the exact sum above `i64::MAX`.
 
 Verified: `cargo check -p casper --all-targets` clean; fork-choice bisim (5) + uc_16
 slashed-parent + `three_writers_converge_under_load` all green (B2/B3 behaviour-
@@ -135,14 +135,14 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-DET** | same `(DAG, latest_messages)` ⟹ identical `(tips, lca, main_parent)` (S1) | Rocq `MainTheorem.fork_choice_determinism_correct`; TLA⁺ `ForkChoice.Inv_Deterministic`; Rust `fork_choice_determinism_correct` (example: the flipping DAG returns `[b8, b7]` for every latest-message map order) + `fork_choice_determinism_over_subsets` (proptest: identical tips across rebuilds of any latest-message sub-relation) (`prop_estimator_determinism.rs`) |
 | **T-TOTAL** | tie-break is a total order on distinct hashes ⟹ unique argmax | Rocq `TieBreak.sort_total_order`, `output_indep_of_input_perm`; Z3 `tiebreak_total_order.py`; Rust `tie_break_is_total_shuffle_invariant_on_distinct` |
 | **T-SCORE** | score accumulation additive/order-independent | Rocq `Score.score_perm_invariant`, `score_eq_support_sum`; Z3 `score_supply_cap_bitvec.py`; Sage `forkchoice_algebra.sage`; Rust `score_perm_invariant` (proptest: permuting the latest-message order never changes the tips — the score monoid's only observable consequence, `prop_estimator_determinism.rs`) |
-| **weight purity** | weights are block-structural `i64` (no `f32`, no node-local view) | Rocq `Score.weight_is_pure` + `GuardBridge.weight_block_structural` |
+| **weight purity** | weights are block-structural `BigInt` values (no floating point or node-local view) | Rocq `Score.weight_is_pure` + `GuardBridge.weight_block_structural` |
 | **T-FILTER** | slashed/invalid latest messages add zero weight (S2) | Rocq `Filter.invalid_excluded` (cites slashing `ForkChoice.v`); Rust `filter_t10_invalid_latest_message_excluded` (the real `Estimator` + a DAG-flagged invalid latest message: excluded ⇒ tips identical to omitting it, `prop_estimator_determinism.rs`) |
 | **T-GHOST** | the head lands in the heaviest subtree at every fork | Rust **proptests** `ghost_head_lands_in_the_heaviest_subtree_branch` (`heaviest_subtree_descent.rs`: DEPTH-2 weighted forks — the geometry where tip-ranking and descent diverge) and `ghost_ranked_tips_are_heaviest_subtree_argmax` (`prop_ghost_argmax.rs`: random weighted fork DAGs against an independent stake-sum oracle); directed regression `the_head_must_not_leave_a_majority_branch_for_a_hash_earlier_rival` (the ucc-i6 production divergence, run 32404488936). Rocq `Rank.rank_selects_heaviest` / `rank_head_is_argmax` model a descent but their correspondence claims cite the deleted implementation — re-derivation pending (§6.2). Wolfram `ghost_heaviest_subtree.wl` |
 | **T-TERM** | the descent terminates | Each step commits to a strictly higher-numbered child, bounded by DAG height (`estimator.rs:373-385`). Rocq `Rank.rank_terminates` (same caveat as T-GHOST); Wolfram (measure monotone) |
 | **T-LCA** | LCA is a common ancestor (modeled from the fold; termination proved); depth filter deterministic (S6) | Rocq `Lca.lca_is_common_ancestor` (+ `lcua_many_common_ancestor`, `reduce_converges`, `lca_is_lowest` — §6.1), `lca_depth_filter_deterministic`, `lca_empty_is_genesis`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic`; Rust proptests `reduce_converges`, `lca_is_common_ancestor`, `lcua_many_is_max`, `lca_single_and_genesis_boundary` (`prop_lca.rs`: the real `DagOperations::lowest_universal_common_ancestor_many` on random DAGs converges, is a common ancestor of every input, and is the lowest such on trees) |
 | **T-BOUND** | count/depth/`i32::MAX` truncations keep the head, never panic (S3/S4) | Rocq `Bound.head_preserved`, `take_never_drops_head`, `empty_tips_typed_err`; Rust `filter_deep_parents` tests |
 | **B1** | missing metadata ⟹ typed error, not panic (S4) | Rust `weight_from_validator_missing_parent_is_typed_err`; bridged by `GuardBridge.weight_block_structural` |
-| **B3** | score overflow ⟹ typed error, not wrap (S5) | Rust (`checked_add`); Z3 `score_supply_cap_bitvec.py` |
+| **B3** | exact sums above `i64::MAX` (S5) | Rust `b3_score_above_int64_preserves_the_exact_sum`; Rocq exact score model |
 | **T-MP** | the proposer's main parent is the GHOST head, except when the parent set collapses to a single deploy-free parent that DAG-covers every other (content-preserving; see §6.2) | Rust `main_parent_is_ghost_head_deterministic` (`prop_ghost_argmax.rs`: `tips[0]` is the heaviest branch, stable across every latest-message map order) + `parent_selection_prunes_dag_covered_parents` (`snapshot.rs` in-module tests). Both promotion stages the Rocq pipeline theorems modeled are deleted (§6.2) — `GuardBridge` re-derivation pending |
 | **T-VALID (reframed)** | honest proposer's parents pass `Validate::parents` (not a recompute) | Rocq `GuardBridge.honest_forkchoice_parents_validate`, derived against the real predicate — `parents` (`validate.rs:945`), which bound-checks count/depth/progress and never recomputes the estimator (§6) |
 | **T-WF (bridge)** | block validation ⟹ acyclic, height-monotone DAG (the premise the proofs derive) | Rocq `GuardBridge.validation_implies_wf_dag` |
@@ -234,7 +234,7 @@ gate's `[8/8]` Rust tier (each test carries its Rocq citation in a doc-comment):
   (`Lca.lca_is_common_ancestor`), and no common ancestor is higher (`Lca.lcua_many_is_max`, over
   single-parent trees per the `Lca.v` §7 `single_parent_spine` residual).
 - **`prop_bound`** — the B2/B3/B4 seams on `tips_with_latest_messages`: `usize`-cast sentinels +
-  positive caps (B2), typed `Err` on score overflow (B3) and empty ranked tips (B4), and `take`
+  positive caps (B2), exact BigInt sums (B3), typed `Err` on empty ranked tips (B4), and `take`
   never drops the head.
 - **Tie-break** — `shared` `list_ops::sort_by_with_decreasing_order` proptest
   (`TieBreak.sort_total_order`): permutation-invariant, output is a permutation of the input, and
@@ -392,7 +392,7 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 | Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
 | TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
 | Apalache (unbounded) | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`); non-vacuous (`TotalTieBreak=FALSE` ⇒ STEP CTI = the S1 fork). Horizon-free: holds on every reachable state at any trajectory length (C9). Fail-soft. |
-| Rust proptest | **C12** proposer-side `prop_filter_deep_parents` (4/4: `Estimator::filter_deep_parents` ⊨ `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)`) **+ receive-side** `Validate::parents` depth-horizon (accept within / reject beyond / buffer extends); `prop_estimator_determinism` (permutation-invariant tips + score-monoid + T-10 filter); `prop_ghost_argmax` (**T-GHOST** ranked tips = heaviest-subtree argmax on random weighted forks + **T-MP** main-parent `tips[0]` deterministic + heaviest); `prop_lca` (LUCA converges / common-ancestor / maximal); `prop_bound` (B2/B3/B4 sentinel/overflow/empty seams); tie-break `sort_by_with_decreasing_order` (perm-invariant + permutation + argmax-unique) — all pass |
+| Rust proptest | **C12** proposer-side `prop_filter_deep_parents` (4/4: `Estimator::filter_deep_parents` ⊨ `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)`) **+ receive-side** `Validate::parents` depth-horizon (accept within / reject beyond / buffer extends); `prop_estimator_determinism` (permutation-invariant tips + score-monoid + T-10 filter); `prop_ghost_argmax` (**T-GHOST** ranked tips = heaviest-subtree argmax on random weighted forks + **T-MP** main-parent `tips[0]` deterministic + heaviest); `prop_lca` (LUCA converges / common-ancestor / maximal); `prop_bound` (B2/B3/B4 sentinel/exact-sum/empty seams); tie-break `sort_by_with_decreasing_order` (perm-invariant + permutation + argmax-unique) — all pass |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
 | Wolfram | GHOST heaviest-subtree / termination / LCA-bound — via the licensed MCP evaluator |
@@ -445,7 +445,7 @@ fully coloured with an in-diagram legend.
 
 ### 8.5 Fork-choice evaluation flow + the hardened seams
 
-[![Diagram 5 — activity: collect → filter → LCA → build_scores (checked_add, B3) → rank → empty?→typed Err (B4) / else filter_deep + cast-safe parent cap (B2) → ForkChoice tips](./diagrams/05-activity-estimator-flow.svg)](./diagrams/05-activity-estimator-flow.svg)
+[![Diagram 5 — activity: collect → filter → LCA → build_scores (BigInt addition, B3) → rank → empty?→typed Err (B4) / else filter_deep + cast-safe parent cap (B2) → ForkChoice tips](./diagrams/05-activity-estimator-flow.svg)](./diagrams/05-activity-estimator-flow.svg)
 
 ### 8.6 `rank_forkchoices` termination
 

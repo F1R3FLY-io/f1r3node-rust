@@ -1,5 +1,11 @@
 # 02 · Glossary & Notation
 
+> **PR #54 proposal scope:** The verdict lists and formal taxonomy below describe historical behavior.
+> They do not prove the current Rust verdict set or the BigInt proposal.
+> Current production code permits slashing only for admissible or ignorable equivocation.
+> The proposal adds `InvalidDeployCost` as a non-slashable admission rejection.
+> The models do not include that verdict. Updating the historical taxonomy proofs remains separate work.
+
 This document defines every symbol, acronym, and term used in the
 remainder of the design document **before** it is used. If you encounter
 a term you do not recognize while reading later sections, return here.

@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::ToPrimitive;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -17,15 +20,18 @@ pub struct CliqueOracle;
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ExactOracleResult {
     pub decision: bool,
-    pub total_stake: Option<i64>,
-    pub agreeing_stake: Option<i64>,
-    pub clique_weight: Option<i64>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    pub total_stake: Option<BigInt>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    pub agreeing_stake: Option<BigInt>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    pub clique_weight: Option<BigInt>,
     pub early_return: Option<&'static str>,
 }
 
 type M = BlockHash; // type for message
 type V = Validator; // type for message creator/validator
-type WeightMap = HashMap<V, i64>; // stakes per message creator
+type WeightMap = HashMap<V, BigInt>; // stakes per message creator
 const COOPERATIVE_YIELD_CHECK_INTERVAL: usize = 8;
 const COOPERATIVE_YIELD_TIMESLICE_MS: u64 = 1;
 const MAX_SELF_JUSTIFICATION_CACHE_ENTRIES: usize = 10_000;
@@ -67,30 +73,22 @@ impl FtThreshold {
     }
 }
 
-/// Exact rational finalization test: θ = num/den.
-///
-/// `strict=false` ⇒ (2q−S)/S ≥ θ — every production decision site (the LFB
-/// is the floor of the live view, one clock); `strict=true` ⇒ > θ, retained
-/// in the API and its unit pins only. Cleared of denominators (S, den > 0), the test is
-/// `2·q·den ⋛ S·(den+num)`. `i128` so `2·q·den` and `S·(den+num)` (≤ ~2^84 for
-/// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
-/// stays exact.
-///
-/// A9 atomic activation: this exact DECISION replaces the imprecise `f32`
-/// comparison and activates ATOMICALLY with the unreleased branch — every
-/// validator runs the branch binary together, so there is no mixed-version
-/// window and no on-chain activation parameter is required.
-pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, strict: bool) -> bool {
-    // Domain (den > 0, s > 0, q ∈ [0, s], num ∈ [-den, den]) is discharged by
-    // the callers: den is the fixed ppm constant, the oracle short-circuits
-    // non-positive stake, q is a clique weight within total stake, and the
-    // on-chain ppm is range-gated typed at its single read choke point
-    // (`runtime.rs`). The comparison math is exact across [-den, den].
-    if (agreeing as i128) * 2 <= s as i128 {
-        return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
+pub fn ft_decides_exact(
+    agreeing: impl Into<BigInt>,
+    q: impl Into<BigInt>,
+    s: impl Into<BigInt>,
+    num: i64,
+    den: i64,
+    strict: bool,
+) -> bool {
+    let agreeing = agreeing.into();
+    let q = q.into();
+    let s = s.into();
+    if agreeing * 2 <= s {
+        return false;
     }
-    let lhs = 2i128 * q as i128 * den as i128;
-    let rhs = s as i128 * (den as i128 + num as i128);
+    let lhs = q * den * 2;
+    let rhs = s * (BigInt::from(den) + num);
     if strict {
         lhs > rhs
     } else {
@@ -428,7 +426,7 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         run_cache: &mut CliqueOracleRunCache,
         latest_messages: &BTreeMap<V, M>,
-    ) -> Result<i64, KvStoreError> {
+    ) -> Result<BigInt, KvStoreError> {
         let __compute_start = std::time::Instant::now();
         // Using tracing events for async - Span[F].traceI("compute-max-clique-weight") from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "compute-max-clique-weight-started");
@@ -601,14 +599,11 @@ impl CliqueOracle {
             (message_weight_map.len() + agreeing_weight_map.len()) as u64,
             0,
         )?;
-        let total_stake = message_weight_map.values().sum::<i64>() as f32;
-        assert!(
-            total_stake > 0.0,
-            "Long overflow when computing total stake"
-        );
-
-        // If less than 1/2+ of stake agrees on message - it can be orphaned
-        if (agreeing_weight_map.values().sum::<i64>() as f32) <= total_stake / 2.0 {
+        let total_stake = message_weight_map.values().sum::<BigInt>();
+        if total_stake <= BigInt::from(0) {
+            return Ok(MIN_FAULT_TOLERANCE);
+        }
+        if agreeing_weight_map.values().sum::<BigInt>() * 2 <= total_stake {
             Ok(MIN_FAULT_TOLERANCE)
         } else {
             let max_clique_weight = CliqueOracle::compute_max_clique_weight_metered(
@@ -619,11 +614,12 @@ impl CliqueOracle {
                 run_cache,
                 latest_messages,
             )
-            .await? as f32;
-
-            let result = (max_clique_weight * 2.0 - total_stake) / total_stake;
-
-            Ok(result)
+            .await?;
+            BigRational::new(max_clique_weight * 2 - &total_stake, total_stake)
+                .to_f32()
+                .ok_or_else(|| {
+                    KvStoreError::InvalidArgument("Invalid fault tolerance ratio".to_string())
+                })
         }
     }
 
@@ -702,7 +698,7 @@ impl CliqueOracle {
             meter.step(WorkKind::Oracle)?;
             meter.allocate(4, 256)?;
             if agree_metered(meter, validator, target_msg, dag, latest_messages).await? {
-                agreeing_map.insert(validator.clone(), *weight);
+                agreeing_map.insert(validator.clone(), weight.clone());
             }
         }
 
@@ -757,10 +753,10 @@ impl CliqueOracle {
             CliqueOracle::get_corresponding_weight_map_metered(meter, target_msg, dag).await?;
         meter.charge(WorkKind::Oracle, committee.len() as u64, 0)?;
         let full_weight_map = Self::participating_weight_map(committee, dag, latest_messages)?;
-        let total_stake = full_weight_map.values().sum::<i64>();
+        let total_stake = full_weight_map.values().sum::<BigInt>();
         // Zero (or negative) total stake cannot witness anything — mirrors the
         // ft_witnessed guard that returns MIN instead of asserting a positive total.
-        if total_stake <= 0 {
+        if total_stake <= BigInt::from(0) {
             return Ok(ExactOracleResult {
                 decision: false,
                 total_stake: Some(total_stake),
@@ -778,10 +774,10 @@ impl CliqueOracle {
         )
         .await?;
         meter.charge(WorkKind::Oracle, agreeing_weight_map.len() as u64, 0)?;
-        let agreeing = agreeing_weight_map.values().sum::<i64>();
+        let agreeing = agreeing_weight_map.values().sum::<BigInt>();
         // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized. Short-circuit BEFORE the expensive
         // clique search, exactly as compute_output_with_cache does.
-        if (agreeing as i128) * 2 <= total_stake as i128 {
+        if &agreeing * 2 <= total_stake {
             return Ok(ExactOracleResult {
                 decision: false,
                 total_stake: Some(total_stake),
@@ -801,9 +797,9 @@ impl CliqueOracle {
         )
         .await?;
         let decision = ft_decides_exact(
-            agreeing,
-            max_clique_weight,
-            total_stake,
+            agreeing.clone(),
+            max_clique_weight.clone(),
+            total_stake.clone(),
             ftt.num,
             ftt.den,
             strict,
@@ -826,9 +822,9 @@ impl CliqueOracle {
             tracing::debug!(
                 target: "f1r3.trace.oracle",
                 tgt = %hex::encode(&target_msg[..8.min(target_msg.len())]),
-                agreeing,
-                max_clique_weight,
-                total_stake,
+                agreeing = %agreeing,
+                max_clique_weight = %max_clique_weight,
+                total_stake = %total_stake,
                 decision,
                 snapshot = ?snapshot,
                 agreeing_validators = ?agreeing_validators,
@@ -869,7 +865,7 @@ impl CliqueOracle {
             // `compute_output` asserts a positive total; a block whose metadata
             // carries zero-stake bonds must yield MIN, not panic — this path
             // runs on arbitrary received blocks via floor derivation.
-            if full_weight_map.values().sum::<i64>() <= 0 {
+            if full_weight_map.values().sum::<BigInt>() <= BigInt::from(0) {
                 return Ok(MIN_FAULT_TOLERANCE);
             }
             // A latest message this node does not hold (a stale slot below an
@@ -913,8 +909,8 @@ impl CliqueOracle {
             tracing::debug!(
                 target: "f1r3fly.casper.safety.clique_oracle",
                 ft = result,
-                agreeing_weight = agreeing_weight_map.values().sum::<i64>(),
-                total_weight = full_weight_map.values().sum::<i64>(),
+                agreeing_weight = %agreeing_weight_map.values().sum::<BigInt>(),
+                total_weight = %full_weight_map.values().sum::<BigInt>(),
                 agreeing_n = agreeing_weight_map.len(),
                 total_n = full_weight_map.len(),
                 target_msg = ?target_msg,

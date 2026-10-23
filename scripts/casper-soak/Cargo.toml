@@ -17,6 +17,7 @@ required-features = ["p2p"]
 clap = { workspace = true }
 eyre = { workspace = true }
 libc = "0.2"
+num-bigint = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

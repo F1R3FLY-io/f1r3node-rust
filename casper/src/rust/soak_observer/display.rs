@@ -4,6 +4,7 @@ use block_storage::rust::dag::soak_equivocations::EquivocationSnapshot;
 use block_storage::rust::dag::soak_snapshot::DetachedDagSnapshot;
 use models::rust::block_hash::BlockHash;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use serde::Serialize;
 use shared::rust::dag::observation_work::{CheckedWork, WorkKind, WorkMeter};
 
@@ -76,7 +77,7 @@ pub fn calculate(
         )
         .map_err(|e| e.to_string())?;
     let mut weights = HashMap::with_capacity(block.metadata.weight_map.len());
-    let mut checked_total = 0u64;
+    let mut checked_total = BigInt::from(0);
     for (validator, weight) in &block.metadata.weight_map {
         meter
             .charge(WorkKind::Allocation, 1, validator.len() as u64)
@@ -95,16 +96,16 @@ pub fn calculate(
                 0,
             )
             .map_err(|e| e.to_string())?;
-        let weight = *weight as u64;
-        checked_total = checked_total
-            .checked_add(weight)
-            .ok_or("initial_fault_weight_overflow")?;
-        weights.insert(validator.clone(), weight);
+        if *weight < BigInt::from(0) {
+            return Err("negative_stake".into());
+        }
+        checked_total += weight;
+        weights.insert(validator.clone(), weight.clone());
     }
     meter
         .allocate(tracker.rows().len(), 32 * std::mem::size_of::<usize>())
         .map_err(|e| e.to_string())?;
-    let mut checked_matched = 0u64;
+    let mut checked_matched = BigInt::from(0);
     let mut matched_records = 0usize;
     let mut scans = (weights.len() as u64)
         .checked_add(4)
@@ -128,9 +129,7 @@ pub fn calculate(
             .charge(WorkKind::Oracle, compare_cost, 0)
             .map_err(|e| e.to_string())?;
         if let Some(weight) = weights.get(&row.equivocator) {
-            checked_matched = checked_matched
-                .checked_add(*weight)
-                .ok_or("initial_fault_weight_overflow")?;
+            checked_matched += weight;
             matched_records += 1;
             distinct.insert(&row.equivocator);
         }
@@ -144,7 +143,7 @@ pub fn calculate(
     if matched != checked_matched || total != checked_total {
         return Err("initial_fault_sum_mismatch".into());
     }
-    let fault = initial_fault::normalized_initial_fault(matched, total);
+    let fault = initial_fault::normalized_initial_fault(matched.clone(), total.clone());
     let projection = initial_fault::display_projection(f32::from_bits(base_bits), fault);
     meter.allocate(1, 256).map_err(|e| e.to_string())?;
     Ok((projection.to_bits(), DisplayInputs {

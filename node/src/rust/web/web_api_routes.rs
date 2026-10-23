@@ -1308,13 +1308,13 @@ mod router_tests {
             Ok(ValidatorsResponse {
                 validators: vec![ValidatorInfo {
                     public_key: "vk".to_string(),
-                    stake: 10,
-                    self_stake: 7,
-                    delegated_stake: 3,
+                    stake: 10.into(),
+                    self_stake: 7.into(),
+                    delegated_stake: 3.into(),
                 }],
-                total_stake: 10,
-                total_self_stake: 7,
-                total_delegated_stake: 3,
+                total_stake: 10.into(),
+                total_self_stake: 7.into(),
+                total_delegated_stake: 3.into(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1324,18 +1324,18 @@ mod router_tests {
             Ok(DelegationsResponse {
                 delegations: [(
                     "delegator".to_string(),
-                    [("validator".to_string(), 30)].into_iter().collect(),
+                    [("validator".to_string(), 30.into())].into_iter().collect(),
                 )]
                 .into_iter()
                 .collect(),
-                delegated_totals: [("validator".to_string(), 30)].into_iter().collect(),
+                delegated_totals: [("validator".to_string(), 30.into())].into_iter().collect(),
                 delegator_rewards: [("delegator".to_string(), "9223372036854775808".to_string())]
                     .into_iter()
                     .collect(),
                 pending_undelegations: [(
                     "delegator".to_string(),
                     [("validator".to_string(), PendingUndelegationInfo {
-                        amount: 7,
+                        amount: 7.into(),
                         unlock_block: 55,
                     })]
                     .into_iter()
@@ -1357,16 +1357,16 @@ mod router_tests {
                 public_key: pubkey,
                 active_delegations: vec![DelegationEntry {
                     validator_public_key: "validator".to_string(),
-                    amount: 30,
+                    amount: 30.into(),
                 }],
                 pending_undelegations: vec![PendingUndelegationEntry {
                     validator_public_key: "validator".to_string(),
-                    amount: 7,
+                    amount: 7.into(),
                     unlock_block: 55,
                 }],
                 claimable_rewards: "9223372036854775808".to_string(),
-                total_active_delegated: 30,
-                total_pending_undelegation: 7,
+                total_active_delegated: 30.into(),
+                total_pending_undelegation: 7.into(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1417,9 +1417,9 @@ mod router_tests {
             Ok(ValidatorStatusResponse {
                 public_key: pubkey,
                 is_bonded: true,
-                stake: Some(10),
-                self_stake: Some(7),
-                delegated_stake: Some(3),
+                stake: Some(10.into()),
+                self_stake: Some(7.into()),
+                delegated_stake: Some(3.into()),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })

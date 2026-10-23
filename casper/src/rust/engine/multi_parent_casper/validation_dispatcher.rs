@@ -127,6 +127,10 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
+    if let Either::Left(error) = Validate::deploy_costs(block) {
+        return Ok(Either::Left(error));
+    }
+
     let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds {
         // Reuse the floor derived by block_summary's fill; a deploy-less
         // block never filled it, so derive here — same frozen inputs, same

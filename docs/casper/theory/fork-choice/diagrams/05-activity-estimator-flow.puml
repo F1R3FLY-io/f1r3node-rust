@@ -5,13 +5,9 @@
 '   B1: weight_from_validator_by_dag returns a typed KvStoreError on a missing
 '       parent (no panic) — proto_util.rs.
 '   B2: parent cap is cast-safe — < 0 or i32::MAX means "all", else take n.
-'   B3: build_scores_map accumulates with checked_add (supply-cap guard).
+'   B3: build_scores_map accumulates with BigInt addition (exact sum).
 '   B4: filter_deep_parents surfaces a typed Err on an empty tip set
 '       (genesis-only DAG) instead of panicking.
-'
-' NOTE on node coloring in THIS PlantUML build: the correct form is the suffix
-' stereotype  ':label; <<#hex>>'  (verified by rendering); the prefix form
-' '#hex:label;' emits a deprecation banner and leaves the node uncolored.
 '
 ' Source of truth for the B1–B4 fixes (section 3) in
 ' docs/theory/fork-choice/fork-choice-verification.md.
@@ -38,7 +34,6 @@ skinparam defaultFontSize 10
 
 title Fork-choice evaluation flow ── Estimator::tips + the hardened seams (B1–B4)
 
-' Node color legend (suffix <<#hex>> form):
 '   blue     (#BBDEFB) = read / setup step
 '   lavender (#D1C4E9) = slashing filter (T-10)
 '   mint     (#C8E6C9) = scoring step
@@ -49,24 +44,24 @@ title Fork-choice evaluation flow ── Estimator::tips + the hardened seams (B
 '   amber diamond (#FFF8E1) = decision
 
 start
-:collect latest_message_hashes; <<#BBDEFB>>
-:filter invalid latest messages\n(T-10, slashed → 0 weight); <<#D1C4E9>>
-:calculate_lca — depth-filter > top − 1000\n(deterministic: structural top); <<#BBDEFB>>
-:build_scores_map — BFS to LCA,\nchecked_add score (B3); <<#C8E6C9>>
+#BBDEFB:collect latest_message_hashes;
+#D1C4E9:filter invalid latest messages\n(T-10, slashed → 0 weight);
+#BBDEFB:calculate_lca — depth-filter > top − 1000\n(deterministic: structural top);
+#C8E6C9:build_scores_map — BFS to LCA,\nexact BigInt score addition (B3);
 note right #FFECB3
   B1: weight_from_validator_by_dag
   returns a typed KvStoreError on a
   MISSING parent (no panic).
 end note
-:rank_forkchoices — heaviest scored-child;\nsort (score desc, hash asc);\nrecurse to still_same; <<#FFE0B2>>
+#FFE0B2:rank_forkchoices — heaviest scored-child,\nsort (score desc, hash asc),\nrecurse to still_same;
 
 if (tips empty? (genesis-only DAG)) then (yes ── B4)
-  :typed Err\n(filter_deep_parents empty guard); <<#FFCDD2>>
+  #FFCDD2:typed Err\n(filter_deep_parents empty guard);
   kill
 else (no)
-  :filter_deep_parents\n(max_parent_depth); <<#D7CCC8>>
-  :cap parents — unlimited\n(i32::MAX or −1) ⟹ all,\nelse take n (B2 cast-safe); <<#D7CCC8>>
-  :ForkChoice { tips, lca }; <<#A5D6A7>>
+  #D7CCC8:filter_deep_parents\n(max_parent_depth);
+  #D7CCC8:cap parents — unlimited\n(i32::MAX or −1) ⟹ all,\nelse take n (B2 cast-safe);
+  #A5D6A7:ForkChoice { tips, lca };
   stop
 endif
 
@@ -74,7 +69,7 @@ legend bottom
   Every step is a PURE function of (DAG, latest_messages), so all honest nodes
   compute a node-identical ForkChoice (Rocq fork_choice_determinism_correct).
   The empty-tips case is a typed Err, NOT a panic (Bound.empty_tips_typed_err);
-  the parent cap is cast-safe (B2); score accumulation is checked_add (B3);
+  the parent cap is cast-safe (B2); score accumulation is BigInt addition (B3);
   and a missing parent surfaces a typed KvStoreError, never a panic (B1).
 endlegend
 

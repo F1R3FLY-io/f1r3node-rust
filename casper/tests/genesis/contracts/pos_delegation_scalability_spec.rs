@@ -53,13 +53,13 @@ fn pos_delegation_scalability_spec() {
                         .2
                         .proof_of_stake
                         .number_of_active_validators = 1;
-                    genesis_parameters.2.proof_of_stake.minimum_bond = 2;
-                    genesis_parameters.2.proof_of_stake.maximum_bond = 100_000;
+                    genesis_parameters.2.proof_of_stake.minimum_bond = 2.into();
+                    genesis_parameters.2.proof_of_stake.maximum_bond = 100_000.into();
 
                     let spec = RhoSpec::new_with_genesis_parameters(
                         compiled,
                         vec![],
-                        Duration::from_secs(60),
+                        Duration::from_secs(120),
                         genesis_parameters,
                     );
 

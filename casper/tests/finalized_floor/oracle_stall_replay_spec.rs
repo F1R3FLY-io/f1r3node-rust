@@ -57,6 +57,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Justification};
 use models::rust::validator::Validator;
+use num_traits::ToPrimitive;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use serde::Deserialize;
 
@@ -145,7 +146,7 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
             e.iter()
                 .map(|(v, stake)| Bond {
                     validator: validator_of[v].clone(),
-                    stake: *stake,
+                    stake: stake.clone().into(),
                 })
                 .collect()
         })
@@ -269,16 +270,23 @@ async fn replay_sample(
     let weight_map = CliqueOracle::get_corresponding_weight_map(&target, &rebuilt.dag)
         .await
         .expect("weight map");
-    let expected_weights = &rebuilt.era_weights[sample.era];
+    let expected_weights = &rebuilt.era_weights[sample.era]
+        .iter()
+        .map(|(key, value)| (key.clone(), (*value).into()))
+        .collect::<HashMap<_, num_bigint::BigInt>>();
     assert_eq!(
         &weight_map, expected_weights,
         "staging: the rebuilt target's committee must be the fixture era"
     );
-    let total: i64 = weight_map.values().sum();
+    let total = weight_map
+        .values()
+        .sum::<num_bigint::BigInt>()
+        .to_i64()
+        .expect("fixture total fits i64");
 
     // Agreement, by the oracle's own definition: the target is on the
     // main-parent spine of the validator's latest message.
-    let mut agreeing_map: HashMap<Validator, i64> = HashMap::new();
+    let mut agreeing_map: HashMap<Validator, num_bigint::BigInt> = HashMap::new();
     for (v, stake) in &weight_map {
         if let Some(lm) = snapshot.get(v) {
             if rebuilt
@@ -286,11 +294,15 @@ async fn replay_sample(
                 .is_in_main_chain(&target, lm)
                 .expect("is_in_main_chain")
             {
-                agreeing_map.insert(v.clone(), *stake);
+                agreeing_map.insert(v.clone(), stake.clone());
             }
         }
     }
-    let agreeing: i64 = agreeing_map.values().sum();
+    let agreeing = agreeing_map
+        .values()
+        .sum::<num_bigint::BigInt>()
+        .to_i64()
+        .expect("fixture total fits i64");
 
     // (2q − S)/S recovers the max clique weight exactly for these stakes.
     let ft =
