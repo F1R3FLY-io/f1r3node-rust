@@ -61,7 +61,7 @@ mod linux {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::Path;
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime};
 
     use eyre::{ensure, eyre};
 
@@ -437,7 +437,13 @@ mod linux {
                 } else {
                     match fs::read_link(format!("/proc/{pid}/cwd")) {
                         Ok(cwd) if names(cwd.as_os_str().as_encoded_bytes(), root) => "cwd",
-                        _ => return Ok(None),
+                        Ok(_) => return Ok(None),
+                        Err(error)
+                            if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) =>
+                        {
+                            "uninspected"
+                        }
+                        Err(error) => return Err(error.into()),
                     }
                 };
                 let name = String::from_utf8_lossy(&bounded(
@@ -481,23 +487,64 @@ mod linux {
             return Ok(());
         }
         let (processes, mut failed) = residual(root, owner)?;
+        let mut stopped = Vec::new();
         for residual in &processes {
             writeln!(
                 output,
                 "pid={} name={} reason={} environment={} owner={}",
                 residual.pid, residual.name, residual.reason, residual.environment, residual.owner
             )?;
+            if residual.reason == "uninspected" {
+                continue;
+            }
             if let Err(error) = signal(&residual.process, libc::SIGKILL) {
                 if error.raw_os_error() != Some(libc::ESRCH) {
                     failed = true;
                 }
             }
+            stopped.push(&residual.process);
         }
-        if !reaped(processes.iter().map(|residual| &residual.process)) {
+        if !reaped(stopped.into_iter()) {
+            failed = true;
+        }
+        if !quiet(root, QUIET_WINDOW)? {
             failed = true;
         }
         ensure!(!failed, "Writer termination is unconfirmed.");
         Ok(())
+    }
+
+    const QUIET_WINDOW: Duration = Duration::from_secs(2);
+
+    fn newest(path: &Path) -> Result<Option<SystemTime>> {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut latest = Some(metadata.modified()?);
+        if metadata.is_dir() {
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(latest),
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                latest = latest.max(newest(&entry.path())?);
+            }
+        }
+        Ok(latest)
+    }
+
+    fn quiet(root: &Path, window: Duration) -> Result<bool> {
+        let before = newest(root)?;
+        std::thread::sleep(window);
+        Ok(newest(root)? <= before)
     }
 
     fn prefer_oom(owner: &str) -> Result<()> {
@@ -975,6 +1022,86 @@ mod linux {
                 Ok(_) => assert_eq!(state, ("readable", "absent")),
                 Err(_) => assert_eq!(state, ("unreadable", "unknown")),
             }
+        }
+
+        fn hidden_writer(root: &Path) -> Undumpable {
+            assert!(
+                Path::new("/.dockerenv").is_file(),
+                "Run process fixtures in an isolated container."
+            );
+            let directory = CString::new(root.to_str().unwrap()).unwrap();
+            let log = CString::new("writer.log").unwrap();
+            let mut pipe = [0; 2];
+            assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                unsafe {
+                    libc::close(pipe[0]);
+                    libc::chdir(directory.as_ptr());
+                    libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                    let fd = libc::open(
+                        log.as_ptr(),
+                        libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
+                        0o600,
+                    );
+                    libc::write(pipe[1], b"r".as_ptr().cast(), 1);
+                    loop {
+                        libc::write(fd, b"x".as_ptr().cast(), 1);
+                        libc::usleep(100_000);
+                    }
+                }
+            }
+            let mut ready = [0u8; 1];
+            unsafe {
+                libc::close(pipe[1]);
+                assert_eq!(libc::read(pipe[0], ready.as_mut_ptr().cast(), 1), 1);
+                libc::close(pipe[0]);
+            }
+            Undumpable(pid)
+        }
+
+        #[test]
+        fn residual_stop_fails_when_an_uninspectable_writer_keeps_writing() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("data");
+            fs::create_dir_all(&root).unwrap();
+            let hidden = hidden_writer(&root);
+            let inspectable = fs::read_link(format!("/proc/{}/cwd", hidden.0)).is_ok();
+            let mut record = Vec::new();
+            let result = stop_under(&root, &marker(), &mut record);
+            let record = String::from_utf8(record).unwrap();
+            if inspectable {
+                result.unwrap();
+                assert!(record.contains(&format!("pid={} ", hidden.0)));
+                assert!(record.contains("reason=cwd"));
+            } else {
+                assert!(result.is_err());
+                assert!(record.lines().any(|line| {
+                    line.starts_with(&format!("pid={} ", hidden.0))
+                        && line.contains("reason=uninspected")
+                }));
+                assert_eq!(
+                    unsafe { libc::waitpid(hidden.0, std::ptr::null_mut(), libc::WNOHANG) },
+                    0
+                );
+            }
+        }
+
+        #[test]
+        fn residual_stop_accepts_an_uninspectable_process_that_writes_elsewhere() {
+            let hidden = undumpable();
+            unreadable_environment(hidden.0);
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("data");
+            fs::create_dir_all(root.join("session")).unwrap();
+            fs::write(root.join("session/validator1.log"), b"old").unwrap();
+            let mut record = Vec::new();
+            stop_under(&root, &marker(), &mut record).unwrap();
+            assert_eq!(
+                unsafe { libc::waitpid(hidden.0, std::ptr::null_mut(), libc::WNOHANG) },
+                0
+            );
         }
 
         #[test]
