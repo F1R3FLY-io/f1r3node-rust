@@ -73,6 +73,34 @@ mr_status:
 
 ---
 
+### EPIC-029: Trusted Daily Back-merges
+
+```yaml
+epic_id: EPIC-029
+title: "Trusted Daily Back-merges"
+status: in_progress
+priority: p1
+user_story: US-013
+branch: ci/ca-release-train
+tasks:
+  - id: TASK-029-1
+    title: "Validate daily back-merges with trusted code and permit clean base merges"
+    status: in_progress
+    claimed_by: pi-session
+    claimed_at: 2026-10-20T19:05:51Z
+    review_requested_at: 2026-10-20
+    review_type: human
+    progress: "Local provenance, protected-head, tag, routing, and workflow invariant tests pass. ShellCheck passes. Hosted validation remains pending."
+    notes: "Review follow-up for issues #791 and PR #792. Preserve the accepted ca-soaked label risk."
+    acceptance:
+      - "Tests accept the release source and repeated clean base merges."
+      - "Tests reject foreign sources, edited merge trees, single-parent additions, forks, and invalid metadata."
+      - "A pull_request_target workflow runs only base code and posts CA Daily Provenance on the event head SHA."
+      - "The ca-daily queue requires CA Daily Provenance, and the existing workflow invariant checks pass."
+```
+
+---
+
 ### EPIC-024: Spike: Tokio and LMDB Disk Access, and Detection of Delayed Writes
 
 ```yaml
@@ -473,7 +501,7 @@ tasks:
     decision: "2026-10-16: the user chose the CI check and a local command first. The change of the human bypass actors of masterProtect and devProtect from always to pull_request is still open."
     acceptance:
       - "just backmerge creates backmerge/<UTC timestamp> at the origin/master commit and opens the pull request to dev. test-open-backmerge-pr.sh covers the nothing-to-back-merge cases, the created branch and pull request, and the branch delete after a failed pull request."
-      - "check-promotion-source.sh rejects a pull request from this repository with head master or dev, for every base, and accepts a fork pull request from the fork's master or dev. The Promotion Source job in ci.yml runs it with a read-only token. protected-head-guard.yml runs it from the base branch under pull_request_target and closes the pull request with the remedy and the reason. test-check-promotion-source.sh covers both events, the close, and a failed close."
+      - "check-promotion-source.sh rejects a pull request from this repository with head master or dev, for every base, and accepts a fork pull request from the fork's master or dev. Since issue #791 it also rejects head ca-canary and ca-release, the release train branches. The Promotion Source job in ci.yml runs it with a read-only token. protected-head-guard.yml runs it from the base branch under pull_request_target and closes the pull request with the remedy and the reason. test-check-promotion-source.sh covers both events, the close, and a failed close."
       - "just backmerge names an open backmerge/* pull request to dev and creates nothing. The branch name backmerge/master-<sha> makes a second run for the same master commit fail at branch creation."
       - "docs/ci.md and CLAUDE.md name just backmerge and the reason."
   - id: TASK-023-14
@@ -1298,6 +1326,53 @@ tasks:
     acceptance:
       - "The same soak profile as TASK-021-16 runs on dev with cost accounting."
       - "The issue #24 report compares both runs and records new baselines if legacy cost changed."
+  - id: TASK-021-26
+    title: "Attribute and remove the soak disk growth that stops weekend soaks after 16 to 18 hours"
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-19T17:45:00Z
+    branch: fix/soak-disk-attribution
+    pr_base_branch: dev
+    pull_request: 782
+    blocked_by: ["PR #774 in dev (accepted driver digest 4626f343)"]
+    finding: "Soak 38995239992 stopped at 16.7 h (output directory 10.4 GB, Docker build cache 7.0 GB with 6.6 GB reclaimable, .subprocess-data 4.6 GB between iterations). Soak 39089710676 stopped at 18.2 h after the gzip fix. Its output directory was about 1.5 GB, but the space outside it was about 10 GB larger. It stopped on the benchmark admission path, which wrote no du snapshot."
+    decision: "2026-10-19: the maintainer holds the H1 comparison soak of TASK-021-13 until this fix lands."
+    notes:
+      - "Blocks TASK-021-16 and the TASK-021-13 comparison: a long soak cannot reach 100 sessions on each provider before the disk floor stops it."
+      - "Coordination: Claude Code (f1r3node-rust-71) owns the code, the fixture, the workflow, docs/claims/soak-disk-protection.md, and the ledger records. The Pi agent (pi-session-heartbeat-h1-cbc) owns the CbC review package casper-soak-disk-attribution-20261019-01 and the draft refresh of the workflow evidence record. The exchange is in the gitignored channel docs/handoffs/channel-soak-disk-attribution-2026-10-19.md."
+      - "Step 1 (this PR): a per-component disk usage record (disk-usage.tsv), a du snapshot on the benchmark admission refusal, and a Docker build cache prune after the node image build. Step 2: a daily soak with the record names the growing component. Step 3: remove that growth."
+    acceptance:
+      - "disk-usage.tsv has rows for segment start, each iteration, each benchmark segment, and the soak end. scripts/bench/test-soak-disk-admission.sh covers them, including disk-record-degraded."
+      - "A maintainer accepts the review package for the driver, the fixture, and the workflow under CLAIM-CASPER-SOAK-001."
+      - "A soak with the record names the component that grows, with its growth rate."
+      - "After the growth fix, a weekend soak runs past 24 hours without a disk floor stop."
+  - id: TASK-021-27
+    title: "Stop the subprocess nodes of a deadline-stopped soak session, and fail closed when a writer remains"
+    status: in_progress
+    claimed_by: claude-session-0f4d8053
+    claimed_at: 2026-10-22T23:55:00Z
+    branch: fix/soak-deadline-shard-stop
+    pr_base_branch: dev
+    pull_request: null
+    blocked_by: []
+    finding: "Daily soak 39711861154 on dev f9340ed61 (PR #811 merged) stopped at the disk floor after 18.3 h. The six nodes of session 58 (PIDs 2082849 to 2082858) ran after the segment 1 deadline until the end of the job, and the nodes of session 92 after the segment 2 deadline. .subprocess-data was 1 MB through session 57, then grew about 95 MB and later 195 MB for each session. The scheduled soak runs the driver of ci-control at github.workflow_sha (master 679e2b4c1), and master did not contain PR #811, so the owner stop of PR #811 did not run in that soak. The failure-evidence copy also copied the logs of these nodes (1.6 to 5.7 GB for each failure). Evidence: issue #24 comment 6354292291 and its correction."
+    notes:
+      - "Follows TASK-021-26. Its last acceptance item (a weekend soak past 24 hours without a disk floor stop) depends on this task."
+      - "scripts/run-merge-recovery-soak.sh and scripts/casper-soak/src/host_control.rs are CbC-mandatory. The change needs a review package and a maintainer acceptance, as for PR #811."
+      - "Plan: (1) host-control residual reports each process under a directory with its dumpable state, environment readability, and owner-marker match; (2) the end-of-segment stop kills every residual writer under .subprocess-data and fails the segment when one remains; (3) the failure-evidence copy takes only session directories created after the iteration started; (4) tests for each; (5) review package and acceptance."
+      - "2026-10-22 implemented: host-control stop-under (arguments and working directory match with a path boundary, excludes itself and its ancestors), the end-of-segment residual stop with residual-writers.txt and the fail-closed rule, and the session-scoped evidence copy under .subprocess-data. Fixture RED before the fix (a node without the owner marker survived the segment), GREEN after it. host_control tests 13 passed as root and UID 65534. Review package runs/casper-soak-deadline-shard-stop-20261022-01, pending acceptance."
+      - "Open: .subprocess-data keeps the data directory of each deadline-stopped session (about 1.7 GB in soak 39711861154). Removal after a confirmed stop is a possible follow-up."
+      - "2026-10-23 correction: an earlier note on this task said that the owner stop of PR #811 missed the nodes. It did not run, because the scheduled soak uses the master driver. The residual stop is a second stop that does not depend on the owner marker."
+      - "2026-10-23 review fix (Pi agent, P2 on 793ca6c13): a non-dumpable writer with no target path in its arguments was silently excluded. stop-under now records such a process as uninspected and fails when a file under the directory changes during a 2 s window after the stop. host_control tests 15 passed as root and UID 65534. Driver fixture passed."
+      - "2026-10-23 second review fix (Pi agent, P2 on 621507755): a future-dated file hid writes from the newest-timestamp check. The write check now compares a per-entry snapshot of inode, size, modification time, and change time. host_control tests 17 passed as root and UID 65534."
+      - "2026-10-23 hosted regression: run 39889530851 failed the stop-timeout scenario of test-soak-disk-admission.sh, because the residual stop delayed failure publication past the 5 s deadline. After a host protection breach the driver now passes --quiet-ms 0 and bounds the stop by DISK_STOP_SECONDS. host_control tests 18 passed."
+      - "A scheduled soak exercises this change only after it is on master. A manual dispatch from dev (gh workflow run merge-recovery-soak.yml --ref dev) runs the dev driver."
+    acceptance:
+      - "scripts/bench/test-run-merge-recovery-soak.sh has a deadline-stop fixture with a node that the owner marker cannot match. No fixture process runs after the segment, and residual-writers.txt records the process."
+      - "host_control.rs unit tests cover residual for a marked process, an unmarked process, and a process with an unreadable environment."
+      - "An evidence-copy test with a stale session directory that is still written copies only the files of the failed session."
+      - "A maintainer accepts the review package for both CbC-mandatory files."
+      - "A daily soak after the merge has .subprocess-data near 1 MB after each segment, and residual-writers.txt names why the owner match missed."
 ---
 ```
 

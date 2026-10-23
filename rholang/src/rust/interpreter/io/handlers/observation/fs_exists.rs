@@ -30,21 +30,15 @@
 // Different shape from fs_seek / fs_size (fd-based cmode via
 // shadow lookup).
 //
-// # Shape-A gated resolver deferred
+// # Shape-A root gating
 //
-// Fileio's fs_exists uses
-// `root_registry.resolve_or_identity_gated_for_consensus(root, cmode)`
-// which refuses Consensus caps targeting unregistered logical
-// roots.  That gated variant has NOT been ported to dev yet —
-// it needs `FSERR_UNREGISTERED_ROOT` + the test-permissive flag
-// infrastructure, which land with the Shape-A boot slice.
-//
-// Under Wave 4 + 5, this handler uses the ungated
-// `resolve_or_identity` (slice 4.12) — Consensus caps against
-// unregistered logicals fall through to `(logical, None)` the
-// same way Oracular caps do.  This is pre-Shape-A behavior.
-// Shape-A enforcement + the gated resolver land together in a
-// future slice.
+// Uses `root_registry.resolve_or_identity_gated_for_consensus`
+// so a Consensus-mode call on an unregistered `/@bundle/<X>`
+// logical root short-circuits with `FSERR_UNSUPPORTED` instead
+// of silently falling through to the Oracular identity path.
+// Oracular calls pass through unchanged.  The refusal reply is
+// wrapped in `HandlerReply::ok` to match this handler's "always
+// ok, Par carries error semantics" discipline.
 //
 // # WAL state-read journaling (Wave 6 scope)
 //
@@ -132,13 +126,22 @@ impl FsHandler for FsExistsHandler {
         args: FsExistsArgs,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
-            // Ungated resolver — Shape-A gated variant deferred
-            // (see module header).  Consensus + unregistered
-            // logical falls through to `(logical, None)` the same
-            // way Oracular does.
+            // Shape-A gating: Consensus-mode call on an unregistered
+            // `/@bundle/<X>` logical root short-circuits with
+            // FSERR_UNSUPPORTED instead of silently falling through
+            // to the Oracular identity path.  Wrapped in
+            // `HandlerReply::ok` to match this handler's "always
+            // ok, Par carries error semantics" discipline — same
+            // pattern as the quarantine arms below.
             let logical = PathBuf::from(&args.root);
-            let (on_disk_root, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (on_disk_root, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::ok(err(c, m)),
+            };
             let rel = args.rel;
             let par = spawn_blocking_par(move || -> Par {
                 let parent = match safe_descend_verified(&on_disk_root, &rel, expected_root_id) {
