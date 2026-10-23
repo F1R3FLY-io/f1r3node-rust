@@ -169,11 +169,19 @@ PETTA_BLOCK_GOAL=$(petta_block_preds_goal)
 # exported-function list, so `!(git-import! ...)` becomes an
 # inert, unregistered symbol. Generated from the pinned PeTTa so it tracks
 # upstream automatically; the check fails the run loudly if the strip no-ops.
+# Generate once per CACHE_DIR. The sed+mv publishes the file atomically (mv on
+# one filesystem is atomic), so concurrent petta.sh invocations never read a
+# half-written patch and never race on the shared path.
 PATCHED_LIB_IMPORT="${CACHE_DIR}/lib_import.no-git-import.metta"
-sed 's/git-import! //g' "${PETTA_DIR}/lib/lib_import.metta" >"${PATCHED_LIB_IMPORT}"
-if grep -q 'git-import!' "${PATCHED_LIB_IMPORT}"; then
-  echo "petta.sh: could not strip git-import! from lib_import.metta (upstream format changed)" >&2
-  exit 1
+if [ ! -f "${PATCHED_LIB_IMPORT}" ]; then
+  tmp="$(mktemp "${CACHE_DIR}/lib_import.XXXXXX")"
+  sed 's/git-import! //g' "${PETTA_DIR}/lib/lib_import.metta" >"${tmp}"
+  if grep -q 'git-import!' "${tmp}"; then
+    echo "petta.sh: could not strip git-import! from lib_import.metta (upstream format changed)" >&2
+    rm -f "${tmp}"
+    exit 1
+  fi
+  mv -f "${tmp}" "${PATCHED_LIB_IMPORT}"
 fi
 LIB_IMPORT_BIND="--ro-bind ${PATCHED_LIB_IMPORT} /lib/PeTTa/lib/lib_import.metta"
 
