@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-src-authority-mapping-rs.md
