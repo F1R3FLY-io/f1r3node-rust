@@ -194,6 +194,24 @@ fn contiguous_coverage_start(
     Some(lowest.max(accept_bound - 1))
 }
 
+/// Fail a restore that did not establish the genesis hash.
+///
+/// The genesis hash is this node's chain identity, and the node does not run
+/// without one. A genesis-anchored restore holds the genesis block. A restore
+/// anchored above genesis learns the hash from the bootstrap's floor-cache
+/// response. Without the hash, the restore fails here, before the replay, and
+/// `recover_from_restore_failure` asks for the approved state again.
+fn require_genesis_hash(block_dag_storage: &BlockDagKeyValueStorage) -> Result<(), CasperError> {
+    match block_dag_storage.genesis_hash()? {
+        Some(_) => Ok(()),
+        None => Err(CasperError::RuntimeError(
+            "The restore did not establish the genesis hash: the bootstrap did not ship it \
+             with the floor cache. This node cannot know its chain identity without it."
+                .to_string(),
+        )),
+    }
+}
+
 /// Land the shipped genesis block on a truncated node: verified against the
 /// learned register (claimed hash equals the register AND the content
 /// re-hashes to it), then stored and inserted finalized. Holding genesis
@@ -942,6 +960,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
             self.request_floor_cache(approved_block).await;
+            require_genesis_hash(&self.block_dag_storage)?;
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -1108,9 +1127,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// for O(window) bytes.
     ///
     /// Failure degrades to that crawl — alive and alarmed, never a wedge — so
-    /// this never fails the restore.
+    /// this never fails the restore. The genesis hash that the response also
+    /// carries is different: `require_genesis_hash` fails the restore without
+    /// it, because it is this node's chain identity. So the request waits for
+    /// a slow or briefly unreachable bootstrap for up to five minutes, which is
+    /// far cheaper than the full restore that a failure starts again.
     async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
-        const ATTEMPTS: u32 = 3;
+        const ATTEMPTS: u32 = 30;
         const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
         // A genesis-anchored restore holds a parentless root, so every floor
@@ -1132,9 +1155,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 hashes: hashes.clone(),
             };
             for attempt in 1..=ATTEMPTS {
-                self.transport_layer
+                if let Err(e) = self
+                    .transport_layer
                     .send_to_bootstrap(&self.rp_conf_ask, Arc::new(request.clone().to_proto()))
-                    .await?;
+                    .await
+                {
+                    tracing::warn!(attempt, error = %e, "floor-cache request failed; retrying");
+                    sleep(RESPONSE_TIMEOUT).await;
+                    continue;
+                }
                 match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
                     Ok(Some(response)) => {
                         // The genesis hash rides the same trusted exchange:
@@ -2439,5 +2468,84 @@ mod tests {
             "a genesis-rooted node holds every height and claims from 0"
         );
         assert_eq!(contiguous_coverage_start(&BTreeMap::new(), 0), None);
+    }
+
+    /// A restore anchored above genesis holds no height-0 block, so it knows
+    /// its chain identity only when it learned the genesis hash.
+    #[test]
+    fn a_restore_without_a_genesis_hash_fails() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let anchor = get_random_block(
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![BlockHash::from(vec![0xaa; 32])]),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+            assert!(require_genesis_hash(&dag_storage).is_err());
+
+            dag_storage
+                .record_genesis_hash(BlockHash::from(vec![0x01; 32]))
+                .unwrap();
+            assert!(require_genesis_hash(&dag_storage).is_ok());
+        });
+    }
+
+    #[test]
+    fn a_genesis_anchored_restore_has_its_genesis_hash() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let genesis = get_random_block(
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+            assert!(require_genesis_hash(&dag_storage).is_ok());
+            assert_eq!(
+                dag_storage.genesis_hash().unwrap(),
+                Some(genesis.block_hash.clone())
+            );
+        });
     }
 }

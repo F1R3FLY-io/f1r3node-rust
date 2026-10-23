@@ -3381,13 +3381,16 @@ tasks:
 
   - id: TASK-012-3
     title: "Reject stale-chain peers after a network-ID relaunch"
-    status: pending
+    status: in_progress
     issues: [13]
     base_branch: dev
     branch: fix/genesis-bound-peer-handshake
     proposed_pr_title: "fix(network): bind peer sessions to genesis identity"
+    pull_request: 709
     claimed_by: null
     blocked_by: []
+    decision: "2026-10-06: mixed-version operation is not supported. There is no production network, so all nodes of a network upgrade together and there is no compatibility setting. The third acceptance item is met by the rollout section in docs/comm/README.md, not by a mixed-version test."
+    design: "docs/comm/README.md#chain-identity"
     acceptance:
       - "The peer handshake carries an immutable genesis/chain identity in addition to networkId"
       - "Peers from an old chain with the same networkId are rejected before dependency fetching or block processing"

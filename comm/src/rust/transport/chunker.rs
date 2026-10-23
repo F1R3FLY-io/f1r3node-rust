@@ -12,7 +12,12 @@ pub struct Chunker;
 
 impl Chunker {
     /// Chunks a blob into an iterator of Chunk messages for streaming
-    pub fn chunk_it(network_id: &str, blob: &Blob, max_message_size: usize) -> Vec<Chunk> {
+    pub fn chunk_it(
+        network_id: &str,
+        chain_id: Bytes,
+        blob: &Blob,
+        max_message_size: usize,
+    ) -> Vec<Chunk> {
         let raw = blob.packet.content.as_ref();
         let kb500 = 1024 * 500;
         let compress = raw.len() > kb500;
@@ -29,6 +34,7 @@ impl Chunker {
             &blob.sender,
             &blob.packet.type_id,
             network_id,
+            chain_id,
             compress,
             raw.len(),
         );
@@ -51,6 +57,7 @@ impl Chunker {
         sender: &PeerNode,
         type_id: &str,
         network_id: &str,
+        chain_id: Bytes,
         compressed: bool,
         content_length: usize,
     ) -> Chunk {
@@ -60,6 +67,7 @@ impl Chunker {
             compressed,
             content_length: content_length as i32,
             network_id: network_id.to_string(),
+            chain_id,
         };
 
         Chunk {
@@ -118,7 +126,7 @@ mod tests {
     fn test_small_message_no_compression() {
         let content = vec![1u8; 1000]; // Small message
         let blob = create_test_blob(content.clone());
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", Bytes::new(), &blob, 4096);
 
         // Should have header + 1 data chunk for small message
         assert_eq!(chunks.len(), 2);
@@ -146,7 +154,7 @@ mod tests {
         // Create message larger than 500KB to trigger compression
         let content = vec![42u8; 600 * 1024]; // 600KB of repeatable data
         let blob = create_test_blob(content.clone());
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", Bytes::new(), &blob, 4096);
 
         // Should have header + multiple data chunks
         assert!(chunks.len() > 1);
@@ -179,7 +187,7 @@ mod tests {
         let content = vec![1u8; 10000]; // 10KB content
         let blob = create_test_blob(content);
         let small_chunk_size = 1024; // Force multiple chunks
-        let chunks = Chunker::chunk_it("test_network", &blob, small_chunk_size);
+        let chunks = Chunker::chunk_it("test_network", Bytes::new(), &blob, small_chunk_size);
 
         // Should have header + multiple data chunks
         // With 10KB content and 1024 max chunk size (minus 2KB buffer = -1024 bytes),
@@ -206,7 +214,7 @@ mod tests {
         let content = vec![1u8; 10000]; // 10KB content
         let blob = create_test_blob(content);
         let chunk_size = 4096; // Larger chunk size to ensure we get data chunks
-        let chunks = Chunker::chunk_it("test_network", &blob, chunk_size);
+        let chunks = Chunker::chunk_it("test_network", Bytes::new(), &blob, chunk_size);
 
         // With 10KB content and 4096 max chunk size (minus 2KB buffer = 2048 bytes),
         // we should get header + multiple data chunks
@@ -231,7 +239,7 @@ mod tests {
     fn test_empty_content() {
         let content = vec![];
         let blob = create_test_blob(content);
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", Bytes::new(), &blob, 4096);
 
         // Should have just header chunk for empty content
         assert_eq!(chunks.len(), 1);
@@ -249,7 +257,7 @@ mod tests {
         let content = vec![1u8; 5000];
         let blob = create_test_blob(content);
         let max_message_size = 3000;
-        let chunks = Chunker::chunk_it("test_network", &blob, max_message_size);
+        let chunks = Chunker::chunk_it("test_network", Bytes::new(), &blob, max_message_size);
 
         // Should respect chunk size limits
         assert!(chunks.len() > 2); // Header + multiple data chunks

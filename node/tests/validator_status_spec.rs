@@ -55,6 +55,7 @@ fn services(
     let rp_conf_cell = RPConfCell::new(RPConf::new(
         local,
         "testnet".to_string(),
+        comm::rust::rp::chain_id::ChainIdCell::unknown(),
         None,
         Duration::from_secs(1),
         8,

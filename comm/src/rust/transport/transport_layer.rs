@@ -29,11 +29,46 @@ pub struct Blob {
     pub packet: Packet,
 }
 
+/// A fan-out succeeds if it reached at least one peer. One unreachable or
+/// refusing peer must not fail the operation for the peers that received it.
+pub(crate) fn best_effort(
+    operation: &str,
+    peers: &[PeerNode],
+    results: Vec<Result<(), CommError>>,
+) -> Result<(), CommError> {
+    let mut first_error = None;
+    let mut delivered = false;
+    for (peer, result) in peers.iter().zip(results) {
+        match result {
+            Ok(()) => delivered = true,
+            Err(error) => {
+                tracing::debug!(peer = %peer.to_address(), error = %error, "{} to one peer failed", operation);
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) if !delivered => Err(error),
+        _ => Ok(()),
+    }
+}
+
 #[async_trait]
 pub trait TransportLayer {
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError>;
 
     async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError>;
+
+    /// Broadcast, and also return the peers that refused the message because
+    /// this node is on another chain. The default calls `broadcast` and reports
+    /// no refusals; a transport that sees per-peer results overrides it.
+    async fn broadcast_reporting_refusals(
+        &self,
+        peers: &[PeerNode],
+        msg: &Protocol,
+    ) -> (Result<(), CommError>, Vec<PeerNode>) {
+        (self.broadcast(peers, msg).await, Vec::new())
+    }
 
     async fn stream(&self, peer: &PeerNode, blob: &Blob) -> Result<(), CommError>;
 
@@ -53,7 +88,8 @@ pub trait TransportLayer {
         peer: &PeerNode,
         msg: Packet,
     ) -> Result<(), CommError> {
-        let protocol_msg = protocol_helper::packet(&conf.local, &conf.network_id, msg);
+        let protocol_msg =
+            protocol_helper::packet(&conf.local, &conf.network_id, conf.chain_id.to_wire(), msg);
         self.send(peer, &protocol_msg).await
     }
 
@@ -112,9 +148,33 @@ pub trait TransportLayer {
         scope_size: Option<usize>,
     ) -> Result<(), CommError> {
         let max = scope_size.unwrap_or(conf.max_num_of_connections);
-        let peers = connections_cell.random(max)?;
-        let protocol_msg = protocol_helper::packet(&conf.local, &conf.network_id, message);
-        self.broadcast(&peers.0, &protocol_msg).await
+        let peers = connections_cell.random(max)?.into_vec();
+        let protocol_msg = protocol_helper::packet(
+            &conf.local,
+            &conf.network_id,
+            conf.chain_id.to_wire(),
+            message,
+        );
+        let (result, refused) = self
+            .broadcast_reporting_refusals(&peers, &protocol_msg)
+            .await;
+
+        // A connected peer that refuses us as a node of another chain will
+        // refuse every later message too, so drop the connection now rather
+        // than wait for the heartbeat cleanup to reach it.
+        for peer in &refused {
+            warn!("Disconnecting from {}: it is on another chain", peer);
+            let _ = connections_cell.flat_modify(|connections| {
+                if connections.iter().any(|known| known.id.key == peer.id.key) {
+                    connections.remove_conn_and_report(peer.clone())
+                } else {
+                    Ok(connections)
+                }
+            });
+            let _ = self.disconnect(peer).await;
+        }
+
+        result
     }
 
     async fn stream_packet_to_peers(
@@ -141,7 +201,12 @@ pub trait TransportLayer {
         retry_after: Duration,
         msg_type_name: &str,
     ) -> Result<(), CommError> {
-        let protocol_msg = protocol_helper::packet(&conf.local, &conf.network_id, message);
+        let protocol_msg = protocol_helper::packet(
+            &conf.local,
+            &conf.network_id,
+            conf.chain_id.to_wire(),
+            message,
+        );
 
         info!("Starting to request {}", msg_type_name);
 
@@ -150,6 +215,12 @@ pub trait TransportLayer {
                 Ok(()) => {
                     info!("Successfully sent {} to {}", msg_type_name, peer);
                     return Ok(());
+                }
+                // The peer is on another network or chain and refuses every
+                // retry until one of the two nodes restarts.
+                Err(error @ (CommError::WrongNetwork(..) | CommError::WrongChainId(..))) => {
+                    warn!("{} to {} refused: {}", msg_type_name, peer, error);
+                    return Err(error);
                 }
                 Err(error) => {
                     warn!(
@@ -299,5 +370,158 @@ pub trait TransportLayer {
             "ApprovedBlockRequest",
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::rp::connect::Connections;
+    use crate::rust::test_instances::create_rp_conf_ask;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+        }
+    }
+
+    /// Test-only transport: every peer receives the broadcast except "foreign",
+    /// which is reported as refusing this node's chain.
+    struct RefusingTransport {
+        disconnected: std::sync::Mutex<Vec<PeerNode>>,
+    }
+
+    #[async_trait]
+    impl TransportLayer for RefusingTransport {
+        async fn send(&self, _peer: &PeerNode, _msg: &Protocol) -> Result<(), CommError> { Ok(()) }
+
+        async fn broadcast(&self, _peers: &[PeerNode], _msg: &Protocol) -> Result<(), CommError> {
+            Ok(())
+        }
+
+        async fn broadcast_reporting_refusals(
+            &self,
+            peers: &[PeerNode],
+            _msg: &Protocol,
+        ) -> (Result<(), CommError>, Vec<PeerNode>) {
+            let refused = peers
+                .iter()
+                .filter(|candidate| **candidate == peer("foreign"))
+                .cloned()
+                .collect();
+            (Ok(()), refused)
+        }
+
+        async fn stream(&self, _peer: &PeerNode, _blob: &Blob) -> Result<(), CommError> { Ok(()) }
+
+        async fn stream_mult(&self, _peers: &[PeerNode], _blob: &Blob) -> Result<(), CommError> {
+            Ok(())
+        }
+
+        async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError> {
+            self.disconnected.lock().unwrap().push(peer.clone());
+            Ok(())
+        }
+
+        async fn get_channeled_peers(
+            &self,
+        ) -> Result<std::collections::HashSet<PeerNode>, CommError> {
+            Ok(std::collections::HashSet::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_drops_a_connected_peer_that_refuses_our_chain() {
+        let cell = ConnectionsCell::new();
+        cell.flat_modify(|_| Ok(Connections::from_vec(vec![peer("foreign"), peer("good")])))
+            .unwrap();
+        let transport = RefusingTransport {
+            disconnected: std::sync::Mutex::new(Vec::new()),
+        };
+        let conf = create_rp_conf_ask(peer("local"), None, None);
+        let packet = Packet {
+            type_id: "BlockHashMessage".to_string(),
+            content: Bytes::new(),
+        };
+
+        transport
+            .send_packet_to_peers(&cell, &conf, packet, None)
+            .await
+            .unwrap();
+
+        assert_eq!(cell.read().unwrap().into_vec(), vec![peer("good")]);
+        assert_eq!(*transport.disconnected.lock().unwrap(), vec![peer(
+            "foreign"
+        )]);
+    }
+
+    fn request_packet() -> Packet {
+        Packet {
+            type_id: "ApprovedBlockRequest".to_string(),
+            content: Bytes::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_stops_at_a_network_or_chain_refusal() {
+        let refusals = [
+            CommError::WrongNetwork("bootstrap".to_string(), "network mismatch".to_string()),
+            CommError::WrongChainId("bootstrap".to_string(), "another chain".to_string()),
+        ];
+
+        for refusal in refusals {
+            let transport = crate::rust::test_instances::TransportLayerStub::new();
+            let response = refusal.clone();
+            transport.set_responses(move |_, _| Err(response.clone()));
+            let conf = create_rp_conf_ask(peer("local"), None, None);
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                transport.send_with_retry(
+                    &conf,
+                    request_packet(),
+                    &peer("bootstrap"),
+                    Duration::from_secs(3600),
+                    "ApprovedBlockRequest",
+                ),
+            )
+            .await
+            .expect("a refusal must end the retry loop");
+
+            assert_eq!(result, Err(refusal));
+            assert_eq!(transport.request_count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_retries_a_transient_failure() {
+        let transport = crate::rust::test_instances::TransportLayerStub::new();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = attempts.clone();
+        transport.set_responses(move |_, _| {
+            if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Err(CommError::TimeOut)
+            } else {
+                Ok(())
+            }
+        });
+        let conf = create_rp_conf_ask(peer("local"), None, None);
+
+        transport
+            .send_with_retry(
+                &conf,
+                request_packet(),
+                &peer("bootstrap"),
+                Duration::from_millis(1),
+                "ApprovedBlockRequest",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(transport.request_count(), 2);
     }
 }

@@ -1,4 +1,4 @@
-> Last updated: 2026-03-23
+> Last updated: 2026-10-16
 
 # Crate: comm (P2P Networking)
 
@@ -43,6 +43,7 @@ pub struct PeerNode {
 **gRPC Kademlia service** (port 40404):
 - `SendPing` / `SendLookup` RPCs
 - Network ID validation prevents cross-network discovery
+- Kademlia messages do not carry the chain identity. A peer that is refused for another chain is evicted from the routing table and suppressed from rediscovery for 5 minutes (see [Chain identity](#chain-identity)).
 
 ## TLS Transport
 
@@ -66,11 +67,82 @@ pub struct ConnectionsCell {
 **Protocol messages**: `Heartbeat`, `ProtocolHandshake`, `ProtocolHandshakeResponse`, `Disconnect`, `Packet`
 
 **Connection lifecycle**:
-1. Local sends `ProtocolHandshake` with network_id
-2. Peer validates network_id, responds with `ProtocolHandshakeResponse`
+1. Local sends `ProtocolHandshake` with network_id and chain_id
+2. Peer validates network_id and chain_id before it acknowledges the message, then responds with `ProtocolHandshakeResponse`
 3. Connection added to `ConnectionsCell`
 4. Periodic `Heartbeat` for liveness
-5. Explicit `Disconnect` on teardown
+5. Explicit `Disconnect` on teardown. A `Disconnect` from a peer that is not connected is ignored and does not change connection logs or metrics.
+
+**Fan-out**: `broadcast` and `stream_mult` fail only when the message reached no peer. One refusing or unreachable peer does not fail the operation for the other peers.
+
+### Chain identity
+
+A relaunched network can reuse its `networkId`, so `networkId` cannot separate two launches. A node that kept the state of the previous chain would pass the `networkId` check and push blocks of a chain that no longer exists (issue #13). The chain identity separates the two launches.
+
+**Value**: the hash of the shard's genesis block, held in `ChainIdCell` (`rp/chain_id.rs`). It is write-once: a second, different value stops the node.
+
+**Wire**: `Header.chainId` (unary messages) and `ChunkHeader.chainId` (streams). An empty value means that the sender does not know its chain yet.
+
+**When a node learns its identity**:
+- Restart on existing data: from storage, at startup (`node/src/rust/runtime/setup.rs`).
+- First launch: when the node enters the Running state (`engine::transition_to_running`).
+- Joining node: adopted from the header of a unary message from the configured bootstrap peer, then verified against the genesis that the node records.
+
+**Where the genesis hash comes from**: `BlockDagKeyValueStorage::genesis_hash` gives the value. It is the held height-0 block, or the hash that the node learned and recorded with `record_genesis_hash`. The register is write-once and persists across restarts. A node that ran the genesis ceremony, or restored from a genesis-anchored approved block, holds the genesis block. A node that restored from an approved block above genesis holds no height-0 block. It learns the hash from the bootstrap's `FloorCacheResponse`. The identity is never the hash of the approved block or of a snapshot anchor.
+
+**A node does not run without its identity**: `transition_to_running` publishes the genesis hash from storage before the node enters the Running state. It fails if the hash is missing or unreadable, or if it differs from an identity that the node already published. An identity adopted from the bootstrap does not replace the stored genesis hash, because nothing has verified it yet. A restore anchored above genesis asks the bootstrap for the hash again for up to 5 minutes. If it still did not learn the hash, the restore fails before its replay, and the bounded restore retry asks for the approved state again. A restart on data without a genesis hash fails at startup, so the operator must resync the node. Before the Running state, a joining node does not need its identity: it sends an empty chain identity, and its handshakes, heartbeats, and requests are pulls.
+
+**What the identity does not prove**: a peer names its chain in a header, and nothing checks that claim against block content. The check stops a node that runs with the state of another chain by mistake. It does not stop a peer that names this node's chain falsely. Block validation stays the defense against such a peer: it keeps blocks of another chain out of the DAG. It does not prevent the cost of buffering such blocks and fetching their dependencies.
+
+**Decision rules** (`ChainIdCell::check`):
+
+| Peer's chain_id | Pull (requests, handshake, heartbeat, disconnect) | Push (blocks, gossip, responses) |
+| --- | --- | --- |
+| Same as ours | accepted | accepted |
+| Different from ours | refused | refused |
+| Empty | accepted | refused |
+| Ours not known yet | accepted | accepted |
+
+The pull list (`classify` in `rp/chain_id.rs`) holds the control messages without a packet (handshake, heartbeat, disconnect) and these request types:
+- `ApprovedBlockRequest`, `BlockRequest`, `HasBlockRequest`, `ForkChoiceTipRequest`, `StoreItemsMessageRequest`, `MergeableEntryRequest`, `FloorCacheRequest`
+- snapshot requests: `GetSnapshotChunkRequest`, `HasSnapshotRequest`
+- write-ahead log (WAL) payload requests: `GetWalPayloadRequest`, `HasWalPayloadRequest`
+
+A joining node sends the snapshot and WAL payload requests before it knows its chain. A message type that is not in the pull list counts as a push.
+
+**Where the check runs**:
+
+| Path | Site | Effect |
+| --- | --- | --- |
+| Unary message (all types) | `TransportLayerService::send` | refused before it is acknowledged or enqueued; the sender gets gRPC status `FailedPrecondition`, which maps to `CommError::WrongChainId` |
+| Chunk stream | `StreamValidation` in `grpc_transport_receiver.rs`, applied after every chunk and at the end of the stream | the stream is cut at the first chunk that fails, and its data is released |
+| Queued message (unary or stream) | per-peer queue in `TransportLayerService`, just before dispatch | dropped if the chain identity became known while the message waited and now refuses it |
+
+Each stream gets its own `StreamValidation`. It holds the `networkId`, the stream size limit, and the node's shared `ChainIdCell`, not a copy of it. The checks thus do not depend on the thread that polls the stream, and an identity learned while a stream is open applies to the rest of the stream. A stream has exactly one header chunk, and it must come first. A data chunk before the header, or a second header, stops the stream.
+
+**What a node does with a refusal**:
+
+| Refused message | Action |
+| --- | --- |
+| Our handshake (`find_and_connect`) | evict the peer from the routing table at once and suppress its rediscovery for 5 minutes |
+| Our heartbeat (`clear_connections`) | evict the peer from the connections at once, without a failure streak. Also remove the peer from the routing table and close its channel. |
+| Our broadcast (`send_packet_to_peers`) | drop the peer from the connections and close its channel |
+| Our stream (`stream`, `stream_mult`) | log the refusal. The stream result does not reach the caller, so the next heartbeat to the peer is refused and evicts it, at most one `cleanup-interval` later. |
+| Our request with retry (`send_with_retry`, for example `ApprovedBlockRequest`) | stop retrying and return the error |
+
+`CommError::WrongNetwork` (a `networkId` mismatch, gRPC status `PermissionDenied`) gets the same handling. A refused stream gets the same gRPC status as a refused unary message, so the sender gets `WrongChainId` or `WrongNetwork` for it too, not a generic error.
+
+**Pinned bootstrap**: the configured bootstrap peer stays in the routing table after a failure, so the node can find it again. A refusal is the exception: after `WrongNetwork` or `WrongChainId`, `find_and_connect` and `clear_connections` evict the pinned bootstrap too. A timeout and all other errors keep the pin. The network ID comes from configuration, and the chain identity is write-once. So a bootstrap on another network or chain cannot serve this node until one of the two nodes restarts. Until then, a dial every `lookup-interval` only adds refusals to the logs of both nodes. A joining node does not get `WrongChainId` from its bootstrap: it sends an empty chain identity, and a handshake or a heartbeat is a pull.
+
+**Rollout**: this is a breaking protocol change. A node without it names no chain, so every push from it is refused. All nodes of a network must upgrade together. There is no compatibility setting.
+
+**Known gaps**:
+- A joining node adopts its identity only from unary messages, because a stream sender is not bound to the TLS certificate (#663).
+- A node that restores from an approved block above genesis records the genesis hash from the `FloorCacheResponse`. That response arrives as a stream, and a stream sender is not bound to the TLS certificate (#663). Until #663 is fixed, a peer that can send this node a stream can claim to be the bootstrap and give a false genesis hash. If the node adopted an identity from the real bootstrap first, a false hash differs from it, and the node stops instead of running on that hash.
+- Before a node learns its identity (for example during the genesis ceremony), it accepts any peer. A peer of another chain that connects in that window is dropped by the first refused heartbeat or broadcast after the identity is known.
+- A peer on an older build names no chain. Its handshake and heartbeat are pulls and are accepted, so it stays connected, and its pushes are refused. Each refused push costs one check before the message is enqueued, so the cost is bounded, but the receiver does not penalize or disconnect the peer. The receiver cannot attribute the push safely in all cases:
+  - A stream sender is not bound to the TLS certificate (#663), so a stream header can name any peer.
+  - A unary sender is bound to the certificate, but a fresh node also names no chain, and it can send a push, for example a response to a request. A penalty for an unnamed push would disconnect fresh nodes.
 
 ## Stream Processing (Large Payloads)
 
@@ -78,7 +150,7 @@ pub struct ConnectionsCell {
 - Compress if content > 500KB
 - Split into fragments (max_message_size - 2KB buffer)
 - Header chunk with metadata + data chunks
-- Circuit breaker pattern for error detection
+- Circuit breaker pattern for error detection: the receiver checks the `networkId`, the chain identity, and the size limit after every chunk (see [Chain identity](#chain-identity))
 
 ## UPnP
 
@@ -88,7 +160,7 @@ pub struct ConnectionsCell {
 
 Sources: `f1r3fly.comm.rp.connect`, `f1r3fly.comm.rp.handle`, `f1r3fly.comm.discovery.kademlia`, `f1r3fly.comm.rp.transport`
 
-Counters: connect, disconnect, ping, lookup, send. Histograms: connect-time, ping-time, lookup-time, send-time.
+Counters: connect, disconnect, ping, lookup, send, chain-id.refused (messages refused for chain identity, by source `f1r3fly.comm.rp.transport`). Histograms: connect-time, ping-time, lookup-time, send-time.
 
 ## Tests
 
