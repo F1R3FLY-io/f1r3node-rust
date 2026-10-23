@@ -1,0 +1,5 @@
+/src/rust/instances/heartbeat_proposer.rs cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/src/rust/soak_observer.rs cbc=mandatory cbc-weight=high
+/tests/soak_observer.rs cbc=mandatory cbc-weight=high
+/src/rust/instances/block_processor_instance.rs cbc=mandatory cbc-weight=medium
+/src/rust/instances/release_queue.rs cbc=mandatory cbc-weight=medium

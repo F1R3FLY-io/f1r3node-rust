@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-check-campaign-reservation-sh.md
