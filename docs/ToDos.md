@@ -352,11 +352,18 @@ tasks:
       - "2026-10-12: deferred. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the migration does not need R7."
   - id: TASK-026-7
     title: "Verify the /cbc commands against the migrated layout"
-    status: pending
+    status: complete
     blocked_by: [TASK-026-5]
     notes:
       - "2026-10-22: added at the maintainer request. The migration is complete only when the current /cbc slash commands work with the owner files."
       - "Known defect, before the migration and unchanged by it: the ledger docs/casper/cbc-evidence/casper-src-rust-util-rholang-interpreter-util-rs.md holds two JSON records. cbc discharge then emits an extra waived row with path null. Record it as a defect in this task."
+      - "2026-10-23 check run: tooling top-level-gitlab-profile tag cbc-r8-8a64da8 (8a64da86482aaa9dbf55fc9cf30a4ebc23d28d34), a read-only git archive. Base d75bb6cfc (merge base with dev), head 8401cf73e plus five routes. The base runs use an extracted base tree with a temporary index."
+      - "2026-10-23 identify: /cbc identify over all tracked files finds the same 408 CbC-mandatory files at base (root .gitattributes) and at head (owner files)."
+      - "2026-10-23 discharge and status: discharge --strict without CBC_EVIDENCE_DIR gives 408 rows, 179 gaps, and exit 4 at base and head. /cbc status gives 322 rows at base and head. The only status differences are the two R8 changes that the R8 package records and the maintainer accepted: interpreter_util.rs invalid_record to waived, and check-tla-invariants.sh discharged to pending."
+      - "2026-10-23 defect found and fixed: after the symlink removal, /cbc status hid the five Casper ledgers of artifacts that are not cbc=mandatory. Exact lines in docs/.gitattributes and scripts/.gitattributes now route them with cbc-evidence only, and status parity holds."
+      - "2026-10-23 review and scaffold: cbc-identify-critical.sh proposes 14 new tags. Each goes to the nearest owner file with an anchored exact-file rule, and none goes to the root file. cbc-scaffold.sh --dry-run plans the same 14 rules (12 in casper, 2 in crypto) and changes no file. attributes lint reports no error, override, duplicate, or diagnostic."
+      - "2026-10-23 known defect: the extra waived row with path null does not occur at base or head. The R8 named claims make both interpreter_util.rs claims readable."
+      - "2026-10-23 observations for the tooling owner, not failures: the scanner proposes crypto/.gitattributes itself as a candidate, and the 14 candidates include crypto/src/rust/hash/merkle.rs from PR #815. Tag ratification is outside this task."
     acceptance:
       - "The check records the top-level-gitlab-profile revision of the /cbc commands that it uses."
       - "/cbc identify finds the same CbC-mandatory files at the branch base and at the branch head, for the same scope."

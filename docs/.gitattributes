@@ -1,1 +1,3 @@
 /crypto/README.md cbc=mandatory cbc-weight=medium
+/casper/design/authority-live-executor.md cbc-evidence=docs/casper/cbc-evidence
+/casper/design/authority-provider-adaptation.md cbc-evidence=docs/casper/cbc-evidence

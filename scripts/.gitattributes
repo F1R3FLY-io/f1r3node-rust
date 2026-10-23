@@ -13,3 +13,6 @@
 /bench/fixtures/casper-lifecycle-executor.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /ci/check-casper-soak-models.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /ci/check-casper-soak-bindings.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/bench/test-soak-disk-admission.sh cbc-evidence=docs/casper/cbc-evidence
+/bench/casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence
+/bench/test_casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence
