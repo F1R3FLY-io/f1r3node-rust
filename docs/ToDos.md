@@ -3339,10 +3339,43 @@ tasks:
     acceptance:
       - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
       - "The deferred parameters (soak-in period length, Anchor criteria, test net composition) are set and ratified"
+  - id: TASK-013-8
+    title: "Version increase rules and client compatibility signals in the node status"
+    status: blocked
+    blocked_by: ["ratification of release-process Sections 5.1 to 5.4 (decisions V1 to V3)", "decision D1 and capability names V4"]
+    branch: docs/proposed-versioning-standard
+    design_doc: docs/designs/node-status-versioning.md
+    references:
+      - "F1r3Faucet docs/designs/node-compatibility.md Section 3 (source proposal)"
+      - "EPIC-014 TASK-014-10 (test net faucet)"
+    notes:
+      - "2026-10-15: proposal only. release-process Sections 5.1 to 5.5 hold the bump rules, the client API version, capabilities, contract aliases, and the decisions V1 to V5. The code change waits for a maintainer request."
+      - "version.api is a protobuf and JSON string today. The design keeps it and adds the integer fields apiVersion and apiSupported (decision D1)."
+    acceptance:
+      - "/api/status and gRPC status return apiVersion, apiSupported, capabilities, consensusModel, and genesisId with the same values"
+      - "version.api stays a string equal to apiVersion, so clients of the current response still decode the new one"
+      - "genesisId is the approved block hash, and vault.alias capabilities report only the aliases that the shard registry resolves"
+      - "Release automation or review checks that a candidate's version increase follows Section 5.1"
+  - id: TASK-013-9
+    title: "Change classes, the fork rule, and upgrade paths for a running shard"
+    status: blocked
+    blocked_by: ["decisions V6 to V10 of release-process Section 5.5", "a Casper decision ledger entry for the fork rule (V6) and for any activation mechanism (V7)"]
+    branch: docs/proposed-versioning-standard
+    design_doc: docs/release-process.md
+    notes:
+      - "2026-10-18: proposal only. A discussion of 2026-10-15 asked whether the node supports soft and hard forks, upgrades at a block height or an epoch, and a recovery procedure. No design existed. Release-process Sections 5.6 to 5.10 give the change classes, the fork rule, the requirements for height or epoch activation (it reopens option C of D-01), and the questions for contract evolution. The recovery procedure goes in the test net runbook of EPIC-014 (PR #654)."
+      - "Two current changes are hard forks without a version number: the A9 rejection-search cap (fix/stall-track-a-rest 16c57af9c) and PR #662."
+      - "2026-10-18: Section 5.11 adds version axes. Execution (RSpace++, the interpreter, the parser, the cost table, the merge) is versioned apart from the replication mechanism, so that a mechanism written in Rholang or F1r3lang can evolve as contract code. Sources: docs/artifacts/f1r3fly-consensus-neutral-sm.md sections 1 to 3 and the replication boundary design of PR #627 (section 9, decision D2, the manifest). The plan for mechanisms in Rholang is not yet in any document."
+    acceptance:
+      - "The maintainers record decisions V6 to V9, each with a linked review comment."
+      - "Each pull request that changes a replay result names its class (Section 5.6) and its versioned path (Section 5.7) in the description."
+      - "The node status reports the shard tuple from the approved block or the shard state: executionVersion, mechanism (id, version, implementation, codeHash), and accountingVersion, with the other fields of node-status-versioning.md Section 3.0 as decision D2 states."
 ---
 ```
 
 **Context:** `docs/release-process.md` is the ratified specification. This PR (feature/release-process-implementation, PR #279) delivers TASK-013-1 and TASK-013-2; later phases follow the Section 18 migration plan on follow-on branches.
+
+**Versioning and client compatibility (proposed 2026-10-15):** release-process Sections 5.1 to 5.5 adapt the F1r3Faucet node compatibility proposal ([`docs/designs/node-compatibility.md`](https://github.com/F1R3FLY-io/F1r3Faucet/blob/dev/docs/designs/node-compatibility.md), Section 3). [`docs/designs/node-status-versioning.md`](designs/node-status-versioning.md) specifies the status changes, and TASK-013-8 tracks them.
 
 ---
 
@@ -3374,6 +3407,8 @@ tasks:
 ```
 
 **Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
+
+**Faucet compatibility (2026-10-15):** TASK-014-10 (F1r3Faucet test token faucet, on the `ci/testnet-deployment` branch, PR #654) depends on the versioning and client compatibility proposal in release-process Sections 5.1 to 5.5 and TASK-013-8. The faucet uses the client API version, the capability list, `consensusModel`, and `genesisId` to find compatible nodes and new shards. Source: F1r3Faucet [`docs/designs/node-compatibility.md`](https://github.com/F1R3FLY-io/F1r3Faucet/blob/dev/docs/designs/node-compatibility.md).
 
 ---
 
