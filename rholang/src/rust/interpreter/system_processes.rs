@@ -608,6 +608,13 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
     ])
 }
 
+/// Channel URNs that a PeTTa program is allowed to forward emission frames to
+/// (see [`SystemProcesses::forward_frames`]). The frame `channel` is controlled
+/// by the MeTTa program, and `urn_to_channel` holds every dispatch-table URN
+/// (including the `rho:io:fs:native:*` URNs that `eval_new` hides from deploys),
+/// so this allowlist is the boundary that keeps program output to stdout.
+pub const FORWARDABLE_FRAME_CHANNELS: &[&str] = &["rho:io:stdout"];
+
 #[derive(Clone)]
 pub struct ProcessContext {
     pub space: RhoISpace,
@@ -2403,12 +2410,24 @@ impl SystemProcesses {
     /// Each frame specifies a channel URN (e.g. `"rho:io:stdout"`) and a list of argument
     /// `Par` values. This method looks up the URN in the `urn_to_channel` map and produces
     /// each argument on the corresponding fixed channel via rspace.
+    ///
+    /// Only the URNs in [`FORWARDABLE_FRAME_CHANNELS`] may be targeted. The frame
+    /// `channel` is controlled by the MeTTa program, and `urn_to_channel` holds every
+    /// dispatch-table URN (including the `rho:io:fs:native:*` URNs that `eval_new` hides
+    /// from deploys), so without this allowlist a program could forward arguments onto a
+    /// privileged channel. Frames for any other channel are dropped with a warning.
     async fn forward_frames(
         &self,
         frames: &[Frame],
         rand: Vec<u8>,
     ) -> Result<(), InterpreterError> {
         for frame in frames {
+            if !FORWARDABLE_FRAME_CHANNELS.contains(&frame.channel.as_str()) {
+                tracing::warn!(target: "f1r3fly.petta",
+                    "Dropping frame for non-forwardable channel URN: {}", frame.channel);
+                continue;
+            }
+
             let channel_par = match self.urn_to_channel.get(&frame.channel) {
                 Some(ch) => ch.clone(),
                 None => {
@@ -2747,5 +2766,17 @@ mod body_refs_fs_tests {
                 );
             }
         }
+    }
+
+    /// `forward_frames` may only forward PeTTa emission frames to the channels
+    /// in `FORWARDABLE_FRAME_CHANNELS`. A MeTTa program controls the frame
+    /// channel URN, so widening this list (or letting a privileged
+    /// `rho:io:fs:native:*` URN in) would let a deploy reach a channel
+    /// `eval_new` hides from it. This pins the allowlist to stdout only.
+    #[test]
+    fn forwardable_frame_channels_is_stdout_only() {
+        assert_eq!(FORWARDABLE_FRAME_CHANNELS, &["rho:io:stdout"]);
+        assert!(FORWARDABLE_FRAME_CHANNELS.contains(&"rho:io:stdout"));
+        assert!(!FORWARDABLE_FRAME_CHANNELS.contains(&"rho:io:fs:native:1.0.0/removeDir"));
     }
 }
