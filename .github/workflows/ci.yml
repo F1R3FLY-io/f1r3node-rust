@@ -26,10 +26,13 @@ on:
       - ca-release
     tags:
       - "**"
-  # `labeled` carries the ci-heavy opt-in. `edited` stays: a stacked pull
-  # request's base change arrives as an edit, and the gate reads the base ref.
+  # No `labeled` type: a labeled run replaces the checks of the head with
+  # pending checks, and the queued label of the merge queue then failed the
+  # merge (pull request #826). ci-heavy-label.yml reruns this workflow for the
+  # ci-heavy label. `edited` stays: a stacked pull request's base change
+  # arrives as an edit, and the gate reads the base ref.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   merge_group:
 
 # GitHub keeps one running item and one pending item in each concurrency group.
@@ -91,6 +94,7 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HAS_HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
           MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
@@ -219,6 +223,18 @@ jobs:
             printf '%s %s\n' "$second" "$run_id"
           }
 
+          # A rerun from ci-heavy-label.yml replays the event of the first
+          # run, whose labels can lack ci-heavy, so the current labels decide.
+          # An API error falls back to the labels of the event.
+          pull_request_has_heavy_label() {
+            local current
+            [ "$PR_HAS_HEAVY_LABEL" = true ] && return 0
+            [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+              --jq 'any(.labels[]; .name == "ci-heavy")')" || return 1
+            [ "$current" = true ]
+          }
+
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
           # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
           # GitHub-hosted checks only and reaches the heavy pipeline through the
@@ -258,7 +274,7 @@ jobs:
               reused_heavy_run=""
             fi
           elif [ "$EVENT_NAME" = pull_request ] \
-            && [ "$PR_HAS_HEAVY_LABEL" = true ] \
+            && pull_request_has_heavy_label \
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
             && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ] \
               || [ "$PR_BASE_REF" = ca-canary ] || [ "$PR_BASE_REF" = ca-release ]; } \
@@ -646,6 +662,10 @@ jobs:
       - name: Verify back-merge pull request opener
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-open-backmerge-pr.sh
+
+      - name: Verify the ci-heavy label rerun
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-rerun-ci-for-heavy-label.sh
 
       - name: Verify Promotion Source check
         shell: bash -euo pipefail {0}
