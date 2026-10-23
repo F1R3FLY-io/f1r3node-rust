@@ -1,1 +1,0 @@
-../casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-window-unsafe-cfg.md
