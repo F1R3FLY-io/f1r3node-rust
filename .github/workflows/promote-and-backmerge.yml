@@ -56,7 +56,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: promote-dev-to-master
+  group: promote-and-backmerge
   cancel-in-progress: false
 
 jobs:
