@@ -198,7 +198,7 @@ The commands run the same scripts as `just promote` and `just backmerge`. The sc
 CI treats the two branches like `dev` and `master`:
 
 - A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
-- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to an approved pull request. Its head must not be a protected branch.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to every pull request when it opens. Its head must not be a protected branch.
 - An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
 
 Image publication:
@@ -236,15 +236,28 @@ The rulesets require a branch to be up to date before a merge. Mergify then acce
 
 Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
 
-Mergify adds the `ci-heavy` label to an approved pull request of this repository. It also adds the label to a pull request into `dev` or `ca-canary` from a member of `@F1R3FLY-io/ci-maintainers`. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
+Mergify adds the `ci-heavy` label to every open pull request of this repository into `dev`, `master`, `ca-canary`, and `ca-release`. It does not label a protected head, or a `ca-canary` pull request that is not a `ca/` item. A draft gets the label when it is ready for review. If someone removes the label, Mergify adds it again. The label runs the heavy pipeline on the pull request.
+
+Each push to a labeled pull request runs the heavy pipeline again. Each heavy run uses OCI instances from the shared daily quota, so push in batches. A `LimitExceeded` error means that the quota is used up for the day.
+
+Without a waiver, a queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`.
+
+A member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run on the member's own pull request into `dev` or `ca-canary`. To avoid any heavy run, open the pull request with `--label ci-heavy-waived`. On an open pull request:
+
+1. Add the `ci-heavy-waived` label. Mergify then does not add `ci-heavy` again.
+2. Remove the `ci-heavy` label.
+
+When the pull request has `ci-heavy-waived` and no `ci-heavy`, the **CI Heavy Label** workflow cancels the running CI run, including its OCI jobs. It then reruns CI with the current labels, so the heavy pipeline is skipped and the Integration Gate checks report skipped. Failed gate results of an earlier heavy run are replaced in the same way.
+
+The `dev` and `ca-item` queues accept the waiver only when the author is a ci-maintainers member. A waiver on another pull request does not count, so the pull request cannot merge until `ci-heavy` is back. `devProtect` requires both Integration Gate checks, and GitHub counts a skipped gate job as passing, so a waived pull request can merge into `dev`. The `master` and `ca-release` queues have no waiver. Every promotion and every hotfix needs `ci-heavy` and both gates.
 
 CI does not run on a `labeled` event. A run for a label replaces the checks of the pull request head with pending checks. The merge queue adds the `queued` label when it queues a pull request, so the required checks became pending and the merge failed (pull request #826).
 
-The **CI Heavy Label** workflow reruns the newest CI run of the head only when the `ci-heavy` label is added. The rerun keeps the `pull_request` event, and Resolve Target reads the current labels to start the heavy pipeline. Other labels, for example `queued` and `dequeued`, do not start CI. An edit of the pull request still starts CI, because a base change arrives as an edit.
+The **CI Heavy Label** workflow reruns the newest CI run of the head when the `ci-heavy` label is added, and when a waiver takes effect. It does not rerun a run whose heavy pipeline already runs or passed, so the label that Mergify adds at open does not restart CI. The rerun keeps the `pull_request` event, and Resolve Target reads the current labels to start or skip the heavy pipeline. Other labels, for example `queued` and `dequeued`, do not start CI. An edit of the pull request still starts CI, because a base change arrives as an edit.
 
 | Queue | Pull requests | Queue and merge conditions |
 |---|---|---|
-| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, reviews from requested reviewers, no requested changes, `ci-heavy`, the `devProtect` checks, Promotion Source, and the Integration Gates |
+| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, requested reviews, no requested changes, the `devProtect` checks, Promotion Source, and `ci-heavy` with the gates, or a maintainer waiver |
 | `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `ci-heavy` label, the `masterProtect` checks, Promotion Source, the casper shards, and the Integration Gates |
 | `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`, and also the `ca-soaked` label |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
@@ -254,14 +267,14 @@ To merge a pull request into `master` or `ca-release`, get an approving review.
 
 A member of `@F1R3FLY-io/ci-maintainers` can merge a pull request into `dev` or `ca-canary` without an approval. Any other author needs an approving review. In both cases, each requested reviewer or team must submit a review, and no review can request changes. A reviewer who does not agree must use **Request changes**. A comment-only review removes the request and does not block the merge.
 
-To merge any other pull request into `dev`, get an approving review. Mergify adds `ci-heavy`, queues the pull request, and merges it after the checks pass. A push to the pull request starts the checks again.
+To merge any other pull request into `dev`, get an approving review. Mergify adds `ci-heavy` when the pull request opens, queues it, and merges it after the checks pass. A push to the pull request starts the checks again.
 
 To merge a `ca/<item>` pull request:
 
 1. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
 2. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
 
-Mergify then adds `ci-heavy` and queues the pull request.
+Mergify queues the pull request. It added `ci-heavy` when the pull request opened.
 
 A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with this body line:
 
