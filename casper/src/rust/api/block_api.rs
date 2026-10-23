@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -636,6 +636,10 @@ impl BlockAPI {
 
         // Return early if validation fails
         validation_result.map_err(|e| eyre::Report::new(e))?;
+
+        d.data
+            .total_phlo_charge()
+            .map_err(|message| eyre::Report::new(DeployValidationError { message }))?;
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -1588,12 +1592,7 @@ impl BlockAPI {
         };
 
         let weights_map = proto_util::weight_map(block);
-        let weights_u64: HashMap<Bytes, u64> = weights_map
-            .into_iter()
-            .map(|(k, v)| (k, v as u64))
-            .collect();
-
-        let initial_fault = casper.normalized_initial_fault(weights_u64)?;
+        let initial_fault = casper.normalized_initial_fault(weights_map)?;
         let fault_tolerance = crate::rust::safety::initial_fault::display_projection(
             normalized_fault_tolerance,
             initial_fault,

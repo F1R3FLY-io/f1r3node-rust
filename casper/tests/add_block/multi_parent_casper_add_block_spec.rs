@@ -1318,8 +1318,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         .unwrap();
 
     let weight_map = proto_util::weight_map(&ctx.genesis.genesis_block);
-    let weight_map_u64: std::collections::HashMap<Validator, u64> =
-        weight_map.into_iter().map(|(k, v)| (k, v as u64)).collect();
+    let weight_map_u64 = weight_map;
 
     let normalized_fault = nodes[1]
         .casper
@@ -1475,11 +1474,11 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
 
     let bonds = {
         let mut bonds_map = std::collections::HashMap::new();
-        bonds_map.insert(validator_pks[0].clone(), 3i64);
-        bonds_map.insert(validator_pks[1].clone(), 1i64);
-        bonds_map.insert(validator_pks[2].clone(), 5i64);
-        bonds_map.insert(validator_pks[3].clone(), 2i64);
-        bonds_map.insert(validator_pks[4].clone(), 4i64);
+        bonds_map.insert(validator_pks[0].clone(), 3i64.into());
+        bonds_map.insert(validator_pks[1].clone(), 1i64.into());
+        bonds_map.insert(validator_pks[2].clone(), 5i64.into());
+        bonds_map.insert(validator_pks[3].clone(), 2i64.into());
+        bonds_map.insert(validator_pks[4].clone(), 4i64.into());
         bonds_map
     };
 
@@ -1615,9 +1614,13 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
 
     // Slashing should reduce the offender to the configured bond floor (currently 1 in tests).
     // Older behavior allowed 0, so keep this tolerant to either floor.
-    let min_stake = bonds.iter().map(|b| b.stake).min().unwrap_or(0);
+    let min_stake = bonds
+        .iter()
+        .map(|b| b.stake.clone())
+        .min()
+        .unwrap_or(0.into());
     assert!(
-        min_stake <= 1,
+        min_stake <= 1.into(),
         "Slashed validator should be reduced to bond floor (<=1), got {}",
         min_stake
     );
@@ -1684,11 +1687,11 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
     let slashed_validator_stake = bonds_after_second_slash
         .iter()
         .find(|b| b.validator == signed_block.sender)
-        .map(|b| b.stake)
-        .unwrap_or(0);
+        .map(|b| b.stake.clone())
+        .unwrap_or(0.into());
 
     assert!(
-        slashed_validator_stake <= 1,
+        slashed_validator_stake <= 1.into(),
         "Slashed validator should stay at bond floor (<=1) after second slashing attempt, got {}",
         slashed_validator_stake
     );
@@ -1696,7 +1699,7 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
     // Verify all stakes are non-negative
     for bond in &bonds_after_second_slash {
         assert!(
-            bond.stake >= 0,
+            bond.stake >= 0.into(),
             "All validator stakes should be non-negative, found: {}",
             bond.stake
         );

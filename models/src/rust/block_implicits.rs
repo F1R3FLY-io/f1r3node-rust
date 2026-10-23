@@ -36,7 +36,10 @@ pub fn bond_gen() -> impl Strategy<Value = Bond> {
     let validator_gen = prop::collection::vec(any::<u8>(), validator::LENGTH)
         .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec));
     let stake_gen = 1i64..=1024i64;
-    (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond { validator, stake })
+    (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond {
+        validator,
+        stake: stake.into(),
+    })
 }
 
 pub fn justification_gen() -> impl Strategy<Value = Justification> {

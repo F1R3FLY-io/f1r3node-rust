@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
 /// Casper configuration
@@ -185,10 +186,16 @@ pub struct GenesisBlockData {
     #[serde(rename = "wallets-file")]
     pub wallets_file: String,
 
-    #[serde(rename = "bond-minimum")]
-    pub bond_minimum: i64,
-    #[serde(rename = "bond-maximum")]
-    pub bond_maximum: i64,
+    #[serde(
+        rename = "bond-minimum",
+        with = "models::rust::serde_helpers::decimal_bigint"
+    )]
+    pub bond_minimum: BigInt,
+    #[serde(
+        rename = "bond-maximum",
+        with = "models::rust::serde_helpers::decimal_bigint"
+    )]
+    pub bond_maximum: BigInt,
 
     #[serde(rename = "epoch-length")]
     pub epoch_length: i32,
@@ -236,6 +243,15 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
+    pub fn validate_bond_limits(&self) -> Result<(), String> {
+        if self.bond_minimum < BigInt::from(1) || self.bond_maximum < self.bond_minimum {
+            return Err(
+                "bond-minimum must be at least 1 and no greater than bond-maximum".to_string(),
+            );
+        }
+        Ok(())
+    }
+
     /// Validates native-token-* fields. Called during config load so a
     /// misconfigured node fails startup loudly rather than baking bad
     /// values into genesis or serving misleading metadata via `/api/status`.
@@ -498,8 +514,8 @@ mod native_token_validation_tests {
             genesis_data_dir: String::new(),
             bonds_file: String::new(),
             wallets_file: String::new(),
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,

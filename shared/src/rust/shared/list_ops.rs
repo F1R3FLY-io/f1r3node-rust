@@ -41,12 +41,15 @@ impl ListOps {
     ///   Ordering.by((b: ByteString) => b.toByteArray.toIterable)  // Hash ascending
     /// )
     /// ```
-    pub fn sort_by_with_decreasing_order<A>(list: Vec<A>, map: &HashMap<A, i64>) -> Vec<A>
-    where A: Clone + Hash + Eq + Ord {
-        let mut scored_items: Vec<(i64, A)> = list
+    pub fn sort_by_with_decreasing_order<A, S>(list: Vec<A>, map: &HashMap<A, S>) -> Vec<A>
+    where
+        A: Clone + Hash + Eq + Ord,
+        S: Clone + Ord + Default,
+    {
+        let mut scored_items: Vec<(S, A)> = list
             .into_iter()
             .map(|e| {
-                let score = map.get(&e).cloned().unwrap_or(0); // map.getOrElse(e, 0L)
+                let score = map.get(&e).cloned().unwrap_or_default(); // map.getOrElse(e, 0L)
                 (score, e) // (score, e) tuple
             })
             .collect();

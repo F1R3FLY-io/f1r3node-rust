@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-19
+last_updated: 2026-10-23
 mr_status:
   ready: false
   target_branch: master
@@ -190,6 +190,53 @@ tasks:
       - "A manual workflow selects the node revision and 1 to 20 repetitions on one 64 GB runner."
       - "The benchmark has a 45-minute test limit and retains revision identities, timing measurements, and failure logs."
       - "Runner cleanup covers successful, failed, and cancelled manual runs."
+```
+
+---
+
+### EPIC-030: BigInt economic pipeline proposal based on PR #54
+
+```yaml
+epic_id: EPIC-030
+title: "BigInt economic pipeline proposal based on PR #54"
+status: complete
+completed_date: 2026-10-23
+priority: p1
+user_story: US-014
+branch: proposal/pr54-bigint-staking-fees
+base_commit: 604e1ea82b3b28ba4a12915c92fd2d85c1747a55
+base_pull_request: 54
+validation_report: docs/specs/pr54-bigint-validation.md
+authorization: "Create a proposal branch from PR #54, add the proposed changes, commit once, and push."
+protocol_decision: "Keep version 1. Activation, versioning, historical replay, and migration remain team decisions before deployment."
+tasks:
+  - id: TASK-030-1
+    title: "Propose the strict BigInt type predicate"
+    status: complete
+    claimed_by: codex-session-01a16578
+    acceptance:
+      - "Predicate tests cover evaluated values, arity, and gas accounting."
+  - id: TASK-030-2
+    title: "Propose checked fee arithmetic and replay safeguards"
+    status: complete
+    claimed_by: codex-session-01a16578
+    acceptance:
+      - "Fee boundaries, direct/API admission, proposal selection, and forged replay metadata tests pass."
+  - id: TASK-030-3
+    title: "Propose exact staking through consensus and APIs"
+    status: complete
+    claimed_by: codex-session-01a16578
+    acceptance:
+      - "100 ASI staking and peer replay preserve amounts."
+      - "Canonical encoding, schema protection, and API regressions pass."
+  - id: TASK-030-4
+    title: "Review, validate, commit, and publish the proposal branch"
+    status: complete
+    claimed_by: codex-session-01a16578
+    acceptance:
+      - "Opus reviews the proposal and confirmed defects are resolved."
+      - "Validation and compatibility limits are recorded."
+      - "One commit is pushed on the requested new branch without deployment."
 ```
 
 ---

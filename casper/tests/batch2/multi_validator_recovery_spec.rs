@@ -119,8 +119,8 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator_0.clone(), 100);
-        bonds_map.insert(validator_1.clone(), 100);
+        bonds_map.insert(validator_0.clone(), 100.into());
+        bonds_map.insert(validator_1.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
