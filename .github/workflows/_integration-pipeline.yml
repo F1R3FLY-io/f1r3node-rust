@@ -28,6 +28,11 @@ on:
         type: string
         required: false
         default: ""
+      build_id:
+        description: "Build identity for the selected source. Empty uses git describe."
+        type: string
+        required: false
+        default: ""
       gated:
         description: "When true, launch_ephemeral_runners uses the ephemeral-launch environment (required-reviewer approval)."
         type: boolean
@@ -81,6 +86,9 @@ jobs:
   build_docker_image:
     name: Build Docker Image (${{ matrix.arch }})
     needs: await_approval
+    outputs:
+      build_id: ${{ steps.identity.outputs.build_id }}
+      node_version: ${{ steps.identity.outputs.node_version }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -109,6 +117,7 @@ jobs:
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
           # Fork PRs reach this pipeline through ci-fork-pr.yml's
           # pull_request_target, and recent actions/checkout releases refuse to
@@ -143,11 +152,34 @@ jobs:
             echo "Docker daemon config already up to date, skipping restart"
           fi
 
+      - name: Resolve build identity
+        id: identity
+        env:
+          REQUESTED_BUILD_ID: ${{ inputs.build_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          VERSION="$REQUESTED_BUILD_ID"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(git describe --tags --always)"
+          fi
+          if [[ -z "$VERSION" || "$VERSION" == unknown || "$VERSION" =~ [[:space:][:cntrl:]] ]]; then
+            echo "::error::The build identity must be known and contain no whitespace or control characters."
+            exit 1
+          fi
+          NODE_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' node/Cargo.toml | head -n 1)"
+          if [ -z "$NODE_VERSION" ]; then
+            echo "::error::Cannot read the node package version from node/Cargo.toml."
+            exit 1
+          fi
+          echo "build_id=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "node_version=$NODE_VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build Docker Image
+        env:
+          VERSION: ${{ steps.identity.outputs.build_id }}
         shell: bash -ex {0}
         run: |
           docker context use default
-          VERSION="$(git describe --tags --always)"
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --file node/Dockerfile \
@@ -155,6 +187,14 @@ jobs:
             --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
             --load \
             .
+
+      - name: Verify image build identity
+        env:
+          IMAGE_NAME: ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }}
+          EXPECTED_BUILD_ID: ${{ steps.identity.outputs.build_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          bash .github/scripts/check-image-build-identity.sh "$IMAGE_NAME" "$EXPECTED_BUILD_ID"
 
       - name: Export Docker Image
         shell: bash -ex {0}
@@ -989,9 +1029,25 @@ jobs:
           done
           docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs 2>&1 | grep "Making a transition to Running state" || (echo "FAIL: Node did not reach Running state" && exit 1)
 
-      - name: Verify HTTP API
-        shell: bash -ex {0}
-        run: curl -sf http://localhost:14403/api/status
+      - name: Verify node build identity
+        env:
+          EXPECTED_BUILD_ID: ${{ needs.build_docker_image.outputs.build_id }}
+          NODE_VERSION: ${{ needs.build_docker_image.outputs.node_version }}
+        shell: bash -exu -o pipefail {0}
+        run: |
+          test -n "$EXPECTED_BUILD_ID"
+          test "$EXPECTED_BUILD_ID" != unknown
+          EXPECTED="F1r3node Rust $NODE_VERSION ($EXPECTED_BUILD_ID)"
+          STATUS_VERSION="$(curl -fsS http://localhost:14403/api/status | jq -er '.version.node')"
+          HTTP_VERSION="$(curl -fsS http://localhost:14403/version)"
+          test "$STATUS_VERSION" = "$EXPECTED"
+          test "$HTTP_VERSION" = "$EXPECTED"
+          GRPC_VERSION="$(docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml \
+            exec -T standalone grpcurl -plaintext 127.0.0.1:40401 casper.v1.DeployService/status \
+            | jq -er '.status.version.node')"
+          test "$GRPC_VERSION" = "$EXPECTED"
+          docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs --no-color \
+            | grep -F "$EXPECTED"
 
       - name: Wait for 10 finalized blocks
         shell: bash -ex {0}

@@ -1,5 +1,7 @@
 extern crate tonic_prost_build;
 
+mod build_identity;
+
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -48,14 +50,35 @@ fn main() {
         ])
         .expect("Failed to compile proto files");
 
-    let git_hash = Command::new("git")
-        .args(["rev-parse", "--short=7", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|hash| hash.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let explicit = env::var("F1R3NODE_BUILD_ID")
+        .map(Some)
+        .unwrap_or_else(|error| match error {
+            env::VarError::NotPresent => None,
+            env::VarError::NotUnicode(_) => panic!("F1R3NODE_BUILD_ID must contain valid UTF-8"),
+        });
+    let build_id = build_identity::resolve_build_id(explicit.as_deref(), || {
+        Command::new("git")
+            .current_dir(&manifest_dir)
+            .args(["describe", "--tags", "--always"])
+            .output()
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
 
-    println!("cargo:rustc-env=GIT_HASH_SHORT={}", git_hash);
-    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rustc-env=F1R3NODE_BUILD_ID={build_id}");
+    println!("cargo:rerun-if-env-changed=F1R3NODE_BUILD_ID");
+    println!("cargo:rerun-if-changed=build_identity.rs");
+
+    if explicit
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        for path in build_identity::git_metadata_paths(&manifest_dir, |args| {
+            Command::new("git")
+                .current_dir(&manifest_dir)
+                .args(args)
+                .output()
+        }) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 }
