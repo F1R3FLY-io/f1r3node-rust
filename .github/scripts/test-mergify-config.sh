@@ -22,7 +22,7 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
   maintainer = {"or" => ["#approved-reviews-by>=1", "author=@F1R3FLY-io/ci-maintainers"]}
   heavy_or = {"or" => [
     {"and" => ["label=ci-heavy"] + heavy.map { |h| "check-success=#{h}" }},
-    {"and" => ["label=ci-heavy-waived", {"or" => ["author=@F1R3FLY-io/ci-maintainers", "approved-reviews-by=@F1R3FLY-io/ci-maintainers"]}]},
+    {"and" => ["label=ci-heavy-waived", "author=@F1R3FLY-io/ci-maintainers"]},
   ]}
   maintained = ["#review-requested=0", "#changes-requested-reviews-by=0"]
   queues = doc.fetch("queue_rules").to_h { |q| [q.fetch("name"), q] }
@@ -150,15 +150,17 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
       %w[dev master ca-canary ca-release].each { |b| errors << "the ci-heavy rule skips #{b}" unless re.match?(b) }
       %w[staging feature/x].each { |b| errors << "the ci-heavy rule labels #{b}" if re.match?(b) }
     end
-    ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-closed", "-draft", "-head~=^backmerge/ca-release-"].each do |x|
+    ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-closed", "-draft", "-head~=^backmerge/ca-release-", "-head~=^(dev|master|ca-canary|ca-release)$"].each do |x|
       errors << "the ci-heavy rule does not require #{x}" unless c.include?(x)
     end
     waiver = {"or" => ["-label=ci-heavy-waived", "base~=^(master|ca-release)$"]}
     errors << "the ci-heavy rule ignores a waiver into dev or ca-canary, or honors one into master or ca-release" unless Array(label.first["conditions"]).include?(waiver)
     errors << "the ci-heavy rule still waits for an approval" if c.any? { |x| x.include?("approved-reviews-by") }
+    ca_heads = {"or" => ["-base=ca-canary", "head~=^ca/"]}
+    errors << "the ci-heavy rule labels a ca-canary pull request that is not a ca/ item" unless Array(label.first["conditions"]).include?(ca_heads)
   end
 
   abort errors.map { |e| "FAIL: #{e}" }.join("\n") unless errors.empty?
 ' "$CONFIG"
 
-printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. The queue is serial, and each queue checks one pull request in place, without retries, and with identical queue and merge conditions. Each queue merges with a merge commit. The dev and master queues require every ruleset check. The master and ca-release queues require ci-heavy and both Integration gates. The dev and ca-item queues require them or a ci-heavy-waived label with a ci-maintainers author or approval. Each heavy queue requires a review and a head of this repository. One rule adds ci-heavy to every pull request, except a waived pull request into dev or ca-canary.\n'
+printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. The queue is serial, and each queue checks one pull request in place, without retries, and with identical queue and merge conditions. Each queue merges with a merge commit. The dev and master queues require every ruleset check. The master and ca-release queues require ci-heavy and both Integration gates. The dev and ca-item queues require them or a ci-heavy-waived label with a ci-maintainers author. Each heavy queue requires a review and a head of this repository. One rule adds ci-heavy to every pull request, except a protected head, a ca-canary pull request that is not a ca/ item, and a waived pull request into dev or ca-canary.\n'
