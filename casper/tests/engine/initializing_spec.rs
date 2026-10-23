@@ -250,16 +250,6 @@ impl InitializingSpec {
             &fixture.network_id,
             models::casper::ForkChoiceTipRequestProto::default(),
         ));
-        // After the genesis BlockMessage lands and is saved, the joiner fires
-        // a MergeableEntryRequest for the same hash.
-        expected_requests.push(packet_with_content(
-            &local_for_expected,
-            &fixture.network_id,
-            models::casper::MergeableEntryRequestProto {
-                block_hash: genesis.block_hash.clone(),
-            },
-        ));
-
         let test = async {
             engine_cell.set(initializing_engine.clone()).await;
 

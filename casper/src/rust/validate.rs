@@ -163,6 +163,16 @@ impl Validate {
     }
 
     pub fn approved_block(approved_block: &ApprovedBlock) -> bool {
+        if matches!(
+            Self::block_hash(&approved_block.candidate.block),
+            Either::Left(_)
+        ) {
+            tracing::warn!(
+                "Received invalid ApprovedBlock message: the candidate block does not match its block hash."
+            );
+            return false;
+        }
+
         let candidate_bytes_digest =
             Blake2b256::hash(approved_block.clone().candidate.to_proto().encode_to_vec());
         let required_signatures = approved_block.candidate.required_sigs;
@@ -234,6 +244,21 @@ impl Validate {
         verified
     }
 
+    pub fn block_hash_and_signature(b: &BlockMessage) -> Result<(), InvalidBlock> {
+        if matches!(Self::block_hash(b), Either::Left(_)) {
+            return Err(InvalidBlock::InvalidBlockHash);
+        }
+        if !Self::block_signature(b) {
+            return Err(InvalidBlock::InvalidSignature);
+        }
+        Ok(())
+    }
+
+    pub fn historical_block(b: &BlockMessage) -> bool {
+        matches!(Self::block_hash(b), Either::Right(_))
+            && (proto_util::block_number(b) == 0 || Self::block_signature(b))
+    }
+
     pub fn block_sender_has_weight(
         b: &BlockMessage,
         genesis: &BlockMessage,
@@ -277,6 +302,19 @@ impl Validate {
             false
         } else if b.body.state.post_state_hash.is_empty() {
             tracing::warn!("{}", Self::ignore(b, "block post state hash is empty."));
+            false
+        } else if !b
+            .justifications
+            .windows(2)
+            .all(|pair| pair[0].validator < pair[1].validator)
+        {
+            tracing::warn!(
+                "{}",
+                Self::ignore(
+                    b,
+                    "block justifications are not in strictly ascending validator order."
+                )
+            );
             false
         } else {
             true
@@ -2091,5 +2129,119 @@ mod merge_recovery_validation_tests {
             Validate::neglected_invalid_block(&block, &mut snapshot),
             Either::Right(ValidBlock::Valid)
         ));
+    }
+}
+
+#[cfg(test)]
+mod justification_order_tests {
+    use models::rust::block_implicits::get_random_block_default;
+    use models::rust::casper::protocol::casper_message::Justification;
+
+    use super::*;
+
+    #[test]
+    fn format_of_fields_requires_strictly_ascending_justifications() {
+        let justification = |validator: u8| Justification {
+            validator: vec![validator; 65].into(),
+            latest_block_hash: vec![0; 32].into(),
+        };
+        let mut block = get_random_block_default();
+        block.sig = vec![1].into();
+        block.sig_algorithm = "secp256k1".to_string();
+
+        block.justifications = vec![justification(1), justification(2)];
+        assert!(Validate::format_of_fields(&block));
+
+        block.justifications = vec![justification(2), justification(1)];
+        assert!(!Validate::format_of_fields(&block));
+
+        block.justifications = vec![justification(1), justification(1)];
+        assert!(!Validate::format_of_fields(&block));
+    }
+}
+
+#[cfg(test)]
+mod previous_hash_rule_tests {
+    use models::rust::block_implicits::get_random_block_default;
+    use models::rust::casper::protocol::casper_message::{ApprovedBlock, ApprovedBlockCandidate};
+    use prost::Message;
+
+    use super::*;
+    use crate::rust::engine::casper_launch::ensure_compatible_approved_block;
+
+    fn previous_rule_hash(block: &BlockMessage) -> BlockHash {
+        let bytes: Vec<u8> = block
+            .header
+            .to_proto()
+            .encode_to_vec()
+            .into_iter()
+            .chain(block.body.to_proto().encode_to_vec())
+            .chain(block.sender.clone())
+            .chain(block.sig_algorithm.as_bytes().to_vec())
+            .chain(block.seq_num.to_le_bytes())
+            .chain(block.shard_id.as_bytes().to_vec())
+            .chain(block.extra_bytes.clone())
+            .collect();
+        Blake2b256::hash(bytes).into()
+    }
+
+    fn approved(block: BlockMessage) -> ApprovedBlock {
+        ApprovedBlock {
+            candidate: ApprovedBlockCandidate {
+                block,
+                required_sigs: 0,
+            },
+            sigs: vec![],
+            floor_seed: None,
+        }
+    }
+
+    #[test]
+    fn blocks_hashed_by_the_previous_rule_are_refused() {
+        let mut block = get_random_block_default();
+        block.block_hash = previous_rule_hash(&block);
+
+        assert!(matches!(
+            Validate::block_hash(&block),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockHash))
+        ));
+        assert!(!Validate::approved_block(&approved(block.clone())));
+        assert!(ensure_compatible_approved_block(&approved(block.clone())).is_err());
+
+        block.block_hash = proto_util::hash_block(&block);
+        assert!(Validate::approved_block(&approved(block.clone())));
+        assert!(ensure_compatible_approved_block(&approved(block)).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod historical_block_tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rust::block_implicits::get_random_block_default;
+
+    use super::*;
+    use crate::rust::validator_identity::ValidatorIdentity;
+
+    #[test]
+    fn historical_blocks_need_a_valid_signature_except_genesis() {
+        let (secret_key, _) = Secp256k1.new_key_pair();
+        let mut block = get_random_block_default();
+        block.body.state.block_number = 5;
+        let signed = ValidatorIdentity::new(&secret_key).sign_block(&block);
+        assert!(Validate::historical_block(&signed));
+
+        let mut tampered = signed.clone();
+        tampered.sig = vec![0u8; 70].into();
+        assert!(matches!(Validate::block_hash(&tampered), Either::Right(_)));
+        assert!(!Validate::historical_block(&tampered));
+
+        let mut genesis = get_random_block_default();
+        genesis.body.state.block_number = 0;
+        genesis.sender = Bytes::new();
+        genesis.sig = Bytes::new();
+        genesis.sig_algorithm = String::new();
+        genesis.block_hash = proto_util::hash_block(&genesis);
+        assert!(Validate::historical_block(&genesis));
     }
 }
