@@ -6,11 +6,23 @@
 # included. An org admin who must merge by hand changes that ruleset, and the
 # audit log records the change. docs/ci.md describes the rulesets.
 #
-# Mergify adds ci-heavy to an approved pull request of this repository, so the
-# heavy pipeline runs on its head. A queue merges only after the Integration
+# Mergify adds ci-heavy to every open pull request of this repository into
+# dev, master, ca-canary, and ca-release, so the heavy pipeline runs on its
+# head. A draft gets the label when it is ready for review. If the label is
+# removed, Mergify adds it again. A queue merges only after the Integration
 # gates succeed. check-success does not accept a skipped check, so a pull
 # request without a heavy run cannot merge. Each queue checks one pull request
 # at a time on its own head, after Mergify merges the current base into it.
+#
+# Waiver. Only the dev and ca-item queues accept the ci-heavy-waived label in
+# place of ci-heavy and the Integration gates. The waiver counts only when the
+# author is in the ci-maintainers team or a ci-maintainers member approved the
+# pull request. A waiver from anyone else leaves the pull request without a
+# valid path, so it cannot merge. Mergify does not add ci-heavy again to a
+# waived pull request into dev or ca-canary. The master and ca-release queues
+# have no waiver: every promotion and hotfix needs ci-heavy and both gates.
+# devProtect requires both gates, and GitHub counts a skipped gate job as
+# passing, so a waived pull request can merge into dev.
 #
 # The rulesets require a branch to be up to date before a merge. Mergify then
 # accepts only in-place checks: a serial queue with one check at a time, a
@@ -68,7 +80,16 @@ queue_rules:
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - -head~=^(dev|master|ca-canary|ca-release)$
       - -draft
-      - label=ci-heavy
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - or:
+                  - author=@F1R3FLY-io/ci-maintainers
+                  - approved-reviews-by=@F1R3FLY-io/ci-maintainers
       - or:
           - "#approved-reviews-by>=1"
           - author=@F1R3FLY-io/ci-maintainers
@@ -95,14 +116,21 @@ queue_rules:
       - check-success=Test (casper 1/2)
       - check-success=Test (casper 2/2)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
     merge_conditions:
       - base=dev
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - -head~=^(dev|master|ca-canary|ca-release)$
       - -draft
-      - label=ci-heavy
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - or:
+                  - author=@F1R3FLY-io/ci-maintainers
+                  - approved-reviews-by=@F1R3FLY-io/ci-maintainers
       - or:
           - "#approved-reviews-by>=1"
           - author=@F1R3FLY-io/ci-maintainers
@@ -129,8 +157,6 @@ queue_rules:
       - check-success=Test (casper 1/2)
       - check-success=Test (casper 2/2)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
 
   - name: master
     batch_size: 1
@@ -203,7 +229,16 @@ queue_rules:
       - base=ca-canary
       - head~=^ca/
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
-      - label=ci-heavy
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - or:
+                  - author=@F1R3FLY-io/ci-maintainers
+                  - approved-reviews-by=@F1R3FLY-io/ci-maintainers
       - or:
           - "#approved-reviews-by>=1"
           - author=@F1R3FLY-io/ci-maintainers
@@ -227,13 +262,20 @@ queue_rules:
       - check-success=Test (casper 1/2)
       - check-success=Test (casper 2/2)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
     merge_conditions:
       - base=ca-canary
       - head~=^ca/
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
-      - label=ci-heavy
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - or:
+                  - author=@F1R3FLY-io/ci-maintainers
+                  - approved-reviews-by=@F1R3FLY-io/ci-maintainers
       - or:
           - "#approved-reviews-by>=1"
           - author=@F1R3FLY-io/ci-maintainers
@@ -257,8 +299,6 @@ queue_rules:
       - check-success=Test (casper 1/2)
       - check-success=Test (casper 2/2)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
 
   - name: ca-daily
     batch_size: 1
@@ -349,19 +389,17 @@ queue_rules:
       - check-success=Integration Gate (arm64)
 
 pull_request_rules:
-  - name: Run the heavy pipeline for an approved pull request
+  - name: Add ci-heavy to every pull request
     conditions:
       - base~=^(dev|master|ca-canary|ca-release)$
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - -head~=^backmerge/ca-release-
+      - -closed
       - -draft
       - -label=ci-heavy
       - or:
-          - "#approved-reviews-by>=1"
-          - and:
-              - base~=^(dev|ca-canary)$
-              - author=@F1R3FLY-io/ci-maintainers
-      - "#changes-requested-reviews-by=0"
+          - -label=ci-heavy-waived
+          - base~=^(master|ca-release)$
     actions:
       label:
         add:
