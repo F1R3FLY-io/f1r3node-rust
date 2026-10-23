@@ -111,7 +111,7 @@ async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
     .expect("Failed to create delegation deploy");
     let block_time = deploy.data.time_stamp;
 
-    let (state_hash, processed_deploys, _processed_system_deploys, bonds) = node
+    let (state_hash, processed_deploys, _processed_system_deploys, bonds, _deploy_hashes) = node
         .runtime_manager
         .compute_state_with_bonds(
             &genesis.genesis_block.body.state.post_state_hash,
