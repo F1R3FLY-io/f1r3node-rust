@@ -9,7 +9,7 @@ use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use crate::helper::rho_spec::RhoSpec;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn prepare_vault(hex_string: &str, balance: u64) -> Vault {
+fn prepare_vault(hex_string: &str, balance: u128) -> Vault {
     let pk_bytes = hex::decode(hex_string).expect("failed to decode hex public key");
     let pk = PublicKey::from_bytes(&pk_bytes);
 

@@ -1329,7 +1329,9 @@ mod router_tests {
                 .into_iter()
                 .collect(),
                 delegated_totals: [("validator".to_string(), 30)].into_iter().collect(),
-                delegator_rewards: [("delegator".to_string(), 4)].into_iter().collect(),
+                delegator_rewards: [("delegator".to_string(), "9223372036854775808".to_string())]
+                    .into_iter()
+                    .collect(),
                 pending_undelegations: [(
                     "delegator".to_string(),
                     [("validator".to_string(), PendingUndelegationInfo {
@@ -1362,7 +1364,7 @@ mod router_tests {
                     amount: 7,
                     unlock_block: 55,
                 }],
-                claimable_rewards: 4,
+                claimable_rewards: "9223372036854775808".to_string(),
                 total_active_delegated: 30,
                 total_pending_undelegation: 7,
                 block_number: 5,
@@ -1697,7 +1699,7 @@ mod router_tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["delegations"]["delegator"]["validator"], 30);
         assert_eq!(json["delegatedTotals"]["validator"], 30);
-        assert_eq!(json["delegatorRewards"]["delegator"], 4);
+        assert_eq!(json["delegatorRewards"]["delegator"], "9223372036854775808");
         assert_eq!(
             json["pendingUndelegations"]["delegator"]["validator"]["amount"],
             7
@@ -1721,7 +1723,7 @@ mod router_tests {
         );
         assert_eq!(json["pendingUndelegations"][0]["amount"], 7);
         assert_eq!(json["pendingUndelegations"][0]["unlockBlock"], 55);
-        assert_eq!(json["claimableRewards"], 4);
+        assert_eq!(json["claimableRewards"], "9223372036854775808");
         assert_eq!(json["totalActiveDelegated"], 30);
         assert_eq!(json["totalPendingUndelegation"], 7);
 
