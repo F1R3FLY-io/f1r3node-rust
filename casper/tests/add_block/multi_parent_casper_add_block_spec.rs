@@ -1,6 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/addblock/MultiParentCasperAddBlockSpec.scala
 
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
+use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
@@ -398,6 +399,125 @@ async fn multi_parent_casper_validate_should_reject_unbonded_sender_before_repla
         status,
         Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
     );
+}
+
+/// A forged block that names a main parent this node does not hold has an
+/// unknown sender authorization. It may wait for its dependencies, but only in
+/// the bounded in-memory pending area, never on disk.
+#[tokio::test]
+async fn multi_parent_casper_should_hold_a_block_with_an_unknown_main_parent_off_disk() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let mut block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    block.seq_num = 0;
+    block.header.parents_hash_list = vec![Bytes::from(vec![5u8; 32])];
+
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let forged = ValidatorIdentity::new(&sk).sign_block(&block);
+
+    let status = node.process_block(forged.clone()).await.unwrap();
+
+    assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+    assert!(node.block_store.is_pending(&forged.block_hash));
+    assert!(!node.casper.dag_contains(&forged.block_hash));
+}
+
+/// Out-of-order delivery: the child waits in the pending area until its
+/// parent is validated, then reaches disk and the DAG.
+#[tokio::test]
+async fn multi_parent_casper_should_validate_a_child_that_arrived_before_its_parent() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+
+    let parent_deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let child_deploy =
+        construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
+    let parent = nodes[0]
+        .add_block_from_deploys(&[parent_deploy])
+        .await
+        .unwrap();
+    let child = nodes[0]
+        .add_block_from_deploys(&[child_deploy])
+        .await
+        .unwrap();
+    assert_eq!(
+        child.header.parents_hash_list.first(),
+        Some(&parent.block_hash)
+    );
+
+    let status = nodes[1].process_block(child.clone()).await.unwrap();
+    assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+    assert!(nodes[1].block_store.is_pending(&child.block_hash));
+
+    let status = nodes[1].process_block(parent.clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+
+    let ready = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
+    assert!(ready.iter().any(|b| b.block_hash == child.block_hash));
+
+    let status = nodes[1].process_block(child.clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+    assert!(!nodes[1].block_store.is_pending(&child.block_hash));
+    assert!(nodes[1].contains(&child.block_hash));
+}
+
+/// A pending chain longer than the area limit: the oldest pending block is
+/// evicted, the rest reach the DAG once the chain's root arrives, and the
+/// evicted block is admitted directly when it is delivered again.
+#[tokio::test]
+async fn multi_parent_casper_should_recover_a_pending_chain_longer_than_the_area_limit() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+
+    let mut chain = Vec::new();
+    for i in 0..4 {
+        let deploy =
+            construct_deploy::basic_deploy_data(i, None, Some(ctx.shard_id.clone())).unwrap();
+        chain.push(nodes[0].add_block_from_deploys(&[deploy]).await.unwrap());
+    }
+
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 2,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+
+    for block in chain[1..].iter().rev() {
+        let status = nodes[1].process_block(block.clone()).await.unwrap();
+        assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+    }
+    assert_eq!(nodes[1].block_store.pending_blocks().len(), 2);
+    let evicted = &chain[3];
+    assert!(!nodes[1].block_store.is_pending(&evicted.block_hash));
+
+    let status = nodes[1].process_block(chain[0].clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+    loop {
+        let ready = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
+        if ready.is_empty() {
+            break;
+        }
+        for block in ready {
+            let status = nodes[1].process_block(block).await.unwrap();
+            assert_eq!(status, Either::Right(Valid));
+        }
+    }
+    for block in &chain[..3] {
+        assert!(nodes[1].contains(&block.block_hash));
+    }
+    assert!(!nodes[1].contains(&evicted.block_hash));
+
+    let status = nodes[1].process_block(evicted.clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+    assert!(nodes[1].contains(&evicted.block_hash));
+    assert!(nodes[1].block_store.pending_blocks().is_empty());
 }
 
 #[tokio::test]
