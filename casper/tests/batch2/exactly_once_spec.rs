@@ -472,7 +472,6 @@ async fn reinstated_effect_must_not_be_executed_again() {
     // retry, client resubmission; the seam models their common endpoint).
     nodes[2]
         .deploy_storage
-        .lock()
         .add(vec![loser_deploy.clone()])
         .expect("inject loser into deploy storage");
     nodes[2]
