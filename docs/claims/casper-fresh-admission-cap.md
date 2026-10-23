@@ -74,6 +74,13 @@ The first change let the cap follow the backlog without backpressure. A local `t
 
 ## Discharge plan
 
+Issue #712 removes the outer deploy-pool mutex without changing the admission rules.
+The candidate predicates, caps, retry gates, expiry rules, and FinalityProgress tracker retain their definitions.
+For fixed captured inputs, statements S1 through S8 retain the same results.
+The rejected-buffer mutex still covers its admission check and the pool insert.
+The preservation review must include the existing admission tests and CLAIM-DEPLOY-STORE-CONCURRENCY-001.
+This change does not discharge the pending soak obligations.
+
 1. Each statement has a unit test in `block_creator.rs` (`mod tests`). The tests call the admission functions with fixed values. **Done 2026-10-10.**
    - S1: `non_leader_fresh_admission_cap_follows_its_backlog_without_backpressure`
    - S2: `non_leader_fresh_admission_cap_is_bounded_by_the_fallback_maximum_and_the_shard_cap` and `the_soft_backpressure_backlog_cap_is_never_above_the_shard_cap`

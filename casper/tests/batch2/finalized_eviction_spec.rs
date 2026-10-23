@@ -38,7 +38,6 @@ fn test_ftt() -> FtThreshold { FtThreshold::from_f32_lossy(0.0) }
 
 fn pool_holds(node: &TestNode, sig: &Bytes) -> bool {
     node.deploy_storage
-        .lock()
         .read_all()
         .expect("read deploy pool")
         .iter()

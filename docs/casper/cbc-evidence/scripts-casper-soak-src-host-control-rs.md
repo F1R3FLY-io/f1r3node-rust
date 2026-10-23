@@ -6,31 +6,33 @@ The previous ledger remains in the archive below. Earlier reports retain their e
 
 The maintainer accepted the PR #811 owner scan change of this file, its narrower ownership guarantee, and its limitation on 2026-10-21 (PR #811, comment 6324960804) at revision `32798242d`. The owner scan skips a same-user process when its environment read fails with EACCES or EPERM. An owned process with an unreadable environment escapes cleanup and the OOM preference.
 
+The maintainer accepted the TASK-021-27 `stop-under` action of this file, its write check, and its limitations on 2026-10-23 (PR #827, review 5627170022) at revision `c1cf31d7e`.
+
 ```json
 {
   "artifact": {
     "path": "scripts/casper-soak/src/host_control.rs",
     "id": "scripts-casper-soak-src-host-control-rs",
-    "commit": "4c38b5489fe35b943d8d6c8db9b0e2103600fcb9",
+    "commit": "f7a2696bd91224ac237f52664b9df406d8420c98",
     "commit_is_base": false,
-    "sha256": "3c4c637574f6624f4e1d08518cee22eb8a99e76383f1fc92d0f489db6ed540a8",
+    "sha256": "31c99688f2475b8d9756cd6fdd2f49af54981e50a07160c8a3f479ad8e80cfed",
     "working_tree": true,
-    "sha256_before_change": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9"
+    "sha256_before_change": "3c4c637574f6624f4e1d08518cee22eb8a99e76383f1fc92d0f489db6ed540a8"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+    "docs/claims/casper-soak-harness.md": "670e2867bf40fb941a7e762b8624550c0feb8cdc45fe7efcfc7b69f3cc0cabc8"
   },
   "adapter": "embedded",
   "status": "discharged",
   "scope": "bounded-harness-only",
   "evidence": {
     "kind": "accepted-change",
-    "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json",
-    "sha256": "982fc077d124845f51132e013284af25a846e84fca7f3ff0a783a99699434756"
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json",
+    "sha256": "c24f610020098e953c6a6ca9194b062fb87c9ccf97b8eb1604dab9c872cde76a"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -43,7 +45,7 @@ The maintainer accepted the PR #811 owner scan change of this file, its narrower
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-10-21T19:43:20Z",
+  "verified_at": "2026-10-23T10:45:54Z",
   "previous_ledger": {
     "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
     "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
@@ -58,15 +60,15 @@ The maintainer accepted the PR #811 owner scan change of this file, its narrower
     "reason": "The execute function moved above the test module to satisfy clippy. The production region is byte-identical."
   },
   "evidence_before_change": {
-    "kind": "hosted-source-bound-workflow-renewal",
-    "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
-    "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    "kind": "accepted-change",
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json",
+    "sha256": "982fc077d124845f51132e013284af25a846e84fca7f3ff0a783a99699434756"
   },
   "acceptance": {
     "accepted_by": "jltatbeach",
-    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/811#issuecomment-6324960804",
-    "revision": "32798242d1ab26ffebb2946939d7246bd2899306",
-    "reviewed_at": "2026-10-21T19:43:20Z"
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/827#pullrequestreview-5627170022",
+    "revision": "c1cf31d7ed9224ccb83ebdd8de9d9ea8cd9b9c88",
+    "reviewed_at": "2026-10-23T10:45:54Z"
   }
 }
 ```
