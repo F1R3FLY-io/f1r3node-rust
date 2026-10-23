@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md

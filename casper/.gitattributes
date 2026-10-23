@@ -1,9 +1,11 @@
 /src/rust/engine/multi_parent_casper/snapshot.rs cbc=mandatory cbc-weight=high
-/src/rust/blocks/proposer/block_creator.rs cbc=mandatory cbc-weight=high
+/src/rust/blocks/proposer/block_creator.rs cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /src/rust/engine/multi_parent_casper/validation_dispatcher.rs cbc=mandatory cbc-weight=high
 /src/rust/finality/** cbc=mandatory cbc-weight=high
-/src/rust/merging/conflict_set_merger.rs cbc=mandatory cbc-weight=high
-/src/rust/merging/dag_merger.rs cbc=mandatory cbc-weight=high
+/src/rust/finality/deploy_lifecycle.rs cbc-evidence=docs/casper/cbc-evidence
+/src/rust/finality/floor_context.rs cbc-evidence=docs/casper/cbc-evidence
+/src/rust/merging/conflict_set_merger.rs cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/src/rust/merging/dag_merger.rs cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /src/rust/merging/deploy_chain_index.rs cbc=mandatory cbc-weight=high
 /src/rust/rholang/replay_runtime.rs cbc=mandatory cbc-weight=high
 /src/rust/util/rholang/interpreter_util.rs cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence

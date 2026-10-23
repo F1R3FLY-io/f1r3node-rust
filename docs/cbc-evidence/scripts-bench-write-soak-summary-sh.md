@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-bench-write-soak-summary-sh.md

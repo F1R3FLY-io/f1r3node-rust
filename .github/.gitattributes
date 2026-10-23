@@ -1,16 +1,16 @@
 /workflows/slashing-tests.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
-/workflows/merge-recovery-soak.yml cbc=mandatory cbc-weight=high
+/workflows/merge-recovery-soak.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /workflows/ca-soak-dispatch.yml cbc=mandatory cbc-weight=high
 /scripts/ca-soak-dispatch.sh cbc=mandatory cbc-weight=high
 /scripts/report-soak-gate.sh cbc=mandatory cbc-weight=high
 /scripts/test-soak-gate.sh cbc=mandatory cbc-weight=high
 /scripts/test-ca-soak-dispatch.sh cbc=mandatory cbc-weight=high
-/workflows/casper-carrier-index.yml cbc=mandatory cbc-weight=high
-/workflows/casper-authority-finality.yml cbc=mandatory cbc-weight=high
-/workflows/casper-authority-adapter.yml cbc=mandatory cbc-weight=high
-/workflows/casper-publication.yml cbc=mandatory cbc-weight=high
-/workflows/casper-recovery.yml cbc=mandatory cbc-weight=high
-/workflows/casper-merge-accounting.yml cbc=mandatory cbc-weight=high
-/workflows/casper-slashing.yml cbc=mandatory cbc-weight=high
-/workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high
-/workflows/casper-campaign-control.yml cbc=mandatory cbc-weight=high
+/workflows/casper-carrier-index.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-authority-finality.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-authority-adapter.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-publication.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-recovery.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-merge-accounting.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-slashing.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/casper-campaign-control.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence

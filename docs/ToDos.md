@@ -313,7 +313,7 @@ tasks:
       - "The independent verifier in top-level-gitlab-profile confirms the result."
   - id: TASK-026-6
     title: "Set the evidence directory per path"
-    status: in_progress
+    status: complete
     blocked_by: []
     decisions:
       - "2026-10-22: the maintainer chose shared-tooling support for several claims on one artifact (D1 option a). The consumer does not drop or merge claims. The request goes to top-level-gitlab-profile."
@@ -335,6 +335,11 @@ tasks:
       - "2026-10-22 R8 auditor: check-casper-claims.rs selects the audited claim record from a named ledger and fails closed on other layouts. Review package runs/casper-r8-named-claims-20261022-01, pending acceptance."
       - "2026-10-23 binding pin: the Slashing test suite (run 39873743499) failed because check-casper-soak-bindings.sh pinned the claims suite to 3 passed, and it failed with no message. The pin is 4, a mismatch names the suite and both result lines, and a failed container prints its output. The script joins the R8 review package. Mergify cancelled the queue request of 2026-10-22 23:24Z because commits were pushed after it."
       - "2026-10-23 R8 accepted: jltatbeach accepted the review package on PR #700 (comment 6363192996) at revision c49e736c2, after CI run 39940746978 and Slashing test suite run 39940746980 passed. The check-casper-claims.rs, claims.rs, and check-casper-soak-bindings.sh ledgers use acceptance record runs/casper-r8-named-claims-acceptance-20261023-01."
+      - "2026-10-23 tooling pin: the record moves from e8ba49f to tag cbc-r8-8a64da8 (8a64da86482aaa9dbf55fc9cf30a4ebc23d28d34). The tag contains R7. The verification runs use a read-only git archive of the tag."
+      - "2026-10-23 routing (maintainer decision: route all): the owner files set cbc-evidence=docs/casper/cbc-evidence on the 184 mandatory Casper artifacts that were not routed. formal /tlaplus/casper_soak/** and scripts /casper-soak/** carry the attribute on their glob lines. casper /src/rust/finality/** keeps its glob, and two exact lines route deploy_lifecycle.rs and floor_context.rs. Twenty exact lines in .github, casper, node, and scripts get the attribute."
+      - "2026-10-23 routing check with cbc-r8-8a64da8: attributes compare reports 184 changed paths, and each change only adds cbc-evidence. attributes lint reports no error, override, duplicate, or diagnostic. No non-Casper mandatory file is routed to docs/casper/cbc-evidence."
+      - "2026-10-23 symlinks (recorded decision: remove): the 193 docs/cbc-evidence symlinks into docs/casper/cbc-evidence are removed. Five of them belong to artifacts that are not cbc=mandatory (two deleted Python files, two design documents, and test-soak-disk-admission.sh). Two live references now use docs/casper/cbc-evidence (formal/tlaplus/soak_disk/README.md and the references list of CLAIM-SOAK-001). Historical run records keep their old paths."
+      - "2026-10-23 discharge check: cbc discharge --strict over the 408 mandatory files, with CBC_EVIDENCE_DIR unset, gives 408 rows and 179 gaps (exit 4) before and after. The per-file statuses are identical. check-casper-claims exits 0, and the models, claims, and interruption tests pass (4, 4, 2)."
     acceptance:
       - "Adoption runs use an immutable checkout of the R7 tag with no tracked changes, and the full tooling commit ID is recorded."
       - "interpreter_util.rs and the three C1 artifacts keep both claims in one ledger, in the multi-claim format of the shared tooling. No claim is dropped, and each artifact status is its weakest claim."

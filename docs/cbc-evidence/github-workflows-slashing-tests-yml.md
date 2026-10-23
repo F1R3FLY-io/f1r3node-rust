@@ -1,1 +1,0 @@
-../casper/cbc-evidence/github-workflows-slashing-tests-yml.md

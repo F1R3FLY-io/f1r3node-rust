@@ -1,4 +1,4 @@
 /tlaplus/node_observation/** cbc=mandatory cbc-weight=high
 /rocq/node_observation/** cbc=mandatory cbc-weight=high
 /rocq/node_authority/** cbc=mandatory cbc-weight=high
-/tlaplus/casper_soak/** cbc=mandatory cbc-weight=high
+/tlaplus/casper_soak/** cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
