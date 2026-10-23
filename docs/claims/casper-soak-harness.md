@@ -237,6 +237,8 @@ On 2026-10-22, TASK-021-27 added a residual stop to the end of each segment. The
 - **Limitation:** after a host protection breach, the soak already fails and must publish that failure promptly. The residual stop then kills and records within the disk stop budget, and it skips the write check.
 - Six unit tests and the fixture scenarios 2 and 6 of `scripts/bench/test-run-merge-recovery-soak.sh` cover the stop, the record, the write check, and the evidence scope. The unit tests are `residual_scan_records_why_the_owner_stop_missed_a_writer`, `residual_stop_fails_when_an_uninspectable_writer_keeps_writing`, `residual_stop_detects_writes_beside_a_future_dated_file`, `residual_stop_accepts_an_unchanged_tree_with_a_future_dated_file`, `residual_stop_without_a_quiet_window_still_kills_and_returns_promptly`, and `residual_stop_accepts_an_uninspectable_process_that_writes_elsewhere`.
 
+On 2026-10-23 the maintainer accepted this change, the wider cleanup guarantee, and its three limitations (PR #827, review 5627170022) at revision `c1cf31d7e`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-20261022-01/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
