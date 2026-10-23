@@ -14,7 +14,7 @@ CONFIG="${1:-$ROOT/.mergify.yml}"
 DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
 MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|cargo-deny|Commit Policy|Promotion Source'
 
-DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
+CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
   doc = YAML.load_file(ARGV[0])
   repo = "F1R3FLY-io/f1r3node-rust"
   heavy = ["Integration Gate (amd64)", "Integration Gate (arm64)"]
@@ -64,6 +64,34 @@ DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
     else
       (review - c).each { |r| errors << "queue #{name} does not require #{r}" }
       errors << "queue #{name} accepts a merge without an approval" if Array(q["queue_conditions"]).any? { |x| x.is_a?(Hash) }
+    end
+  end
+
+  if (q = queues["dev"])
+    owners = Array(q["queue_conditions"]).find do |x|
+      x.is_a?(Hash) && x["or"].is_a?(Array) && x["or"].any? { |y| y.to_s.start_with?("-files~=") }
+    end
+    if owners.nil?
+      errors << "queue dev does not enforce the CODEOWNERS paths"
+    else
+      %w[author=@F1R3FLY-io/ci-maintainers approved-reviews-by=@F1R3FLY-io/ci-maintainers].each do |x|
+        errors << "the dev code-owner condition does not accept #{x}" unless owners["or"].include?(x)
+      end
+      errors << "the dev code-owner condition has #{owners["or"].size} alternatives, not 3" unless owners["or"].size == 3
+      re = Regexp.new(owners["or"].find { |y| y.to_s.start_with?("-files~=") }.delete_prefix("-files~="))
+      File.readlines(ENV.fetch("CODEOWNERS")).each do |line|
+        pattern = line.strip.split(/\s+/).first
+        next if pattern.nil? || pattern.start_with?("#")
+        samples = if pattern.start_with?("/")
+          pattern.end_with?("/") ? [pattern[1..] + "x"] : [pattern[1..]]
+        else
+          [pattern, "casper/#{pattern}"]
+        end
+        samples.each { |p| errors << "the dev code-owner pattern misses #{p} (CODEOWNERS #{pattern})" unless re.match?(p) }
+      end
+      %w[casper/src/lib.rs docs/ci.md scripts/bench/run.sh .github/dependabot.yml README.md].each do |p|
+        errors << "the dev code-owner pattern matches #{p}, which CODEOWNERS does not own" if re.match?(p)
+      end
     end
   end
 

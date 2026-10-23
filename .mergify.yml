@@ -73,6 +73,10 @@ queue_rules:
           - "#approved-reviews-by>=1"
           - author=@F1R3FLY-io/ci-maintainers
       - "#review-requested=0"
+      - or:
+          - author=@F1R3FLY-io/ci-maintainers
+          - approved-reviews-by=@F1R3FLY-io/ci-maintainers
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
@@ -103,6 +107,10 @@ queue_rules:
           - "#approved-reviews-by>=1"
           - author=@F1R3FLY-io/ci-maintainers
       - "#review-requested=0"
+      - or:
+          - author=@F1R3FLY-io/ci-maintainers
+          - approved-reviews-by=@F1R3FLY-io/ci-maintainers
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
