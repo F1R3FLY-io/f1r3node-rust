@@ -37,6 +37,8 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
+    fn v6_engine(&self) -> Option<Arc<crate::rust::v6::V6Engine>> { self.v6.clone() }
+
     async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
         self.block_retriever
             .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)

@@ -211,6 +211,7 @@ pub(crate) struct FinalizationContext {
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
     pub(crate) divergence_monitor: Arc<DivergenceMonitor>,
+    pub(crate) v6: Option<Arc<crate::rust::v6::V6Engine>>,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -236,6 +237,7 @@ pub(crate) fn build_finalization_context<
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
         divergence_monitor: this.divergence_monitor.clone(),
+        v6: this.v6.clone(),
     }
 }
 
@@ -358,6 +360,7 @@ pub(crate) async fn compute_last_finalized_block(
         enable_mergeable_channel_gc,
         ftt,
         divergence_monitor,
+        v6,
     } = ctx;
     let observation_operation = observer.as_ref().and_then(|observer| observer.operation());
     let lfb_lookup_started = std::time::Instant::now();
@@ -600,6 +603,9 @@ pub(crate) async fn compute_last_finalized_block(
             );
         }
         let effect_result = new_lfb_found_effect((new_lfb.hash.clone(), ft_value)).await;
+        if let Some(engine) = &v6 {
+            engine.wake();
+        }
         if let Some(observer) = &observer {
             observer.emit(
                 crate::rust::soak_observer::EventKind::EffectReturn,
