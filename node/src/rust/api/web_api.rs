@@ -1011,9 +1011,12 @@ impl WebApi for WebApiImpl {
         let delegated_totals = self
             .get_pos_int_map("getDelegatedTotals", &resolved_hash)
             .await?;
-        let delegator_rewards = self
-            .get_pos_int_map("getDelegatorRewards", &resolved_hash)
-            .await?;
+        let delegator_rewards = parse_reward_map(
+            "getDelegatorRewards",
+            &self
+                .get_pos_value("getDelegatorRewards", &resolved_hash)
+                .await?,
+        )?;
         let pending_undelegations = self
             .get_pos_pending_undelegations("getPendingUndelegations", &resolved_hash)
             .await?;
@@ -1683,7 +1686,7 @@ pub struct DelegationsResponse {
     #[serde(rename = "delegatedTotals")]
     pub delegated_totals: HashMap<String, i64>,
     #[serde(rename = "delegatorRewards")]
-    pub delegator_rewards: HashMap<String, i64>,
+    pub delegator_rewards: HashMap<String, String>,
     #[serde(rename = "pendingUndelegations")]
     pub pending_undelegations: HashMap<String, HashMap<String, PendingUndelegationInfo>>,
     #[serde(rename = "blockNumber")]
@@ -1701,7 +1704,7 @@ pub struct DelegatorStateResponse {
     #[serde(rename = "pendingUndelegations")]
     pub pending_undelegations: Vec<PendingUndelegationEntry>,
     #[serde(rename = "claimableRewards")]
-    pub claimable_rewards: i64,
+    pub claimable_rewards: String,
     #[serde(rename = "totalActiveDelegated")]
     pub total_active_delegated: i64,
     #[serde(rename = "totalPendingUndelegation")]
@@ -1808,6 +1811,30 @@ fn parse_int_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, i64>> {
         values.insert(public_key.clone(), *data);
     }
     Ok(values)
+}
+
+fn parse_reward_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, String>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!("Expected map result from {}: {:?}", method, expr));
+    };
+
+    data.iter()
+        .map(|(public_key, value)| {
+            let amount = match value {
+                RhoExpr::ExprBigInt { data } => data.clone(),
+                RhoExpr::ExprInt { data } => data.to_string(),
+                _ => {
+                    return Err(eyre!(
+                        "Unexpected reward value type from {} for key {}: {:?}",
+                        method,
+                        public_key,
+                        value
+                    ));
+                }
+            };
+            Ok((public_key.clone(), amount))
+        })
+        .collect()
 }
 
 fn parse_nested_int_map(
@@ -1992,8 +2019,8 @@ fn delegator_state_from_snapshot(
     let claimable_rewards = snapshot
         .delegator_rewards
         .get(&pubkey)
-        .copied()
-        .unwrap_or_default();
+        .cloned()
+        .unwrap_or_else(|| "0".to_string());
 
     DelegatorStateResponse {
         public_key: pubkey,
@@ -3459,7 +3486,10 @@ mod tests {
                 HashMap::from([(validator_b.clone(), 7), (validator_a.clone(), 5)]),
             )]),
             delegated_totals: HashMap::from([(validator_a.clone(), 5), (validator_b.clone(), 7)]),
-            delegator_rewards: HashMap::from([(delegator.clone(), 11)]),
+            delegator_rewards: HashMap::from([(
+                delegator.clone(),
+                "9223372036854775808".to_string(),
+            )]),
             pending_undelegations: HashMap::from([(
                 delegator.clone(),
                 HashMap::from([
@@ -3477,6 +3507,8 @@ mod tests {
             block_hash: "block-hash".to_string(),
         };
 
+        let absent = delegator_state_from_snapshot("absent".to_string(), snapshot.clone());
+        assert_eq!(absent.claimable_rewards, "0");
         let state = delegator_state_from_snapshot(delegator.clone(), snapshot);
         let mut expected_active_delegations = vec![
             DelegationEntry {
@@ -3508,11 +3540,42 @@ mod tests {
         assert_eq!(state.public_key, delegator);
         assert_eq!(state.active_delegations, expected_active_delegations);
         assert_eq!(state.pending_undelegations, expected_pending_undelegations);
-        assert_eq!(state.claimable_rewards, 11);
+        assert_eq!(state.claimable_rewards, "9223372036854775808");
         assert_eq!(state.total_active_delegated, 12);
         assert_eq!(state.total_pending_undelegation, 5);
         assert_eq!(state.block_number, 42);
         assert_eq!(state.block_hash, "block-hash");
+    }
+
+    #[test]
+    fn delegation_reward_map_preserves_bigint_and_legacy_int_values() {
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([
+                ("large".to_string(), RhoExpr::ExprBigInt {
+                    data: "184467440737095516160000".to_string(),
+                }),
+                ("legacy".to_string(), RhoExpr::ExprInt { data: 42 }),
+            ]),
+        };
+        let rewards = parse_reward_map("getDelegatorRewards", &expr).unwrap();
+        assert_eq!(rewards["large"], "184467440737095516160000");
+        assert_eq!(rewards["legacy"], "42");
+        assert_eq!(
+            serde_json::to_value(rewards).unwrap()["large"],
+            "184467440737095516160000"
+        );
+    }
+
+    #[test]
+    fn delegation_reward_map_rejects_non_numeric_values() {
+        let value = RhoExpr::ExprString {
+            data: "42".to_string(),
+        };
+        assert!(parse_reward_map("getDelegatorRewards", &value).is_err());
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([("delegator".to_string(), value)]),
+        };
+        assert!(parse_reward_map("getDelegatorRewards", &expr).is_err());
     }
 
     fn sample_deploy_data() -> DeployData {
