@@ -225,6 +225,15 @@ On 2026-10-21 the maintainer accepted this change, the narrower guarantee, and i
 
 Later on 2026-10-21 the maintainer accepted a fixture fix (PR #811, comment 6326106207) at revision `c3a9a0a28`. Three assertions of `scripts/bench/test-run-merge-recovery-soak.sh` could not fail under `set -e`, and they now fail with a message. The [second acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-02/report.json) binds the fixture to its [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-02/report.json).
 
+On 2026-10-22, TASK-021-27 added a residual stop to the end of each segment. The change widens the cleanup guarantee, and it needs a fresh acceptance.
+
+- Daily soak 39711861154 on `dev` `f9340ed61` showed that the owner stop of PR #811 reported success while the nodes of two deadline-stopped subprocess sessions kept running. The nodes filled the disk after 18.3 h (issue #24, comment 6354292291).
+- After the owner stop, `host-control stop-under` kills every same-user process whose arguments or working directory are under `.subprocess-data`, whatever its owner marker. It does not consider its own process and its ancestors. A writer that does not stop fails the segment like a failed owner stop.
+- `residual-writers.txt` records each such process with its segment, name, match reason, environment readability, and owner-marker state. The record shows why the owner stop missed the process.
+- Under `.subprocess-data`, the failure-evidence copy takes only the session directories that the failed iteration created. A directory that existed before the iteration started is not copied.
+- **Limitation:** a same-user process that names a path under `.subprocess-data` in its arguments is stopped, also when it is not a soak writer. The soak runner is dedicated to one soak, so such a process is part of the soak.
+- The unit test `residual_scan_records_why_the_owner_stop_missed_a_writer` and the fixture scenarios 2 and 6 of `scripts/bench/test-run-merge-recovery-soak.sh` cover the stop, the record, and the evidence scope.
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.

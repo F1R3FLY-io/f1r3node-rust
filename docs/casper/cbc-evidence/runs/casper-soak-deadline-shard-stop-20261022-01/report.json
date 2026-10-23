@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-harness-residual-writer-stop",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "TASK-021-27 (stop the subprocess nodes of a deadline-stopped soak session, and fail closed when a writer remains)",
+    "branch": "fix/soak-deadline-shard-stop",
+    "base": "f9340ed6115c5d7101c7edddc4a4400abc5881e5",
+    "origin": "Daily soak 39711861154 on dev f9340ed61 (the PR #811 merge) stopped at the host disk floor after 18.3 h. The six nodes of session 58 (PIDs 2082849 to 2082858) ran after the segment 1 deadline until the end of the job, and the nodes of session 92 after the segment 2 deadline. The end-of-segment owner stop of PR #811 ran and reported success: no writer-stop-failure.txt exists. Evidence: issue #24 comment 6354292291.",
+    "driver": "After the owner stop, the end of each segment runs host-control stop-under on .subprocess-data. A residual writer that does not stop writes writer-stop-failure.txt, records writer_stop_failed unless an earlier reason exists, and changes a failure count of 0 to 1. Under .subprocess-data, the failure-evidence copy prunes the session directories that existed before the iteration started.",
+    "host_control": "New stop-under command. It scans /proc for same-user processes whose arguments (a path or a --option=path value with a path boundary) or working directory are under the directory. It excludes its own process and its ancestors, including PID 1. It records each process with its name, match reason, environment readability, and owner-marker state, kills it through its pidfd, and confirms the exit within 750 ms. same_user, pids, and reaped are extracted from owned and stop without a change of behavior.",
+    "fixture": "Scenario 2 adds a detached node without the owner marker that names its session directory in its arguments. Scenario 6 adds a stale .subprocess-data session that a running writer appends to while a failed iteration runs."
+  },
+  "guarantee_change": {
+    "before": "At the end of a segment, only same-user processes with a readable environment that contains the owner marker of the segment are stopped.",
+    "after": "At the end of a segment, every same-user process whose arguments or working directory are under .subprocess-data is also stopped, whatever its owner marker, and recorded in residual-writers.txt.",
+    "limitation": "A same-user process that names a path under .subprocess-data in its arguments is stopped, also when it is not a soak writer. The soak runner is dedicated to one soak.",
+    "claim_record": "docs/claims/casper-soak-harness.md, the paragraph of 2026-10-22"
+  },
+  "source_digests_before_change": {
+    "scripts/run-merge-recovery-soak.sh": "8486972f4b7ea2c2ba3433d0dc1c3b2cdd1efa58de01feebbe7e6726548b2758",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "3ff8305f3323e950c9a474b57dd24936de10461d6a5b6318cf129aef6ee953ba",
+    "scripts/casper-soak/src/host_control.rs": "3c4c637574f6624f4e1d08518cee22eb8a99e76383f1fc92d0f489db6ed540a8"
+  },
+  "source_digests": {
+    "scripts/run-merge-recovery-soak.sh": "b474196ff945779477207d8af781c88fd00c2702aaeac27ccbb1d37f39ae38eb",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "d70933e3d37af22aa0a0cd819d909ee86cdc700a43e820ff95153d1babb23a60",
+    "scripts/casper-soak/src/host_control.rs": "38a08666e167bee20a4425c95f8fdc9fec72ddb71afeb1c9f6023d5136c46891"
+  },
+  "claim_digests_before_change": {
+    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "c0297964dcd3ba7b32da3eb03d9c983683d7f908730effe5db4e54da1df25be1"
+  },
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "fixture_local": {
+      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "environment": "rust:bookworm container on arm64, run as UID 1000 (non-root), with a 12 GB tmpfs /tmp and the casper-soak binary built from the same tree. A 6 GB /tmp is inside the 8 GB disk hygiene band and makes scenario 1 stop at the disk floor.",
+      "exit": 0
+    },
+    "fixture_before_fix": {
+      "tree": "the fixture of this change with the driver and host_control.rs at the base",
+      "result": "failed: a node without the owner marker survived the segment"
+    },
+    "driver_mutations": {
+      "method": "Each mutation edits a scratch copy of the driver. The fixture of the same tree runs against it.",
+      "results": {
+        "no-stale-prune": "failed: the failure-evidence copy took the files of a stale session",
+        "no-residual-stop": "failed: a node without the owner marker survived the segment (the run before the fix)"
+      },
+      "survived": 0
+    },
+    "host_control_unit_tests": {
+      "command": "casper-soak unit test binary, host_control tests, --test-threads=1, 4 GB tmpfs /tmp",
+      "as_uid_65534": "13 passed, 1 ignored",
+      "as_root": "13 passed, 1 ignored",
+      "red_before_implementation": "the five new tests did not compile without names, residual, owner_state, ancestors, and stop_under",
+      "parallel_note": "Run in parallel at the base, stop_kills_only_exact_owner_markers and stop_skips_a_process_whose_environment_is_unreadable failed in 1 of 3 runs, as the PR #811 package recorded."
+    },
+    "static": {
+      "clippy": "cargo clippy -p casper-soak --all-targets -D warnings on Linux: no findings",
+      "rustfmt": "no changes",
+      "shellcheck": "no new findings in the driver or the fixture (19 and 1 at the base and after the change)",
+      "check_casper_claims": "exit 0",
+      "ste": "the claim paragraph passes the STE Check; human STE Review pending"
+    }
+  },
+  "hosted": "pending",
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "the pull request of fix/soak-deadline-shard-stop",
+    "scope": "One acceptance covers the driver, host_control.rs, the fixture, the claim paragraph, and the wider guarantee with its limitation."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The three ledger records keep their accepted digests until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": "2026-10-22"
+}

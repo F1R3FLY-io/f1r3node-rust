@@ -2254,12 +2254,25 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 					tee -a "$OUTPUT_DIR/emergency-skipped.txt" >&2
 				continue
 			fi
+			# A subprocess node of an earlier, deadline-stopped session keeps
+			# writing its logs in its own session directory, and soak
+			# 39711861154 copied 1.6 to 5.7 GB of them into each failed
+			# iteration. Under .subprocess-data, copy only the session
+			# directories that this iteration created.
+			stale_sessions=false
+			[ "$evidence_name" != .subprocess-data ] || stale_sessions=true
 			session_bounded "$copy_budget" bash -c '
 				cd "$1" &&
-					find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
-						-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0 |
+					if [ "$4" = true ]; then
+						find . -path "./*" ! -path "./*/*" -type d ! -newer "$3" -prune -o \
+							-type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+							-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0
+					else
+						find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+							-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0
+					fi |
 					tar --null -T - -cf - |
-					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" ||
+					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" "$stale_sessions" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
 		done
@@ -2359,6 +2372,31 @@ if [ "$CASPER_RUNTIME" -eq 0 ] && ! stop_node_writers -q kill >/dev/null 2>&1; t
 	fi
 	if [ "$FAILURES" -eq 0 ]; then
 		FAILURES=1
+	fi
+fi
+
+# The owner stop above reported success in soak 39711861154, but the nodes of
+# the two deadline-stopped subprocess sessions kept running and filled the disk.
+# A subprocess node names its session directory in its arguments, so stop every
+# process of this user whose arguments or working directory are under
+# .subprocess-data, whatever its owner marker. residual-writers.txt records each
+# one with its environment and owner state, which shows why the owner stop
+# missed it. A writer that remains fails the soak like a failed owner stop.
+SUBPROCESS_DATA_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
+if [ "$CASPER_RUNTIME" -eq 0 ] && [ -d "$SUBPROCESS_DATA_DIR" ]; then
+	residual_status=0
+	residual_lines="$(timeout --signal=KILL 30 "$SOAK_HARNESS_BIN" host-control stop-under \
+		--owner "$SOAK_WRITER_OWNER" "$SUBPROCESS_DATA_DIR" 2>/dev/null)" || residual_status=$?
+	[ -z "$residual_lines" ] || printf '%s\n' "$residual_lines" | sed "s/^/segment=$SEGMENT /" >>"$OUTPUT_DIR/residual-writers.txt"
+	if [ "$residual_status" -ne 0 ]; then
+		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+		if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
+			EARLY_EXIT_REASON="writer_stop_failed"
+			publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
+		fi
+		if [ "$FAILURES" -eq 0 ]; then
+			FAILURES=1
+		fi
 	fi
 fi
 

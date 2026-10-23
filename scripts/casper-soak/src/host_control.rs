@@ -15,6 +15,11 @@ enum Action {
     StopOwned {
         owner: String,
     },
+    StopUnder {
+        #[arg(long)]
+        owner: String,
+        directory: PathBuf,
+    },
     PreferOom {
         owner: String,
     },
@@ -209,21 +214,65 @@ mod linux {
         directory: File,
     }
 
-    fn owned(owner: &str) -> Result<(Vec<Owned>, bool)> {
-        ensure!(
-            !owner.is_empty() && owner.len() <= 256 && !owner.chars().any(char::is_control),
-            "The owner marker is invalid."
-        );
-        let marker = format!("SOAK_PROCESS_OWNER={owner}");
+    fn same_user(directory: &File) -> Result<bool> {
+        let status = String::from_utf8(bounded(
+            child(directory, "status", false, false)?,
+            RECORD_LIMIT,
+        )?)?;
+        let uid_line = status
+            .lines()
+            .find(|line| line.starts_with("Uid:"))
+            .ok_or_else(|| eyre!("The process UID is unavailable."))?;
+        let uids = uid_line[4..]
+            .split_whitespace()
+            .map(str::parse::<u32>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        ensure!(uids.len() == 4, "The process UID is invalid.");
+        Ok(uids[1] == unsafe { libc::geteuid() })
+    }
+
+    fn pids() -> Result<Vec<i32>> {
         let entries = fs::read_dir("/proc")?.collect::<io::Result<Vec<_>>>()?;
         let mut pids: Vec<i32> = entries
             .iter()
             .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
             .collect();
         pids.sort_unstable();
+        Ok(pids)
+    }
+
+    fn reaped<'a>(processes: impl Iterator<Item = &'a File>) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(750);
+        let mut confirmed = true;
+        for process in processes {
+            loop {
+                let remaining = deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis() as i32;
+                match exited(process, remaining) {
+                    Ok(true) => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted && remaining > 0 => {
+                        continue
+                    }
+                    _ => {
+                        confirmed = false;
+                        break;
+                    }
+                }
+            }
+        }
+        confirmed
+    }
+
+    fn owned(owner: &str) -> Result<(Vec<Owned>, bool)> {
+        ensure!(
+            !owner.is_empty() && owner.len() <= 256 && !owner.chars().any(char::is_control),
+            "The owner marker is invalid."
+        );
+        let marker = format!("SOAK_PROCESS_OWNER={owner}");
         let mut result = Vec::new();
         let mut failed = false;
-        for pid in pids {
+        for pid in pids()? {
             let process = match open_pid(pid) {
                 Ok(fd) => fd,
                 Err(error) if error.raw_os_error() == Some(libc::ESRCH) => continue,
@@ -234,20 +283,7 @@ mod linux {
             };
             let scan = (|| -> Result<Option<Owned>> {
                 let directory = directory(Path::new(&format!("/proc/{pid}")))?;
-                let status = String::from_utf8(bounded(
-                    child(&directory, "status", false, false)?,
-                    RECORD_LIMIT,
-                )?)?;
-                let uid_line = status
-                    .lines()
-                    .find(|line| line.starts_with("Uid:"))
-                    .ok_or_else(|| eyre!("The process UID is unavailable."))?;
-                let uids = uid_line[4..]
-                    .split_whitespace()
-                    .map(str::parse::<u32>)
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                ensure!(uids.len() == 4, "The process UID is invalid.");
-                if uids[1] != unsafe { libc::geteuid() } {
+                if !same_user(&directory)? {
                     return Ok(None);
                 }
                 let environment = match child(&directory, "environ", false, false)
@@ -298,23 +334,167 @@ mod linux {
                 }
             }
         }
-        let deadline = Instant::now() + Duration::from_millis(750);
-        for owned in &processes {
-            loop {
-                let remaining = deadline
-                    .saturating_duration_since(Instant::now())
-                    .as_millis() as i32;
-                match exited(&owned.process, remaining) {
-                    Ok(true) => break,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted && remaining > 0 => {
-                        continue
+        if !reaped(processes.iter().map(|owned| &owned.process)) {
+            failed = true;
+        }
+        ensure!(!failed, "Writer termination is unconfirmed.");
+        Ok(())
+    }
+
+    struct Residual {
+        process: File,
+        pid: i32,
+        name: String,
+        reason: &'static str,
+        environment: &'static str,
+        owner: &'static str,
+    }
+
+    fn names(argument: &[u8], root: &[u8]) -> bool {
+        let value = match argument.iter().position(|byte| *byte == b'=') {
+            Some(index) if argument.starts_with(b"-") => &argument[index + 1..],
+            _ => argument,
+        };
+        value
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
+    }
+
+    fn ancestors() -> Result<Vec<i32>> {
+        let mut chain = Vec::new();
+        let mut pid = std::process::id() as i32;
+        loop {
+            chain.push(pid);
+            if pid <= 1 {
+                break;
+            }
+            let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+            pid = stat
+                .rsplit_once(") ")
+                .ok_or_else(|| eyre!("The process identity is invalid."))?
+                .1
+                .split_whitespace()
+                .nth(1)
+                .ok_or_else(|| eyre!("The parent process is unavailable."))?
+                .parse()?;
+        }
+        Ok(chain)
+    }
+
+    fn owner_state(directory: &File, owner: &str) -> Result<(&'static str, &'static str)> {
+        match child(directory, "environ", false, false)
+            .and_then(|file| bounded(file, 16 * 1024 * 1024))
+        {
+            Ok(environment) => {
+                let marker = format!("SOAK_PROCESS_OWNER={owner}");
+                let mut state = "absent";
+                for value in environment.split(|byte| *byte == 0) {
+                    if value == marker.as_bytes() {
+                        return Ok(("readable", "match"));
                     }
-                    _ => {
+                    if value.starts_with(b"SOAK_PROCESS_OWNER=") {
+                        state = "other";
+                    }
+                }
+                Ok(("readable", state))
+            }
+            Err(error) if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) => {
+                Ok(("unreadable", "unknown"))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn residual(root: &Path, owner: &str) -> Result<(Vec<Residual>, bool)> {
+        let root = fs::canonicalize(root)?;
+        let root = root.as_os_str().as_encoded_bytes();
+        let excluded = ancestors()?;
+        let mut result = Vec::new();
+        let mut failed = false;
+        for pid in pids()? {
+            if excluded.contains(&pid) {
+                continue;
+            }
+            let process = match open_pid(pid) {
+                Ok(fd) => fd,
+                Err(error) if error.raw_os_error() == Some(libc::ESRCH) => continue,
+                Err(_) => {
+                    failed = true;
+                    continue;
+                }
+            };
+            let scan = (|| -> Result<Option<Residual>> {
+                let directory = directory(Path::new(&format!("/proc/{pid}")))?;
+                if !same_user(&directory)? {
+                    return Ok(None);
+                }
+                let arguments = bounded(child(&directory, "cmdline", false, false)?, 1024 * 1024)?;
+                let reason = if arguments
+                    .split(|byte| *byte == 0)
+                    .any(|argument| names(argument, root))
+                {
+                    "arguments"
+                } else {
+                    match fs::read_link(format!("/proc/{pid}/cwd")) {
+                        Ok(cwd) if names(cwd.as_os_str().as_encoded_bytes(), root) => "cwd",
+                        _ => return Ok(None),
+                    }
+                };
+                let name = String::from_utf8_lossy(&bounded(
+                    child(&directory, "comm", false, false)?,
+                    RECORD_LIMIT,
+                )?)
+                .trim_end()
+                .replace(char::is_whitespace, "_");
+                let (environment, owner) = owner_state(&directory, owner)?;
+                if exited(&process, 0)? {
+                    return Ok(None);
+                }
+                Ok(Some(Residual {
+                    process: process.try_clone()?,
+                    pid,
+                    name,
+                    reason,
+                    environment,
+                    owner,
+                }))
+            })();
+            match scan {
+                Ok(Some(value)) => result.push(value),
+                Ok(None) => (),
+                Err(_) => {
+                    if !exited(&process, 0)? {
                         failed = true;
-                        break;
                     }
                 }
             }
+        }
+        Ok((result, failed))
+    }
+
+    fn stop_under(root: &Path, owner: &str, output: &mut impl Write) -> Result<()> {
+        ensure!(
+            !owner.is_empty() && owner.len() <= 256 && !owner.chars().any(char::is_control),
+            "The owner marker is invalid."
+        );
+        if !root.is_dir() {
+            return Ok(());
+        }
+        let (processes, mut failed) = residual(root, owner)?;
+        for residual in &processes {
+            writeln!(
+                output,
+                "pid={} name={} reason={} environment={} owner={}",
+                residual.pid, residual.name, residual.reason, residual.environment, residual.owner
+            )?;
+            if let Err(error) = signal(&residual.process, libc::SIGKILL) {
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    failed = true;
+                }
+            }
+        }
+        if !reaped(processes.iter().map(|residual| &residual.process)) {
+            failed = true;
         }
         ensure!(!failed, "Writer termination is unconfirmed.");
         Ok(())
@@ -377,6 +557,9 @@ mod linux {
                 "The exit marker is invalid."
             ),
             Action::StopOwned { owner } => stop(&owner)?,
+            Action::StopUnder { owner, directory } => {
+                stop_under(&directory, &owner, &mut io::stdout().lock())?
+            }
             Action::PreferOom { owner } => prefer_oom(&owner)?,
             Action::VerifyDomain { record } => check_domain(
                 &domain_record(&record)?,
@@ -694,6 +877,115 @@ mod linux {
             let name = CString::new(path.to_str().unwrap()).unwrap();
             assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
             assert!(domain_record(&path).is_err());
+        }
+
+        fn named(owner: Option<&str>, argument: &str, cwd: &Path) -> Process {
+            assert!(
+                Path::new("/.dockerenv").is_file(),
+                "Run process fixtures in an isolated container."
+            );
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", "printf 'ready\\n'; read -r _", "fixture", argument])
+                .current_dir(cwd)
+                .env_remove("SOAK_PROCESS_OWNER")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped());
+            if let Some(owner) = owner {
+                command.env("SOAK_PROCESS_OWNER", owner);
+            }
+            let mut child = Process(command.spawn().unwrap());
+            let mut receipt = [0; 6];
+            child
+                .0
+                .stdout
+                .take()
+                .unwrap()
+                .read_exact(&mut receipt)
+                .unwrap();
+            assert_eq!(&receipt, b"ready\n");
+            child
+        }
+
+        #[test]
+        fn directory_names_require_a_path_boundary() {
+            assert!(names(b"/soak/data", b"/soak/data"));
+            assert!(names(b"/soak/data/s/v", b"/soak/data"));
+            assert!(names(b"--data-dir=/soak/data/s/v", b"/soak/data"));
+            assert!(!names(b"/soak/data-old/v", b"/soak/data"));
+            assert!(!names(b"/soak", b"/soak/data"));
+            assert!(!names(b"key=/soak/data/v", b"/soak/data"));
+        }
+
+        #[test]
+        fn residual_scan_records_why_the_owner_stop_missed_a_writer() {
+            let owner = marker();
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("data");
+            let session = root.join("session");
+            fs::create_dir_all(&session).unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let neutral = Path::new("/");
+            let text = |path: &Path| path.to_str().unwrap().to_owned();
+            let mut marked = named(Some(&owner), &text(&session.join("validator1")), neutral);
+            let mut unmarked = named(
+                None,
+                &format!("--data-dir={}", text(&session.join("v2"))),
+                neutral,
+            );
+            let mut other = named(Some("other"), "plain", &session);
+            let mut sibling = named(None, &format!("{}-old/v", text(&root)), neutral);
+            let mut unrelated = named(None, &text(outside.path()), neutral);
+            let (found, failed) = residual(&root, &owner).unwrap();
+            assert!(!failed);
+            let state = |child: &Process| {
+                found
+                    .iter()
+                    .find(|residual| residual.pid == child.0.id() as i32)
+                    .map(|residual| (residual.reason, residual.environment, residual.owner))
+            };
+            assert_eq!(state(&marked), Some(("arguments", "readable", "match")));
+            assert_eq!(state(&unmarked), Some(("arguments", "readable", "absent")));
+            assert_eq!(state(&other), Some(("cwd", "readable", "other")));
+            assert_eq!(state(&sibling), None);
+            assert_eq!(state(&unrelated), None);
+            assert_eq!(found.len(), 3);
+            let mut record = Vec::new();
+            stop_under(&root, &owner, &mut record).unwrap();
+            let record = String::from_utf8(record).unwrap();
+            assert_eq!(record.lines().count(), 3);
+            assert!(record.contains(&format!(
+                "pid={} name=sh reason=arguments environment=readable owner=absent",
+                unmarked.0.id()
+            )));
+            assert!(marked.0.wait().unwrap().code().is_none());
+            assert!(unmarked.0.wait().unwrap().code().is_none());
+            assert!(other.0.wait().unwrap().code().is_none());
+            assert!(sibling.0.try_wait().unwrap().is_none());
+            assert!(unrelated.0.try_wait().unwrap().is_none());
+        }
+
+        #[test]
+        fn residual_scan_classifies_an_unreadable_environment() {
+            let hidden = undumpable();
+            unreadable_environment(hidden.0);
+            let directory = directory(Path::new(&format!("/proc/{}", hidden.0))).unwrap();
+            let state = owner_state(&directory, &marker()).unwrap();
+            match fs::read(format!("/proc/{}/environ", hidden.0)) {
+                Ok(_) => assert_eq!(state, ("readable", "absent")),
+                Err(_) => assert_eq!(state, ("unreadable", "unknown")),
+            }
+        }
+
+        #[test]
+        fn residual_stop_excludes_its_ancestors_and_accepts_a_missing_directory() {
+            let chain = ancestors().unwrap();
+            assert!(chain.contains(&(std::process::id() as i32)));
+            assert!(chain.contains(&(unsafe { libc::getppid() })));
+            let temp = tempfile::tempdir().unwrap();
+            let mut record = Vec::new();
+            stop_under(&temp.path().join("absent"), &marker(), &mut record).unwrap();
+            assert!(record.is_empty());
         }
     }
 }

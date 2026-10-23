@@ -1346,6 +1346,28 @@ tasks:
       - "A maintainer accepts the review package for the driver, the fixture, and the workflow under CLAIM-CASPER-SOAK-001."
       - "A soak with the record names the component that grows, with its growth rate."
       - "After the growth fix, a weekend soak runs past 24 hours without a disk floor stop."
+  - id: TASK-021-27
+    title: "Stop the subprocess nodes of a deadline-stopped soak session, and fail closed when a writer remains"
+    status: in_progress
+    claimed_by: claude-session-0f4d8053
+    claimed_at: 2026-10-22T23:55:00Z
+    branch: fix/soak-deadline-shard-stop
+    pr_base_branch: dev
+    pull_request: null
+    blocked_by: []
+    finding: "Daily soak 39711861154 on dev f9340ed61 (PR #811 merged) stopped at the disk floor after 18.3 h. The six nodes of session 58 (PIDs 2082849 to 2082858) ran after the segment 1 deadline until the end of the job, and the nodes of session 92 after the segment 2 deadline. .subprocess-data was 1 MB through session 57, then grew about 95 MB and later 195 MB for each session. The end-of-segment stop of PR #811 ran and reported success, so host-control stop-owned did not match these nodes. The failure-evidence copy also copied their logs (1.6 to 5.7 GB for each failure). Evidence: issue #24 comment 6354292291."
+    notes:
+      - "Follows TASK-021-26. Its last acceptance item (a weekend soak past 24 hours without a disk floor stop) depends on this task."
+      - "scripts/run-merge-recovery-soak.sh and scripts/casper-soak/src/host_control.rs are CbC-mandatory. The change needs a review package and a maintainer acceptance, as for PR #811."
+      - "Plan: (1) host-control residual reports each process under a directory with its dumpable state, environment readability, and owner-marker match; (2) the end-of-segment stop kills every residual writer under .subprocess-data and fails the segment when one remains; (3) the failure-evidence copy takes only session directories created after the iteration started; (4) tests for each; (5) review package and acceptance."
+      - "2026-10-22 implemented: host-control stop-under (arguments and working directory match with a path boundary, excludes itself and its ancestors), the end-of-segment residual stop with residual-writers.txt and the fail-closed rule, and the session-scoped evidence copy under .subprocess-data. Fixture RED before the fix (a node without the owner marker survived the segment), GREEN after it. host_control tests 13 passed as root and UID 65534. Review package runs/casper-soak-deadline-shard-stop-20261022-01, pending acceptance."
+      - "Open: .subprocess-data keeps the data directory of each deadline-stopped session (about 1.7 GB in soak 39711861154). Removal after a confirmed stop is a possible follow-up."
+    acceptance:
+      - "scripts/bench/test-run-merge-recovery-soak.sh has a deadline-stop fixture with a node that the owner marker cannot match. No fixture process runs after the segment, and residual-writers.txt records the process."
+      - "host_control.rs unit tests cover residual for a marked process, an unmarked process, and a process with an unreadable environment."
+      - "An evidence-copy test with a stale session directory that is still written copies only the files of the failed session."
+      - "A maintainer accepts the review package for both CbC-mandatory files."
+      - "A daily soak after the merge has .subprocess-data near 1 MB after each segment, and residual-writers.txt names why the owner match missed."
 ---
 ```
 
