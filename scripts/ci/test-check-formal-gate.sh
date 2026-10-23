@@ -112,4 +112,46 @@ grep -Fq 'check-formal-gate.sh verify target/formal-receipts' "$WORK/job.yml"
 for kind in tla rocq; do
     [[ $(grep -Fc "name: formal-provenance-$kind-\${{ github.run_id }}-\${{ github.run_attempt }}" .github/workflows/slashing-tests.yml) == 2 ]]
 done
+awk '
+    /^      - name: Prepare Java and TLC$/ { active=1; next }
+    active && /^      - / { exit }
+    active { print }
+' .github/workflows/slashing-tests.yml > "$WORK/setup-step.yml"
+grep -Fxq '        timeout-minutes: 3' "$WORK/setup-step.yml"
+grep -Fq 'https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar' "$WORK/setup-step.yml"
+grep -Fq '936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88' "$WORK/setup-step.yml"
+! grep -Eq 'apt-get|sudo|wget|continue-on-error' "$WORK/setup-step.yml"
+awk '
+    /^        run: \|$/ { active=1; next }
+    active { sub(/^          /, ""); print }
+' "$WORK/setup-step.yml" > "$WORK/setup-tlc.sh"
+[[ -s "$WORK/setup-tlc.sh" ]]
+cat > "$WORK/bin/java" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == -version ]]
+exit "${TEST_JAVA_FAILURE:-0}"
+SH
+cat > "$WORK/bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == "--fail --silent --show-error --location --proto =https --proto-redir =https --connect-timeout 10 --max-time 60 --retry 2 --retry-max-time 120 $TLA_TOOLS_URL -o $HOME/.tla/tla2tools.jar" ]]
+printf 'download\n' >> "$HOME/downloads"
+[[ "${TEST_DOWNLOAD_FAILURE:-0}" == 0 ]] || exit 1
+printf '%s' "${TEST_TLC_BYTES:-fixture}" > "$HOME/.tla/tla2tools.jar"
+SH
+chmod +x "$WORK/bin/java" "$WORK/bin/curl"
+export HOME="$WORK/home"
+mkdir "$HOME"
+export TLA_TOOLS_URL=https://example.invalid/tla2tools.jar
+export TLA_TOOLS_SHA256
+TLA_TOOLS_SHA256=$(printf fixture | sha256sum | awk '{print $1}')
+reject env TEST_JAVA_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
+[[ ! -e "$HOME/downloads" && ! -e "$HOME/.tla/tla2tools.jar" ]]
+reject env TEST_DOWNLOAD_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
+[[ ! -e "$HOME/.tla/tla2tools.jar" ]]
+reject env TEST_TLC_BYTES=altered bash -euo pipefail "$WORK/setup-tlc.sh"
+bash -euo pipefail "$WORK/setup-tlc.sh"
+[[ "$(< "$HOME/.tla/tla2tools.jar")" == fixture ]]
+printf 'TLC setup: bounded download, checksum verification, and setup failure controls passed.\n'
 printf 'Formal gate: positive round trips, workflow wiring, and %s exact-exit refusal controls passed.\n' "$count"
