@@ -68,11 +68,12 @@ pub(crate) fn effect_in_state_of(
     min_height: i64,
 ) -> Result<bool, CasperError> {
     let mut found = false;
-    let (_, gap) = walk_lineage(
+    let (_, end) = walk_lineage(
         block_store,
         block_hash,
         min_height,
         "membership carrier-body read",
+        None,
         &mut |facts| {
             if facts.applied_sigs.contains(sig) {
                 found = true;
@@ -82,9 +83,9 @@ pub(crate) fn effect_in_state_of(
             }
         },
     )?;
-    match gap {
-        Some(gap) => Err(CasperError::BlockNotHeld(gap.missing, gap.context)),
-        None => Ok(found),
+    match end {
+        WalkEnd::Gap(gap) => Err(CasperError::BlockNotHeld(gap.missing, gap.context)),
+        WalkEnd::Done | WalkEnd::Stopped => Ok(found),
     }
 }
 
@@ -96,31 +97,44 @@ struct Gap {
     lowest_read: i64,
 }
 
+enum WalkEnd {
+    /// The bound, genesis, or a `visit` break.
+    Done,
+    /// The `stop_at` block, which was not visited.
+    Stopped,
+    Gap(Gap),
+}
+
 /// Walks `from`'s state lineage (the recorded `merge_base` chain; a block
 /// with no recorded base continues to its sole parent, and genesis ends it)
 /// down to `min_height`, handing each block's facts to `visit` until it
-/// breaks. An absent body ends the walk with a [`Gap`] rather than an error,
-/// so each caller decides whether a partial answer is acceptable. A
-/// multi-parent block with no recorded base is malformed: its state parent
-/// is not derivable from the header, so the walk refuses to guess it.
-/// Returns the number of blocks visited.
+/// breaks. The walk ends before `stop_at` if it reaches that block. An absent
+/// body ends the walk with a [`Gap`] rather than an error, so each caller
+/// decides whether a partial answer is acceptable. A multi-parent block with
+/// no recorded base is malformed: its state parent is not derivable from the
+/// header, so the walk refuses to guess it. Returns the number of blocks
+/// visited.
 fn walk_lineage(
     block_store: &KeyValueBlockStore,
     from: &BlockHash,
     min_height: i64,
     accessor: &'static str,
+    stop_at: Option<&BlockHash>,
     visit: &mut dyn FnMut(&BlockFacts) -> ControlFlow<()>,
-) -> Result<(usize, Option<Gap>), CasperError> {
+) -> Result<(usize, WalkEnd), CasperError> {
     let mut walked = 0usize;
     let mut lowest_read = i64::MAX;
     let mut cur = from.clone();
     loop {
+        if stop_at == Some(&cur) {
+            return Ok((walked, WalkEnd::Stopped));
+        }
         let facts = match block_facts(block_store, &cur, accessor) {
             Ok(facts) => facts,
             Err(CasperError::BlockNotHeld(missing, context)) => {
                 return Ok((
                     walked,
-                    Some(Gap {
+                    WalkEnd::Gap(Gap {
                         missing,
                         context,
                         lowest_read,
@@ -130,16 +144,16 @@ fn walk_lineage(
             Err(other) => return Err(other),
         };
         if facts.block_number < min_height {
-            return Ok((walked, None));
+            return Ok((walked, WalkEnd::Done));
         }
         walked += 1;
         lowest_read = facts.block_number;
         if visit(&facts).is_break() {
-            return Ok((walked, None));
+            return Ok((walked, WalkEnd::Done));
         }
         match &facts.lineage_next {
             LineageNext::Base(base) => cur = base.clone(),
-            LineageNext::Genesis => return Ok((walked, None)),
+            LineageNext::Genesis => return Ok((walked, WalkEnd::Done)),
             LineageNext::MalformedMultiParent => {
                 return Err(CasperError::Other(format!(
                     "multi-parent block {} carries no recorded merge_base — \
@@ -174,17 +188,18 @@ pub(crate) fn settled_sigs_of_lineage(
     min_height: i64,
 ) -> Result<(HashSet<Bytes>, usize), CasperError> {
     let mut settled: HashSet<Bytes> = HashSet::new();
-    let (walked, gap) = walk_lineage(
+    let (walked, end) = walk_lineage(
         block_store,
         block_hash,
         min_height,
         "settled-lineage body read",
+        None,
         &mut |facts| {
             settled.extend(facts.applied_sigs.iter().cloned());
             ControlFlow::Continue(())
         },
     )?;
-    if let Some(gap) = gap {
+    if let WalkEnd::Gap(gap) = end {
         return Err(CasperError::BlockNotHeld(gap.missing, gap.context));
     }
     Ok((settled, walked))
@@ -258,17 +273,49 @@ pub(crate) fn record_settle_timing(settle_ms: u128, prune_ms: Option<u128>) {
     }
 }
 
-/// Writes every verdict the adopted LFB in `dag` now decides, and returns
-/// the sigs this call made terminal. Every input comes from `dag` and the
-/// store, so the clock and the view can never disagree.
+/// What the last settle's walk learned, kept for the next settle. A block's
+/// lineage below it is fixed by its body, so a later walk that reaches
+/// `start` can take every answer below it from here instead of walking on.
+#[derive(Default)]
+pub(crate) struct LineageMemo {
+    last: Option<WalkedLineage>,
+}
+
+struct WalkedLineage {
+    start: BlockHash,
+    start_height: i64,
+    /// The sigs this walk answered, each down to its `valid_after`.
+    answered: HashSet<Bytes>,
+    applied_at: HashMap<Bytes, i64>,
+    gap_lowest_read: Option<i64>,
+}
+
+pub(crate) struct Settled {
+    /// The sigs this settle made terminal.
+    pub(crate) terminal: Vec<Bytes>,
+    /// The lineage blocks this settle walked.
+    pub(crate) walked: usize,
+}
+
+/// Writes every verdict the adopted LFB in `dag` now decides. Every input
+/// comes from `dag` and the store, so the clock and the view can never
+/// disagree; `memo` only spares re-reading lineage an earlier settle read.
 pub(crate) fn settle(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     deploy_lifespan: i64,
     citability_horizon: Option<i64>,
-) -> Result<Vec<Bytes>, CasperError> {
+    memo: &mut LineageMemo,
+) -> Result<Settled, CasperError> {
     let rows = dag.open_lifecycle_rows().map_err(CasperError::from)?;
-    let pass = SettlePass::walk(dag, block_store, &rows, deploy_lifespan, citability_horizon)?;
+    let (pass, walked) = SettlePass::walk(
+        dag,
+        block_store,
+        &rows,
+        deploy_lifespan,
+        citability_horizon,
+        memo,
+    )?;
     // One row's failure costs that row, never the rows after it: each is
     // retried by the next settle.
     let mut terminal = Vec::new();
@@ -292,7 +339,7 @@ pub(crate) fn settle(
             }
         }
     }
-    Ok(terminal)
+    Ok(Settled { terminal, walked })
 }
 
 /// One settle's view of the adopted LFB: its lineage, walked once for every
@@ -300,57 +347,98 @@ pub(crate) fn settle(
 struct SettlePass {
     lfb: BlockHash,
     lfb_height: i64,
-    /// The highest lineage height that applied each sig.
+    /// The highest lineage height that applied each open sig.
     applied_at: HashMap<Bytes, i64>,
-    gap: Option<Gap>,
+    /// Set when the lineage crosses this node's restore horizon.
+    gap_lowest_read: Option<i64>,
     deploy_lifespan: i64,
     citability_horizon: Option<i64>,
 }
 
 impl SettlePass {
+    /// Walks the LFB's lineage down to the lowest open `valid_after`, or only
+    /// down to the last walk's start when that walk still answers every open
+    /// sig. Returns the pass and the number of blocks walked.
     fn walk(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         rows: &[(Vec<u8>, LifecycleEvents)],
         deploy_lifespan: i64,
         citability_horizon: Option<i64>,
-    ) -> Result<Self, CasperError> {
+        memo: &mut LineageMemo,
+    ) -> Result<(Self, usize), CasperError> {
         let lfb = dag.last_finalized_block();
         let lfb_height = dag.block_number_unsafe(&lfb).map_err(CasperError::from)?;
+        let open: HashMap<Bytes, i64> = rows
+            .iter()
+            .filter_map(|(sig, row)| row.valid_after.map(|va| (Bytes::from(sig.clone()), va)))
+            .collect();
         let mut applied_at: HashMap<Bytes, i64> = HashMap::new();
-        let mut gap = None;
-        if let Some(min_valid_after) = rows.iter().filter_map(|(_, row)| row.valid_after).min() {
+        let mut gap_lowest_read = None;
+        let mut walked = 0;
+        if let Some(min_valid_after) = open.values().min().copied() {
+            // A sig valid only above the last start cannot apply below it.
+            let last = memo.last.as_ref().filter(|last| {
+                open.iter()
+                    .all(|(sig, va)| last.answered.contains(sig) || *va > last.start_height)
+            });
             // Highest first, so a sig's first recorded height is its highest.
-            let (_, walk_gap) = walk_lineage(
+            let (count, end) = walk_lineage(
                 block_store,
                 &lfb,
                 min_valid_after,
                 "settle lineage body read",
+                last.map(|last| &last.start),
                 &mut |facts| {
                     for sig in &facts.applied_sigs {
-                        applied_at.entry(sig.clone()).or_insert(facts.block_number);
+                        if open.contains_key(sig) {
+                            applied_at.entry(sig.clone()).or_insert(facts.block_number);
+                        }
                     }
                     ControlFlow::Continue(())
                 },
             )?;
-            if let Some(walk_gap) = &walk_gap {
-                tracing::warn!(
-                    target: "f1r3fly.casper.lifecycle",
-                    missing = %hex::encode(&walk_gap.missing[..8.min(walk_gap.missing.len())]),
-                    lowest_read = walk_gap.lowest_read,
-                    "settle walk crossed the restore horizon: sigs valid below it stay Pending"
-                );
+            walked = count;
+            match end {
+                WalkEnd::Done => {}
+                WalkEnd::Stopped => {
+                    let last = last.expect("a walk stops only at the last walk's start");
+                    for (sig, height) in &last.applied_at {
+                        if open.contains_key(sig) {
+                            applied_at.entry(sig.clone()).or_insert(*height);
+                        }
+                    }
+                    gap_lowest_read = last.gap_lowest_read;
+                }
+                WalkEnd::Gap(gap) => {
+                    tracing::warn!(
+                        target: "f1r3fly.casper.lifecycle",
+                        missing = %hex::encode(&gap.missing[..8.min(gap.missing.len())]),
+                        lowest_read = gap.lowest_read,
+                        "settle walk crossed the restore horizon: sigs valid below it stay Pending"
+                    );
+                    gap_lowest_read = Some(gap.lowest_read);
+                }
             }
-            gap = walk_gap;
+            memo.last = Some(WalkedLineage {
+                start: lfb.clone(),
+                start_height: lfb_height,
+                answered: open.keys().cloned().collect(),
+                applied_at: applied_at.clone(),
+                gap_lowest_read,
+            });
         }
-        Ok(Self {
-            lfb,
-            lfb_height,
-            applied_at,
-            gap,
-            deploy_lifespan,
-            citability_horizon,
-        })
+        Ok((
+            Self {
+                lfb,
+                lfb_height,
+                applied_at,
+                gap_lowest_read,
+                deploy_lifespan,
+                citability_horizon,
+            },
+            walked,
+        ))
     }
 
     /// Writes the verdict this pass decides for one open row, and returns it.
@@ -374,9 +462,8 @@ impl SettlePass {
         {
             Some(TerminalState::Finalized)
         } else if self
-            .gap
-            .as_ref()
-            .is_some_and(|gap| valid_after < gap.lowest_read)
+            .gap_lowest_read
+            .is_some_and(|lowest_read| valid_after < lowest_read)
         {
             None
         } else {
@@ -731,7 +818,15 @@ mod tests {
         dag.put_cached_floor(b.block_hash.clone(), b.block_hash.clone())
             .expect("seed frozen floor");
 
-        let terminalized = settle(&dag, &block_store, 10, Some(10)).expect("settle at genesis");
+        let terminalized = settle(
+            &dag,
+            &block_store,
+            10,
+            Some(10),
+            &mut LineageMemo::default(),
+        )
+        .expect("settle at genesis")
+        .terminal;
         assert!(
             terminalized.is_empty(),
             "no verdict may be written off an admitted block's frozen floor \
@@ -746,7 +841,15 @@ mod tests {
             .await
             .expect("adopt b");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminalized = settle(&dag, &block_store, 10, Some(10)).expect("settle at b");
+        let terminalized = settle(
+            &dag,
+            &block_store,
+            10,
+            Some(10),
+            &mut LineageMemo::default(),
+        )
+        .expect("settle at b")
+        .terminal;
         assert_eq!(
             terminalized,
             vec![sig],
@@ -829,7 +932,9 @@ mod tests {
         }
 
         let dag = dag_storage.get_representation().expect("dag");
-        let early = settle(&dag, &block_store, 1, Some(1)).expect("settle at genesis");
+        let early = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+            .expect("settle at genesis")
+            .terminal;
         assert!(early.is_empty(), "no verdict before a covering adoption");
 
         // Adopt d (height 4): past decide_at = max(window_end, last
@@ -840,7 +945,9 @@ mod tests {
             .await
             .expect("adopt d");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminalized = settle(&dag, &block_store, 1, Some(1)).expect("settle after adoption");
+        let terminalized = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+            .expect("settle after adoption")
+            .terminal;
 
         assert_eq!(terminalized, vec![sig.clone()]);
         let record = dag
@@ -1086,8 +1193,10 @@ mod tests {
             .expect("adopt w2");
 
         let dag = dag_storage.get_representation().expect("dag");
-        let terminalized =
-            settle(&dag, &block_store, 1, Some(1)).expect("a horizon crossing must not error");
+        let mut memo = LineageMemo::default();
+        let terminalized = settle(&dag, &block_store, 1, Some(1), &mut memo)
+            .expect("a horizon crossing must not error")
+            .terminal;
         assert_eq!(
             terminalized,
             vec![sig_live.clone()],
@@ -1113,9 +1222,13 @@ mod tests {
             .await
             .expect("adopt w3");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminalized =
-            settle(&dag, &block_store, 1, Some(1)).expect("later settles must not error");
-        assert!(terminalized.is_empty());
+        let settled = settle(&dag, &block_store, 1, Some(1), &mut memo)
+            .expect("later settles must not error");
+        assert_eq!(
+            settled.walked, 1,
+            "only w3 is new: the gap below w2 comes from the last walk"
+        );
+        assert!(settled.terminal.is_empty());
         assert!(
             dag.deploy_terminal(&sig_blocked)
                 .expect("terminal lookup")
@@ -1137,7 +1250,9 @@ mod tests {
             .await
             .expect("adopt w4");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminalized = settle(&dag, &block_store, 1, Some(1)).expect("settle at w4");
+        let terminalized = settle(&dag, &block_store, 1, Some(1), &mut memo)
+            .expect("settle at w4")
+            .terminal;
         assert_eq!(terminalized, vec![sig_blocked.clone()]);
         let record = dag
             .deploy_terminal(&sig_blocked)
@@ -1520,7 +1635,7 @@ mod settle_and_release_tests {
             .await
             .expect("adopt #3");
         let dag = dag_storage.get_representation().expect("dag");
-        settle(&dag, &block_store, 1, Some(1)).expect("settle at #3");
+        settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default()).expect("settle at #3");
         assert!(row_open(&dag), "at the bound the row must still stand");
 
         dag_storage
@@ -1528,7 +1643,9 @@ mod settle_and_release_tests {
             .await
             .expect("adopt #4");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminal = settle(&dag, &block_store, 1, Some(1)).expect("settle at #4");
+        let terminal = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+            .expect("settle at #4")
+            .terminal;
         assert!(terminal.is_empty(), "a record-only row is never terminal");
         assert!(!row_open(&dag), "past the bound the row is dropped");
         assert!(dag.deploy_terminal(&sig).expect("lookup").is_none());
@@ -1593,8 +1710,9 @@ mod settle_and_release_tests {
             .expect("adopt the tip");
         let dag = dag_storage.get_representation().expect("dag");
 
-        let terminal =
-            settle(&dag, &block_store, 1, Some(1)).expect("a row error must not fail the settle");
+        let terminal = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+            .expect("a row error must not fail the settle")
+            .terminal;
         assert_eq!(terminal, vec![clean.sig.clone()]);
         assert_eq!(
             dag.deploy_terminal(&clean.sig)
@@ -1651,6 +1769,194 @@ mod settle_and_release_tests {
             release_settled(&dag, &pool).expect("second release"),
             0,
             "nothing is left to release"
+        );
+    }
+
+    fn processed(
+        deploy: crypto::rust::signatures::signed::Signed<
+            models::rust::casper::protocol::casper_message::DeployData,
+        >,
+        is_failed: bool,
+    ) -> models::rust::casper::protocol::casper_message::ProcessedDeploy {
+        let mut pd = models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy);
+        pd.is_failed = is_failed;
+        pd
+    }
+
+    fn valid_after(
+        n: i32,
+        valid_after: i64,
+    ) -> crypto::rust::signatures::signed::Signed<
+        models::rust::casper::protocol::casper_message::DeployData,
+    > {
+        crate::rust::util::construct_deploy::source_deploy_now_full(
+            format!("@\"memo_{n}\"!(1)"),
+            None,
+            None,
+            None,
+            Some(valid_after),
+            Some("test".to_string()),
+        )
+        .expect("deploy")
+    }
+
+    /// A row that never closes (a failed execution under the unlimited
+    /// sentinel) keeps the walk's bound at its `valid_after`. Each settle
+    /// still walks only the lineage above the last one, and the verdicts match
+    /// a settle that walks it all.
+    #[tokio::test]
+    async fn a_settle_walks_only_the_lineage_above_the_last_walk() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let stuck = valid_after(1, 1);
+        let late = valid_after(2, 29);
+        let genesis = chain_block(0, None);
+        let mut chain = vec![genesis];
+        for number in 1..=40 {
+            let mut next = chain_block(number, chain.last());
+            match number {
+                1 => next.body.deploys = vec![processed(stuck.clone(), true)],
+                30 => next.body.deploys = vec![processed(late.clone(), false)],
+                _ => {}
+            }
+            chain.push(next);
+        }
+        for block in &chain {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&chain[0], InsertMode::Approved)
+            .expect("insert genesis");
+        for block in &chain[1..] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        let mut memo = LineageMemo::default();
+        for height in 2..=40usize {
+            dag_storage
+                .record_directly_finalized(chain[height].block_hash.clone(), 0.5, |_| async {
+                    Ok(())
+                })
+                .await
+                .expect("adopt");
+            let dag = dag_storage.get_representation().expect("dag");
+            let settled = settle(&dag, &block_store, 50, None, &mut memo).expect("settle");
+            let expected_walk = if height == 2 { 2 } else { 1 };
+            assert_eq!(
+                settled.walked, expected_walk,
+                "at #{height} only the blocks above the last walk's start are read"
+            );
+            assert_eq!(
+                settle(&dag, &block_store, 50, None, &mut memo)
+                    .expect("repeat settle")
+                    .walked,
+                0,
+                "an unchanged LFB reads nothing"
+            );
+            assert_eq!(
+                dag.deploy_terminal(&late.sig)
+                    .expect("lookup")
+                    .map(|t| t.state),
+                (height >= 30).then_some(TerminalState::Finalized),
+                "at #{height}"
+            );
+            assert!(dag.deploy_terminal(&stuck.sig).expect("lookup").is_none());
+        }
+
+        let dag = dag_storage.get_representation().expect("dag");
+        assert_eq!(
+            settle(&dag, &block_store, 50, None, &mut LineageMemo::default())
+                .expect("settle without a memo")
+                .walked,
+            40,
+            "without the memo every settle walks down to the stuck row"
+        );
+    }
+
+    /// A new LFB whose lineage does not pass through the last walk's start
+    /// (a merge over a lower base) gets a full walk: the memo answers only
+    /// for the lineage below that start.
+    #[tokio::test]
+    async fn a_lineage_that_misses_the_last_start_is_walked_in_full() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let deploy = valid_after(3, 0);
+        let genesis = chain_block(0, None);
+        let a1 = chain_block(1, Some(&genesis));
+        let a2 = chain_block(2, Some(&a1));
+        let a3 = chain_block(3, Some(&a2));
+        let mut b1 = chain_block(1, Some(&genesis));
+        b1.body.deploys = vec![processed(deploy.clone(), false)];
+        let mut merge = get_random_block(
+            Some(4),
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+            Some(4),
+            Some(vec![a3.block_hash.clone(), b1.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("test".to_string()),
+            None,
+        );
+        merge.body.merge_base = b1.block_hash.clone();
+
+        for block in [&genesis, &a1, &a2, &a3, &b1, &merge] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&a1, &a2, &a3, &b1, &merge] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        let mut memo = LineageMemo::default();
+        dag_storage
+            .record_directly_finalized(a3.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt a3");
+        let dag = dag_storage.get_representation().expect("dag");
+        let settled = settle(&dag, &block_store, 50, Some(50), &mut memo).expect("settle at a3");
+        assert!(
+            settled.terminal.is_empty(),
+            "fixture precondition: a3's lineage does not apply the deploy"
+        );
+
+        dag_storage
+            .record_directly_finalized(merge.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt the merge");
+        let dag = dag_storage.get_representation().expect("dag");
+        let settled =
+            settle(&dag, &block_store, 50, Some(50), &mut memo).expect("settle at the merge");
+        assert_eq!(settled.walked, 3, "merge, b1 and genesis");
+        assert_eq!(settled.terminal, vec![deploy.sig.clone()]);
+        assert_eq!(
+            dag.deploy_terminal(&deploy.sig)
+                .expect("lookup")
+                .map(|t| t.state),
+            Some(TerminalState::Finalized)
         );
     }
 }

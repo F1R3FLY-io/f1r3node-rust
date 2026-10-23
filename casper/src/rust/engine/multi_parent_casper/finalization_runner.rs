@@ -74,6 +74,7 @@ use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::CasperShardConf;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::deploy_lifecycle::LineageMemo;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 /// Consecutive containment refusals of strictly rising derived floors
@@ -331,13 +332,15 @@ async fn finalizer_loop(
 }
 
 fn finalizer_cycle(ctx: FinalizationContext) -> Cycle {
+    let memo = Arc::new(parking_lot::Mutex::new(LineageMemo::default()));
     Box::new(move || {
         let ctx = ctx.clone();
+        let memo = memo.clone();
         Box::pin(async move {
             run_cycle(
                 FINALIZER_COMPUTE_TIMEOUT,
                 || compute_last_finalized_block(&ctx),
-                |advanced| settle_after_cycle(ctx.clone(), advanced),
+                |advanced| settle_after_cycle(ctx.clone(), memo, advanced),
             )
             .await
         })
@@ -394,8 +397,14 @@ pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
 /// and an advance persisted by a cycle that then failed, timed out or crashed
 /// is otherwise not seen until the next advance. The carrier prune is
 /// retention only, so it waits for an advance.
-async fn settle_after_cycle(ctx: FinalizationContext, advanced: bool) {
-    match tokio::task::spawn_blocking(move || settle_blocking(&ctx, advanced)).await {
+async fn settle_after_cycle(
+    ctx: FinalizationContext,
+    memo: Arc<parking_lot::Mutex<LineageMemo>>,
+    advanced: bool,
+) {
+    match tokio::task::spawn_blocking(move || settle_blocking(&ctx, &mut memo.lock(), advanced))
+        .await
+    {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::error!(
             target: "f1r3fly.casper.lifecycle",
@@ -410,7 +419,11 @@ async fn settle_after_cycle(ctx: FinalizationContext, advanced: bool) {
     }
 }
 
-fn settle_blocking(ctx: &FinalizationContext, advanced: bool) -> Result<(), CasperError> {
+fn settle_blocking(
+    ctx: &FinalizationContext,
+    memo: &mut LineageMemo,
+    advanced: bool,
+) -> Result<(), CasperError> {
     use crate::rust::finality::deploy_lifecycle::{record_settle_timing, release_settled, settle};
 
     if let Err(e) = ctx.finalized_bond_cache.refresh(&ctx.block_dag_storage) {
@@ -427,8 +440,18 @@ fn settle_blocking(ctx: &FinalizationContext, advanced: bool) -> Result<(), Casp
         &ctx.block_store,
         ctx.shard_conf.deploy_lifespan,
         ctx.citability_horizon(),
+        memo,
     );
     let settle_ms = settle_started.elapsed().as_millis();
+    if let Ok(settled) = &settled {
+        tracing::debug!(
+            target: "f1r3fly.casper.lifecycle",
+            terminal = settled.terminal.len(),
+            walked = settled.walked,
+            settle_ms,
+            "deploy-lifecycle settle"
+        );
+    }
     let prune_ms = if advanced {
         let prune_started = std::time::Instant::now();
         let lfb_height = dag.block_number_unsafe(&dag.last_finalized_block())?;
