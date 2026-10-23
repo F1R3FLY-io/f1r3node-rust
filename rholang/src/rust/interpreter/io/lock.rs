@@ -609,9 +609,9 @@ enum WaitKind {
 /// from a single `RuntimeManager` via
 /// [`SharedLockRegistry`] + `FileHandleTable::share_lock_registry`
 /// (mirrors the `RootIdentityRegistry` broadcast pattern).
-/// Note: the `RuntimeManager`-side wiring that broadcasts a
-/// single registry across every spawn is still pending — see
-/// slice D5 in the fileio-port plan.
+/// Manager-side wiring: `RuntimeManager::shared_lock_registry`
+/// is broadcast to every spawn in `broadcast_fs_slots` next to
+/// the matching `share_root_registry` call.
 ///
 /// # Lock topology
 ///
