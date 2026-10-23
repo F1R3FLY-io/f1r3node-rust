@@ -278,49 +278,6 @@ fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<Dep
     ordered
 }
 
-struct TimedDeployPoolGuard<'a> {
-    guard: Option<parking_lot::MutexGuard<'a, KeyValueDeployStorage>>,
-    acquired_at: std::time::Instant,
-}
-
-impl std::ops::Deref for TimedDeployPoolGuard<'_> {
-    type Target = KeyValueDeployStorage;
-    fn deref(&self) -> &Self::Target { self.guard.as_deref().expect("held until drop") }
-}
-
-impl std::ops::DerefMut for TimedDeployPoolGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.guard.as_deref_mut().expect("held until drop")
-    }
-}
-
-impl Drop for TimedDeployPoolGuard<'_> {
-    fn drop(&mut self) {
-        use crate::rust::metrics_constants::{
-            CASPER_METRICS_SOURCE, DEPLOY_POOL_LOCK_HOLD_TIME_METRIC,
-        };
-        let held = self.acquired_at.elapsed();
-        drop(self.guard.take());
-        metrics::histogram!(DEPLOY_POOL_LOCK_HOLD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .record(held.as_secs_f64());
-    }
-}
-
-fn lock_deploy_pool(pool: &parking_lot::Mutex<KeyValueDeployStorage>) -> TimedDeployPoolGuard<'_> {
-    use crate::rust::metrics_constants::{
-        CASPER_METRICS_SOURCE, DEPLOY_POOL_LOCK_WAIT_TIME_METRIC,
-    };
-    let requested_at = std::time::Instant::now();
-    let guard = pool.lock();
-    let acquired_at = std::time::Instant::now();
-    metrics::histogram!(DEPLOY_POOL_LOCK_WAIT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .record(acquired_at.duration_since(requested_at).as_secs_f64());
-    TimedDeployPoolGuard {
-        guard: Some(guard),
-        acquired_at,
-    }
-}
-
 /// Ordinary admission accounting for one deploy preparation: a disabled
 /// lane, and the ordinary candidates the selection left out.
 pub(crate) fn record_ordinary_admission(
@@ -517,7 +474,7 @@ pub async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
@@ -615,7 +572,7 @@ async fn prepare_user_deploys_with_policy(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
@@ -630,11 +587,10 @@ async fn prepare_user_deploys_with_policy(
     let allow_ordinary_deploys = admission_policy.allow_ordinary && ordinary_cap > 0;
     let allow_in_scope_recovery =
         admission_policy.allow_in_scope_recovery && in_scope_recovery_cap > 0;
-    let mut deploy_storage_guard = lock_deploy_pool(&deploy_storage);
 
     let stored_unfinalized: HashSet<Signed<DeployData>> =
         if allow_ordinary_deploys || allow_in_scope_recovery {
-            deploy_storage_guard.read_all()?
+            deploy_storage.read_all()?
         } else {
             HashSet::new()
         };
@@ -693,7 +649,7 @@ async fn prepare_user_deploys_with_policy(
             "Removing {} expired rejected-buffer deploy(s) from storage and rejected-deploy buffer",
             expired_buffered.len()
         );
-        deploy_storage_guard.remove(expired_buffered.clone())?;
+        deploy_storage.remove(expired_buffered.clone())?;
         rejected_deploy_buffer
             .lock()?
             .remove(expired_buffered.clone())?;
@@ -1034,7 +990,7 @@ async fn prepare_user_deploys_with_policy(
         );
     }
     let purged_recovered_already_in_scope = purge_recovered_already_in_scope(
-        &mut deploy_storage_guard,
+        &deploy_storage,
         &recovered_canonical_wins,
         &recovered_sigs,
     )?;
@@ -1486,7 +1442,7 @@ async fn prepare_user_deploys_with_policy(
             all_expired.len()
         );
         let expired_list: Vec<Signed<DeployData>> = all_expired.into_iter().cloned().collect();
-        deploy_storage_guard.remove(expired_list.clone())?;
+        deploy_storage.remove(expired_list.clone())?;
 
         // Also purge expired sigs from the rejected-deploy buffer.
         // Reads above already filter expired sigs out of `valid_unique`, so
@@ -1494,7 +1450,7 @@ async fn prepare_user_deploys_with_policy(
         // unless explicitly removed. Without this, a sustained-load
         // adversary that keeps generating conflicts can grow the buffer
         // unbounded.
-        let mut buffer_guard = rejected_deploy_buffer.lock()?;
+        let buffer_guard = rejected_deploy_buffer.lock()?;
         buffer_guard.remove(expired_list)?;
     }
 
@@ -1769,10 +1725,10 @@ fn branch_unfinalized_user_deploy_info(
 
 fn storage_has_unresolved_in_scope_deploys(
     casper_snapshot: &CasperSnapshot,
-    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: &Arc<KeyValueDeployStorage>,
     _rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
 ) -> Result<bool, CasperError> {
-    let stored_deploys = deploy_storage.lock().read_all()?;
+    let stored_deploys = deploy_storage.read_all()?;
     for deploy in stored_deploys {
         if casper_snapshot.deploys_in_scope.contains(&deploy.sig) {
             return Ok(true);
@@ -1993,7 +1949,7 @@ fn extract_deploy_sig_from_refund_failure(msg: &str) -> Option<Vec<u8>> {
 }
 
 fn quarantine_refund_failure_deploy(
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     failure_msg: &str,
 ) -> Result<(bool, bool), CasperError> {
@@ -2001,10 +1957,7 @@ fn quarantine_refund_failure_deploy(
         return Ok((false, false));
     };
 
-    // Phase 9 (A-3): deploy_storage is a parking_lot::Mutex (no poison) → `.lock()` yields
-    // the guard directly; rejected_deploy_buffer is a std Mutex (map_err the poison).
     let removed_from_deploy_storage = deploy_storage
-        .lock()
         .remove_by_sig(&sig)
         .map_err(CasperError::from)?;
     let removed_from_rejected_buffer = rejected_deploy_buffer
@@ -2020,7 +1973,7 @@ fn drain_selected_deploys_from_rejected_buffer(
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     deploys: &[Signed<DeployData>],
 ) -> Result<usize, CasperError> {
-    let mut guard = rejected_deploy_buffer.lock()?;
+    let guard = rejected_deploy_buffer.lock()?;
     let mut removed = 0usize;
     for deploy in deploys {
         if guard
@@ -2041,7 +1994,7 @@ fn drain_selected_deploys_from_rejected_buffer(
 /// finalized-won (see the terminal purge in `prepare_user_deploys_with_policy`)
 /// or expired.
 fn drain_selected_recovered_deploys_from_deploy_storage(
-    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: &Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     deploys: &[Signed<DeployData>],
 ) -> Result<usize, CasperError> {
@@ -2061,7 +2014,7 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
 
     let mut removed_from_storage = 0usize;
     {
-        let mut storage = deploy_storage.lock();
+        let storage = deploy_storage;
         for deploy in &selected_recovered {
             if storage
                 .remove_by_sig(&deploy.sig)
@@ -2089,7 +2042,7 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
 /// orphaned, and the buffer entry must remain re-proposable until the win is
 /// finalized (terminal purge in `prepare_user_deploys_with_policy`).
 fn purge_recovered_already_in_scope(
-    deploy_storage: &mut KeyValueDeployStorage,
+    deploy_storage: &KeyValueDeployStorage,
     deploys: &[Signed<DeployData>],
     recovered_sigs: &HashSet<Bytes>,
 ) -> Result<usize, CasperError> {
@@ -2213,12 +2166,12 @@ fn fresh_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: &Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<FreshLocalDeployStats, CasperError> {
-    let stored_deploys = deploy_storage.lock().read_all()?;
+    let stored_deploys = deploy_storage.read_all()?;
     if stored_deploys.is_empty() {
         return Ok(FreshLocalDeployStats::default());
     }
@@ -2282,12 +2235,12 @@ fn in_scope_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: &Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<InScopeLocalDeployStats, CasperError> {
-    let stored_deploys = deploy_storage.lock().read_all()?;
+    let stored_deploys = deploy_storage.read_all()?;
     if stored_deploys.is_empty() {
         return Ok(InScopeLocalDeployStats::default());
     }
@@ -2886,7 +2839,7 @@ pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
@@ -2912,7 +2865,7 @@ pub async fn create_with_progress(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
@@ -3578,6 +3531,7 @@ pub async fn create_with_progress(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves,
     } = checkpoint_data;
 
     let block_bonds = {
@@ -3632,6 +3586,7 @@ pub async fn create_with_progress(
         merge_base,
         shard_id,
         casper_version,
+        &block_hash_leaves,
     );
     let package_ms = package_started.elapsed().as_millis();
     metrics::histogram!(
@@ -3641,9 +3596,12 @@ pub async fn create_with_progress(
     .record(package_started.elapsed().as_secs_f64());
 
     tracing::event!(tracing::Level::DEBUG, mark = "block-created");
-    // Sign the block
+    // Sign the block.  Reuse the leaves computed during replay — a
+    // 32-deploy block skips ~200 µs of leaf re-hashing on the propose
+    // critical path.
     let sign_started = std::time::Instant::now();
-    let signed_block = validator_identity.sign_block(&unsigned_block);
+    let signed_block =
+        validator_identity.sign_block_with_leaves(&unsigned_block, &block_hash_leaves);
     let sign_ms = sign_started.elapsed().as_millis();
     let signed_block_bytes = signed_block.to_proto().encoded_len();
     metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -3737,6 +3695,7 @@ fn package_block(
     merge_base: Option<BlockHash>,
     shard_id: String,
     version: i64,
+    block_hash_leaves: &[[u8; 32]],
 ) -> BlockMessage {
     let state = F1r3flyState {
         pre_state_hash,
@@ -3764,12 +3723,13 @@ fn package_block(
         extra_bytes: Bytes::new(),
     };
 
-    proto_util::unsigned_block_proto(
+    proto_util::unsigned_block_proto_with_leaves(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
+        block_hash_leaves,
     )
 }
 
@@ -3826,6 +3786,7 @@ mod tests {
             None,
             "test".to_string(),
             1,
+            &[],
         );
         block.sender = sender;
         block.block_hash = hash;
@@ -3940,11 +3901,11 @@ mod tests {
     #[tokio::test]
     async fn storage_user_deploy_gate_tracks_unresolved_in_scope_storage_deploys() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -3967,7 +3928,6 @@ mod tests {
         .expect("empty storage"));
 
         deploy_storage
-            .lock()
             .add(vec![deploy.clone()])
             .expect("seed storage deploy");
         assert!(!storage_has_unresolved_in_scope_deploys(
@@ -5480,11 +5440,11 @@ mod tests {
     #[tokio::test]
     async fn selected_recovered_deploys_drain_storage_but_keep_buffer_entry() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -5499,7 +5459,6 @@ mod tests {
                 .expect("unselected recovered deploy");
 
         deploy_storage
-            .lock()
             .add(vec![
                 recovered.clone(),
                 ordinary.clone(),
@@ -5520,7 +5479,7 @@ mod tests {
         .expect("drain selected recovered deploys");
 
         assert_eq!(removed, 1);
-        let storage = deploy_storage.lock().read_all().expect("read storage");
+        let storage = deploy_storage.read_all().expect("read storage");
         assert!(!storage.iter().any(|deploy| deploy.sig == recovered.sig));
         assert!(storage.iter().any(|deploy| deploy.sig == ordinary.sig));
         assert!(storage
@@ -5538,11 +5497,11 @@ mod tests {
     #[tokio::test]
     async fn non_leader_skips_storage_deploys_parked_in_rejected_buffer() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -5564,7 +5523,6 @@ mod tests {
             .expect("ordinary deploy");
 
         deploy_storage
-            .lock()
             .add(vec![buffered.clone(), ordinary.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -5687,11 +5645,11 @@ mod tests {
     #[tokio::test]
     async fn prepare_user_deploys_purges_expired_rejected_buffer_entries() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -5727,7 +5685,6 @@ mod tests {
         )
         .expect("sign expired deploy");
         deploy_storage
-            .lock()
             .add(vec![expired.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -5751,7 +5708,6 @@ mod tests {
 
         assert!(prepared.deploys.is_empty());
         assert!(!deploy_storage
-            .lock()
             .read_all()
             .expect("read storage")
             .iter()
@@ -5768,11 +5724,11 @@ mod tests {
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -5787,11 +5743,9 @@ mod tests {
         let valid = construct_deploy::basic_deploy_data(141, None, Some("test".to_string()))
             .expect("deploy");
         deploy_storage
-            .lock()
             .add(vec![valid.clone()])
             .expect("seed deploy storage");
         let damaged_key = deploy_storage
-            .lock()
             .store
             .encode_key(&vec![7u8; 64])
             .expect("damaged key");
@@ -5843,11 +5797,11 @@ mod tests {
     #[tokio::test]
     async fn ordinary_storage_selection_uses_ordinary_throughput_cap() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -5872,10 +5826,7 @@ mod tests {
         let first = deploys[0].clone();
         let current_time = deploys[2].data.time_stamp;
 
-        deploy_storage
-            .lock()
-            .add(deploys)
-            .expect("seed deploy storage");
+        deploy_storage.add(deploys).expect("seed deploy storage");
 
         let prepared = prepare_user_deploys(
             &snapshot,
@@ -5902,11 +5853,11 @@ mod tests {
     #[tokio::test]
     async fn ordinary_storage_selection_uses_byte_budget_for_large_stored_event_batches() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -5938,10 +5889,7 @@ mod tests {
             })
             .collect();
 
-        deploy_storage
-            .lock()
-            .add(deploys)
-            .expect("seed deploy storage");
+        deploy_storage.add(deploys).expect("seed deploy storage");
 
         let prepared = prepare_user_deploys_with_policy(
             &snapshot,
@@ -5978,11 +5926,11 @@ mod tests {
     #[tokio::test]
     async fn fallback_ordinary_selection_uses_bounded_oldest_first_cap() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6013,10 +5961,7 @@ mod tests {
             })
             .collect();
 
-        deploy_storage
-            .lock()
-            .add(deploys)
-            .expect("seed deploy storage");
+        deploy_storage.add(deploys).expect("seed deploy storage");
 
         let prepared = prepare_user_deploys_with_policy(
             &snapshot,
@@ -6063,11 +6008,11 @@ mod tests {
     #[tokio::test]
     async fn already_in_scope_deploys_do_not_consume_fallback_fresh_cap() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6116,7 +6061,6 @@ mod tests {
         }
         let fresh_sigs: HashSet<Bytes> = fresh.iter().map(|deploy| deploy.sig.clone()).collect();
         deploy_storage
-            .lock()
             .add(in_scope.into_iter().chain(fresh.into_iter()).collect())
             .expect("seed deploy storage");
 
@@ -6168,11 +6112,11 @@ mod tests {
     #[tokio::test]
     async fn rejected_in_scope_deploy_without_local_recovery_is_still_selected_for_recovery() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6206,7 +6150,6 @@ mod tests {
         snapshot.deploys_in_scope.insert(deploy.sig.clone());
         snapshot.rejected_in_scope.insert(deploy.sig.clone());
         deploy_storage
-            .lock()
             .add(vec![deploy.clone()])
             .expect("seed deploy storage");
 
@@ -6243,11 +6186,11 @@ mod tests {
     #[tokio::test]
     async fn stale_in_scope_recovery_selects_bounded_oldest_first_batch() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6299,10 +6242,7 @@ mod tests {
         snapshot.last_finalized_block = lfb_hash;
         snapshot.max_block_num = 299;
         snapshot.parents = vec![lfb];
-        deploy_storage
-            .lock()
-            .add(deploys)
-            .expect("seed deploy storage");
+        deploy_storage.add(deploys).expect("seed deploy storage");
 
         let stats = in_scope_local_deploy_stats(
             &snapshot,
@@ -6363,11 +6303,11 @@ mod tests {
     #[tokio::test]
     async fn parent_chain_in_scope_deploys_are_not_selected_for_recovery() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6395,7 +6335,6 @@ mod tests {
         .expect("deploy");
         snapshot.deploys_in_scope.insert(deploy.sig.clone());
         deploy_storage
-            .lock()
             .add(vec![deploy.clone()])
             .expect("seed deploy storage");
         let lfb_hash = invalid_block_hash(0x94);
@@ -6454,11 +6393,11 @@ mod tests {
     #[tokio::test]
     async fn finalized_sibling_stranded_in_scope_deploy_is_selected_for_recovery() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6486,7 +6425,6 @@ mod tests {
         .expect("deploy");
         snapshot.deploys_in_scope.insert(deploy.sig.clone());
         deploy_storage
-            .lock()
             .add(vec![deploy.clone()])
             .expect("seed deploy storage");
         let base_hash = invalid_block_hash(0x96);
@@ -6568,11 +6506,11 @@ mod tests {
     #[tokio::test]
     async fn finalized_in_scope_deploys_are_not_selected_for_recovery() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6600,7 +6538,6 @@ mod tests {
         .expect("deploy");
         snapshot.deploys_in_scope.insert(deploy.sig.clone());
         deploy_storage
-            .lock()
             .add(vec![deploy.clone()])
             .expect("seed deploy storage");
         // Real geometry: the winning inclusion rides a block the parents
@@ -6659,11 +6596,11 @@ mod tests {
     #[tokio::test]
     async fn ordinary_selection_stays_eligible_while_a_retry_is_gated() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6685,7 +6622,6 @@ mod tests {
             .expect("ordinary deploy");
 
         deploy_storage
-            .lock()
             .add(vec![recovered.clone(), ordinary.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -6720,7 +6656,6 @@ mod tests {
             .any(|deploy| deploy.sig == recovered.sig));
 
         deploy_storage
-            .lock()
             .remove(vec![recovered.clone()])
             .expect("drain recovered deploy storage");
         rejected_deploy_buffer
@@ -6796,11 +6731,11 @@ mod tests {
     #[tokio::test]
     async fn recovered_buffered_deploy_waits_when_seen_in_scope() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6820,7 +6755,6 @@ mod tests {
             .expect("recovered deploy");
 
         deploy_storage
-            .lock()
             .add(vec![recovered.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -6852,11 +6786,11 @@ mod tests {
     #[tokio::test]
     async fn buffered_retry_without_derivable_floor_is_deferred_not_lost() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6876,7 +6810,6 @@ mod tests {
             .expect("recovered deploy");
 
         deploy_storage
-            .lock()
             .add(vec![recovered.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -6917,11 +6850,11 @@ mod tests {
     #[tokio::test]
     async fn recovered_buffered_deploy_is_purged_after_block_expiry() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -6946,7 +6879,6 @@ mod tests {
         .expect("recovered deploy");
 
         deploy_storage
-            .lock()
             .add(vec![recovered.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -6977,7 +6909,7 @@ mod tests {
     #[tokio::test]
     async fn recovered_canonical_wins_are_purged_from_storage_only() {
         let mut kvm = InMemoryStoreManager::new();
-        let mut deploy_storage = KeyValueDeployStorage::new(&mut kvm)
+        let deploy_storage = KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage");
         let rejected_deploy_buffer = Arc::new(Mutex::new(
@@ -7012,7 +6944,7 @@ mod tests {
                 .into_iter()
                 .collect();
         let removed = purge_recovered_already_in_scope(
-            &mut deploy_storage,
+            &deploy_storage,
             &[recovered_done.clone(), ordinary_done.clone()],
             &recovered_sigs,
         )
@@ -7042,11 +6974,11 @@ mod tests {
     #[tokio::test]
     async fn refund_failure_quarantine_removes_recovered_deploy_from_both_stores() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -7056,7 +6988,6 @@ mod tests {
             .expect("deploy");
 
         deploy_storage
-            .lock()
             .add(vec![deploy.clone()])
             .expect("add deploy");
         rejected_deploy_buffer
@@ -7078,7 +7009,6 @@ mod tests {
 
         assert_eq!(removed, (true, true));
         assert!(!deploy_storage
-            .lock()
             .read_all()
             .expect("read deploy storage")
             .contains(&deploy));
@@ -7098,11 +7028,11 @@ mod tests {
     #[tokio::test]
     async fn buffer_entry_is_kept_without_floor_state_evidence_of_its_effect() {
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -7134,7 +7064,6 @@ mod tests {
         snapshot.last_finalized_block = won_block.block_hash.clone();
 
         deploy_storage
-            .lock()
             .add(vec![buffered.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -7182,11 +7111,11 @@ mod tests {
         };
 
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -7262,7 +7191,6 @@ mod tests {
         snapshot.parents = vec![parent_block];
 
         deploy_storage
-            .lock()
             .add(vec![retry.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -7307,11 +7235,11 @@ mod tests {
         };
 
         let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
                 .await
                 .expect("deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             KeyValueRejectedDeployBuffer::new(&mut kvm)
                 .await
@@ -7397,7 +7325,6 @@ mod tests {
         snapshot.parents = vec![left.clone(), right.clone()];
 
         deploy_storage
-            .lock()
             .add(vec![retry.clone()])
             .expect("seed deploy storage");
         rejected_deploy_buffer
@@ -7572,36 +7499,6 @@ mod stage_metric_tests {
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC), 2);
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC), 1);
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC), 0);
-    }
-
-    #[tokio::test]
-    async fn the_deploy_pool_lock_records_one_wait_and_one_hold_for_each_acquire() {
-        use crate::rust::metrics_constants::{
-            DEPLOY_POOL_LOCK_HOLD_TIME_METRIC, DEPLOY_POOL_LOCK_WAIT_TIME_METRIC,
-        };
-        let mut kvm =
-            rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
-        let pool = parking_lot::Mutex::new(KeyValueDeployStorage::new(&mut kvm).await.unwrap());
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-        let _guard = metrics::set_default_local_recorder(&recorder);
-
-        {
-            let held = lock_deploy_pool(&pool);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            drop(held);
-        }
-        drop(lock_deploy_pool(&pool));
-
-        let recorded = take(&snapshotter);
-        let samples = |name: &str| recorded.get(name).map(|v| v.1.clone()).unwrap_or_default();
-        assert_eq!(samples(DEPLOY_POOL_LOCK_WAIT_TIME_METRIC).len(), 2);
-        let holds = samples(DEPLOY_POOL_LOCK_HOLD_TIME_METRIC);
-        assert_eq!(holds.len(), 2);
-        assert!(
-            holds[0] >= 0.02,
-            "the first hold covers the 20 ms sleep: {holds:?}"
-        );
     }
 
     #[test]

@@ -1,0 +1,184 @@
+{
+  "task": "TASK-012-33",
+  "issue": "https://github.com/F1R3FLY-io/f1r3node-rust/issues/712",
+  "status": "pending_maintainer_review",
+  "base_commit": "594df581ea9a818cb5373bb3cea8dc19fcbdd31b",
+  "recorded_at": "2026-10-20T12:31:46.448321+03:00",
+  "record_scope": "Validation state before publication. Later results belong to the pull request.",
+  "environment": {
+    "platform": "Ubuntu-24.04 under WSL2",
+    "toolchain": "nightly-2026-02-09",
+    "build_jobs": 2
+  },
+  "sources": [
+    {
+      "path": "block-storage/src/rust/dag/carrier_index.rs",
+      "sha256": "de4b7a7ffb189d33f06cda1558dfe34bf860f189c478e265a1252a699538d2d1"
+    },
+    {
+      "path": "block-storage/src/rust/deploy/deploy_codec.rs",
+      "sha256": "c83749c190bce37d339a84556db460011370a50508e49d0dd56613b2a33d2e57"
+    },
+    {
+      "path": "block-storage/src/rust/deploy/deploy_record_quarantine.rs",
+      "sha256": "0ff22b61a50aa2f95738bdd6e4ec07aa8bebf61d477667b5416dfa2e9b385189"
+    },
+    {
+      "path": "block-storage/src/rust/deploy/key_value_deploy_storage.rs",
+      "sha256": "451f7399d326d1d342b29f5d4c4032baa0524ff9e5b678d98d88150542d69884"
+    },
+    {
+      "path": "block-storage/src/rust/key_value_block_store.rs",
+      "sha256": "188e1b7e515577468c50592dc6327f6d777c6a72d4a9a1cb811985f7ba463352"
+    },
+    {
+      "path": "casper/src/rust/blocks/proposer/block_creator.rs",
+      "sha256": "e1db2816261b915380b19b709a181c86e87e43a46ec4b72c66025fd143c0fa0b"
+    },
+    {
+      "path": "casper/src/rust/blocks/proposer/proposer.rs",
+      "sha256": "8c7d9c655636ea5bb64e3cbfc0a0aca93bace3f21d93fb91f93e102ee38991a9"
+    },
+    {
+      "path": "casper/src/rust/casper.rs",
+      "sha256": "10e28e64ed0f15c741fec89aa4fdaf1dc76122b52aa8dc42612de655f84dacdd"
+    },
+    {
+      "path": "casper/src/rust/engine/multi_parent_casper/block_admission.rs",
+      "sha256": "98ece93c8d9f3bd315c9e068327fc02132334029b9ad6e734771eb4065366f2a"
+    },
+    {
+      "path": "casper/src/rust/engine/multi_parent_casper/types.rs",
+      "sha256": "edb6ee743ed563f5340a8e8d1603fa5bc769e3072b1618b995f4df874681385d"
+    },
+    {
+      "path": "casper/src/rust/metrics_constants.rs",
+      "sha256": "607df30917071a9c679ed8e24245d45a6dc97be15aaff0017fdd580090fa73ee"
+    },
+    {
+      "path": "casper/src/rust/util/rholang/interpreter_util.rs",
+      "sha256": "e6f29e0fc68f8b11ca5ea547a7d1c9728a22f4ffb996fd12e8fef478d4154bcd"
+    },
+    {
+      "path": "casper/tests/api/pending_deploys_test.rs",
+      "sha256": "e4ae4ab1e0105f688d4d70dccdde3569e7b9531e602e642d27e7cec2ce70c179"
+    },
+    {
+      "path": "casper/tests/batch1/multi_parent_casper_deploy_spec.rs",
+      "sha256": "b8a3ab5dd4f55dcb7d78444aa8b9a18d856ae94aa325b14a65e0a893fde9947a"
+    },
+    {
+      "path": "casper/tests/batch2/clique_oracle_metadata_reads_spec.rs",
+      "sha256": "a1e8578175df0b74b1e9d6cf38b078224ab1f1f59ebef353515e12b2c5ef20fe"
+    },
+    {
+      "path": "casper/tests/batch2/exactly_once_spec.rs",
+      "sha256": "150a4a22373b28236e10e522d902a92555c995924899820261619e4e6e9025eb"
+    },
+    {
+      "path": "casper/tests/batch2/finalized_eviction_spec.rs",
+      "sha256": "c7f7a65dde590d9dfa8e0372c2bce45cfddde7340a815225fc34186c3b4b3489"
+    },
+    {
+      "path": "casper/tests/batch2/floor_erasure_reproduction_spec.rs",
+      "sha256": "cd48d95ccf5ec1c70cdefb93cc08cab1c539a45ea368c3a57f29fe58e574bb8e"
+    },
+    {
+      "path": "casper/tests/batch2/recovery_repeat_deploy_misfire_spec.rs",
+      "sha256": "004dc758c14723f72b7470d10e71d881aefb3ef2caccd45b26856eaa62791a70"
+    },
+    {
+      "path": "casper/tests/batch2/rnode_key_value_store_manager_spec.rs",
+      "sha256": "06dd8ee9020465d4a962651ff7dca75cd8623885fc81a8074a2f71960e72b819"
+    },
+    {
+      "path": "casper/tests/batch2/settled_membership_spec.rs",
+      "sha256": "67e7cd410aaea491d22b57de023512301787f6d3e66a327f8f78bb05bdd0d852"
+    },
+    {
+      "path": "casper/tests/block_creator_memory_profile_spec.rs",
+      "sha256": "0c18aaa035ff65ddbbbb6b0ff6a04dca1ae2b2fea34fd6990b166029191701e0"
+    },
+    {
+      "path": "casper/tests/blocks/block_creator_spec.rs",
+      "sha256": "d8991c77f33092f828e9053636e4386d15cfaa698d2145d8c3db2a35d2fbace5"
+    },
+    {
+      "path": "casper/tests/helper/test_node.rs",
+      "sha256": "cd618288b2c6cfc6757abd111d90538638f336bb265dcfc403bd5d4d7e083110"
+    },
+    {
+      "path": "casper/tests/util/test_mocks.rs",
+      "sha256": "bf711fd663001af393434b96a092638f5c866ce7f5d181bec6fbb9eae2864c3d"
+    },
+    {
+      "path": "node/src/rust/runtime/setup.rs",
+      "sha256": "63cb5377ce6b524254c987c5969cf72e8c0fa5e2607f485f6357866df9cfa621"
+    },
+    {
+      "path": "rspace++/src/rspace/shared/in_mem_key_value_store.rs",
+      "sha256": "14efdf8fda924c92d195fba654a8000eeddd4387a1f374d819caa9e3ef0517f6"
+    },
+    {
+      "path": "scripts/bench/extend-issue24-metrics.sh",
+      "sha256": "4bff8ccb1bba94750ce360afd99b8685f263cd009af812d7fd07811c465b83d5"
+    },
+    {
+      "path": "scripts/bench/test-extend-issue24-metrics.sh",
+      "sha256": "1faa1715ff0a97ee5f51703c3451ebd4f41c8527a3c33638a3ae362f8ace6a13"
+    },
+    {
+      "path": "shared/src/rust/store/key_value_store.rs",
+      "sha256": "818710c8f575f3c79aeb1a3a64b481dff4dba901778c828c75e640a1a551a607"
+    },
+    {
+      "path": "shared/src/rust/store/lmdb_key_value_store.rs",
+      "sha256": "e64560a4a703dc4556848bac4bb11a8a33f5c99da10e03b543072746eb417db4"
+    },
+    {
+      "path": "shared/tests/soak_snapshot.rs",
+      "sha256": "bee278696b9c64491a9347cd569462c494aab7ceeecc6e92d8ff5c22fd1455b9"
+    }
+  ],
+  "checks": [
+    {
+      "name": "block_storage_unit",
+      "command": "cargo test --offline --locked --release -p block-storage --lib",
+      "status": "passed",
+      "passed": 105,
+      "failed": 0
+    },
+    {
+      "name": "lmdb_conditional_delete",
+      "command": "cargo test --offline --locked --release -p shared conditional_delete -- --test-threads=2",
+      "status": "passed",
+      "passed": 2,
+      "failed": 0
+    },
+    {
+      "name": "metrics_script",
+      "command": "bash scripts/bench/test-extend-issue24-metrics.sh",
+      "status": "passed"
+    },
+    {
+      "name": "workspace_all_targets",
+      "command": "cargo check --offline --locked --workspace --all-targets",
+      "status": "running_at_record_time"
+    },
+    {
+      "name": "remaining_release_and_clippy",
+      "status": "pending_at_record_time"
+    },
+    {
+      "name": "format",
+      "command": "cargo fmt --all -- --check",
+      "status": "passed"
+    }
+  ],
+  "claims": [
+    "CLAIM-DEPLOY-STORE-CONCURRENCY-001",
+    "CLAIM-CASPER-FRESH-ADMISSION-CAP-001",
+    "CLAIM-CASPER-STAGE-METRICS-001"
+  ],
+  "todos_excluded": true
+}
