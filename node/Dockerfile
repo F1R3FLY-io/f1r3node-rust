@@ -102,9 +102,12 @@ RUN --network=none \
 # PeTTa is pure Prolog and is not needed to compile the node, so cloning after
 # the cargo build keeps the build cache intact.
 # 
-# Bump PETTA_REF to upgrade the bundled interpreter.
-ARG PETTA_REPO=https://github.com/trueagi-io/PeTTa.git
-ARG PETTA_REF=52e85c6d02d016a4734559a64b2a69e8fdc385fc
+# Bump PETTA_REF to upgrade the bundled interpreter. Keep this repo+ref in sync
+# with PETTA_NOPYTHON_REPO/PETTA_NOPYTHON_REF in the petta-test stage: the node
+# must ship the same de-pythonified interpreter that the PeTTa specs, petta.sh,
+# and the handler doc assume.
+ARG PETTA_REPO=https://github.com/mlabs-haskell/PeTTa.git
+ARG PETTA_REF=fcc22e8a2e5623870c87b6033ecb3f33d72a7338
 RUN git clone "${PETTA_REPO}" /build/PeTTa && \
     git -C /build/PeTTa checkout --detach "${PETTA_REF}" && \
     rm -rf /build/PeTTa/.git
@@ -136,13 +139,19 @@ RUN apt-get update && apt-get install -y \
     gperf \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone Cloudflare sandbox (LD_PRELOAD seccomp library)
-RUN git clone --depth 1 https://github.com/cloudflare/sandbox /tmp/sandbox
+# Clone Cloudflare sandbox (LD_PRELOAD seccomp library), pinned to a commit so
+# the build is reproducible. Bump SANDBOX_REF to upgrade.
+ARG SANDBOX_REF=86393156e156b12b8bbbcea383b2395e0dae0fdb
+RUN git clone https://github.com/cloudflare/sandbox /tmp/sandbox && \
+    git -C /tmp/sandbox checkout --detach "${SANDBOX_REF}"
 
-# Build libseccomp as a static library (required by sandbox Makefile)
+# Build libseccomp as a static library (required by sandbox Makefile). Pin and
+# verify the tarball hash so a compromised or swapped release fails the build.
 WORKDIR /tmp/sandbox
+ARG LIBSECCOMP_SHA256=248a2c8a4d9b9858aa6baf52712c34afefcf9c9e94b76dce02c1c9aa25fb3375
 RUN curl -L -o libseccomp.tar.gz \
     https://github.com/seccomp/libseccomp/releases/download/v2.5.5/libseccomp-2.5.5.tar.gz && \
+    echo "${LIBSECCOMP_SHA256}  libseccomp.tar.gz" | sha256sum -c - && \
     tar xf libseccomp.tar.gz && \
     mv libseccomp-2.5.5 libseccomp
 
