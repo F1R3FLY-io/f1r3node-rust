@@ -332,6 +332,12 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
 
         SlashAuth(_) => (S::FORBIDDEN, "slash_auth_error", err.to_string()),
 
+        OfferedCandidateRejected(_) => (
+            S::UNPROCESSABLE_ENTITY,
+            "offered_candidate_rejected",
+            err.to_string(),
+        ),
+
         // The node is answering about history it does not have, not failing:
         // a node restored from a sync anchor is still filling in below it, and
         // the same request may succeed once it has. 503 tells the caller to

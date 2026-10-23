@@ -45,7 +45,16 @@ pub enum CasperError {
     /// (`FloorOfView::IncompatibilityHold`). Typed so that regime split is a
     /// match, not a string search. Carries the full preformatted detail.
     IncompatibleFinalizedFork(String),
+    OfferedCandidateRejected(OfferedCandidateRejection),
     Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferedCandidateRejection {
+    pub deploy_id: models::rust::deploy_id::DeployIdV6,
+    pub pre_state_root: models::rust::block::state_hash::StateHash,
+    pub reason: String,
+    pub group: Vec<models::rust::deploy_id::DeployIdV6>,
 }
 
 impl fmt::Display for CasperError {
@@ -72,6 +81,13 @@ impl fmt::Display for CasperError {
             // violation: ... — incompatible finalized fork"), and harness
             // forbidden-log patterns key on that text — print it verbatim.
             CasperError::IncompatibleFinalizedFork(detail) => write!(f, "{}", detail),
+            CasperError::OfferedCandidateRejected(rejection) => write!(
+                f,
+                "Offered candidate rejected: deploy={} pre_state_root={} reason={}",
+                hex::encode(rejection.deploy_id.as_array()),
+                hex::encode(&rejection.pre_state_root),
+                rejection.reason
+            ),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }

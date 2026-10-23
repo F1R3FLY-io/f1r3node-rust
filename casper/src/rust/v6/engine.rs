@@ -287,6 +287,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
         let envelopes = admitted(
             self.gate.as_ref(),
             &attestation.root,
+            now_millis,
             selected
                 .into_iter()
                 .map(|envelope| ProcessedUserDeploy::from(ProcessedDeploy::empty(envelope)))

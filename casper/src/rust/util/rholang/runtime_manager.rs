@@ -27,7 +27,7 @@ use rholang::rust::interpreter::merging::rholang_merging_logic::{
 use rholang::rust::interpreter::rho_runtime::{
     self, RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl,
 };
-use rholang::rust::interpreter::system_processes::BlockData;
+use rholang::rust::interpreter::system_processes::{BlockData, Definition};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
@@ -52,6 +52,17 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::{
+    authorize_offered_direct_wallet_funding, authorize_offered_direct_wallet_funding_with_grants,
+    DirectWalletFundingLimits, DirectWalletPolicySnapshot,
+};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::{
+    OfferedBudgetRecorder, OfferedBudgetUsage, OfferedUsageKind,
+};
+use crate::rust::util::rholang::costacc::offered_grants::{
+    grant_issue_definition, GrantIssueCallLimits, VerifiedOfferedGrantSources,
+};
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
 };
@@ -290,6 +301,9 @@ pub struct RuntimeManager {
     exploratory_deploy_phlo_limit: i64,
     exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
+    /// DR-102: test-only records of offered deploy attempts.
+    #[cfg(any(test, feature = "test-utils"))]
+    offered_budget_recorder: OfferedBudgetRecorder,
     /// Slice 30b: shared snapshot-writer config threaded into every
     /// runtime spawned by this manager.  `None` when the operator
     /// has no consensus-static provisioning (backward compat).
@@ -413,6 +427,23 @@ pub struct MergedPreState {
 pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
+    /// DR-102: test-only records of offered deploy attempts.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn offered_budget_usages(&self) -> Vec<OfferedBudgetUsage> {
+        self.offered_budget_recorder.records()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn record_offered_budget_usage(
+        &self,
+        kind: OfferedUsageKind,
+        deploy_id: &[u8],
+        pre_state_root: &[u8],
+    ) {
+        self.offered_budget_recorder
+            .record(kind, deploy_id, pre_state_root);
+    }
+
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
     const MAX_PARENTS_POST_STATE_CACHE_ENTRIES: usize = 64;
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
@@ -649,15 +680,80 @@ impl RuntimeManager {
         self.consensus_static_roots.read().await.clone()
     }
 
+    pub async fn read_direct_offered_wallet_snapshot<'a>(
+        &self,
+        envelope: &'a models::rust::deploy_envelope::DeployEnvelope,
+        original_root: &StateHash,
+        verified: Option<&VerifiedOfferedGrantSources>,
+    ) -> Result<
+        DirectWalletPolicySnapshot<'a, models::rust::signed_phlo_deploy::OfferedFundedDeploy>,
+        CasperError,
+    > {
+        let models::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+            envelope.view()
+        else {
+            return Err(CasperError::RuntimeError(
+                "rooted offered wallet capture requires a signed offered envelope".into(),
+            ));
+        };
+        let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
+        let limits = DirectWalletFundingLimits {
+            members: protocol.envelope.members,
+            funding: protocol.envelope.payload.funding,
+        };
+        let authorization = match verified {
+            Some(verified) => {
+                authorize_offered_direct_wallet_funding_with_grants(signed, limits, verified)
+            }
+            None => authorize_offered_direct_wallet_funding(signed, limits),
+        }
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        authorization
+            .read_policy_snapshot(self, original_root.clone(), std::num::NonZeroUsize::MIN)
+            .await
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))
+    }
+
     pub async fn spawn_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_runtime_with(Vec::new(), self.external_services.clone())
+            .await
+    }
+
+    pub async fn spawn_offered_runtime(
+        &self,
+        limits: GrantIssueCallLimits,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_runtime_with(
+            vec![grant_issue_definition(limits)],
+            ExternalServices::noop(),
+        )
+        .await
+    }
+
+    pub async fn spawn_offered_play_runtime(
+        &self,
+        limits: GrantIssueCallLimits,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_runtime_with(
+            vec![grant_issue_definition(limits)],
+            self.external_services.clone(),
+        )
+        .await
+    }
+
+    async fn spawn_runtime_with(
+        &self,
+        mut definitions: Vec<Definition>,
+        services: ExternalServices,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
         let runtime = rho_runtime::create_rho_runtime(
             new_space,
             self.mergeable_tags.clone(),
             true,
-            &mut Vec::new(),
-            self.external_services.clone(),
+            &mut definitions,
+            services,
         )
         .await?;
         self.broadcast_fs_slots(&runtime).await;
@@ -668,6 +764,26 @@ impl RuntimeManager {
     }
 
     pub async fn spawn_replay_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_replay_runtime_with(Vec::new(), self.external_services.clone())
+            .await
+    }
+
+    pub async fn spawn_offered_replay_runtime(
+        &self,
+        limits: GrantIssueCallLimits,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_replay_runtime_with(
+            vec![grant_issue_definition(limits)],
+            ExternalServices::noop(),
+        )
+        .await
+    }
+
+    async fn spawn_replay_runtime_with(
+        &self,
+        mut definitions: Vec<Definition>,
+        services: ExternalServices,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_replay_space = self
             .replay_space
@@ -678,8 +794,8 @@ impl RuntimeManager {
             new_replay_space,
             self.mergeable_tags.clone(),
             true,
-            &mut Vec::new(),
-            self.external_services.clone(),
+            &mut definitions,
+            services,
         )
         .await?;
         self.broadcast_fs_slots(&runtime).await;
@@ -1720,6 +1836,8 @@ impl RuntimeManager {
             exploratory_deploy_phlo_limit: exploratory_deploy_config.phlo_limit,
             exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
+            #[cfg(any(test, feature = "test-utils"))]
+            offered_budget_recorder: OfferedBudgetRecorder::default(),
             fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
             snapshot_merkle_roots: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),

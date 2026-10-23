@@ -33,6 +33,12 @@ fn shard_conf(minimum: i64, version: i64, shard: &str) -> CasperShardConf {
     }
 }
 
+pub(in crate::rust::util::rholang::costacc) fn retained_record_context() -> AdoptedResourcePolicy {
+    policy(0, 6, "root")
+        .adopt(&shard_conf(0, 6, "root"))
+        .unwrap()
+}
+
 #[test]
 fn adoption_requires_the_authenticated_genesis_context() {
     let adopted = policy(10, 6, "root")

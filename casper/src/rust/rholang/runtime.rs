@@ -84,12 +84,82 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
 }
 
+pub(crate) fn offered_candidate_rejection(
+    envelope: &models::rust::deploy_envelope::DeployEnvelope,
+    pre_state_root: &StateHash,
+    error: CasperError,
+) -> CasperError {
+    let models::rust::deploy_id::DeployLookupId::V6(deploy_id) = envelope.identity() else {
+        return error;
+    };
+    match error {
+        CasperError::KvStoreError(_)
+        | CasperError::HistoryError(_)
+        | CasperError::LockError(_)
+        | CasperError::StreamError(_)
+        | CasperError::CommError(_)
+        | CasperError::BlockNotHeld(..)
+        | CasperError::InterpreterError(InterpreterError::RSpaceError(
+            rspace_plus_plus::rspace::errors::RSpaceError::HistoryError(_)
+            | rspace_plus_plus::rspace::errors::RSpaceError::RadixTreeError(_)
+            | rspace_plus_plus::rspace::errors::RSpaceError::KvStoreError(_),
+        ))
+        | CasperError::OfferedCandidateRejected(_) => error,
+        error => {
+            CasperError::OfferedCandidateRejected(crate::rust::errors::OfferedCandidateRejection {
+                deploy_id: *deploy_id,
+                pre_state_root: pre_state_root.clone(),
+                reason: error.to_string(),
+                group: Vec::new(),
+            })
+        }
+    }
+}
+
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
 
 impl RuntimeOps {
     pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
+
+    pub(crate) async fn evaluate_native_envelope(
+        &mut self,
+        envelope: &models::rust::deploy_envelope::DeployEnvelope,
+        config: rholang::rust::interpreter::accounting::NativeRuntimeConfig,
+    ) -> Result<EvaluateResult, CasperError> {
+        let models::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+            envelope.view()
+        else {
+            return Err(CasperError::RuntimeError(
+                "native funded execution requires an offered envelope".to_string(),
+            ));
+        };
+        let identity: [u8; 32] = envelope.identity().as_bytes().try_into().map_err(|_| {
+            CasperError::RuntimeError("offered envelope identity is not Blake2b-256".to_string())
+        })?;
+        self.runtime
+            .set_deploy_data(SystemProcessDeployData::from_envelope(envelope))
+            .await;
+        self.runtime.cost.set_unmetered(false);
+        self.runtime
+            .cost
+            .set_deploy_id_funded(
+                identity,
+                rholang::rust::interpreter::accounting::funding_sig(signed),
+            )
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        self.runtime
+            .evaluate_with_native_phlo(
+                &envelope.body().term,
+                models::rust::normalizer_env::normalizer_env_from_envelope(envelope),
+                crate::rust::util::rholang::tools::Tools::user_envelope_rng(envelope),
+                None,
+                config,
+            )
+            .await
+            .map_err(CasperError::InterpreterError)
+    }
 }
 
 /// RAII guard that temporarily disables the reducer's fs-native URN
@@ -1280,6 +1350,13 @@ impl RuntimeOps {
             .into_iter()
             .flat_map(|datum| datum.a.pars)
             .collect()
+    }
+
+    pub async fn get_data_datums(
+        &self,
+        channel: &Par,
+    ) -> Vec<rspace_plus_plus::rspace::internal::Datum<ListParWithRandom>> {
+        self.runtime.get_data(channel).await
     }
 
     pub async fn get_continuation_par(&self, channels: Vec<Par>) -> Vec<(Vec<BindPattern>, Par)> {
