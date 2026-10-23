@@ -17,5 +17,6 @@ mod repeat_deploy;
 mod slashing;
 mod sync;
 mod util;
+mod v6;
 
 pub fn init_logger() { shared::rust::tracing_init::init_for_tests(); }

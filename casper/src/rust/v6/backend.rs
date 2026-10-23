@@ -65,7 +65,7 @@ struct Outcome {
     cost: u64,
 }
 
-fn block_data(block: &BlockMessage) -> BlockData {
+pub(super) fn block_data(block: &BlockMessage) -> BlockData {
     BlockData {
         time_stamp: block.header.timestamp,
         block_number: block.body.state.block_number,
@@ -180,7 +180,7 @@ fn envelope_ids(block: &BlockMessage) -> Vec<Bytes> {
         .collect()
 }
 
-fn close_block(block: &BlockMessage) -> SystemDeployEnum {
+pub(super) fn close_block(block: &BlockMessage) -> SystemDeployEnum {
     SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             PublicKey::from_bytes(&block.sender),
