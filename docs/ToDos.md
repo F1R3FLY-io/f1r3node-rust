@@ -1364,6 +1364,7 @@ tasks:
       - "Open: .subprocess-data keeps the data directory of each deadline-stopped session (about 1.7 GB in soak 39711861154). Removal after a confirmed stop is a possible follow-up."
       - "2026-10-23 correction: an earlier note on this task said that the owner stop of PR #811 missed the nodes. It did not run, because the scheduled soak uses the master driver. The residual stop is a second stop that does not depend on the owner marker."
       - "2026-10-23 review fix (Pi agent, P2 on 793ca6c13): a non-dumpable writer with no target path in its arguments was silently excluded. stop-under now records such a process as uninspected and fails when a file under the directory changes during a 2 s window after the stop. host_control tests 15 passed as root and UID 65534. Driver fixture passed."
+      - "2026-10-23 second review fix (Pi agent, P2 on 621507755): a future-dated file hid writes from the newest-timestamp check. The write check now compares a per-entry snapshot of inode, size, modification time, and change time. host_control tests 17 passed as root and UID 65534."
       - "A scheduled soak exercises this change only after it is on master. A manual dispatch from dev (gh workflow run merge-recovery-soak.yml --ref dev) runs the dev driver."
     acceptance:
       - "scripts/bench/test-run-merge-recovery-soak.sh has a deadline-stop fixture with a node that the owner marker cannot match. No fixture process runs after the segment, and residual-writers.txt records the process."

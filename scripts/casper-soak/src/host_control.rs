@@ -55,13 +55,14 @@ fn execute(action: Action) -> Result<()> { linux::execute(action) }
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::collections::BTreeMap;
     use std::ffi::CString;
     use std::fs::{self, File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::Path;
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
 
     use eyre::{ensure, eyre};
 
@@ -516,35 +517,50 @@ mod linux {
 
     const QUIET_WINDOW: Duration = Duration::from_secs(2);
 
-    fn newest(path: &Path) -> Result<Option<SystemTime>> {
+    type Entry = (u64, u64, i64, i64, i64, i64);
+
+    fn snapshot(path: &Path, entries: &mut BTreeMap<PathBuf, Entry>) -> Result<()> {
         let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let mut latest = Some(metadata.modified()?);
+        entries.insert(
+            path.to_path_buf(),
+            (
+                metadata.ino(),
+                metadata.size(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ),
+        );
         if metadata.is_dir() {
-            let entries = match fs::read_dir(path) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(latest),
+            let children = match fs::read_dir(path) {
+                Ok(children) => children,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error.into()),
             };
-            for entry in entries {
-                let entry = match entry {
-                    Ok(entry) => entry,
+            for child in children {
+                let child = match child {
+                    Ok(child) => child,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                     Err(error) => return Err(error.into()),
                 };
-                latest = latest.max(newest(&entry.path())?);
+                snapshot(&child.path(), entries)?;
             }
         }
-        Ok(latest)
+        Ok(())
     }
 
     fn quiet(root: &Path, window: Duration) -> Result<bool> {
-        let before = newest(root)?;
+        let mut before = BTreeMap::new();
+        snapshot(root, &mut before)?;
         std::thread::sleep(window);
-        Ok(newest(root)? <= before)
+        let mut after = BTreeMap::new();
+        snapshot(root, &mut after)?;
+        Ok(before == after)
     }
 
     fn prefer_oom(owner: &str) -> Result<()> {
@@ -627,6 +643,7 @@ mod linux {
         use std::os::unix::fs::{symlink, PermissionsExt};
         use std::process::{Child, Command, Stdio};
         use std::thread;
+        use std::time::SystemTime;
 
         use super::*;
 
@@ -1086,6 +1103,44 @@ mod linux {
                     0
                 );
             }
+        }
+
+        #[test]
+        fn residual_stop_detects_writes_beside_a_future_dated_file() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("data");
+            fs::create_dir_all(&root).unwrap();
+            let future = root.join("future.log");
+            fs::write(&future, b"old").unwrap();
+            File::options()
+                .write(true)
+                .open(&future)
+                .unwrap()
+                .set_modified(SystemTime::now() + Duration::from_secs(365 * 24 * 3600))
+                .unwrap();
+            let hidden = hidden_writer(&root);
+            if fs::read_link(format!("/proc/{}/cwd", hidden.0)).is_ok() {
+                return;
+            }
+            let mut record = Vec::new();
+            assert!(stop_under(&root, &marker(), &mut record).is_err());
+        }
+
+        #[test]
+        fn residual_stop_accepts_an_unchanged_tree_with_a_future_dated_file() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("data");
+            fs::create_dir_all(root.join("session")).unwrap();
+            let future = root.join("session/future.log");
+            fs::write(&future, b"old").unwrap();
+            File::options()
+                .write(true)
+                .open(&future)
+                .unwrap()
+                .set_modified(SystemTime::now() + Duration::from_secs(365 * 24 * 3600))
+                .unwrap();
+            let mut record = Vec::new();
+            stop_under(&root, &marker(), &mut record).unwrap();
         }
 
         #[test]
