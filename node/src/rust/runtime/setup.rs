@@ -105,6 +105,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     ),
     CasperError,
 > {
+    models::rust::record_encoding::set_record_encoding(
+        conf.casper.genesis_block_data.record_encoding(),
+    );
+    info!(
+        protocol_v6 = conf.casper.genesis_block_data.protocol_v6,
+        "Shard protocol mode"
+    );
     models::rust::cost_protocol_limits::set_protocol_caps(conf.casper.protocol_caps).map_err(
         |cap| {
             CasperError::RuntimeError(format!(

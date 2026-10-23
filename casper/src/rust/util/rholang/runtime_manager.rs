@@ -1148,6 +1148,22 @@ impl RuntimeManager {
     /// min-phlo-price)` at `start_hash`, or `None` when the chain's genesis
     /// predates them. Read once at casper construction (`hash_set_casper`) —
     /// not cached here.
+    pub async fn get_genesis_resource_policy(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<models::rust::phlo_schedule::PhloGenesisPolicy, CasperError> {
+        let mut runtime_ops = RuntimeOps::new(self.spawn_runtime().await?);
+        runtime_ops.get_genesis_resource_policy(start_hash).await
+    }
+
+    pub async fn find_genesis_resource_policy(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<models::rust::phlo_schedule::PhloGenesisPolicy>, CasperError> {
+        let mut runtime_ops = RuntimeOps::new(self.spawn_runtime().await?);
+        runtime_ops.find_genesis_resource_policy(start_hash).await
+    }
+
     pub async fn get_consensus_parameters(
         &self,
         start_hash: &StateHash,
@@ -1650,9 +1666,15 @@ impl RuntimeManager {
         // the initial installed set and re-encoding the bootstrap
         // registry's continuations. Coordinated upgrade required.
         // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
-        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
-            .unwrap()
-            .into()
+        let root = match models::rust::record_encoding::record_encoding() {
+            models::rust::record_encoding::RecordEncoding::Legacy => {
+                "facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1"
+            }
+            models::rust::record_encoding::RecordEncoding::Cost => {
+                "b38db9a0203b6b9cf5987024f325b83da33be5c1b820b3f86fd979578f2985d5"
+            }
+        };
+        hex::decode(root).unwrap().into()
     }
 
     pub fn create_with_space_config(

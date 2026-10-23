@@ -3947,6 +3947,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
 
     // Local conf diverges from the chain on all three values.
     let mut local_conf = CasperShardConf::new();
+    local_conf.casper_version = 1;
     local_conf.max_parent_depth = 15;
     local_conf.deploy_lifespan = 50;
     local_conf.min_phlo_price = 1;

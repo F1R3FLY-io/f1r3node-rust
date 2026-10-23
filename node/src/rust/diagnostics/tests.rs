@@ -59,6 +59,7 @@ mod tests {
                 native_token_name: "F1R3CAP".to_string(),
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,
+                protocol_v6: false,
             },
             genesis_ceremony: GenesisCeremony {
                 required_signatures: 0,

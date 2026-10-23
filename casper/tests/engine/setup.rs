@@ -433,6 +433,7 @@ impl TestFixture {
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
+            genesis_params.version,
             transport_layer.clone(),
             Arc::new(rp_conf.clone()),
         )

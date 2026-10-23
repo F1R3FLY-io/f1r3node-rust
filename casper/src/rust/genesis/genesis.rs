@@ -9,6 +9,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy, ProcessedUserDeploy,
 };
+use models::rust::phlo_schedule::PhloGenesisPolicy;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
@@ -18,6 +19,7 @@ use super::contracts::standard_deploys;
 use super::contracts::vault::Vault;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::protocol_resource_policy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -86,6 +88,34 @@ impl Genesis {
         fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
         consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_timestamp_policy(
+            timestamp,
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_timestamp_policy(
+        timestamp: i64,
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
+        resource_policy: Option<&PhloGenesisPolicy>,
+    ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
 
@@ -122,14 +152,18 @@ impl Genesis {
         let non_negative_number = standard_deploys::non_negative_number(shard_id);
         let make_mint = standard_deploys::make_mint(shard_id);
         let auth_key = standard_deploys::auth_key(shard_id);
-        let system_vault = standard_deploys::system_vault(shard_id);
+        let system_vault = match resource_policy {
+            Some(_) => standard_deploys::system_vault_v6(shard_id),
+            None => standard_deploys::system_vault(shard_id),
+        };
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
         let stack = standard_deploys::stack(shard_id);
-        let token_metadata = standard_deploys::token_metadata(
+        let token_metadata = standard_deploys::token_metadata_with_policy(
             native_token_name,
             native_token_symbol,
             native_token_decimals,
             shard_id,
+            resource_policy,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
         // File I/O FIP MVP: shared-Fs model with empty static bundle +
@@ -179,9 +213,35 @@ impl Genesis {
         fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
         consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_policy(
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_policy(
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
+        resource_policy: Option<&PhloGenesisPolicy>,
+    ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
-        Self::default_blessed_terms_with_timestamp(
+        Self::default_blessed_terms_with_timestamp_policy(
             BASE_TIMESTAMP,
             pos_params,
             vaults,
@@ -192,14 +252,20 @@ impl Genesis {
             native_token_decimals,
             fs_bundle,
             consensus_fs_snapshot_cadence,
+            resource_policy,
         )
+    }
+
+    pub fn resource_policy(&self) -> Result<Option<PhloGenesisPolicy>, CasperError> {
+        protocol_resource_policy(self.version, &self.shard_id, self.native_token_decimals)
     }
 
     pub async fn create_genesis_block(
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        let blessed_terms = Self::default_blessed_terms(
+        let resource_policy = genesis.resource_policy()?;
+        let blessed_terms = Self::default_blessed_terms_with_policy(
             &genesis.proof_of_stake,
             &genesis.vaults,
             genesis.supply,
@@ -209,6 +275,7 @@ impl Genesis {
             genesis.native_token_decimals,
             &genesis.fs_bundle,
             genesis.consensus_fs_snapshot_cadence,
+            resource_policy.as_ref(),
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager

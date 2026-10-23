@@ -189,7 +189,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // from the ADOPTED max-parent-depth.
             deploy_play_budget_is_derived: conf.deploy_play_budget.is_zero(),
             heartbeat_check_interval: conf.heartbeat_conf.check_interval,
-            casper_version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
+            casper_version: conf.genesis_block_data.casper_version(),
+            adopted_resource_policy: None,
             bond_minimum: conf.genesis_block_data.bond_minimum,
             bond_maximum: conf.genesis_block_data.bond_maximum,
             epoch_length: conf.genesis_block_data.epoch_length,
@@ -650,6 +651,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.casper_shard_conf.casper_version,
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;
@@ -753,6 +755,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
             self.fs_bundle.clone(),
+            self.casper_shard_conf.casper_version,
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),

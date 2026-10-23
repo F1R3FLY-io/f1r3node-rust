@@ -46,6 +46,7 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
+    pub casper_version: i64,
 
     // Infrastructure
     transport: Arc<T>,
@@ -74,6 +75,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        casper_version: i64,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -115,6 +117,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            casper_version,
             transport,
             conf,
         })
@@ -173,6 +176,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        casper_version: i64,
     ) -> Result<(), String> {
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
@@ -183,6 +187,19 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         }
 
         let block = &candidate.block;
+        if block.header.version != casper_version {
+            return Err(format!(
+                "Candidate genesis has protocol version {}, but this node launches the shard at version {}.",
+                block.header.version, casper_version
+            ));
+        }
+        let resource_policy =
+            crate::rust::util::rholang::costacc::genesis_resource_policy::protocol_resource_policy(
+                casper_version,
+                shard_id,
+                native_token_decimals,
+            )
+            .map_err(|error| format!("{error:?}"))?;
         if !block.body.system_deploys.is_empty() {
             return Err("Candidate must not contain system deploys.".to_string());
         }
@@ -250,7 +267,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         // when ceremony operators configure non-empty bundles —
         // the MVP (empty bundle) path is fine today.
         let genesis_blessed_contracts =
-            crate::rust::genesis::genesis::Genesis::default_blessed_terms(
+            crate::rust::genesis::genesis::Genesis::default_blessed_terms_with_policy(
                 &pos_params,
                 vaults,
                 i64::MAX,
@@ -260,6 +277,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_decimals,
                 &[],
                 None,
+                resource_policy.as_ref(),
             );
 
         let block_deploys: &Vec<ProcessedDeploy> = &crate::rust::util::proto_util::deploys(block);
@@ -359,6 +377,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
+            self.casper_version,
         )
         .await
     }

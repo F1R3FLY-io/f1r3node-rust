@@ -229,6 +229,9 @@ pub struct GenesisBlockData {
     /// `native-token-name`. Operators MUST set this in config before genesis.
     #[serde(rename = "native-token-decimals")]
     pub native_token_decimals: u32,
+
+    #[serde(rename = "protocol-v6", default)]
+    pub protocol_v6: bool,
 }
 
 /// Maximum decimal places accepted for native token. Matches the de-facto
@@ -239,6 +242,22 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
+    pub fn casper_version(&self) -> i64 {
+        if self.protocol_v6 {
+            crate::rust::casper::PROTOCOL_V6_VERSION
+        } else {
+            crate::rust::casper::CASPER_PROTOCOL_VERSION
+        }
+    }
+
+    pub fn record_encoding(&self) -> models::rust::record_encoding::RecordEncoding {
+        if self.protocol_v6 {
+            models::rust::record_encoding::RecordEncoding::Cost
+        } else {
+            models::rust::record_encoding::RecordEncoding::Legacy
+        }
+    }
+
     /// Validates native-token-* fields. Called during config load so a
     /// misconfigured node fails startup loudly rather than baking bad
     /// values into genesis or serving misleading metadata via `/api/status`.
@@ -513,6 +532,7 @@ mod native_token_validation_tests {
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,
+            protocol_v6: false,
         }
     }
 

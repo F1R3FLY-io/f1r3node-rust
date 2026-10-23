@@ -17,6 +17,7 @@ pub const NON_NEGATIVE_NUMBER: &str = include_str!("../../../main/resources/NonN
 pub const MAKE_MINT: &str = include_str!("../../../main/resources/MakeMint.rho");
 pub const AUTH_KEY: &str = include_str!("../../../main/resources/AuthKey.rho");
 pub const SYSTEM_VAULT: &str = include_str!("../../../main/resources/SystemVault.rho");
+pub const SYSTEM_VAULT_V6: &str = include_str!("../../../main/resources/SystemVaultV6.rho");
 pub const MULTI_SIG_SYSTEM_VAULT: &str =
     include_str!("../../../main/resources/MultiSigSystemVault.rho");
 pub const STACK: &str = include_str!("../../../main/resources/Stack.rho");

@@ -54,6 +54,10 @@ use crate::util::comm::transport_layer_test_impl::{
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources;
 
+tokio::task_local! {
+    static V6_ORDER_THEN_EXECUTE: bool;
+}
+
 pub struct TestNode {
     pub name: String,
     pub local: PeerNode,
@@ -794,6 +798,18 @@ impl TestNode {
     }
 
     /// Creates a network of TestNodes
+    pub async fn create_v6_network(
+        genesis: GenesisContext,
+        network_size: usize,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        V6_ORDER_THEN_EXECUTE
+            .scope(
+                true,
+                Self::create_network(genesis, network_size, None, None, None, None),
+            )
+            .await
+    }
+
     pub async fn create_network(
         genesis: GenesisContext,
         network_size: usize,
@@ -1015,6 +1031,7 @@ impl TestNode {
         deploy_lifespan: Option<i64>,
         disable_state_exporter: bool,
     ) -> TestNode {
+        let v6_enabled = V6_ORDER_THEN_EXECUTE.try_with(|v| *v).unwrap_or(false);
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
             TransportLayerServerTestImpl::new(current_peer_node.clone(), test_network.clone());
@@ -1176,7 +1193,12 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
+            casper_version: if v6_enabled {
+                casper::rust::casper::PROTOCOL_V6_VERSION
+            } else {
+                1
+            },
+            adopted_resource_policy: None,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,
@@ -1187,6 +1209,20 @@ impl TestNode {
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
             mergeable_channels_gc_depth_buffer: 10,
             ..CasperShardConf::new()
+        };
+
+        let v6_engine = if v6_enabled {
+            let engine = casper::rust::v6::V6Engine::new(
+                &genesis,
+                Arc::new(runtime_manager.clone()),
+                block_store.clone(),
+                block_dag_storage.clone(),
+                deploy_storage.clone(),
+            );
+            engine.start();
+            Some(engine)
+        } else {
+            None
         };
 
         let casper_impl = MultiParentCasperImpl {
@@ -1218,6 +1254,7 @@ impl TestNode {
             finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            v6: v6_engine,
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

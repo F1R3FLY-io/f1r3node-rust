@@ -95,6 +95,8 @@ pub trait Casper {
     /// Defaulted to a no-op so effect mocks need no retriever wiring.
     async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
 
+    fn v6_engine(&self) -> Option<Arc<crate::rust::v6::V6Engine>> { None }
+
     fn contains(&self, hash: &BlockHash) -> bool;
 
     fn dag_contains(&self, hash: &BlockHash) -> bool;
@@ -230,6 +232,45 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     }
 }
 
+fn protocol_mode_name(version: i64) -> String {
+    match version {
+        PROTOCOL_V6_VERSION => "protocol 6".to_string(),
+        CASPER_PROTOCOL_VERSION => "legacy protocol".to_string(),
+        other => format!("unknown protocol version {other}"),
+    }
+}
+
+pub fn check_protocol_mode(
+    approved_block: &BlockMessage,
+    shard_conf: &CasperShardConf,
+) -> Result<(), CasperError> {
+    let shard_version = approved_block.header.version;
+    if shard_version != shard_conf.casper_version {
+        return Err(CasperError::RuntimeError(format!(
+            "this shard runs {} (its approved block has version {}), but this node is configured \
+             for {}; set casper.genesis-block-data.protocol-v6 = {} to join it",
+            protocol_mode_name(shard_version),
+            shard_version,
+            protocol_mode_name(shard_conf.casper_version),
+            shard_version == PROTOCOL_V6_VERSION,
+        )));
+    }
+    let encoding = models::rust::record_encoding::record_encoding();
+    let expected = if shard_conf.is_v6() {
+        models::rust::record_encoding::RecordEncoding::Cost
+    } else {
+        models::rust::record_encoding::RecordEncoding::Legacy
+    };
+    if encoding != expected {
+        return Err(CasperError::RuntimeError(format!(
+            "this shard runs {}, but the node's record encoding is {:?}",
+            protocol_mode_name(shard_version),
+            encoding
+        )));
+    }
+    Ok(())
+}
+
 pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
@@ -245,6 +286,8 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
+    check_protocol_mode(&approved_block, &casper_shard_conf)?;
+
     // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
     //
     // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
@@ -314,6 +357,26 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     casper_shard_conf.deploy_lifespan = onchain_lifespan;
     casper_shard_conf.min_phlo_price = onchain_min_phlo;
 
+    if casper_shard_conf.is_v6() {
+        use crate::rust::util::rholang::costacc::genesis_resource_policy::{
+            resolve_policy_genesis, AdoptedResourcePolicy,
+        };
+        let genesis = resolve_policy_genesis(&approved_block, &block_dag_storage, &block_store)?;
+        let adopted = AdoptedResourcePolicy::load_at(
+            &runtime_manager,
+            &genesis,
+            &approved_block.body.state.post_state_hash,
+            &casper_shard_conf,
+        )
+        .await?;
+        if !adopted.offered_funded_v6_active() {
+            return Err(CasperError::RuntimeError(
+                "protocol-6 shard: the genesis resource policy is not active".to_string(),
+            ));
+        }
+        casper_shard_conf.adopted_resource_policy = Some(Arc::new(adopted));
+    }
+
     // Startup validation ran on the LOCAL values; everything derived from or
     // judged against max-parent-depth is finished HERE, on the adopted one.
     if casper_shard_conf.deploy_play_budget_is_derived
@@ -366,6 +429,21 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         }
     }
 
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(deploy_storage));
+    let v6 = if casper_shard_conf.is_v6() {
+        let engine = crate::rust::v6::V6Engine::new(
+            &approved_block,
+            runtime_manager.clone(),
+            block_store.clone(),
+            block_dag_storage.clone(),
+            deploy_storage.clone(),
+        );
+        engine.start();
+        Some(engine)
+    } else {
+        None
+    };
+
     Ok(MultiParentCasperImpl {
         observer: std::sync::OnceLock::new(),
         divergence_monitor: std::sync::Arc::new(
@@ -377,7 +455,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         estimator,
         block_store,
         block_dag_storage,
-        deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
+        deploy_storage,
         rejected_deploy_buffer,
         deploy_lifecycle: Arc::new(
             crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
@@ -392,6 +470,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        v6,
     })
 }
 
@@ -465,6 +544,7 @@ impl OnChainCasperState {
 /// Protocol version stamped into proposed block headers and judged against
 /// peers' blocks. Changes only with a coordinated protocol upgrade.
 pub const CASPER_PROTOCOL_VERSION: i64 = 1;
+pub const PROTOCOL_V6_VERSION: i64 = 6;
 
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
@@ -503,6 +583,9 @@ pub struct CasperShardConf {
     /// re-judgements.
     pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
+    pub adopted_resource_policy: Option<
+        Arc<crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy>,
+    >,
     pub bond_minimum: i64,
     pub bond_maximum: i64,
     pub epoch_length: i32,
@@ -543,6 +626,8 @@ pub struct CasperShardConf {
 }
 
 impl CasperShardConf {
+    pub fn is_v6(&self) -> bool { self.casper_version == PROTOCOL_V6_VERSION }
+
     pub fn new() -> Self {
         Self {
             fault_tolerance_threshold: 0.0,
@@ -559,6 +644,7 @@ impl CasperShardConf {
             deploy_play_budget_is_derived: false,
             heartbeat_check_interval: Duration::ZERO,
             casper_version: 0,
+            adopted_resource_policy: None,
             bond_minimum: 0,
             bond_maximum: 0,
             epoch_length: 0,

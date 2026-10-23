@@ -1483,6 +1483,67 @@ impl RuntimeOps {
         })
     }
 
+    pub async fn get_genesis_resource_policy(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<models::rust::phlo_schedule::PhloGenesisPolicy, CasperError> {
+        self.find_genesis_resource_policy(start_hash)
+            .await?
+            .ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "genesis must return exactly one resource policy".to_string(),
+                )
+            })
+    }
+
+    pub async fn find_genesis_resource_policy(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<models::rust::phlo_schedule::PhloGenesisPolicy>, CasperError> {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        let query = QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"new ret, lookup(`rho:registry:lookup`), channel in {
+                    lookup!(`rho:system:tokenMetadata`, *channel) |
+                    for (@(_, metadata) <- channel) { @metadata!("resourcePolicy", *ret) }
+                }"#,
+            )
+            .expect("genesis resource policy query must compile")
+        });
+        let pars = self
+            .play_exploratory_par_strict(query.clone(), start_hash)
+            .await?;
+        if pars.is_empty() {
+            return Ok(None);
+        }
+        let [par] = pars.as_slice() else {
+            return Err(CasperError::RuntimeError(
+                "genesis must return exactly one resource policy".to_string(),
+            ));
+        };
+        if par.exprs.len() != 1
+            || *par
+                != (Par {
+                    exprs: par.exprs.clone(),
+                    ..Par::default()
+                })
+        {
+            return Err(CasperError::RuntimeError(
+                "genesis resource policy must be a byte array".to_string(),
+            ));
+        }
+        match par.exprs[0].expr_instance.as_ref() {
+            Some(ExprInstance::GByteArray(bytes)) => {
+                models::rust::phlo_schedule::PhloGenesisPolicy::decode(bytes)
+                    .map(Some)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            }
+            _ => Err(CasperError::RuntimeError(
+                "genesis resource policy must be a byte array".to_string(),
+            )),
+        }
+    }
+
     /// The on-chain consensus parameters `(max-parent-depth, deploy-lifespan,
     /// min-phlo-price)` baked into the PoS contract at `start_hash`. Returns
     /// `None` when the contract does not expose the getter (a chain whose
