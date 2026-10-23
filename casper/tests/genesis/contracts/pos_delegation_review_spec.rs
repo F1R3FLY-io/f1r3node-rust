@@ -46,11 +46,12 @@ fn pos_delegation_review_spec() {
                     let mut genesis_parameters =
                         GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
                     genesis_parameters.2.vaults.extend([
-                        prepare_vault(VALIDATOR_PK, 10_000),
-                        prepare_vault(DELEGATOR_PK, 10_000),
+                        prepare_vault(VALIDATOR_PK, 10_000_000_000_000_000_000_000),
+                        prepare_vault(DELEGATOR_PK, 10_000_000_000_000_000_000_000),
                     ]);
-                    genesis_parameters.2.proof_of_stake.minimum_bond = 2;
-                    genesis_parameters.2.proof_of_stake.maximum_bond = 100_000;
+                    genesis_parameters.2.proof_of_stake.minimum_bond = 2.into();
+                    genesis_parameters.2.proof_of_stake.maximum_bond =
+                        "100000000000000000000000".parse().unwrap();
 
                     let spec = RhoSpec::new_with_genesis_parameters(
                         compiled,

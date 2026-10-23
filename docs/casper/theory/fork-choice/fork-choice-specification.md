@@ -88,9 +88,8 @@ Given a DAG `d` and a frozen `latest_messages` map (validator → their latest b
 - **R-B1.** Reading a validator's weight MUST NOT panic when a traversed block or its
   main parent is momentarily absent from the metadata index (a sync/prune window); it
   MUST return a typed error.
-- **R-B3.** Score accumulation MUST NOT silently overflow; an overflow (reachable only
-  if cumulative bonded weight exceeds `i64::MAX`, a supply-cap violation) MUST surface a
-  typed error, never a wrapped score.
+- **R-B3.** Score accumulation MUST preserve the exact sum of validator weights with arbitrary-precision integers.
+  Scores above `i64::MAX` remain valid. Accumulation MUST NOT wrap, clamp, scale, or truncate the sum.
 
 ## 6. Explicit non-requirement (design boundary)
 
@@ -112,7 +111,7 @@ Given a DAG `d` and a frozen `latest_messages` map (validator → their latest b
 | **S2** | A slashed/invalid validator influences fork choice (violates R-FILTER). |
 | **S3** | The main tip is dropped by count/depth truncation (violates R-COUNT/R-DEPTH). |
 | **S4** | The estimator panics on a missing-metadata or empty-tips edge (violates R-NOPANIC/R-B1). |
-| **S5** | A wrapped (overflowed) score changes the ranking (violates R-B3). |
+| **S5** | An inexact validator-weight sum changes the ranking (violates R-B3). |
 | **S6** | The LCA/depth filter differs across nodes for the same DAG (violates R-LCA). |
 
 ## 8. Conformance

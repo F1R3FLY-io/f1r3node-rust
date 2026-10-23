@@ -372,7 +372,7 @@ mod linux {
                 "targets":[{"target":"d".repeat(64),"input_scope":"captured_latest_messages","comparator":"ge",
                     "threshold_numerator":1,"threshold_denominator":3,
                     "oracle_decision":available(json!(true),'c'),
-                    "oracle_witness":available(json!({"decision":true,"total_stake":3,"agreeing_stake":3,"clique_weight":2,"early_return":null}),'c'),
+                    "oracle_witness":available(json!({"decision":true,"total_stake":"3","agreeing_stake":"3","clique_weight":"2","early_return":null}),'c'),
                     "original_fault_tolerance":available(json!((1.0f32/3.0).to_bits()),'c'),
                     "display_projection":absent("equivocation_snapshot_unavailable",'c'),
                     "persisted_fault_tolerance":absent("not_finalized",'a'),
@@ -381,6 +381,17 @@ mod linux {
                 "floor_comparison":{"availability":"not_requested"},"events":[],"coverage":null,
                 "work":{"aggregate":work,"preparation":work,"measured":work,
                     "original":{"availability":"not_requested"},"reference":{"availability":"not_requested"},"complete":true,"failure":null}}}});
+        if ["large_stakes", "stake_mismatch"].contains(&mode) {
+            let scale = num_bigint::BigInt::from(1u8) << 140usize;
+            let witness = &mut response["result"]["value"]["targets"][0]["oracle_witness"]["value"];
+            witness["total_stake"] = json!((&scale * 3u8).to_string());
+            witness["agreeing_stake"] = witness["total_stake"].clone();
+            witness["clique_weight"] = json!((&scale * 2u8).to_string());
+        }
+        if mode == "malformed_stake" {
+            response["result"]["value"]["targets"][0]["oracle_witness"]["value"]["total_stake"] =
+                json!("3x");
+        }
         if mode == "paired_heads" {
             let head = |mode: &str, hash: char| {
                 available(
@@ -388,7 +399,7 @@ mod linux {
                         "mode":mode,"head":hash.to_string().repeat(64),
                         "lower_bound":{"hash":"a".repeat(64),"block_number":1,"rule":"finalized_floor"},
                         "common_ancestor":"a".repeat(64),"tips":[hash.to_string().repeat(64)],
-                        "tip_scores":[3],"score_count":1,"score_digest":"7".repeat(64),
+                        "tip_scores":["3"],"score_count":1,"score_digest":"7".repeat(64),
                         "visited_blocks":2,"examined_edges":1
                     }),
                     'e',
@@ -411,8 +422,8 @@ mod linux {
             response["result"]["value"]["targets"][0]["reference_comparison"] = available(
                 json!({
                 "algorithm":"immutable-subset-reference-v1","decision_matches":false,"measured_decision":true,
-                "original_matches":false,"reference":{"decision":false,"original_bits":0,"total_stake":3,
-                    "agreeing_stake":3,"clique_weight":2}}),
+                "original_matches":false,"reference":{"decision":false,"original_bits":0,"total_stake":"3",
+                    "agreeing_stake":"3","clique_weight":"2"}}),
                 'c',
             );
         }
@@ -622,6 +633,39 @@ mod linux {
             assert_eq!(report["status"], "incomplete", "{mode}");
             assert_eq!(fixture.receipts()[0]["status"], "unknown", "{mode}");
             assert_eq!(report["errors"].as_array().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn live_driver_compares_decimal_stakes_above_i128_exactly() {
+        let mut fixture = Fixture::new("large_stakes");
+        let scale = num_bigint::BigInt::from(1u8) << 140usize;
+        for (field, multiplier) in [("S", 3u8), ("agreeing_stake", 3), ("q", 2)] {
+            fixture.envelope["request"]["threshold_inputs"][field] =
+                json!((&scale * multiplier).to_string());
+        }
+        fixture.run(0);
+        let observation = parse(
+            &artifact(
+                &fixture.root.path().join("output"),
+                &fixture.receipts()[1]["observations"][0],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            observation["payload"]["finality"]["value"]["threshold_pass"],
+            true
+        );
+    }
+
+    #[test]
+    fn live_driver_rejects_mismatched_and_malformed_decimal_stakes() {
+        for mode in ["stake_mismatch", "malformed_stake"] {
+            let fixture = Fixture::new(mode);
+            let report = fixture.run(1);
+            assert_eq!(report["status"], "incomplete", "{mode}");
+            assert!(!report["errors"].as_array().unwrap().is_empty(), "{mode}");
         }
     }
 

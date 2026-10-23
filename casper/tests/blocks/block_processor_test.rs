@@ -71,7 +71,7 @@ impl TestFixture {
         let v1 = generate_validator(Some("Test Validator"));
         let bonds = vec![Bond {
             validator: v1.clone(),
-            stake: 100,
+            stake: 100.into(),
         }];
 
         let genesis = create_genesis_block(

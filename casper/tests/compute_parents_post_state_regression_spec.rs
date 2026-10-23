@@ -57,7 +57,7 @@ fn mk_snapshot(
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
-    bonds_map.insert(validator.clone(), 100);
+    bonds_map.insert(validator.clone(), 100.into());
     snapshot.on_chain_state = OnChainCasperState {
         shard_conf,
         bonds_map,
@@ -209,11 +209,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: i64::MAX.into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -447,11 +447,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: i64::MAX.into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -710,11 +710,11 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: i64::MAX.into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -947,12 +947,12 @@ async fn run_visible_blocks_scope_test() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: i64::MAX.into(),
             validators: vec![
-                GenesisValidator { pk: v1_pk.clone(), stake: 100 },
-                GenesisValidator { pk: v2_pk.clone(), stake: 100 },
-                GenesisValidator { pk: v3_pk.clone(), stake: 100 },
+                GenesisValidator { pk: v1_pk.clone(), stake: 100.into() },
+                GenesisValidator { pk: v2_pk.clone(), stake: 100.into() },
+                GenesisValidator { pk: v3_pk.clone(), stake: 100.into() },
             ],
             epoch_length: 1000,
             quarantine_length: 50000,

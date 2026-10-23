@@ -30,10 +30,11 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
-        fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+        fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
             validators
                 .into_iter()
                 .zip(vec![10i64, 10i64, 10i64])
+                .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }
 

@@ -595,7 +595,7 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
             shard_conf: this.casper_shard_conf.clone(),
             bonds_map: bm
                 .iter()
-                .map(|v| (v.validator.clone(), v.stake))
+                .map(|v| (v.validator.clone(), v.stake.clone()))
                 .collect::<HashMap<_, _>>(),
             active_validators: cached,
         });
@@ -629,7 +629,7 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
         shard_conf: this.casper_shard_conf.clone(),
         bonds_map: bm
             .iter()
-            .map(|v| (v.validator.clone(), v.stake))
+            .map(|v| (v.validator.clone(), v.stake.clone()))
             .collect::<HashMap<_, _>>(),
         active_validators: av,
     })

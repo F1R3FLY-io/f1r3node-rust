@@ -3,6 +3,8 @@
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::{Blake2b256Hash, LENGTH as HASH_LENGTH};
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -926,7 +928,7 @@ impl Body {
                 proto
                     .state
                     .ok_or_else(|| "Missing state field".to_string())?,
-            ),
+            )?,
             deploys: proto
                 .deploys
                 .into_iter()
@@ -1017,17 +1019,17 @@ pub struct F1r3flyState {
 }
 
 impl F1r3flyState {
-    pub fn from_proto(proto: RChainStateProto) -> Self {
-        Self {
+    pub fn from_proto(proto: RChainStateProto) -> Result<Self, String> {
+        Ok(Self {
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
             bonds: proto
                 .bonds
                 .into_iter()
                 .map(|b| Bond::from_proto(b))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             block_number: proto.block_number,
-        }
+        })
     }
 
     pub fn to_proto(&self) -> RChainStateProto {
@@ -1055,8 +1057,12 @@ pub struct ProcessedDeploy {
 }
 
 impl ProcessedDeploy {
-    pub fn refund_amount(&self) -> i64 {
-        (self.deploy.data.phlo_limit - self.cost.cost as i64).max(0) * self.deploy.data.phlo_price
+    pub fn refund_amount(&self) -> Result<i64, String> {
+        self.deploy.data.total_phlo_charge()?;
+        let remaining = (self.deploy.data.phlo_limit as u64).saturating_sub(self.cost.cost);
+        (remaining as i64)
+            .checked_mul(self.deploy.data.phlo_price)
+            .ok_or_else(|| "Deploy refund exceeds the signed 64-bit fee range".to_string())
     }
 
     pub fn empty(deploy: Signed<DeployData>) -> Self {
@@ -1322,7 +1328,17 @@ impl ToMessage for DeployData {
 }
 
 impl DeployData {
-    pub fn total_phlo_charge(&self) -> i64 { self.phlo_limit * self.phlo_price }
+    pub fn total_phlo_charge(&self) -> Result<i64, String> {
+        if self.phlo_limit <= 0 {
+            return Err("Deploy phloLimit must be positive".to_string());
+        }
+        if self.phlo_price < 0 {
+            return Err("Deploy phloPrice must be nonnegative".to_string());
+        }
+        self.phlo_limit
+            .checked_mul(self.phlo_price)
+            .ok_or_else(|| "Deploy precharge exceeds the signed 64-bit fee range".to_string())
+    }
 
     /// Returns true if this deploy has a time-based expiration set
     pub fn has_expiration(&self) -> bool {
@@ -1586,21 +1602,46 @@ impl CommEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bond {
     pub validator: ByteString,
-    pub stake: i64,
+    pub stake: BigInt,
 }
 
 impl Bond {
-    pub fn from_proto(proto: BondProto) -> Self {
-        Self {
+    pub fn from_proto(proto: BondProto) -> Result<Self, String> {
+        let stake = if proto.stake_big_int.is_empty() {
+            if proto.stake < 0 {
+                return Err("Bond stake must be nonnegative".to_string());
+            }
+            BigInt::from(proto.stake)
+        } else {
+            if proto.stake != 0 {
+                return Err("Noncanonical BigInt bond stake".to_string());
+            }
+            let amount = BigInt::from_signed_bytes_be(&proto.stake_big_int);
+            if amount <= BigInt::from(i64::MAX)
+                || amount.to_signed_bytes_be() != proto.stake_big_int.as_ref()
+            {
+                return Err("BigInt bond stake must exceed the legacy range".to_string());
+            }
+            amount
+        };
+        Ok(Self {
             validator: proto.validator,
-            stake: proto.stake,
-        }
+            stake,
+        })
     }
 
     pub fn to_proto(self) -> BondProto {
-        BondProto {
-            validator: self.validator,
-            stake: self.stake,
+        match self.stake.to_i64() {
+            Some(stake) => BondProto {
+                validator: self.validator,
+                stake,
+                stake_big_int: Default::default(),
+            },
+            None => BondProto {
+                validator: self.validator,
+                stake: 0.into(),
+                stake_big_int: self.stake.to_signed_bytes_be().into(),
+            },
         }
     }
 }
@@ -1978,6 +2019,100 @@ mod tests {
     fn hash32(fill: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![fill; 32]) }
 
     #[test]
+    fn bond_wire_encoding_preserves_legacy_and_large_stakes() {
+        for stake in [
+            BigInt::from(0),
+            BigInt::from(i64::MAX),
+            BigInt::from(i64::MAX) + 1,
+            "100000000000000000000".parse().unwrap(),
+            BigInt::from(1) << 512,
+        ] {
+            let bond = Bond {
+                validator: Bytes::from_static(b"validator"),
+                stake: stake.clone(),
+            };
+            let wire = bond.clone().to_proto();
+            if let Some(legacy) = stake.to_i64() {
+                assert_eq!(wire.stake, legacy);
+                assert!(wire.stake_big_int.is_empty());
+            } else {
+                assert_eq!(wire.stake, 0);
+                assert_eq!(BigInt::from_signed_bytes_be(&wire.stake_big_int), stake);
+            }
+            let decoded = BondProto::decode(wire.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(Bond::from_proto(decoded).unwrap(), bond);
+        }
+    }
+
+    #[test]
+    fn bond_wire_encoding_rejects_ambiguous_and_negative_stakes() {
+        for (legacy, bytes) in [
+            (-1, vec![]),
+            (0, vec![1]),
+            (0, vec![0]),
+            (0, vec![255]),
+            (1, BigInt::from(u64::MAX).to_signed_bytes_be()),
+            (0, {
+                let mut bytes = vec![0];
+                bytes.extend(BigInt::from(u64::MAX).to_signed_bytes_be());
+                bytes
+            }),
+        ] {
+            assert!(Bond::from_proto(BondProto {
+                validator: Bytes::new(),
+                stake: legacy,
+                stake_big_int: bytes.into()
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn fee_arithmetic_rejects_invalid_metadata_and_overflow() {
+        let mut deploy = signed_deploy().data;
+        for (limit, price, expected) in [
+            (i64::MAX, 1, Some(i64::MAX)),
+            (i64::MAX / 2, 2, Some(i64::MAX - 1)),
+            (1, 0, Some(0)),
+            (5_000_000_000, 10_000_000_000, None),
+            (i64::MAX, 2, None),
+            (0, 1, None),
+            (-1, 1, None),
+            (1, -1, None),
+            (-1, -1, None),
+        ] {
+            deploy.phlo_limit = limit;
+            deploy.phlo_price = price;
+            assert_eq!(
+                deploy.total_phlo_charge().ok(),
+                expected,
+                "limit={limit}, price={price}"
+            );
+        }
+    }
+
+    #[test]
+    fn refund_arithmetic_never_narrows_unsigned_cost() {
+        let mut processed = ProcessedDeploy::empty(signed_deploy());
+        processed.deploy.data.phlo_limit = i64::MAX;
+        processed.deploy.data.phlo_price = 1;
+        for (cost, expected) in [
+            (0, i64::MAX),
+            (1, i64::MAX - 1),
+            (i64::MAX as u64, 0),
+            (i64::MAX as u64 + 1, 0),
+            (u64::MAX, 0),
+        ] {
+            processed.cost.cost = cost;
+            assert_eq!(processed.refund_amount().unwrap(), expected);
+        }
+        processed.deploy.data.phlo_price = 2;
+        assert!(processed.refund_amount().is_err());
+        processed.deploy.data.phlo_limit = -1;
+        assert!(processed.refund_amount().is_err());
+    }
+
+    #[test]
     fn rejected_deploy_decodes_legacy_wire_format() {
         let legacy = [0x0a, 0x03, b's', b'i', b'g'];
         let decoded = RejectedDeployProto::decode(legacy.as_slice()).unwrap();
@@ -2199,7 +2334,7 @@ mod tests {
         );
 
         let expected_refund = (deploy.data.phlo_limit - 100).max(0) * deploy.data.phlo_price;
-        assert_eq!(processed.refund_amount(), expected_refund);
+        assert_eq!(processed.refund_amount().unwrap(), expected_refund);
 
         let info = processed.clone().to_deploy_info();
         assert_eq!(info.term, deploy.data.term);
@@ -2303,7 +2438,7 @@ mod tests {
             expiration_timestamp: None,
             parameters: Vec::new(),
         };
-        assert_eq!(deploy.total_phlo_charge(), 77);
+        assert_eq!(deploy.total_phlo_charge().unwrap(), 77);
         assert!(!deploy.has_expiration());
         assert!(!deploy.is_expired_at(i64::MAX));
 

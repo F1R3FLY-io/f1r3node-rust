@@ -201,8 +201,8 @@ fn run_pos_spec_shard_once(shard: PosSpecShard) -> Result<(), InterpreterError> 
                 // above the 20000 deposit-failure case so that gate ordering is preserved; all
                 // test/genesis bonds are even, so the minimum_bond factor in the reward formula
                 // (PoS.rhox) divides evenly and reward math is unchanged.
-                genesis_parameters.2.proof_of_stake.minimum_bond = 2;
-                genesis_parameters.2.proof_of_stake.maximum_bond = 100_000;
+                genesis_parameters.2.proof_of_stake.minimum_bond = 2.into();
+                genesis_parameters.2.proof_of_stake.maximum_bond = 100_000.into();
 
                 let spec = RhoSpec::new_with_genesis_parameters_and_enabled_tests(
                     compiled,

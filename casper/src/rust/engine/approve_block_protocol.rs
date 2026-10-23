@@ -15,6 +15,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockApproval, BlockMessage, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
+use num_bigint::BigInt;
 use prost::{bytes, Message};
 use shared::rust::shared::f1r3fly_events::{F1r3flyEvent, F1r3flyEvents};
 use tokio::time::sleep;
@@ -119,8 +120,8 @@ impl ApproveBlockProtocolFactory {
         bonds_path: String,
         autogen_shard_size: u32,
         vaults_path: String,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        minimum_bond: BigInt,
+        maximum_bond: BigInt,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
@@ -198,7 +199,7 @@ impl ApproveBlockProtocolFactory {
             },
             vaults,
             supply: i64::MAX,
-            version: 1,
+            version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
             native_token_name,
             native_token_symbol,
             native_token_decimals,

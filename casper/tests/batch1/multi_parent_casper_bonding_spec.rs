@@ -70,11 +70,12 @@ async fn multi_parent_casper_should_allow_bonding() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, i64> = validator_pks
+    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
         .iter()
         .take(3)
         .enumerate()
         .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(key, stake)| (key, stake.into()))
         .collect();
 
     let parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
@@ -148,11 +149,12 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, i64> = validator_pks
+    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
         .iter()
         .take(3)
         .enumerate()
         .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(key, stake)| (key, stake.into()))
         .collect();
 
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
@@ -311,11 +313,12 @@ async fn a_finalized_bond_survives_an_epoch_boundary_merge() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, i64> = validator_pks
+    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
         .iter()
         .take(3)
         .enumerate()
         .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(key, stake)| (key, stake.into()))
         .collect();
 
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);

@@ -125,7 +125,7 @@ async fn metadata_reads_for_one_oracle_call(validator_count: usize) -> usize {
         .iter()
         .map(|validator| Bond {
             validator: validator.clone(),
-            stake: 10,
+            stake: 10.into(),
         })
         .collect();
 

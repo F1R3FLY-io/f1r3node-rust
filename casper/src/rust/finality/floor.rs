@@ -1556,7 +1556,7 @@ mod frontier_determinism_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 1i64);
+        wm.insert(v.clone(), 1i64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -2115,7 +2115,7 @@ mod frontier_determinism_tests {
     ) -> BlockMetadata {
         let mut weight_map = BTreeMap::new();
         for (validator, weight) in wm {
-            weight_map.insert(validator, weight);
+            weight_map.insert(validator, weight.into());
         }
         BlockMetadata {
             block_hash: hash,
@@ -2355,6 +2355,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .map(|(key, stake)| (key, stake.into()))
                 .collect();
             meta
         };
@@ -2426,6 +2427,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .map(|(key, stake)| (key, stake.into()))
                 .collect();
             meta
         };
@@ -2444,7 +2446,7 @@ mod frontier_determinism_tests {
             .expect("committee");
         assert_eq!(
             bonded_committee.get(&joiner),
-            Some(&400),
+            Some(&400.into()),
             "the bond belongs to the target's own committee"
         );
 
@@ -2463,8 +2465,8 @@ mod frontier_determinism_tests {
              threshold the oracle measures against"
         );
         assert_eq!(
-            participating.values().sum::<i64>(),
-            100,
+            participating.values().sum::<num_bigint::BigInt>(),
+            100.into(),
             "the certifying weight is the stake that has actually spoken"
         );
 
@@ -2479,8 +2481,8 @@ mod frontier_determinism_tests {
             CliqueOracle::participating_weight_map(plain_committee, &dag, &unheard)
                 .expect("participating");
         assert_eq!(
-            plain_participating.values().sum::<i64>(),
-            participating.values().sum::<i64>(),
+            plain_participating.values().sum::<num_bigint::BigInt>(),
+            participating.values().sum::<num_bigint::BigInt>(),
             "both siblings certify over the same participating stake until the \
              joiner produces a message"
         );
@@ -2491,10 +2493,10 @@ mod frontier_determinism_tests {
         heard.insert(joiner.clone(), bonded.clone());
         let after = CliqueOracle::participating_weight_map(bonded_committee, &dag, &heard)
             .expect("participating");
-        assert_eq!(after.get(&joiner), Some(&400));
+        assert_eq!(after.get(&joiner), Some(&400.into()));
         assert_eq!(
-            after.values().sum::<i64>(),
-            500,
+            after.values().sum::<num_bigint::BigInt>(),
+            500.into(),
             "the joiner's stake joins the certifying weight once it has spoken"
         );
     }

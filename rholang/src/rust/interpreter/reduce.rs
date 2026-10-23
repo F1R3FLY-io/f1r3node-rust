@@ -6931,6 +6931,41 @@ impl DebruijnInterpreter {
         Box::new(LengthMethod { outer: self })
     }
 
+    fn is_bigint_method(&self) -> Box<dyn Method> {
+        struct IsBigIntMethod;
+
+        impl Method for IsBigIntMethod {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("isBigInt"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let is_bigint = p.sends.is_empty()
+                    && p.receives.is_empty()
+                    && p.news.is_empty()
+                    && p.matches.is_empty()
+                    && p.unforgeables.is_empty()
+                    && p.bundles.is_empty()
+                    && p.connectives.is_empty()
+                    && p.conditionals.is_empty()
+                    && matches!(p.exprs.as_slice(), [Expr {
+                        expr_instance: Some(ExprInstance::GBigInt(_)),
+                    }]);
+                Ok(Par::default().with_exprs(vec![models::rust::utils::new_gbool_expr(is_bigint)]))
+            }
+        }
+
+        Box::new(IsBigIntMethod)
+    }
+
     fn to_bigint_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToBigIntMethod<'a> {
             outer: &'a DebruijnInterpreter,
@@ -7547,6 +7582,7 @@ impl DebruijnInterpreter {
         table.insert("toMap".to_string(), self.to_map_method());
         table.insert("toString".to_string(), self.to_string_method());
         table.insert("toBigInt".to_string(), self.to_bigint_method());
+        table.insert("isBigInt".to_string(), self.is_bigint_method());
         table
     }
 

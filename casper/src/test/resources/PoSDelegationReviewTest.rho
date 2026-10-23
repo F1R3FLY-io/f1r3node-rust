@@ -69,27 +69,27 @@ in {
         prepareUser!("7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", *delegatorSetupCh) |
         for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
              @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh) {
-          match (100, 40, 10, 10) {
+          match (100000000000000000000n, 40000000000000000000n, 10000000000000000000n, 10) {
             (validatorBond, delegationAmt, undelegationAmt, requestBlock) => {
               @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
               for (@(true, _) <- bondCh) {
                 @PoS!("getMinimumBond", *minimumBondCh) |
                 for (@minimumBond <- minimumBondCh) {
-                  @PoS!("delegate", delegatorDeployerId, validatorPubKey, minimumBond - 1, *dustDelegateCh) |
-                  @PoS!("delegate", delegatorDeployerId, validatorPubKey, 2n, *invalidDelegateCh) |
-                  @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 2n, *invalidUndelegateCh) |
+                  @PoS!("delegate", delegatorDeployerId, validatorPubKey, minimumBond - 1n, *dustDelegateCh) |
+                  @PoS!("delegate", delegatorDeployerId, validatorPubKey, 2, *invalidDelegateCh) |
+                  @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 2, *invalidUndelegateCh) |
                   for (@(false, dustMsg) <- dustDelegateCh &
                        @(false, invalidDelegateMsg) <- invalidDelegateCh &
                        @(false, invalidUndelegateMsg) <- invalidUndelegateCh) {
                     @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
                     for (@(true, _) <- delegateCh) {
-                      @PoS!("bond", validatorDeployerId, 50, *rebondCh) |
+                      @PoS!("bond", validatorDeployerId, 50n, *rebondCh) |
                       for (@(false, rebondMsg) <- rebondCh) {
                         setBlockData!("blockNumber", requestBlock, *blockDataCh) |
                         for (_ <- blockDataCh) {
                           @PoS!("undelegate", delegatorDeployerId, validatorPubKey, undelegationAmt, *undelegateCh) |
                           for (@(true, _) <- undelegateCh) {
-                            @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 1, *secondUndelegateCh) |
+                            @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 1n, *secondUndelegateCh) |
                             for (@(false, secondMsg) <- secondUndelegateCh) {
                               @PoS!("getBonds", *selfBondsCh) |
                               @PoS!("getEffectiveBonds", *effectiveBondsCh) |
@@ -101,14 +101,14 @@ in {
                                    @pendingUndelegations <- pendingUndelegationsCh) {
                                 rhoSpec!("assertMany",
                                   [
-                                    ((2, "==", minimumBond), "minimum bond getter exposes genesis parameter"),
-                                    (("Delegation amount must be an Int.", "==", invalidDelegateMsg), "BigInt delegation cannot change consensus stake type"),
-                                    (("Undelegation amount must be an Int.", "==", invalidUndelegateMsg), "BigInt undelegation cannot change consensus stake type"),
+                                    ((2n, "==", minimumBond), "minimum bond getter exposes genesis parameter"),
+                                    (("Delegation amount must be a BigInt.", "==", invalidDelegateMsg), "Int delegation is rejected"),
+                                    (("Undelegation amount must be a BigInt.", "==", invalidUndelegateMsg), "Int undelegation is rejected"),
                                     (("Delegation is less than minimum.", "==", dustMsg), "delegation below minimumBond is rejected"),
                                     (("Public key is already bonded.", "==", rebondMsg), "bond cannot mutate an already bonded validator after delegation"),
                                     (("Pending undelegation already exists for validator.", "==", secondMsg), "a second pending undelegation for the pair is rejected"),
                                     ((validatorBond, "==", selfBonds.get(validatorPubKey)), "self-bond stays unchanged"),
-                                    ((delegationAmt - undelegationAmt, "==", delegatedTotals.getOrElse(validatorPubKey, 0)), "delegated total reflects the active remainder"),
+                                    ((delegationAmt - undelegationAmt, "==", delegatedTotals.getOrElse(validatorPubKey, 0n)), "delegated total reflects the active remainder"),
                                     (((validatorBond + delegationAmt) - undelegationAmt, "==", effectiveBonds.get(validatorPubKey)), "effective bond reflects self plus active delegated remainder"),
                                     ((true, "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "first undelegation remains pending")
                                   ],

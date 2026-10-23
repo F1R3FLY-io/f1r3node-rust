@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use casper_soak::{
     array, artifact, encoded, exclusive, file_hash, hash, manifest, number, object, parse, record,
-    regular, relative, text, MAX_BYTES,
+    regular, relative, stake, text, MAX_BYTES,
 };
 use eyre::{ensure, Result};
 use serde_json::{json, Value};
@@ -371,9 +371,26 @@ fn finality(target: &Value, threshold: &Value, mode: &Value) -> Result<Value> {
         ("agreeing_stake", "agreeing_stake"),
         ("clique_weight", "q"),
     ] {
-        if let Some(actual) = witness[field].as_i64() {
+        let actual = witness
+            .get(field)
+            .ok_or_else(|| eyre::eyre!("The captured stake is absent."))?;
+        if actual.is_null() {
             ensure!(
-                actual >= 0 && actual as u64 == manifest::decimal(&threshold[key])?,
+                matches!(
+                    (witness["early_return"].as_str(), field),
+                    (Some("target_not_held"), _)
+                        | (
+                            Some("non_positive_stake"),
+                            "agreeing_stake" | "clique_weight"
+                        )
+                        | (Some("no_strict_majority"), "clique_weight")
+                ),
+                "The captured stake is unexpectedly null."
+            );
+        } else {
+            let actual = stake(actual)?;
+            ensure!(
+                actual.sign() != num_bigint::Sign::Minus && actual == stake(&threshold[key])?,
                 "The captured stake differs from the fixture."
             );
         }

@@ -280,7 +280,7 @@ mod tests {
     fn build_string_bond_prints_full_validator_and_stake() {
         let bond = Bond {
             validator: Bytes::from_static(&[0xaa, 0xbb]),
-            stake: 150,
+            stake: 150.into(),
         };
         assert_eq!(PrettyPrinter::build_string_bond(&bond), "aabb: 150");
     }

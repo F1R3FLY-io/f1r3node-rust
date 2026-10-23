@@ -178,8 +178,8 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        bond_minimum: 0,
-        bond_maximum: i64::MAX,
+        bond_minimum: 0.into(),
+        bond_maximum: i64::MAX.into(),
         epoch_length: 0,
         quarantine_length: 0,
         min_phlo_price: 0,
@@ -189,8 +189,8 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         ..CasperShardConf::new()
     };
 
-    let mut bonds_map: HashMap<ByteString, i64> = HashMap::new();
-    bonds_map.insert(validator_id.clone(), 100);
+    let mut bonds_map: HashMap<ByteString, num_bigint::BigInt> = HashMap::new();
+    bonds_map.insert(validator_id.clone(), 100.into());
 
     // Set maxSeqNums like Scala does: Map(validatorId -> 0)
     let mut max_seq_nums: HashMap<ByteString, u64> = HashMap::new();
@@ -1376,4 +1376,59 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
             "Valid (unexpired) sig must remain in the rejected-deploy buffer"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn invalid_fee_metadata_in_storage_does_not_block_valid_proposals() {
+    crate::init_logger();
+
+    let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
+    let validator_identity = ValidatorIdentity::new(&validator_sk);
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let mut kvm = InMemoryStoreManager::new();
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        KeyValueDeployStorage::new(&mut kvm)
+            .await
+            .expect("deploy storage"),
+    ));
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
+    ));
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+        .await
+        .expect("block store");
+    let mut snapshot = create_snapshot(20, validator_id);
+    snapshot
+        .on_chain_state
+        .shard_conf
+        .max_user_deploys_per_block = 40;
+    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    let valid = create_deploy(1, None, &validator_sk);
+    let mut invalid_data = create_deploy(2, None, &validator_sk).data;
+    invalid_data.phlo_limit = i64::MAX;
+    invalid_data.phlo_price = 2;
+    let invalid = Signed::create(invalid_data, Box::new(Secp256k1), validator_sk.clone()).unwrap();
+    deploy_storage
+        .lock()
+        .add(vec![invalid, valid.clone()])
+        .unwrap();
+
+    let prepared = block_creator::prepare_user_deploys(
+        &snapshot,
+        70,
+        i64::MAX,
+        deploy_storage,
+        rejected_deploy_buffer,
+        &block_store,
+        true,
+        true,
+    )
+    .await
+    .expect("prepare ordinary deploys");
+
+    assert_eq!(prepared.deploys, HashSet::from([valid]));
 }

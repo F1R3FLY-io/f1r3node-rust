@@ -118,6 +118,7 @@ pub enum InvalidBlock {
     ContainsFutureDeploy,
     NotOfInterest,
     LowDeployCost,
+    InvalidDeployCost,
 }
 
 impl BlockStatus {
@@ -288,8 +289,8 @@ impl InvalidBlock {
             //     enforcement, and a gate rule in its proving phase must
             //     never be able to burn honest stake through its own bugs.
             //   • NotOfInterest: local node filtering decision.
-            //   • LowDeployCost: per-deploy cost threshold; rejected at
-            //     admission, not on-chain accountable.
+            //   • LowDeployCost / InvalidDeployCost: fee admission rules;
+            //     these verdicts do not authorize slashing.
             InvalidBlock::InvalidFormat
             | InvalidBlock::InvalidSignature
             | InvalidBlock::InvalidSender
@@ -315,7 +316,8 @@ impl InvalidBlock {
             | InvalidBlock::InvalidRejectedDeploy
             | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
-            | InvalidBlock::LowDeployCost => false,
+            | InvalidBlock::LowDeployCost
+            | InvalidBlock::InvalidDeployCost => false,
         }
     }
 }

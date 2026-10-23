@@ -20,6 +20,7 @@ use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
@@ -51,6 +52,7 @@ pub const UNLIMITED_PARENTS: i32 = -1;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
     ParsingError(String),
+    InvalidCost(String),
     MissingUser,
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
@@ -73,6 +75,7 @@ impl DeployError {
 impl Display for DeployError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DeployError::InvalidCost(details) => write!(f, "Invalid deploy cost: {}", details),
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
             DeployError::UnknownSignatureAlgorithm(alg) => {
@@ -171,7 +174,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     // this initial fault weight combined with our fault tolerance threshold t.
     fn normalized_initial_fault(
         &self,
-        weights: HashMap<Validator, u64>,
+        weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError>;
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError>;
@@ -471,7 +474,7 @@ impl CasperSnapshot {
 #[derive(Clone)]
 pub struct OnChainCasperState {
     pub shard_conf: CasperShardConf,
-    pub bonds_map: HashMap<Validator, i64>,
+    pub bonds_map: HashMap<Validator, BigInt>,
     pub active_validators: Vec<Validator>,
 }
 
@@ -526,8 +529,8 @@ pub struct CasperShardConf {
     /// re-judgements.
     pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
-    pub bond_minimum: i64,
-    pub bond_maximum: i64,
+    pub bond_minimum: BigInt,
+    pub bond_maximum: BigInt,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
@@ -582,8 +585,8 @@ impl CasperShardConf {
             deploy_play_budget_is_derived: false,
             heartbeat_check_interval: Duration::ZERO,
             casper_version: 0,
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
@@ -728,7 +731,7 @@ pub mod test_helpers {
             {
                 parent.body.state.bonds.push(Bond {
                     validator,
-                    stake: 100,
+                    stake: 100.into(),
                 });
             }
         }
@@ -815,7 +818,7 @@ pub mod test_helpers {
 
         fn normalized_initial_fault(
             &self,
-            _weights: HashMap<Validator, u64>,
+            _weights: HashMap<Validator, num_bigint::BigInt>,
         ) -> Result<f32, CasperError> {
             Ok(0.0)
         }
