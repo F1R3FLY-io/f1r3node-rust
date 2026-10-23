@@ -81,7 +81,39 @@
       "ste": "the claim paragraph passes the STE Check; human STE Review pending"
     }
   },
-  "hosted": "pending",
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "f7a2696bd91224ac237f52664b9df406d8420c98",
+    "run_id": 39895663118,
+    "jobs": {
+      "Soak Harness Tests": {
+        "job_id": 120225593475,
+        "conclusion": "success",
+        "note": "includes the driver fixture and the stop-timeout scenario of test-soak-disk-admission.sh that failed in run 39889530851"
+      },
+      "Static Checks": {
+        "job_id": 120225593512,
+        "conclusion": "success"
+      },
+      "Script Tests": {
+        "job_id": 120225593584,
+        "conclusion": "success"
+      },
+      "Test Gate (casper)": {
+        "job_id": 120236807303,
+        "conclusion": "success"
+      },
+      "Integration Gate (amd64)": {
+        "job_id": 120248590544,
+        "conclusion": "success"
+      },
+      "Integration Gate (arm64)": {
+        "job_id": 120248590624,
+        "conclusion": "success"
+      }
+    },
+    "conclusion": "success"
+  },
   "acceptance_request": {
     "acceptor": "jltatbeach",
     "where": "the pull request of fix/soak-deadline-shard-stop",
