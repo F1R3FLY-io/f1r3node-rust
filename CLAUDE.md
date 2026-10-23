@@ -89,6 +89,7 @@ just clean-standalone                # Reset node data
 
 # Docker
 docker build -f node/Dockerfile -t f1r3fly-rust:local .
+cp -n docker/.env.example docker/.env  # docker/.env is not tracked
 docker compose -f docker/standalone.yml up
 docker compose -f docker/shard.yml up
 ```
