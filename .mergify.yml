@@ -12,6 +12,12 @@
 # request without a heavy run cannot merge. Each queue checks one pull request
 # at a time on its own head, after Mergify merges the current base into it.
 #
+# The rulesets require a branch to be up to date before a merge. Mergify then
+# accepts only in-place checks: a serial queue with one check at a time, a
+# batch size of 1, no check retries, and merge_conditions identical to
+# queue_conditions. Each queue therefore lists its checks in both. A pull
+# request enters a queue only after its checks pass.
+#
 #   dev       a pull request into dev, including the master back-merge.
 #   master    a promotion (promote/<stamp>) or a hotfix/ branch into master.
 #   ca-item   a ca/<item> pull request into ca-canary. It also needs the
@@ -42,9 +48,14 @@
 # list the required checks of the devProtect and masterProtect rulesets.
 # test-mergify-config.sh keeps the lists and these rules in step.
 
+merge_queue:
+  mode: serial
+  max_parallel_checks: 1
+
 queue_rules:
   - name: dev
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
@@ -55,7 +66,33 @@ queue_rules:
       - label=ci-heavy
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
     merge_conditions:
+      - base=dev
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - -head~=^(dev|master|ca-canary|ca-release)$
+      - -draft
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -78,6 +115,7 @@ queue_rules:
 
   - name: master
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
@@ -88,7 +126,34 @@ queue_rules:
       - label=ci-heavy
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test Gate (casper)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
     merge_conditions:
+      - base=master
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - head~=^(promote/[0-9]{8}-[0-9]{6}|hotfix/.+)$
+      - -draft
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -112,6 +177,7 @@ queue_rules:
 
   - name: ca-item
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
@@ -122,7 +188,33 @@ queue_rules:
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
       - label=ca-soaked
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
     merge_conditions:
+      - base=ca-canary
+      - head~=^ca/
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+      - label=ca-soaked
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -145,13 +237,24 @@ queue_rules:
 
   - name: ca-daily
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
       - base=ca-canary
       - head~=^backmerge/ca-release-[0-9a-f]{12}$
       - author=f1r3node-promotion[bot]
+      - check-success=CA Daily Provenance
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
     merge_conditions:
+      - base=ca-canary
+      - head~=^backmerge/ca-release-[0-9a-f]{12}$
+      - author=f1r3node-promotion[bot]
       - check-success=CA Daily Provenance
       - check-success=Static Checks
       - check-success=Script Tests
@@ -162,6 +265,7 @@ queue_rules:
 
   - name: ca-release
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
@@ -172,7 +276,33 @@ queue_rules:
       - label=ci-heavy
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+      - check-success=Integration Gate (amd64)
+      - check-success=Integration Gate (arm64)
     merge_conditions:
+      - base=ca-release
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - head~=^promote/ca-release-[0-9]{8}-[0-9]{6}$
+      - -draft
+      - label=ci-heavy
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
