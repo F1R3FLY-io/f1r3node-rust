@@ -39,7 +39,6 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::rust::blocks::block_processor::MAX_PARALLEL_BLOCKS;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
@@ -147,10 +146,7 @@ impl ExploratoryDeployConfig {
     }
 }
 
-/// One permit per concurrent replay source: each block-pipeline slot, the
-/// proposer's merge-scope recompute and one report replay; the cold-start routes
-/// are extra. No holder takes a second permit, so the bound cannot deadlock.
-const REPLAY_LOCK_PERMITS: usize = MAX_PARALLEL_BLOCKS + 2;
+const REPLAY_LOCK_PERMITS: usize = 4;
 const REPORTING_REPLAY_WAIT_WARN: Duration = Duration::from_secs(30);
 
 pub struct ReplayLock {
@@ -186,7 +182,8 @@ impl Drop for ConsensusReplayWaiter<'_> {
 impl ReplayLock {
     pub fn new() -> Self { Self::with_permits(REPLAY_LOCK_PERMITS) }
 
-    fn with_permits(permits: usize) -> Self {
+    pub fn with_permits(permits: usize) -> Self {
+        assert!(permits > 0);
         Self {
             semaphore: Arc::new(Semaphore::new(permits)),
             consensus_waiters: std::sync::atomic::AtomicUsize::new(0),
@@ -852,6 +849,11 @@ impl RuntimeManager {
             Vec<ProcessedDeploy>,
             Vec<ProcessedSystemDeploy>,
             Vec<Bond>,
+            // Per-deploy Merkle leaves in commit order (user deploys
+            // first, then system deploys).  Fed to
+            // `proto_util::hash_block_with_leaves` by the propose path
+            // to skip re-hashing the body at package time.
+            Vec<[u8; 32]>,
         ),
         CasperError,
     > {
@@ -955,7 +957,29 @@ impl RuntimeManager {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_drop_runtime_ops", rss_kb);
         }
 
-        Ok((state_hash, usr_processed, sys_processed, bonds))
+        // Per-deploy Merkle leaves for `hash_block_with_leaves`.  Computed
+        // from the processed deploys after the propose loop; cheaper than
+        // rehashing from the body at package time, and keeps the Merkle
+        // hash recipe owned by `proto_util`.
+        let mut block_hash_leaves: Vec<[u8; 32]> =
+            Vec::with_capacity(usr_processed.len() + sys_processed.len());
+        for pd in &usr_processed {
+            block_hash_leaves.push(crate::rust::util::proto_util::hash_processed_deploy_leaf(
+                pd,
+            ));
+        }
+        for psd in &sys_processed {
+            block_hash_leaves
+                .push(crate::rust::util::proto_util::hash_processed_system_deploy_leaf(psd));
+        }
+
+        Ok((
+            state_hash,
+            usr_processed,
+            sys_processed,
+            bonds,
+            block_hash_leaves,
+        ))
     }
 
     pub async fn compute_genesis(
@@ -1075,7 +1099,15 @@ impl RuntimeManager {
             .await;
         metrics::histogram!(BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(execute_start.elapsed().as_secs_f64());
-        let (state_hash, mergeable_chs) = replay_result?;
+        // Discard per-deploy Merkle leaves at this API boundary: callers of
+        // `RuntimeManager::replay_compute_state` only need the state hash.
+        // The leaves exist to give fail-fast replay semantics (bad deploy
+        // detected the moment its leaf is computed); they are also used on
+        // the propose path (`compute_state_with_bonds`) to feed
+        // `hash_block_with_leaves` without rehashing.  Validation computes
+        // `block_hash` via `Validate::block_hash` which recomputes leaves
+        // from the stored block body.
+        let (state_hash, mergeable_chs, _block_hash_leaves) = replay_result?;
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
@@ -1675,6 +1707,7 @@ impl RuntimeManager {
             .into()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_with_space_config(
         rspace: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         replay_rspace: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -1688,6 +1721,7 @@ impl RuntimeManager {
         >,
         external_services: ExternalServices,
         exploratory_deploy_config: ExploratoryDeployConfig,
+        replay_lock: Arc<ReplayLock>,
     ) -> RuntimeManager {
         let replay_cache_size = Self::max_replay_cache_entries();
 
@@ -1711,7 +1745,7 @@ impl RuntimeManager {
                     Self::max_replay_cache_bytes(),
                 ))
             }),
-            replay_lock: Arc::new(ReplayLock::new()),
+            replay_lock,
             exploratory_deploy_semaphore: Arc::new(Semaphore::new(
                 exploratory_deploy_config.max_concurrent,
             )),
@@ -1765,6 +1799,7 @@ impl RuntimeManager {
             mergeable_tags,
             external_services,
             ExploratoryDeployConfig::for_tests(),
+            Arc::new(ReplayLock::new()),
         )
     }
 
@@ -1779,6 +1814,7 @@ impl RuntimeManager {
         >,
         external_services: ExternalServices,
         exploratory_deploy_config: ExploratoryDeployConfig,
+        replay_lock: Arc<ReplayLock>,
     ) -> (RuntimeManager, RhoHistoryRepository) {
         let (rspace, replay_rspace) =
             RSpace::create_with_replay(store, Arc::new(Box::new(Matcher)))
@@ -1794,6 +1830,7 @@ impl RuntimeManager {
             mergeable_tags,
             external_services,
             exploratory_deploy_config,
+            replay_lock,
         );
 
         (runtime_manager, history_repo)
@@ -2071,6 +2108,42 @@ mod tests {
             .expect("Reporting remained blocked")
             .expect("Reporting task failed")
             .expect("Replay lock closed");
+    }
+
+    #[tokio::test]
+    async fn runtime_manager_clones_share_the_constructed_replay_budget() {
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        let mut stores = InMemoryStoreManager::new();
+        let replay_lock = Arc::new(ReplayLock::with_permits(8));
+        let (manager, _) = RuntimeManager::create_with_history_config(
+            stores.r_space_stores().await.unwrap(),
+            RuntimeManager::mergeable_store(&mut stores).await.unwrap(),
+            crate::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
+            rholang::rust::interpreter::external_services::ExternalServices::noop(),
+            ExploratoryDeployConfig::for_tests(),
+            replay_lock.clone(),
+        );
+        let runtime_clone = manager.clone();
+        let reporting_lock = runtime_clone.replay_lock();
+        assert!(Arc::ptr_eq(&manager.replay_lock(), &replay_lock));
+        assert!(Arc::ptr_eq(&reporting_lock, &replay_lock));
+        let reporting = reporting_lock.acquire_reporting().await.unwrap();
+        let mut consensus = Vec::new();
+        for _ in 0..7 {
+            consensus.push(
+                tokio::time::timeout(Duration::from_secs(1), replay_lock.acquire_consensus())
+                    .await
+                    .expect("The configured replay budget must be available at construction")
+                    .unwrap(),
+            );
+        }
+        assert_eq!(replay_lock.semaphore.available_permits(), 0);
+        drop(reporting);
+        assert_eq!(replay_lock.semaphore.available_permits(), 1);
+        drop(consensus);
+        assert_eq!(replay_lock.semaphore.available_permits(), 8);
     }
 
     #[test]
