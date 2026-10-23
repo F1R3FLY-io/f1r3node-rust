@@ -535,6 +535,35 @@ impl ReplayRuntimeOps {
             ProcessedSystemDeploy::Failed { .. } => &SystemDeployData::Empty,
         };
 
+        // Per-system-deploy RAII guard mirrors
+        // `play_system_deploy`'s bracket.  System deploys have no
+        // primary-signer sig, so scope is derived from `BlockData`
+        // fields (sender + seq_num + block_number + time_stamp) —
+        // unique per block, which is adequate under sequential
+        // execution: slash and close in the same block get the same
+        // scope but their guards don't overlap in time.  Not
+        // committed: system deploys don't contribute to the block-
+        // level WAL on triage.
+        let deploy_scope: rholang::rust::interpreter::io::lock::DeployScope = {
+            let mut input = b"replay-system-deploy:".to_vec();
+            input.extend_from_slice(&block_data.sender.bytes);
+            input.extend_from_slice(&block_data.seq_num.to_be_bytes());
+            input.extend_from_slice(&block_data.block_number.to_be_bytes());
+            input.extend_from_slice(&block_data.time_stamp.to_be_bytes());
+            let digest = Blake2b256::hash(input);
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&digest);
+            arr
+        };
+        let _wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime_ops.runtime.fs_handles.wal.clone(),
+                self.runtime_ops.runtime.fs_handles.lock_registry.clone(),
+                deploy_scope,
+                Vec::new(),
+                self.runtime_ops.runtime.fs_handles.clone(),
+            );
+
         match system_deploy {
             SystemDeployData::Slash {
                 invalid_block_hash,
