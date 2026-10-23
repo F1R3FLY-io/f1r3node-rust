@@ -252,7 +252,7 @@ For node clients, see BlockMessage for actual Casper protocol Block representati
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| blockHash | [bytes](#bytes) |  | Blake2b256 of this message encoded with blockHash and sig empty |
+| blockHash | [bytes](#bytes) |  | Merkle block hash (scheme v1); covers every field except blockHash and sig |
 | header | [Header](#coop.rchain.casper.protocol.Header) |  |  |
 | body | [Body](#coop.rchain.casper.protocol.Body) |  |  |
 | justifications | [Justification](#coop.rchain.casper.protocol.Justification) | repeated | latest block of each validator in the current view, in strictly ascending validator order |

@@ -160,7 +160,7 @@ Finally: `create_checkpoint()` produces the post-state hash.
 - Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys
 - Justifications: One per bonded validator, in strictly ascending validator order
 - Bonds cache: Current validator set with stakes
-- Hash the block via Blake2b256 over the protobuf encoding of the full `BlockMessage`, with `blockHash` and `sig` empty. The hash covers every other field, including the justifications.
+- Hash the block with the Merkle block hash, scheme version 1 (`proto_util::hash_block`). The top hash combines a header leaf and a Merkle root of the processed and system deploys. The header leaf includes Merkle roots of the bonds, the justifications, the rejected deploys, and the applied-from-scope signatures. The hash covers every field except `blockHash` and `sig`.
 - Sign the block hash with validator's Secp256k1 key
 
 **Timestamp hardening**: If current time < max parent timestamp (clock skew), the timestamp is clamped to the parent's timestamp. This prevents `InvalidTimestamp` validation errors.

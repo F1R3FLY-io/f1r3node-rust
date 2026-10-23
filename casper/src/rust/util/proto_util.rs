@@ -6,15 +6,15 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::signed::Signed;
-use models::casper::{BlockMessageProto, BondInfo, JustificationInfo};
+use models::casper::{BondInfo, JustificationInfo};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
+    ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -464,9 +464,194 @@ pub fn unsigned_block_proto(
     block
 }
 
-pub fn hash_block(block: &BlockMessage) -> BlockHash {
-    use prost::Message;
+/// Fast-path variant of `unsigned_block_proto` that reuses per-deploy
+/// Merkle leaves computed earlier on the propose path.  See
+/// `hash_block_with_leaves` for the contract on `leaves` ordering.
+pub fn unsigned_block_proto_with_leaves(
+    body: Body,
+    header: Header,
+    justifications: Vec<Justification>,
+    shard_id: String,
+    seq_num: Option<i32>,
+    leaves: &[[u8; 32]],
+) -> BlockMessage {
+    let seq_num = seq_num.unwrap_or(0);
+    let mut block = BlockMessage {
+        block_hash: prost::bytes::Bytes::new(),
+        header,
+        body,
+        justifications,
+        sender: prost::bytes::Bytes::new(),
+        seq_num,
+        sig: prost::bytes::Bytes::new(),
+        sig_algorithm: "".to_string(),
+        shard_id,
+        extra_bytes: prost::bytes::Bytes::new(),
+    };
 
+    let hash = hash_block_with_leaves(&block, leaves);
+    block.block_hash = hash.into();
+    block
+}
+
+// =========================================================================
+// Block hash — Merkle scheme v1
+// =========================================================================
+//
+// Shape:
+//   block_hash = hash_top(hash_leaf(LEAF_HEADER, header_preimage),
+//                         deploys_root)
+//
+// where `deploys_root` is a Merkle root over per-deploy leaves (user
+// deploys first, then system deploys, in commit order) and
+// `header_preimage` concatenates header + body-state + metadata fields
+// together with Merkle roots of the bonds, justifications, rejected-deploy
+// and applied-from-scope lists.  See `docs/designs/merkle-block-hash.md` for
+// the full recipe.  Hard-fork surface: the domain-byte constants below
+// pin the shape — any change flips every block hash on-network.
+//
+// This is a per-release hard fork for each shard.  Shards running an
+// older release keep the previous flat Blake2b hash; shards cut from
+// this release use the Merkle scheme.
+//
+// Benefits:
+//   * per-deploy inclusion proofs (log_2(n) sibling hashes + one top
+//     sibling against the signed `block_hash`);
+//   * leaves can be computed on the hot path during replay, so the
+//     end-of-block hash check collapses the already-computed leaves
+//     into a root instead of serial-encoding header+body;
+//   * fail-fast: a bad deploy is detected the moment its leaf is
+//     computed, not at end of block.
+
+/// Scheme-version byte prepended to the header preimage.  Bumping this
+/// constant is a hard fork — see the file-level docstring.
+pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x01;
+
+/// Interior-node domain byte used by `MERKLE_PARAMS`.
+const INTERIOR_DOMAIN: u8 = 0x01;
+
+/// Top-node domain byte: `hash_top(h_header, deploys_root)` =
+/// `Blake2b256(TOP_DOMAIN || h_header || deploys_root)`.  Disjoint from
+/// `INTERIOR_DOMAIN` so a top node cannot be confused with an interior
+/// node of a sub-tree.
+const TOP_DOMAIN: u8 = 0x02;
+
+const LEAF_PROCESSED_DEPLOY: u8 = 0x10;
+const LEAF_PROCESSED_SYSTEM_DEPLOY: u8 = 0x11;
+const LEAF_HEADER: u8 = 0x12;
+const LEAF_REJECTED_DEPLOY: u8 = 0x13;
+const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
+const LEAF_BOND: u8 = 0x15;
+const LEAF_JUSTIFICATION: u8 = 0x16;
+
+const MERKLE_PARAMS: crypto::rust::hash::merkle::MerkleParams =
+    crypto::rust::hash::merkle::MerkleParams::new(INTERIOR_DOMAIN);
+
+/// Compute a `ProcessedDeploy` leaf hash:
+/// `Blake2b256(LEAF_PROCESSED_DEPLOY || prost(pd))`.
+pub fn hash_processed_deploy_leaf(pd: &ProcessedDeploy) -> [u8; 32] {
+    use prost::Message;
+    let proto_bytes = pd.clone().to_proto().encode_to_vec();
+    crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_PROCESSED_DEPLOY, &proto_bytes)
+}
+
+/// Compute a `ProcessedSystemDeploy` leaf hash:
+/// `Blake2b256(LEAF_PROCESSED_SYSTEM_DEPLOY || prost(psd))`.
+pub fn hash_processed_system_deploy_leaf(psd: &ProcessedSystemDeploy) -> [u8; 32] {
+    use prost::Message;
+    let proto_bytes = psd.clone().to_proto().encode_to_vec();
+    crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_PROCESSED_SYSTEM_DEPLOY, &proto_bytes)
+}
+
+/// Build the deploys-root leaf vector from a `BlockMessage` body in
+/// commit order: all user deploys first, then all system deploys.  This
+/// is the recomputation path used by validators that are not replaying
+/// the block (e.g., validating a stored block).  The hot path accepts
+/// pre-computed leaves via `hash_block_with_leaves`.
+fn deploys_root_leaves(block: &BlockMessage) -> Vec<[u8; 32]> {
+    let mut leaves = Vec::with_capacity(block.body.deploys.len() + block.body.system_deploys.len());
+    for pd in &block.body.deploys {
+        leaves.push(hash_processed_deploy_leaf(pd));
+    }
+    for psd in &block.body.system_deploys {
+        leaves.push(hash_processed_system_deploy_leaf(psd));
+    }
+    leaves
+}
+
+/// Merkle root over the rejected-deploy sub-tree.  Rejected deploys are
+/// sorted by signature bytes before leaf-hashing so the root is
+/// independent of insertion order.
+fn rejected_root(block: &BlockMessage) -> [u8; 32] {
+    use prost::Message;
+    let mut sorted: Vec<&RejectedDeploy> = block.body.rejected_deploys.iter().collect();
+    sorted.sort_by(|a, b| a.sig.as_ref().cmp(b.sig.as_ref()));
+    let leaves: Vec<[u8; 32]> = sorted
+        .iter()
+        .map(|r| {
+            let proto_bytes = (*r).clone().to_proto().encode_to_vec();
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_REJECTED_DEPLOY, &proto_bytes)
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
+/// Merkle root over the applied-from-scope sub-tree.  Signatures are
+/// sorted lexicographically before leaf-hashing.
+fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
+    let mut sorted: Vec<&prost::bytes::Bytes> = block.body.applied_from_scope.iter().collect();
+    sorted.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    let leaves: Vec<[u8; 32]> = sorted
+        .iter()
+        .map(|sig| {
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_APPLIED_FROM_SCOPE_SIG, sig.as_ref())
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
+/// Merkle root over the bonds sub-tree.  Bonds are sorted by validator
+/// public key before leaf-hashing so the root is independent of
+/// in-memory order.  Each leaf is
+/// `Blake2b256(LEAF_BOND || validator_pk || stake_le)`.
+fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
+    let mut sorted: Vec<&Bond> = bonds.iter().collect();
+    sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
+    let leaves: Vec<[u8; 32]> = sorted
+        .iter()
+        .map(|b| {
+            let mut buf = Vec::with_capacity(b.validator.len() + 8);
+            buf.extend_from_slice(b.validator.as_ref());
+            buf.extend_from_slice(&b.stake.to_le_bytes());
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BOND, &buf)
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
+/// Merkle root over the justifications sub-tree, in block order.
+/// `Validate::format_of_fields` rejects blocks whose justifications are
+/// not sorted by validator.  Each leaf is
+/// `Blake2b256(LEAF_JUSTIFICATION || validator_len_le || validator || latest_block_hash)`.
+fn justifications_root(justifications: &[Justification]) -> [u8; 32] {
+    let leaves: Vec<[u8; 32]> = justifications
+        .iter()
+        .map(|j| {
+            let mut buf = Vec::with_capacity(4 + j.validator.len() + j.latest_block_hash.len());
+            buf.extend_from_slice(&(j.validator.len() as u32).to_le_bytes());
+            buf.extend_from_slice(j.validator.as_ref());
+            buf.extend_from_slice(j.latest_block_hash.as_ref());
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_JUSTIFICATION, &buf)
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
+/// Build the header-side preimage.  See file-level docstring and
+/// `docs/designs/merkle-block-hash.md` for the field order.  Any change
+/// here is a hard fork — pinned by the `hash_block` golden-hex tests.
+fn header_preimage(block: &BlockMessage) -> Vec<u8> {
+    use prost::Message;
     let BlockMessage {
         block_hash: _,
         header,
@@ -479,21 +664,100 @@ pub fn hash_block(block: &BlockMessage) -> BlockHash {
         shard_id,
         extra_bytes,
     } = block;
+    let Body {
+        state,
+        deploys: _,
+        rejected_deploys: _,
+        system_deploys: _,
+        extra_bytes: body_extra_bytes,
+        applied_from_scope: _,
+        merge_base,
+    } = body;
+    let F1r3flyState {
+        pre_state_hash,
+        post_state_hash,
+        bonds,
+        block_number,
+    } = state;
 
-    let committed = BlockMessageProto {
-        block_hash: prost::bytes::Bytes::new(),
-        header: Some(header.to_proto()),
-        body: Some(body.to_proto()),
-        justifications: justifications.iter().map(Justification::to_proto).collect(),
-        sender: sender.clone(),
-        seq_num: *seq_num,
-        sig: prost::bytes::Bytes::new(),
-        sig_algorithm: sig_algorithm.clone(),
-        shard_id: shard_id.clone(),
-        extra_bytes: extra_bytes.clone(),
-    };
+    let header_bytes = header.to_proto().encode_to_vec();
+    let r_root = rejected_root(block);
+    let afs_root = applied_from_scope_root(block);
+    let b_root = bonds_root(bonds);
+    let j_root = justifications_root(justifications);
 
-    Blake2b256::hash(committed.encode_to_vec()).into()
+    let mut buf = Vec::with_capacity(
+        1 + header_bytes.len()
+            + pre_state_hash.len()
+            + post_state_hash.len()
+            + 32  // bonds_root
+            + 32  // justifications_root
+            + 8   // block_number
+            + 32  // rejected_root
+            + 32  // applied_from_scope_root
+            + merge_base.len()
+            + body_extra_bytes.len()
+            + sender.len()
+            + sig_algorithm.len()
+            + 4   // seq_num
+            + shard_id.len()
+            + extra_bytes.len(),
+    );
+    buf.push(BLOCK_HASH_SCHEME_VERSION);
+    buf.extend_from_slice(&header_bytes);
+    buf.extend_from_slice(pre_state_hash.as_ref());
+    buf.extend_from_slice(post_state_hash.as_ref());
+    buf.extend_from_slice(&b_root);
+    buf.extend_from_slice(&j_root);
+    buf.extend_from_slice(&block_number.to_le_bytes());
+    buf.extend_from_slice(&r_root);
+    buf.extend_from_slice(&afs_root);
+    buf.extend_from_slice(merge_base.as_ref());
+    buf.extend_from_slice(body_extra_bytes.as_ref());
+    buf.extend_from_slice(sender.as_ref());
+    buf.extend_from_slice(sig_algorithm.as_bytes());
+    buf.extend_from_slice(&seq_num.to_le_bytes());
+    buf.extend_from_slice(shard_id.as_bytes());
+    buf.extend_from_slice(extra_bytes.as_ref());
+    buf
+}
+
+/// Combine the header-leaf hash and the deploys root under the TOP
+/// domain byte to produce the final 32-byte block hash.
+fn hash_top(h_header: &[u8; 32], deploys_root: &[u8; 32]) -> [u8; 32] {
+    let mut input = [0u8; 1 + 32 + 32];
+    input[0] = TOP_DOMAIN;
+    input[1..33].copy_from_slice(h_header);
+    input[33..].copy_from_slice(deploys_root);
+    let h = Blake2b256::hash(input.to_vec());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h);
+    out
+}
+
+/// Compute the block hash from a `BlockMessage` alone — recomputes
+/// per-deploy leaves from the body.  Used by validators that are not
+/// replaying (e.g., stored-block hash check) and anywhere a hash is
+/// needed without pre-computed leaves on hand.
+pub fn hash_block(block: &BlockMessage) -> BlockHash {
+    let leaves = deploys_root_leaves(block);
+    hash_block_with_leaves(block, &leaves)
+}
+
+/// Fast-path block hash: skips leaf recomputation by trusting the
+/// caller-supplied leaves.  Used on the propose / replay hot path
+/// where each deploy's leaf was hashed as that deploy finished.
+///
+/// `deploys_leaves` must be in commit order: all user-deploy leaves
+/// first, then all system-deploy leaves.  A caller that supplies the
+/// wrong leaves produces a wrong hash (mismatch surfaces at
+/// `Validate::block_hash` on another node).
+pub fn hash_block_with_leaves(block: &BlockMessage, deploys_leaves: &[[u8; 32]]) -> BlockHash {
+    let d_root = crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, deploys_leaves);
+    let h_header =
+        crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(block));
+    let top = hash_top(&h_header, &d_root);
+    top.to_vec().into()
 }
 
 pub fn hash_string(b: &BlockMessage) -> BlockHash {
@@ -972,6 +1236,805 @@ mod fork_choice_b1_repro_tests {
             }
             prop_assert_eq!(&map_a, &expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod merkle_block_hash_tests {
+    //! Tests for the Merkle-tree block hash scheme introduced per the
+    //! `tidy-honey` plan.  See the file-level docstring above `hash_block`
+    //! for the scheme.
+    use crypto::rust::hash::merkle;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rhoapi::PCost;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, ProcessedDeploy,
+        ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
+    };
+    use prost::bytes::Bytes;
+
+    use super::*;
+
+    /// Build a `ProcessedDeploy` with a deterministic term string.  Uses
+    /// a shared secp256k1 key so repeated calls produce identical
+    /// `ProcessedDeploy` structures (identical signatures) when `nonce`
+    /// is identical — which is exactly what we want for the reordering
+    /// test (change position, not content).
+    fn processed_deploy(nonce: i64) -> ProcessedDeploy {
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let data = DeployData {
+            term: format!("@{nonce}!({nonce})"),
+            time_stamp: nonce,
+            phlo_price: 1,
+            phlo_limit: 100_000,
+            valid_after_block_number: 0,
+            shard_id: "test-shard".to_string(),
+            expiration_timestamp: None,
+            parameters: vec![],
+        };
+        let signed = Signed::create(data, Secp256k1.box_clone(), sk).expect("sign deploy");
+        ProcessedDeploy {
+            deploy: signed,
+            cost: PCost { cost: 0 },
+            deploy_log: vec![],
+            is_failed: false,
+            system_deploy_error: None,
+        }
+    }
+
+    fn processed_system_deploy_close() -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+        }
+    }
+
+    fn processed_system_deploy_slash(seed: u8) -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::Slash {
+                invalid_block_hash: Bytes::from(vec![seed; 32]),
+                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[seed; 33]),
+                target_activation_epoch: seed as i64 + 100,
+            },
+        }
+    }
+
+    fn processed_system_deploy_failed(msg: &str) -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Failed {
+            event_list: vec![],
+            error_msg: msg.to_string(),
+        }
+    }
+
+    fn empty_block() -> BlockMessage {
+        BlockMessage {
+            block_hash: Bytes::new(),
+            header: Header {
+                parents_hash_list: vec![],
+                timestamp: 1_700_000_000_000,
+                version: 1,
+                extra_bytes: Bytes::new(),
+            },
+            body: Body {
+                state: F1r3flyState {
+                    pre_state_hash: Bytes::from(vec![0u8; 32]),
+                    post_state_hash: Bytes::from(vec![0u8; 32]),
+                    bonds: vec![],
+                    block_number: 0,
+                },
+                deploys: vec![],
+                rejected_deploys: vec![],
+                system_deploys: vec![],
+                extra_bytes: Bytes::new(),
+                applied_from_scope: vec![],
+                merge_base: Bytes::new(),
+            },
+            justifications: vec![],
+            sender: Bytes::from(vec![0u8; 33]),
+            seq_num: 0,
+            sig: Bytes::new(),
+            sig_algorithm: "secp256k1".to_string(),
+            shard_id: "test-shard".to_string(),
+            extra_bytes: Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn hash_block_is_deterministic() {
+        let b = empty_block();
+        let h1 = hash_block(&b);
+        let h2 = hash_block(&b);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 32, "block hash must be 32 bytes");
+    }
+
+    #[test]
+    fn empty_block_deploys_root_equals_empty_sentinel() {
+        let b = empty_block();
+        let leaves = deploys_root_leaves(&b);
+        assert!(leaves.is_empty());
+        assert_eq!(
+            crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves),
+            merkle::EMPTY_ROOT,
+        );
+    }
+
+    #[test]
+    fn hash_block_with_leaves_matches_hash_block() {
+        // The fast path (leaves provided from replay) and the recompute
+        // path (hash_block alone) must agree byte-for-byte.
+        let mut b = empty_block();
+        b.body.deploys = vec![processed_deploy(1), processed_deploy(2)];
+        b.body.system_deploys = vec![processed_system_deploy_close()];
+        let leaves = deploys_root_leaves(&b);
+        let h_fast = hash_block_with_leaves(&b, &leaves);
+        let h_slow = hash_block(&b);
+        assert_eq!(h_fast, h_slow);
+    }
+
+    #[test]
+    fn reordering_deploys_changes_block_hash() {
+        let d1 = processed_deploy(1);
+        let d2 = processed_deploy(2);
+        let mut a = empty_block();
+        a.body.deploys = vec![d1.clone(), d2.clone()];
+        let mut b = empty_block();
+        b.body.deploys = vec![d2, d1];
+        assert_ne!(hash_block(&a), hash_block(&b));
+    }
+
+    #[test]
+    fn flipping_any_metadata_field_changes_hash() {
+        let base = {
+            let mut b = empty_block();
+            b.body.deploys = vec![processed_deploy(1)];
+            b
+        };
+        let h0 = hash_block(&base);
+
+        // sender
+        let mut b = base.clone();
+        b.sender = Bytes::from(vec![1u8; 33]);
+        assert_ne!(hash_block(&b), h0, "sender must affect hash");
+
+        // seq_num
+        let mut b = base.clone();
+        b.seq_num = 1;
+        assert_ne!(hash_block(&b), h0, "seq_num must affect hash");
+
+        // shard_id
+        let mut b = base.clone();
+        b.shard_id = "other-shard".to_string();
+        assert_ne!(hash_block(&b), h0, "shard_id must affect hash");
+
+        // sig_algorithm
+        let mut b = base.clone();
+        b.sig_algorithm = "ed25519".to_string();
+        assert_ne!(hash_block(&b), h0, "sig_algorithm must affect hash");
+
+        // extra_bytes (block level)
+        let mut b = base.clone();
+        b.extra_bytes = Bytes::from(vec![0xFF]);
+        assert_ne!(hash_block(&b), h0, "block.extra_bytes must affect hash");
+    }
+
+    #[test]
+    fn flipping_any_header_field_changes_hash() {
+        let base = empty_block();
+        let h0 = hash_block(&base);
+
+        let mut b = base.clone();
+        b.header.timestamp += 1;
+        assert_ne!(hash_block(&b), h0, "header.timestamp must affect hash");
+
+        let mut b = base.clone();
+        b.header.version += 1;
+        assert_ne!(hash_block(&b), h0, "header.version must affect hash");
+
+        let mut b = base.clone();
+        b.header.parents_hash_list = vec![Bytes::from(vec![0xAA; 32])];
+        assert_ne!(
+            hash_block(&b),
+            h0,
+            "header.parents_hash_list must affect hash"
+        );
+
+        let mut b = base.clone();
+        b.header.extra_bytes = Bytes::from(vec![0xCC]);
+        assert_ne!(hash_block(&b), h0, "header.extra_bytes must affect hash");
+    }
+
+    #[test]
+    fn flipping_any_body_field_changes_hash() {
+        let base = empty_block();
+        let h0 = hash_block(&base);
+
+        let mut b = base.clone();
+        b.body.state.pre_state_hash = Bytes::from(vec![0xA1; 32]);
+        assert_ne!(hash_block(&b), h0, "pre_state_hash must affect hash");
+
+        let mut b = base.clone();
+        b.body.state.post_state_hash = Bytes::from(vec![0xA2; 32]);
+        assert_ne!(hash_block(&b), h0, "post_state_hash must affect hash");
+
+        let mut b = base.clone();
+        b.body.state.block_number = 42;
+        assert_ne!(hash_block(&b), h0, "block_number must affect hash");
+
+        let mut b = base.clone();
+        b.body.state.bonds = vec![Bond {
+            validator: Bytes::from(vec![0xBB; 33]),
+            stake: 1,
+        }];
+        assert_ne!(hash_block(&b), h0, "bonds must affect hash");
+
+        let mut b = base.clone();
+        b.body.extra_bytes = Bytes::from(vec![0xDD]);
+        assert_ne!(hash_block(&b), h0, "body.extra_bytes must affect hash");
+
+        let mut b = base.clone();
+        b.body.merge_base = Bytes::from(vec![0xEE; 32]);
+        assert_ne!(hash_block(&b), h0, "merge_base must affect hash");
+
+        let mut b = base.clone();
+        b.body.deploys = vec![processed_deploy(1)];
+        assert_ne!(hash_block(&b), h0, "deploys must affect hash");
+
+        let mut b = base.clone();
+        b.body.system_deploys = vec![processed_system_deploy_close()];
+        assert_ne!(hash_block(&b), h0, "system_deploys must affect hash");
+
+        let mut b = base.clone();
+        b.body.rejected_deploys = vec![RejectedDeploy {
+            sig: Bytes::from(vec![0xF1; 64]),
+            duplicate: false,
+            carrier: Bytes::from(vec![0xF2; 32]),
+        }];
+        assert_ne!(hash_block(&b), h0, "rejected_deploys must affect hash");
+
+        let mut b = base.clone();
+        b.body.applied_from_scope = vec![Bytes::from(vec![0xF3; 64])];
+        assert_ne!(hash_block(&b), h0, "applied_from_scope must affect hash");
+    }
+
+    #[test]
+    fn rejected_deploys_root_is_order_independent() {
+        let r_a = RejectedDeploy {
+            sig: Bytes::from(vec![0x01; 64]),
+            duplicate: false,
+            carrier: Bytes::new(),
+        };
+        let r_b = RejectedDeploy {
+            sig: Bytes::from(vec![0x02; 64]),
+            duplicate: false,
+            carrier: Bytes::new(),
+        };
+        let mut a = empty_block();
+        a.body.rejected_deploys = vec![r_a.clone(), r_b.clone()];
+        let mut b = empty_block();
+        b.body.rejected_deploys = vec![r_b, r_a];
+        assert_eq!(
+            hash_block(&a),
+            hash_block(&b),
+            "rejected_deploys root must be invariant under in-memory ordering"
+        );
+    }
+
+    #[test]
+    fn applied_from_scope_root_is_order_independent() {
+        let s1 = Bytes::from(vec![0x11; 64]);
+        let s2 = Bytes::from(vec![0x22; 64]);
+        let mut a = empty_block();
+        a.body.applied_from_scope = vec![s1.clone(), s2.clone()];
+        let mut b = empty_block();
+        b.body.applied_from_scope = vec![s2, s1];
+        assert_eq!(
+            hash_block(&a),
+            hash_block(&b),
+            "applied_from_scope root must be invariant under in-memory ordering"
+        );
+    }
+
+    #[test]
+    fn bonds_root_is_order_independent() {
+        let v1 = Bytes::from(vec![0x11; 33]);
+        let v2 = Bytes::from(vec![0x22; 33]);
+        let mut a = empty_block();
+        a.body.state.bonds = vec![
+            Bond {
+                validator: v1.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v2.clone(),
+                stake: 200,
+            },
+        ];
+        let mut b = empty_block();
+        b.body.state.bonds = vec![
+            Bond {
+                validator: v2,
+                stake: 200,
+            },
+            Bond {
+                validator: v1,
+                stake: 100,
+            },
+        ];
+        assert_eq!(
+            hash_block(&a),
+            hash_block(&b),
+            "bonds root must be invariant under in-memory ordering"
+        );
+    }
+
+    #[test]
+    fn deploy_inclusion_proof_verifies_against_block_hash() {
+        // Given a block, a validator with the signed block_hash and
+        // h_header + the deploy's Merkle path can verify that a
+        // specific deploy appears in the block without the whole body.
+        let mut b = empty_block();
+        b.body.deploys = (0..5).map(processed_deploy).collect();
+        b.body.system_deploys = vec![processed_system_deploy_close()];
+        let block_hash = hash_block(&b);
+
+        let leaves = deploys_root_leaves(&b);
+        // Pick a middle leaf — tests the general proof path.
+        let target_index = 3u32;
+        let target_leaf = leaves[target_index as usize];
+
+        // Deploys-root sibling path.
+        let deploys_proof = merkle::build_proof(&MERKLE_PARAMS, &leaves, target_index)
+            .expect("proof for valid index");
+        let d_root = merkle::merkle_root(&MERKLE_PARAMS, &leaves);
+        assert!(
+            merkle::verify_proof(&MERKLE_PARAMS, &d_root, &target_leaf, &deploys_proof),
+            "deploys-tree inclusion proof must verify",
+        );
+
+        // Top-level: combine recomputed d_root with recomputed h_header.
+        let header_preimage_bytes = header_preimage(&b);
+        let h_header = merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage_bytes);
+        let recomputed_top = hash_top(&h_header, &d_root);
+        assert_eq!(
+            recomputed_top.to_vec(),
+            block_hash.to_vec(),
+            "recomputed top node must equal block_hash",
+        );
+    }
+
+    /// Determinism guard: a `ProcessedDeploy` built twice with the same
+    /// data must prost-encode to byte-identical output.  The Merkle
+    /// leaf hash is `Blake2b256(LEAF_DOMAIN || prost(pd))`, so any
+    /// nondeterminism in prost's encoding of these messages (e.g. a
+    /// future proto edit that adds a `map<_,_>` field) would silently
+    /// desync validators' block hashes.  This test guards against that
+    /// drift at the lowest cost: byte stability of two independent
+    /// encodings.
+    #[test]
+    fn processed_deploy_encodes_deterministically() {
+        let a = processed_deploy(42);
+        let b = processed_deploy(42);
+        // `processed_deploy` uses a fresh keypair each call, so the
+        // signatures differ — strip the signature-related fields and
+        // compare the remainder for byte-stability of the proto
+        // encoding ITSELF (not the random key).
+        let bytes_of = |pd: &ProcessedDeploy| -> Vec<u8> {
+            use prost::Message as _;
+            // Zero out non-content fields that vary with the random
+            // keypair.
+            let mut normalized = pd.clone();
+            normalized.deploy.sig = Bytes::new();
+            normalized.deploy.pk = crypto::rust::public_key::PublicKey::from_bytes(&[]);
+            normalized.to_proto().encode_to_vec()
+        };
+        assert_eq!(
+            bytes_of(&a),
+            bytes_of(&b),
+            "ProcessedDeploy prost encoding must be byte-deterministic for identical content"
+        );
+        // Encode twice: same bytes.
+        assert_eq!(bytes_of(&a), bytes_of(&a));
+    }
+
+    #[test]
+    fn processed_system_deploy_encodes_deterministically() {
+        use prost::Message as _;
+        let a = processed_system_deploy_close();
+        let b = processed_system_deploy_close();
+        let ea = a.clone().to_proto().encode_to_vec();
+        let eb = b.to_proto().encode_to_vec();
+        assert_eq!(ea, eb);
+        // Encode twice: same bytes.
+        assert_eq!(
+            a.clone().to_proto().encode_to_vec(),
+            a.to_proto().encode_to_vec()
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Gap-closing tests from the coverage review (tests 1–5).
+    // ---------------------------------------------------------------
+
+    /// Test 1 — end-to-end sign → verify round-trip through
+    /// `sign_block_with_leaves`.  The paper's hot path is: compute
+    /// leaves during replay, pass them to `sign_block_with_leaves`,
+    /// gossip the signed block, every other node recomputes the hash
+    /// via `hash_block(stored_block)`.  If the leaves are ever threaded
+    /// in the wrong order, the signed `block_hash` and the recomputed
+    /// hash diverge and the block is rejected by every validator.
+    /// This test pins the contract: for any valid (block, leaves)
+    /// pair where leaves == `deploys_root_leaves(block)` in commit
+    /// order, `sign_block_with_leaves(block, leaves)` produces a
+    /// signed block whose `block_hash` equals `hash_block(signed)`.
+    #[test]
+    fn sign_block_with_leaves_roundtrips_to_hash_block() {
+        use crypto::rust::private_key::PrivateKey;
+
+        use crate::rust::validator_identity::ValidatorIdentity;
+
+        let mut unsigned = empty_block();
+        unsigned.body.deploys = vec![
+            processed_deploy(1),
+            processed_deploy(2),
+            processed_deploy(3),
+        ];
+        unsigned.body.system_deploys = vec![
+            processed_system_deploy_close(),
+            processed_system_deploy_slash(0x42),
+        ];
+        // Also give the block some rejected deploys and applied-from-scope
+        // so the header preimage is non-trivial.
+        unsigned.body.rejected_deploys = vec![RejectedDeploy {
+            sig: Bytes::from(vec![0x77; 64]),
+            duplicate: false,
+            carrier: Bytes::from(vec![0x88; 32]),
+        }];
+        unsigned.body.applied_from_scope = vec![Bytes::from(vec![0x99; 64])];
+
+        // Compute leaves the way the propose path would: from the body
+        // in commit order (user deploys first, then system).  This is
+        // the same vector `replay_deploys` streams out.
+        let leaves = deploys_root_leaves(&unsigned);
+
+        // Sign.  `sign_block_with_leaves` sets sender + sig_algorithm +
+        // computes `block_hash` from the leaves + signs that hash.
+        let sk = PrivateKey::from_bytes(&[0x11; 32]);
+        let vi = ValidatorIdentity::new(&sk);
+        let signed = vi.sign_block_with_leaves(&unsigned, &leaves);
+
+        // The signed block_hash must equal what a receiver computes
+        // via Validate::block_hash → hash_block.
+        let recomputed = hash_block(&signed);
+        assert_eq!(
+            signed.block_hash.to_vec(),
+            recomputed.to_vec(),
+            "sign_block_with_leaves produced a hash that hash_block disagrees with — \
+             every validator would reject this block"
+        );
+
+        // And the slow-path sign (which recomputes leaves itself) must
+        // agree with the fast path.
+        let signed_slow = vi.sign_block(&unsigned);
+        assert_eq!(
+            signed.block_hash.to_vec(),
+            signed_slow.block_hash.to_vec(),
+            "sign_block and sign_block_with_leaves disagree on block_hash"
+        );
+    }
+
+    /// Test 2 — the per-deploy leaf stream from `replay_deploys` is
+    /// identical to what `deploys_root_leaves` recomputes from the
+    /// block body.  This is the propose/validate agreement contract:
+    /// propose hashes leaves on the fly, validate recomputes them from
+    /// the stored body, and the two sequences MUST match element-wise.
+    /// A silent reordering in the replay loop would ship bad blocks.
+    #[test]
+    fn replay_order_leaves_equal_body_order_leaves() {
+        // Simulate the replay loop: user deploys first (in commit
+        // order), then system deploys.  Each leaf is hashed with the
+        // same per-item hash the stored-body recomputation uses.
+        let user: Vec<ProcessedDeploy> = (0..5).map(processed_deploy).collect();
+        let system: Vec<ProcessedSystemDeploy> = vec![
+            processed_system_deploy_close(),
+            processed_system_deploy_slash(0x11),
+            processed_system_deploy_failed("replay-error"),
+        ];
+        let streamed: Vec<[u8; 32]> = user
+            .iter()
+            .map(hash_processed_deploy_leaf)
+            .chain(system.iter().map(hash_processed_system_deploy_leaf))
+            .collect();
+
+        let mut b = empty_block();
+        b.body.deploys = user;
+        b.body.system_deploys = system;
+        let recomputed = deploys_root_leaves(&b);
+
+        assert_eq!(
+            streamed, recomputed,
+            "replay-time leaf stream must equal body-recompute leaf stream — \
+             a mismatch means propose and validate would disagree on block_hash"
+        );
+    }
+
+    /// Test 3a — all three `ProcessedSystemDeploy` variants
+    /// (Close/Slash/Failed) encode deterministically and change the
+    /// block hash when inserted.  CloseBlockSystemDeploy was already
+    /// covered; this fills in Slash and Failed.
+    #[test]
+    fn all_system_deploy_variants_affect_hash_and_encode_deterministically() {
+        use prost::Message as _;
+
+        let variants: Vec<(&str, ProcessedSystemDeploy)> = vec![
+            ("close", processed_system_deploy_close()),
+            ("slash", processed_system_deploy_slash(0x33)),
+            ("failed", processed_system_deploy_failed("insufficient gas")),
+        ];
+
+        // Each variant must prost-encode byte-stably.
+        for (name, v) in &variants {
+            let a = v.clone().to_proto().encode_to_vec();
+            let b = v.clone().to_proto().encode_to_vec();
+            assert_eq!(a, b, "{name} must prost-encode deterministically");
+        }
+
+        // Each variant must produce a distinct block hash when it's the
+        // sole system deploy — guards against the proto encoding
+        // accidentally emitting identical bytes across variants.
+        let mut hashes = std::collections::HashSet::new();
+        let empty_hash = hash_block(&empty_block());
+        hashes.insert(empty_hash.to_vec());
+        for (name, v) in variants {
+            let mut b = empty_block();
+            b.body.system_deploys = vec![v];
+            let h = hash_block(&b);
+            assert!(
+                hashes.insert(h.to_vec()),
+                "{name} variant did not change block_hash — hash collision across variants",
+            );
+        }
+    }
+
+    /// Test 3b — Slash with different field values produces different
+    /// hashes.  Guards against the oneof encoding dropping a field.
+    #[test]
+    fn slash_system_deploy_field_mutations_change_hash() {
+        let mut b = empty_block();
+        b.body.system_deploys = vec![processed_system_deploy_slash(0x01)];
+        let h0 = hash_block(&b);
+
+        let mut b2 = empty_block();
+        b2.body.system_deploys = vec![processed_system_deploy_slash(0x02)];
+        assert_ne!(
+            hash_block(&b2),
+            h0,
+            "Slash with different seed must produce different hash"
+        );
+
+        // Build a Slash with modified target_activation_epoch only.
+        let mut b3 = empty_block();
+        b3.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::Slash {
+                invalid_block_hash: Bytes::from(vec![0x01; 32]),
+                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[0x01; 33]),
+                target_activation_epoch: 999, // vs. seed=0x01 → 0x01+100 = 101
+            },
+        }];
+        assert_ne!(
+            hash_block(&b3),
+            h0,
+            "Slash.target_activation_epoch must affect hash",
+        );
+    }
+
+    /// Test 4 — strong determinism guard: no `map<_,_>` field exists
+    /// on any protobuf message transitively reachable from
+    /// `ProcessedDeployProto` or `ProcessedSystemDeployProto`.  A
+    /// `map<>` field under proto3 encodes map entries in
+    /// implementation-dependent order, which would silently desync
+    /// block hashes across validators.  This static check runs at
+    /// test time against the committed .proto files.
+    ///
+    /// If this test fails: either (a) a new reachable message was
+    /// added — list it in `REACHABLE` below after confirming it has
+    /// no `map<>` field, or (b) a `map<>` field was added to an
+    /// existing message — redesign the leaf-hash construction to
+    /// canonicalize the map before hashing, or remove the map field.
+    #[test]
+    fn processed_deploy_subtree_has_no_proto_map_fields() {
+        const CASPER_PROTO: &str =
+            include_str!("../../../../models/src/main/protobuf/CasperMessage.proto");
+        const RHOTYPES_PROTO: &str =
+            include_str!("../../../../models/src/main/protobuf/RhoTypes.proto");
+
+        // Transitive closure of messages reachable from
+        // ProcessedDeployProto and ProcessedSystemDeployProto.  Review
+        // when adding any new field to any of these messages.
+        const REACHABLE_IN_CASPER: &[&str] = &[
+            "ProcessedDeployProto",
+            "ProcessedSystemDeployProto",
+            "DeployDataProto",
+            "DeployParameter",
+            "RholangValue",
+            "RholangSequence",
+            "RholangMap",
+            "RholangMapEntry",
+            "RholangNil",
+            "SystemDeployDataProto",
+            "SlashSystemDeployDataProto",
+            "CloseBlockSystemDeployDataProto",
+            "EventProto",
+            "ProduceEventProto",
+            "ConsumeEventProto",
+            "CommEventProto",
+            "PeekProto",
+        ];
+        const REACHABLE_IN_RHOTYPES: &[&str] = &["PCost"];
+
+        for name in REACHABLE_IN_CASPER {
+            let body = extract_message_body(CASPER_PROTO, name)
+                .unwrap_or_else(|| panic!("message `{name}` not found in CasperMessage.proto"));
+            let stripped = strip_proto_line_comments(&body);
+            assert!(
+                !stripped.contains("map<"),
+                "message `{name}` contains a proto `map<>` field.  Maps are nondeterministically \
+                 encoded by prost under proto3, which would desync block hashes across \
+                 validators.  Either (a) replace the map with a repeated-of-entries message \
+                 and sort before hashing, or (b) canonicalize the map in the leaf-hash input."
+            );
+        }
+        for name in REACHABLE_IN_RHOTYPES {
+            let body = extract_message_body(RHOTYPES_PROTO, name)
+                .unwrap_or_else(|| panic!("message `{name}` not found in RhoTypes.proto"));
+            let stripped = strip_proto_line_comments(&body);
+            assert!(
+                !stripped.contains("map<"),
+                "message `{name}` (RhoTypes.proto) contains a proto `map<>` field — see \
+                 processed_deploy_subtree_has_no_proto_map_fields docs for the fix path."
+            );
+        }
+    }
+
+    /// Extract the body (text between the message's opening `{` and its
+    /// matching `}`) for the named message in a .proto file.  Handles
+    /// nested braces (none expected in our schemas but defensive).
+    fn extract_message_body(proto: &str, msg_name: &str) -> Option<String> {
+        // Match either `message Foo {` or `message Foo{` (no space).
+        let needle_a = format!("message {msg_name} {{");
+        let needle_b = format!("message {msg_name}{{");
+        let start = proto.find(&needle_a).or_else(|| proto.find(&needle_b))?;
+        let body_start = proto[start..].find('{')? + start + 1;
+        let bytes = proto.as_bytes();
+        let mut depth: i32 = 1;
+        let mut i = body_start;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(proto[body_start..i].to_string());
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Strip `//` line comments.  The .proto files use `//` for comments
+    /// that may contain the text `map<` incidentally; the brace parser
+    /// doesn't care about these but the `map<` substring check would
+    /// false-positive without stripping.
+    fn strip_proto_line_comments(s: &str) -> String {
+        s.lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Test 5a — `hash_block_with_leaves` pins its own contract:
+    /// given leaves that DO match the body (commit-order deploys),
+    /// output equals the slow-path `hash_block`.  Given leaves that
+    /// don't match, output is different.  This catches a bug where
+    /// the fast path silently normalizes / sorts / dedupes leaves
+    /// internally — which would mask propose/validate desync.
+    #[test]
+    fn hash_block_with_leaves_respects_the_leaves_argument() {
+        let mut b = empty_block();
+        b.body.deploys = vec![processed_deploy(1), processed_deploy(2)];
+        b.body.system_deploys = vec![processed_system_deploy_close()];
+
+        let correct_leaves = deploys_root_leaves(&b);
+        let h_correct = hash_block_with_leaves(&b, &correct_leaves);
+        assert_eq!(
+            h_correct.to_vec(),
+            hash_block(&b).to_vec(),
+            "correct leaves must agree with recompute path",
+        );
+
+        // All-zero leaves of correct length: must differ.
+        let zero_leaves = vec![[0u8; 32]; correct_leaves.len()];
+        assert_ne!(
+            hash_block_with_leaves(&b, &zero_leaves).to_vec(),
+            h_correct.to_vec(),
+            "zeroed leaves must produce a different hash — fast path must not ignore its input",
+        );
+
+        // Reordered leaves: must differ.
+        let mut reversed = correct_leaves.clone();
+        reversed.reverse();
+        assert_ne!(
+            hash_block_with_leaves(&b, &reversed).to_vec(),
+            h_correct.to_vec(),
+            "reversed leaves must produce a different hash — fast path must not sort internally",
+        );
+    }
+
+    /// Test 5b — wrong leaf count (too few / too many) produces a
+    /// different hash.  Catches a bug where the fast path silently
+    /// pads or truncates to match the body length.
+    #[test]
+    fn hash_block_with_leaves_rejects_wrong_cardinality() {
+        let mut b = empty_block();
+        b.body.deploys = vec![processed_deploy(1), processed_deploy(2)];
+        let correct_leaves = deploys_root_leaves(&b);
+        let h_correct = hash_block_with_leaves(&b, &correct_leaves);
+
+        // Truncated: 1 leaf instead of 2.
+        let truncated = &correct_leaves[..1];
+        assert_ne!(
+            hash_block_with_leaves(&b, truncated).to_vec(),
+            h_correct.to_vec(),
+            "truncated leaves must produce a different hash",
+        );
+
+        // Padded: 3 leaves instead of 2.
+        let mut padded = correct_leaves.clone();
+        padded.push([0xAA; 32]);
+        assert_ne!(
+            hash_block_with_leaves(&b, &padded).to_vec(),
+            h_correct.to_vec(),
+            "padded leaves must produce a different hash",
+        );
+
+        // Empty leaves on non-empty body: must differ.
+        assert_ne!(
+            hash_block_with_leaves(&b, &[]).to_vec(),
+            h_correct.to_vec(),
+            "empty leaves on non-empty body must produce a different hash",
+        );
+    }
+
+    /// Golden hex for the empty block fixture.  Pins the whole hash
+    /// recipe (header-preimage field order, domain bytes, scheme
+    /// version, top-combiner).  Any accidental change to the Merkle
+    /// scheme trips this test visibly in CI.  Regenerate ONLY when
+    /// intentionally hard-forking the shard's block-hash scheme.
+    #[test]
+    fn hash_block_empty_golden_hex() {
+        let b = empty_block();
+        let h = hash_block(&b);
+        let hex = h.iter().fold(String::with_capacity(64), |mut acc, byte| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{byte:02x}");
+            acc
+        });
+        // Regenerate via:
+        //   cargo test -p casper merkle_block_hash_tests::hash_block_empty_golden_hex -- --nocapture
+        // ONLY when intentionally hard-forking the Merkle scheme.  The
+        // empty-block fixture is defined by `empty_block()` above:
+        // zero deploys, zero system deploys, zero bonds, 32-byte zero
+        // pre/post state hashes, sender = 33 zero bytes, timestamp =
+        // 1_700_000_000_000, version = 1, shard_id = "test-shard",
+        // sig_algorithm = "secp256k1".
+        const EXPECTED: &str = "249c70aa27fa8353d0373e13d6e9fc8ed4f50fc77d40bf901531fdbd4bc3884f";
+        assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
 }
 

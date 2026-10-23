@@ -289,7 +289,7 @@ message NoApprovedBlockAvailableProto {
 // --------- Core Protocol  --------
 message BlockMessageProto {
   option (scalapb.message).extends = "CasperMessageProto";
-  bytes                       blockHash      = 1; // Blake2b256 of this message encoded with blockHash and sig empty
+  bytes                       blockHash      = 1; // Merkle block hash (scheme v1); covers every field except blockHash and sig
   HeaderProto                 header         = 2 [(scalapb.field).no_box = true];
   BodyProto                   body           = 3 [(scalapb.field).no_box = true];
   repeated JustificationProto justifications = 4; // latest block of each validator in the current view, in strictly ascending validator order
