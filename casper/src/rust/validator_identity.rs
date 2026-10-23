@@ -54,6 +54,30 @@ impl ValidatorIdentity {
         new_block
     }
 
+    /// Fast-path variant of `sign_block` that reuses per-deploy Merkle
+    /// leaves computed earlier on the propose path.  Correct iff the
+    /// provided `leaves` match `block.body.deploys` + `block.body.system_deploys`
+    /// in commit order — the caller is responsible for threading them
+    /// through unchanged.  Saves one `deploys_root_leaves` recomputation
+    /// at sign time.
+    pub fn sign_block_with_leaves(
+        &self,
+        block: &BlockMessage,
+        leaves: &[[u8; 32]],
+    ) -> BlockMessage {
+        let mut new_block = block.clone();
+        new_block.sig_algorithm = self.signature_algorithm.clone();
+        new_block.sender = self.public_key.bytes.clone();
+
+        let block_hash = proto_util::hash_block_with_leaves(&new_block, leaves);
+        let sig = self.signature(block_hash.as_ref());
+
+        new_block.sig = sig.sig;
+        new_block.block_hash = block_hash;
+
+        new_block
+    }
+
     pub fn from_private_key_with_logging(
         priv_key: Option<&str>,
     ) -> Result<Option<Self>, CasperError> {
