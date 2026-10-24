@@ -1,15 +1,13 @@
 use std::path::Path;
 
-use ed25519_dalek::ed25519::signature::hazmat::PrehashVerifier;
 use eyre::{Result, WrapErr};
-use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
-use k256::elliptic_curve::SecretKey;
+use k256::elliptic_curve::sec1::ToSec1Point;
+use k256::elliptic_curve::{Generate, SecretKey};
 use openssl::pkey::PKey;
 use pem::Pem;
 use pkcs8::DecodePrivateKey;
-use rand_core::OsRng;
 
 use super::signatures_alg::SignaturesAlg;
 use crate::rust::private_key::PrivateKey;
@@ -164,19 +162,19 @@ impl SignaturesAlg for Secp256k1 {
             SecretKey::from_slice(&sec.bytes).expect("Invalid private key");
 
         let public_key = secret_key.public_key();
-        let public_key_bytes = public_key.to_encoded_point(false).as_bytes().to_vec();
+        let public_key_bytes = public_key.to_sec1_point(false).as_bytes().to_vec();
 
         PublicKey::from_bytes(&public_key_bytes)
     }
 
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
-        let secret_key = SecretKey::<k256::Secp256k1>::random(&mut OsRng);
+        let secret_key = SecretKey::<k256::Secp256k1>::generate();
         let raw_public_key = secret_key.public_key();
 
         let private_key = PrivateKey::from_bytes(&secret_key.to_bytes());
 
         let public_key =
-            PublicKey::from_bytes(&raw_public_key.to_encoded_point(false).as_bytes().to_vec());
+            PublicKey::from_bytes(&raw_public_key.to_sec1_point(false).as_bytes().to_vec());
 
         (private_key, public_key)
     }
@@ -570,6 +568,49 @@ mod tests {
 
         let err = Secp256k1::parse_pem_file(temp_file.path(), "pw").unwrap_err();
         assert!(err.to_string().contains("Unsupported PEM tag"));
+    }
+
+    /// Signing and verification bytes recorded with k256 0.13, so a dependency
+    /// upgrade cannot change which signatures validators produce or accept.
+    #[test]
+    fn signing_and_verification_match_recorded_vectors() {
+        use crate::rust::hash::blake2b256::Blake2b256;
+
+        let secp = Secp256k1;
+        let key1 = "54d4e576251b6c7b95af0349a5a31e583e982edeb9856a59bde14f6be5a302b3";
+        let key2 = "867c21c6a3245865444d80e49cac08a1c11e23b35965b566bbe9f49bb9897511";
+        let pub1 = "0418a6b57c4aeee6c7e19e3ea25aa5bae270eca8580ee5e59c28921df743e416a316c55ed10c63b99a7c2705de0e0d3c52ad7f06144b7f6ed97d3a63b871ced6ff";
+        let pub2 = "040126690519dc9b0f52876cb13458e15697794dd87d7c6477707c7efa4cce8a36b634eab5056bd4e3ba385ab14a638e4ac7d3b3e4968da3d66933fc04bc7038b5";
+        let sha = Sha256::digest(b"testing").to_vec();
+        let blake = Blake2b256::hash(b"test data for blessed contract signature".to_vec());
+        let cases = [
+            (key1, pub1, &sha, "304402207de566f205c191ef2df7c982f9aa41ed5d5df6651692540a3114be81cd280b9702203bcb8a9a30a0301c99a7f2826014652fc71e1369ddadcd5336c86c2533815f8c"),
+            (key2, pub2, &blake, "3045022100ab16bd8559e5afd13812dca1c997d8c8a5ef70735f6a83304f3a8c50921058ab02204fa20863ba0c075383c53b3b15bdc2063b2422a0cd7633b5f7feff3a74bf8eec"),
+            (key1, pub1, &blake, "30440220184cbebac1d1366f8ea24e97b46a8cb94e302a50b798f6a6be3e71b1bf52f83602202d2da9e1e118fea019ace3501c348d9efecdd4711b197b780af87031815be942"),
+        ];
+        for (key, public, hash, signature) in cases {
+            let key = hex::decode(key).unwrap();
+            let public = hex::decode(public).unwrap();
+            assert_eq!(secp.to_public(&PrivateKey::from_bytes(&key)).bytes.to_vec(), public);
+            assert_eq!(hex::encode(secp.sign(hash, &key)), signature);
+            assert!(secp.verify(hash, &hex::decode(signature).unwrap(), &public));
+        }
+
+        let rejected = [
+            // High-S form of the first signature.
+            (pub1, &sha, "304502207de566f205c191ef2df7c982f9aa41ed5d5df6651692540a3114be81cd280b97022100c4347565cf5fcfe366580d7d9feb9acef390c97cd19ad2e88909f2679cb4e1b5"),
+            // High-S form of the second signature.
+            (pub2, &blake, "3046022100ab16bd8559e5afd13812dca1c997d8c8a5ef70735f6a83304f3a8c50921058ab022100b05df79c45f3f8ac7c3ac4c4ea423df87f8aba45e1d26c85c7d35f525b76b255"),
+            // First signature with a non-minimal (zero-padded) r.
+            (pub1, &sha, "30450221007de566f205c191ef2df7c982f9aa41ed5d5df6651692540a3114be81cd280b9702203bcb8a9a30a0301c99a7f2826014652fc71e1369ddadcd5336c86c2533815f8c"),
+        ];
+        for (public, hash, signature) in rejected {
+            assert!(!secp.verify(
+                hash,
+                &hex::decode(signature).unwrap(),
+                &hex::decode(public).unwrap()
+            ));
+        }
     }
 
     #[test]
