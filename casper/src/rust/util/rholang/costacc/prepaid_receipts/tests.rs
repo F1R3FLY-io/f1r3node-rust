@@ -328,6 +328,7 @@ async fn stale_late_entry_and_invalid_batches_leave_all_receipts_unchanged() {
 
 #[tokio::test]
 async fn noncanonical_or_duplicate_stored_values_cannot_supply_receipts() {
+    let _encoding = crate::rust::util::rholang::costacc::cost_encoding();
     let mut runtime = runtime().await;
     let empty = runtime.runtime.create_checkpoint().await;
     for mutation in 0..7 {

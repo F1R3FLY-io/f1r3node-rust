@@ -787,6 +787,9 @@ const NOT_PLAIN_REPLAY: &str = "native replay of gpt4 has a recorded output that
 /// rejected.
 #[tokio::test]
 async fn native_replay_rejects_a_recorded_reply_that_is_not_plain_data() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     for (label, forged) in review_forgeries() {
         let run = replay_with_forged_record(&forged).await;
         assert_eq!(run.played.0, Ok(()), "{label}: play succeeds");
@@ -807,6 +810,9 @@ async fn native_replay_rejects_a_recorded_reply_that_is_not_plain_data() {
 /// the record decodes, and the plain-data check finds the bundle.
 #[tokio::test]
 async fn native_replay_rejects_a_deep_recorded_reply_that_is_not_plain_data() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let mut forged = Par {
         bundles: vec![models::rhoapi::Bundle {
             body: Some(RhoString::create_par("b".to_owned())),

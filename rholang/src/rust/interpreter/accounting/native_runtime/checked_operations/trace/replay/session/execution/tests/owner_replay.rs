@@ -510,6 +510,9 @@ fn runtime(workers: usize) -> tokio::runtime::Runtime {
 /// refusing row is rejected.
 #[test]
 fn replay_requires_and_verifies_a_recorded_refusal() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     for workers in [0, 2, 8] {
         let runtime = runtime(workers);
         for seed in 0..64_u8 {
@@ -526,6 +529,9 @@ fn replay_requires_and_verifies_a_recorded_refusal() {
 /// shortfall too, so only the strict item test rejects it.
 #[tokio::test]
 async fn replay_rejects_a_refusal_whose_items_fail_at_s_r() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let binding = t13_binding();
     let played = play(T13_STORE, T13_RUN, b"sa4", &binding).await;
     assert!(played.outcome.0.is_ok(), "{:?}", played.outcome.0);
@@ -592,6 +598,9 @@ async fn replay_rejects_a_refusal_whose_items_fail_at_s_r() {
 /// its Matched row, because `w` has no budget after the COMM.
 #[tokio::test]
 async fn a_matched_comm_leaves_its_transferee_funded() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     const STORE: &str = r#"for (@x <- @"a5-in") { {% Nil %}[ w ] }"#;
     const RUN: &str = r#"@"a5-in"!(1)"#;
     const NAMES: [&str; 1] = ["a5-in"];
@@ -654,6 +663,9 @@ async fn a_matched_comm_leaves_its_transferee_funded() {
 /// play.
 #[tokio::test]
 async fn an_owner_refused_introduction_replays_as_a_skip() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     const STORE: &str = r#"for ({% @x <- @"r50-in" %}[ owner ]) { @"r50-out"!(x) }"#;
     const RUN: &str = r#"@"r50-in"!(1) | @"r50-side"!(2)"#;
     const NAMES: [&str; 3] = ["r50-in", "r50-out", "r50-side"];

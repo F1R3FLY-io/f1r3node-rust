@@ -898,6 +898,9 @@ fn a_truncated_row_that_holds_a_deep_compound_is_rejected_on_a_small_stack() {
 /// region, and the field check names the first region that differs.
 #[test]
 fn record_decoder_decodes_prices_and_callers() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use models::rhoapi::{CostAuthority, CostCaller, CostRegion};
 
     let signatures = [
@@ -1063,6 +1066,9 @@ fn caller_depth_and_release(row: ListParWithRandom) -> usize {
 /// stack before it read the price.
 #[test]
 fn a_deep_caller_signature_decodes_and_tears_down_on_a_small_stack() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let shallow = encoded_row_with_deep_caller(3);
     let oracle: ListParWithRandom =
         bincode::deserialize(&shallow).expect("the hand-built row is the derived layout");

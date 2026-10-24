@@ -168,6 +168,7 @@ mod tests {
     /// rejects another root.
     #[tokio::test]
     async fn rooted_purse_reader_matches_live_records() {
+        let _encoding = crate::rust::util::rholang::costacc::cost_encoding();
         let stores = RSpaceStore {
             history: Arc::new(InMemoryKeyValueStore::new()),
             roots: Arc::new(InMemoryKeyValueStore::new()),

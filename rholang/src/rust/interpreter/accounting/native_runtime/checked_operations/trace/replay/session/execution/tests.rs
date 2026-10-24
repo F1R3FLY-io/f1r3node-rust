@@ -589,6 +589,9 @@ proptest! {
 /// logs them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reporting_logger_records_the_native_replay_without_changing_it() {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingLogger};
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
