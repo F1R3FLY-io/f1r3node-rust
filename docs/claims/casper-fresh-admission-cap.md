@@ -81,6 +81,18 @@ The rejected-buffer mutex still covers its admission check and the pool insert.
 The preservation review must include the existing admission tests and CLAIM-DEPLOY-STORE-CONCURRENCY-001.
 This change does not discharge the pending soak obligations.
 
+Issue #711 reuses one decoded deploy pool set for the scope predicate, statistics, and selection during one proposal.
+The scope predicate searches the captured set and keeps its signature membership rule.
+The two statistics functions borrow the captured set, and selection consumes the same set.
+On fixed inputs, candidate filters and S1 through S8 retain their current meaning.
+
+Deploys inserted after capture remain in storage for a later proposal.
+This capture does not create a transaction across admission, the pool, and the rejected buffer.
+Regression tests must verify one full read per normal proposal, the capture boundary, and unchanged admission and cleanup rules.
+The refactor retains the pending status until the required evidence receives maintainer review.
+The [issue #711 evidence](../casper/cbc-evidence/runs/issue-711-snapshot-20261019/README.md) records the source identity and regression results.
+The [review follow-up](../casper/cbc-evidence/runs/issue-711-snapshot-20261019/review-follow-up.md) extends the capture boundary to the scope predicate.
+
 1. Each statement has a unit test in `block_creator.rs` (`mod tests`). The tests call the admission functions with fixed values. **Done 2026-10-10.**
    - S1: `non_leader_fresh_admission_cap_follows_its_backlog_without_backpressure`
    - S2: `non_leader_fresh_admission_cap_is_bounded_by_the_fallback_maximum_and_the_shard_cap` and `the_soft_backpressure_backlog_cap_is_never_above_the_shard_cap`

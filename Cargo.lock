@@ -5025,6 +5025,7 @@ dependencies = [
 name = "rho-pure-eval"
 version = "0.1.0"
 dependencies = [
+ "imbl",
  "models",
  "num-bigint",
  "num-rational",
