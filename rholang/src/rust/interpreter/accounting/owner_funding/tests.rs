@@ -13,6 +13,7 @@ use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostAuthority, CostRegion, CostSignature, CostSignatureCompound};
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
+use num_bigint::BigUint;
 use proptest::prelude::*;
 use prost::Message;
 
@@ -369,7 +370,7 @@ proptest! {
         let usages = &usages[..authority.regions.len()];
         let owned = binding.owner_charge(&authority, usages).expect("an owner charge");
 
-        let mut expected_total = 0_u128;
+        let mut expected_total = BigUint::from(0_u8);
         let mut expected_shares = Vec::new();
         for (region, usage) in authority.regions.iter().zip(usages) {
             let signature = region.signature.as_ref().expect("a signature");
@@ -383,7 +384,7 @@ proptest! {
             }
             prop_assert!(binding.is_owner_region(region).expect("a canonical region"));
             let amount = u128::from(*usage) * u128::from(region.price);
-            expected_total += amount;
+            expected_total += BigUint::from(amount);
             expected_shares.push(OwnerRegionShare {
                 purses: locate(signature),
                 units: leaves(signature),
@@ -391,7 +392,7 @@ proptest! {
                 amount,
             });
         }
-        prop_assert_eq!(owned.shares.iter().map(|share| share.amount).sum::<u128>(), expected_total);
+        prop_assert_eq!(owned.shares.iter().map(|share| BigUint::from(share.amount)).sum::<BigUint>(), expected_total);
         prop_assert_eq!(&owned.shares, &expected_shares);
         prop_assert_eq!(owned.transferee, None);
         prop_assert!(owned.restorations.is_empty());

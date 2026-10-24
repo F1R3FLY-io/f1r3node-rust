@@ -49,6 +49,19 @@ fn datum(
     }
 }
 
+fn canonical_datum(
+    mut datum: Datum<ListParWithRandom>,
+    merge_type: MergeType,
+) -> Datum<ListParWithRandom> {
+    if merge_type == MergeType::IntegerAdd {
+        let value = RhoNumber::unapply(&datum.a.pars[0]).unwrap();
+        datum.a.pars[0] = RhoBigInt::create_par(&num_bigint::BigInt::from(value));
+        datum.source.hash =
+            stable_hash_provider::hash_produce(datum.source.channel_hash.bytes(), &datum.a, false);
+    }
+    datum
+}
+
 fn accounted_datum(unit: bool, stack: bool) -> Datum<ListParWithRandom> {
     let signature = signature(unit);
     datum(
@@ -166,7 +179,7 @@ fn numeric_merge_rejects_numeric_stack_hybrids() {
 #[test]
 fn numeric_merge_retains_explicit_empty_authority() {
     for merge_type in [MergeType::IntegerAdd, MergeType::BitmaskOr] {
-        let empty = datum(15, Some(CostAuthority::default()), None);
+        let empty = canonical_datum(datum(15, Some(CostAuthority::default()), None), merge_type);
         let bare = datum(15, None, None);
         let singleton = merge_single(&empty, merge_type);
         assert_eq!(singleton.a, empty.a);
@@ -226,7 +239,8 @@ fn numeric_merge_malformed_encoding_returns_checked_error() {
 fn numeric_merge_zero_difference_does_not_restore_consumed_authority() {
     for merge_type in [MergeType::IntegerAdd, MergeType::BitmaskOr] {
         let original = accounted_datum(false, false);
-        let replacement = datum(15, Some(CostAuthority::default()), None);
+        let replacement =
+            canonical_datum(datum(15, Some(CostAuthority::default()), None), merge_type);
         let merged =
             merge_outputs(original, std::slice::from_ref(&replacement), 0, merge_type).unwrap();
         assert_eq!(merged.a, replacement.a);
@@ -236,7 +250,10 @@ fn numeric_merge_zero_difference_does_not_restore_consumed_authority() {
 #[test]
 fn numeric_merge_netted_intermediate_authority_does_not_return() {
     let base = datum(10, None, None);
-    let final_output = datum(15, Some(CostAuthority::default()), None);
+    let final_output = canonical_datum(
+        datum(15, Some(CostAuthority::default()), None),
+        MergeType::IntegerAdd,
+    );
     // The netted change of a branch that adds and then consumes an accounted
     // intermediate datum: the intermediate cancels out of both sides.
     let changes = ChannelChange {
@@ -452,7 +469,7 @@ fn numeric_merge_wide_authority_preserves_live_region_bound() {
 #[test]
 fn numeric_merge_single_writer_retains_unit_authority() {
     for merge_type in [MergeType::IntegerAdd, MergeType::BitmaskOr] {
-        let original = accounted_datum(true, false);
+        let original = canonical_datum(accounted_datum(true, false), merge_type);
         let merged = merge_single(&original, merge_type);
         assert_eq!(merged.a, original.a);
         assert_eq!(merged.source.hash, original.source.hash);
@@ -475,7 +492,7 @@ fn numeric_merge_single_writer_retains_funding_demand() {
 fn numeric_merge_single_writer_retains_following_comm_byte_charge() {
     for merge_type in [MergeType::IntegerAdd, MergeType::BitmaskOr] {
         for unit in [true, false] {
-            let original = accounted_datum(unit, false);
+            let original = canonical_datum(accounted_datum(unit, false), merge_type);
             let merged = merge_single(&original, merge_type);
             let comm = COMM {
                 consume: Consume::create(
@@ -498,10 +515,60 @@ fn numeric_merge_single_writer_retains_following_comm_byte_charge() {
 #[test]
 fn numeric_merge_single_writer_retains_unaccounted_datum() {
     for merge_type in [MergeType::IntegerAdd, MergeType::BitmaskOr] {
-        let original = datum(15, None, None);
+        let original = canonical_datum(datum(15, None, None), merge_type);
         let merged = merge_single(&original, merge_type);
         assert_eq!(merged.a, original.a);
         assert_eq!(merged.source.hash, original.source.hash);
+    }
+}
+
+#[test]
+fn numeric_merge_normalizes_legacy_int_with_exact_accounting() {
+    let authorities = [
+        None,
+        Some(CostAuthority::default()),
+        accounted_datum(true, false).a.cost_authority,
+        accounted_datum(false, false).a.cost_authority,
+    ];
+    for authority in authorities {
+        for value in [0, 1, 127, 128, 255, 256, i32::MAX as i64, i64::MAX] {
+            let original = datum(value, authority.clone(), None);
+            let mut expected = original.clone();
+            expected.a.pars = vec![RhoBigInt::create_par(&num_bigint::BigInt::from(value))];
+            expected.source.hash = stable_hash_provider::hash_produce(
+                expected.source.channel_hash.bytes(),
+                &expected.a,
+                false,
+            );
+            let merged = merge_outputs(
+                datum(0, None, None),
+                std::slice::from_ref(&original),
+                value,
+                MergeType::IntegerAdd,
+            )
+            .unwrap();
+            assert_eq!(merged.a, expected.a);
+            assert_eq!(merged.source.hash, expected.source.hash);
+            let comm = COMM {
+                consume: Consume::create(
+                    &vec!["channel"],
+                    &vec!["pattern"],
+                    &"continuation",
+                    false,
+                ),
+                produces: vec![merged.source.clone()],
+                peeks: BTreeSet::new(),
+                times_repeated: BTreeMap::new(),
+            };
+            let before = comm_charge(&comm, &[(&original.a, false)]).unwrap();
+            let after = comm_charge(&comm, &[(&merged.a, false)]).unwrap();
+            assert_eq!(
+                after.transfer_bytes,
+                u64::try_from(prost::Message::encode_to_vec(&expected.a).len()).unwrap()
+            );
+            assert_eq!(after.introduction_bytes, before.introduction_bytes);
+            assert_eq!(after.trace_bytes, before.trace_bytes);
+        }
     }
 }
 
@@ -517,7 +584,7 @@ async fn numeric_merge_following_native_comm_and_replay_preserve_accounting() {
 
     for merge_type in [MergeType::IntegerAdd, MergeType::BitmaskOr] {
         for (output_unit, consumer_unit) in [(true, true), (true, false), (false, false)] {
-            let original = accounted_datum(output_unit, false);
+            let original = canonical_datum(accounted_datum(output_unit, false), merge_type);
             let merged = merge_single(&original, merge_type);
             let mut results = Vec::new();
             for value in [original.a, merged.a] {

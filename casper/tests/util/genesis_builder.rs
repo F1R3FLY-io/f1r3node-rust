@@ -483,7 +483,7 @@ impl GenesisContext {
 #[cfg(test)]
 mod offered_vault_tests {
     use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
-    use rholang::rust::interpreter::rho_type::RhoNumber;
+    use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 
     use super::*;
     use crate::helper::test_node::TestNode;
@@ -525,8 +525,9 @@ mod offered_vault_tests {
                 panic!("the balance query returns one value, got {observed:?}");
             };
             assert_eq!(
-                RhoNumber::unapply(balance),
-                Some(expected),
+                RhoBigInt::unapply(balance)
+                    .or_else(|| RhoNumber::unapply(balance).map(num_bigint::BigInt::from)),
+                Some(num_bigint::BigInt::from(expected)),
                 "vault {} at genesis",
                 address.to_base58()
             );

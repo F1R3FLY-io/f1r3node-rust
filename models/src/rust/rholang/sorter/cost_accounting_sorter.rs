@@ -1,10 +1,16 @@
-use super::par_sort_matcher::ParSortMatcher;
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
-use super::sortable::Sortable;
 use crate::rhoapi::cost_signature::Value;
 use crate::rhoapi::{CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, Par};
 
 pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
+    super::sort_drive::sort_signature(signature)
+}
+
+pub(crate) fn combine_signature(
+    signature: &CostSignature,
+    par: Option<ScoredTerm<Par>>,
+    mut elements: Vec<ScoredTerm<CostSignature>>,
+) -> ScoredTerm<CostSignature> {
     match &signature.value {
         None => ScoredTerm {
             term: CostSignature::default(),
@@ -32,8 +38,8 @@ pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
                 Tree::<ScoreAtom>::create_leaf_from_i64(*level as i64),
             ]),
         },
-        Some(Value::Quote(par)) => {
-            let sorted = ParSortMatcher::sort_match(par);
+        Some(Value::Quote(_)) => {
+            let sorted = par.expect("signature Par child");
             ScoredTerm {
                 term: CostSignature {
                     value: Some(Value::Quote(sorted.term)),
@@ -43,24 +49,24 @@ pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
                 ]),
             }
         }
-        Some(Value::Compound(compound)) => {
-            let mut elements = Vec::new();
-            collect_compound(&compound.elements, &mut elements);
+        Some(Value::Compound(_)) => {
             elements.retain(|element| !matches!(element.term.value, Some(Value::Unit(_))));
             if elements.is_empty() {
-                return sort_signature(&CostSignature {
-                    value: Some(Value::Unit(true)),
-                });
+                return ScoredTerm {
+                    term: CostSignature {
+                        value: Some(Value::Unit(true)),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::COST_SIG_UNIT,
+                        Vec::new(),
+                    ),
+                };
             }
             if elements.len() == 1 {
                 return elements.pop().expect("one cost-signature element");
             }
             ScoredTerm::sort_vec(&mut elements);
-            let scores = elements
-                .iter()
-                .map(|element| element.score.clone())
-                .collect();
-            let terms = elements.into_iter().map(|element| element.term).collect();
+            let (terms, scores) = super::sort_combine::split_scored_terms(elements);
             ScoredTerm {
                 term: CostSignature {
                     value: Some(Value::Compound(CostSignatureCompound { elements: terms })),
@@ -68,8 +74,8 @@ pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
                 score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIG_COMPOUND, scores),
             }
         }
-        Some(Value::Name(par)) => {
-            let sorted = ParSortMatcher::sort_match(par);
+        Some(Value::Name(_)) => {
+            let sorted = par.expect("signature Par child");
             ScoredTerm {
                 term: CostSignature {
                     value: Some(Value::Name(sorted.term)),
@@ -88,6 +94,7 @@ pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
 // order, as the recursive version gave them. That order matters, because
 // `ScoredTerm::sort_vec` keeps ties in input order. The recursive version
 // below stays as the test oracle.
+#[cfg(test)]
 fn collect_compound(signatures: &[CostSignature], output: &mut Vec<ScoredTerm<CostSignature>>) {
     let mut work: Vec<&CostSignature> = signatures.iter().rev().collect();
     while let Some(signature) = work.pop() {
@@ -117,36 +124,22 @@ fn collect_compound_recursive(
 }
 
 pub fn sort_signed_term(term: &CostSignedTerm) -> ScoredTerm<CostSignedTerm> {
-    let body = term
-        .body
-        .as_ref()
-        .map(ParSortMatcher::sort_match)
-        .unwrap_or_else(|| ScoredTerm {
-            term: Par::default(),
-            score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
-        });
-    let signature = term
-        .signature
-        .as_ref()
-        .map(sort_signature)
-        .unwrap_or_else(|| ScoredTerm {
-            term: CostSignature::default(),
-            score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
-        });
-    // Changed by G3 (DR-135, S3b): a held term keeps its held price, and the
-    // price is the last leaf of its score, in the big-endian bytes that a
-    // `GUint64` scores with. A held term so never sorts as the signed term of
-    // the surface syntax with the same body and signature.
-    // ScoredTerm {
-    //     term: CostSignedTerm {
-    //         body: term.body.as_ref().map(|_| body.term),
-    //         signature: term.signature.as_ref().map(|_| signature.term),
-    //     },
-    //     score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIGNED_TERM, vec![
-    //         signature.score,
-    //         body.score,
-    //     ]),
-    // }
+    super::sort_drive::sort_signed_term(term)
+}
+
+pub(crate) fn combine_signed_term(
+    term: &CostSignedTerm,
+    body: Option<ScoredTerm<Par>>,
+    signature: Option<ScoredTerm<CostSignature>>,
+) -> ScoredTerm<CostSignedTerm> {
+    let body = body.unwrap_or_else(|| ScoredTerm {
+        term: Par::default(),
+        score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
+    });
+    let signature = signature.unwrap_or_else(|| ScoredTerm {
+        term: CostSignature::default(),
+        score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),
+    });
     let mut scores = Vec::with_capacity(3);
     scores.push(signature.score);
     scores.push(body.score);
@@ -166,15 +159,14 @@ pub fn sort_signed_term(term: &CostSignedTerm) -> ScoredTerm<CostSignedTerm> {
 }
 
 pub fn sort_stack(stack: &CostStack) -> ScoredTerm<CostStack> {
-    let cells: Vec<_> = stack.cells.iter().map(sort_signature).collect();
+    super::sort_drive::sort_stack(stack)
+}
+
+pub(crate) fn combine_stack(cells: Vec<ScoredTerm<CostSignature>>) -> ScoredTerm<CostStack> {
+    let (cells, scores) = super::sort_combine::split_scored_terms(cells);
     ScoredTerm {
-        term: CostStack {
-            cells: cells.iter().map(|cell| cell.term.clone()).collect(),
-        },
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::COST_STACK,
-            cells.into_iter().map(|cell| cell.score).collect(),
-        ),
+        term: CostStack { cells },
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_STACK, scores),
     }
 }
 

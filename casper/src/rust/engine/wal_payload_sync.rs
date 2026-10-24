@@ -1525,6 +1525,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "reducer produced bytes that don't hash to the requested payload_hash"
+        )
+    )]
     async fn enumerate_reducer_wrong_bytes_falls_back_to_fetch() {
         // LOAD-BEARING: mark_resolved's defensive rehash catches
         // a reducer bug returning bytes that don't hash to the

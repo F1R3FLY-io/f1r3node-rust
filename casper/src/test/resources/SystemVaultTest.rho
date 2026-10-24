@@ -263,9 +263,9 @@ match (
                           (((false, "Transfer targets must be distinct"), "==", invalidResult), "duplicate target is rejected"),
                           (((false, "Invalid target vault address"), "==", invalidAddressResult), "invalid late target is rejected"),
                           (((false, "Insufficient funds"), "==", noFundsResult), "insufficient batch funds are rejected"),
-                          ((before - 40, "== <-", *afterCh), "source balance is conserved"),
-                          ((17, "== <-", *firstBalanceCh), "first target receives its share"),
-                          ((23, "== <-", *secondBalanceCh), "second target receives its share")
+                          ((before - 40n, "== <-", *afterCh), "source balance is conserved"),
+                          ((17n, "== <-", *firstBalanceCh), "first target receives its share"),
+                          ((23n, "== <-", *secondBalanceCh), "second target receives its share")
                         ], *ackCh)
                       }
                     }

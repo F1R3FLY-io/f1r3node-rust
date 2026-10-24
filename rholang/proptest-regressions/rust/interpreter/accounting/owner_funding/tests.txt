@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5e040e2617f6e525844616348ce7a714321d6db2adaa3ae6b3030180c50c183c # shrinks to regions = [(CostSignature { value: Some(Unit(true)) }, 0), (CostSignature { value: Some(Unit(true)) }, 0), (CostSignature { value: Some(Unit(true)) }, 0), (CostSignature { value: Some(Unit(true)) }, 0), (CostSignature { value: Some(Ground([198, 198, 198, 198])) }, 18446744073709551615), (CostSignature { value: Some(Unit(true)) }, 0), (CostSignature { value: Some(Ground([193, 193, 193, 193])) }, 18446744073709551615)], usages = [18446744073709551615, 0, 0, 0, 0, 0, 18446744073709551615, 0, 0, 0, 0, 0], client = []

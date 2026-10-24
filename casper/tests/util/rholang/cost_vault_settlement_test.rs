@@ -15,7 +15,7 @@ use rholang::rust::interpreter::accounting::monetary_allocation::{
     MonetaryCursor, MonetaryCursorTransition,
 };
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 // Changed by DR-134 (DR-71): the exploratory reads take the adopted policy.
@@ -38,7 +38,12 @@ async fn balance(
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    RhoNumber::unapply(&values[0]).unwrap()
+    i64::try_from(
+        RhoBigInt::unapply(&values[0])
+            .or_else(|| RhoNumber::unapply(&values[0]).map(num_bigint::BigInt::from))
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 // Changed by DR-134 (DR-71): the exploratory read is the native dry run of the

@@ -24,7 +24,7 @@ use rholang::rust::interpreter::accounting::native_phlo_rules::{
 };
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
-use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString};
+use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoBoolean, RhoNumber, RhoString};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -253,7 +253,12 @@ async fn balance(
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    u64::try_from(RhoNumber::unapply(&values[0]).unwrap()).unwrap()
+    u64::try_from(
+        RhoBigInt::unapply(&values[0])
+            .or_else(|| RhoNumber::unapply(&values[0]).map(num_bigint::BigInt::from))
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 fn offered_gateway_call(
