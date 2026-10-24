@@ -13,6 +13,7 @@ use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+use rspace_plus_plus::rspace::merger::event_log_index::{EventLogIndex, EventLogIndexFold};
 use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::merger::state_change_merger;
@@ -165,12 +166,6 @@ fn branch_mergeable_channels(
 fn split_unavailable_branch_consumes(
     branch: HashableSet<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
-    state_changes: &impl Fn(
-        &DeployChainIndex,
-    ) -> Result<
-        rspace_plus_plus::rspace::merger::state_change::StateChange,
-        rspace_plus_plus::rspace::errors::HistoryError,
-    >,
     mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
     base_data: &impl Fn(
         &Blake2b256Hash,
@@ -207,7 +202,7 @@ fn split_unavailable_branch_consumes(
             continue;
         }
 
-        let changes = state_changes(chain)?;
+        let changes = &chain.state_changes;
         let chain_mergeable = mergeable_channels(chain);
         let mut next_data = available_data.clone();
         let mut next_continuations = available_continuations.clone();
@@ -352,12 +347,6 @@ fn split_unavailable_branch_consumes(
 fn split_unavailable_resolved_branches(
     resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
-    state_changes: &impl Fn(
-        &DeployChainIndex,
-    ) -> Result<
-        rspace_plus_plus::rspace::merger::state_change::StateChange,
-        rspace_plus_plus::rspace::errors::HistoryError,
-    >,
     mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
     base_data: &impl Fn(
         &Blake2b256Hash,
@@ -374,7 +363,6 @@ fn split_unavailable_resolved_branches(
         let (kept, rejected) = split_unavailable_branch_consumes(
             branch,
             depends,
-            state_changes,
             mergeable_channels,
             base_data,
             base_continuations,
@@ -1212,14 +1200,12 @@ pub fn merge(
         }
         actual_set_vec = ordinary;
     }
-    let mut settled_log = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
-    for chain in &settled_committed {
-        settled_log = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-            &settled_log,
-            &chain.event_log_index,
-        )
-        .map_err(CasperError::HistoryError)?;
-    }
+    let settled_log = EventLogIndex::combine_all(
+        settled_committed
+            .iter()
+            .map(|chain| chain.event_log_index.as_ref()),
+    )
+    .map_err(CasperError::HistoryError)?;
     for (i, first) in settled_committed.iter().enumerate() {
         for second in settled_committed.iter().skip(i + 1) {
             if merging_logic::are_conflicting(&first.event_log_index, &second.event_log_index) {
@@ -1329,20 +1315,17 @@ pub fn merge(
     //
     // A scope chain conflicting with the base loses by construction (see
     // `partition_base_conflicts`).
-    let mut base_event_log =
-        rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
+    let mut base_fold = EventLogIndexFold::default();
     let mut base_lineage_sorted: Vec<&BlockHash> = base_lineage_blocks.iter().collect();
     base_lineage_sorted.sort();
     for block_hash in base_lineage_sorted {
         for chain in index(block_hash)? {
-            base_event_log =
-                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-                    &base_event_log,
-                    &chain.event_log_index,
-                )
+            base_fold
+                .add(&chain.event_log_index)
                 .map_err(CasperError::HistoryError)?;
         }
     }
+    let base_event_log = base_fold.finish();
     let (actual_seq_all, base_conflicting) =
         partition_base_conflicts(actual_seq_all, &base_event_log);
     if !base_conflicting.is_empty() {
@@ -1405,37 +1388,20 @@ pub fn merge(
             .map(|deploy| deploy.deploy_id.clone())
             .collect();
 
-        let combined_user_event_log = branch
-            .0
-            .iter()
-            .map(|chain| &chain.user_event_log_index)
-            .try_fold(
-                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
-                |acc, index| {
-                    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-                        &acc, index,
-                    )
-                },
-            )?;
-
-        let combined_system_event_log = branch
-            .0
-            .iter()
-            .map(|chain| &chain.system_event_log_index)
-            .try_fold(
-                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
-                |acc, index| {
-                    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-                        &acc, index,
-                    )
-                },
-            )?;
-
+        let combined_user_event_log = EventLogIndex::combine_all(
+            branch
+                .0
+                .iter()
+                .map(|chain| chain.user_event_log_index.as_ref()),
+        )?;
+        let combined_system_event_log = EventLogIndex::combine_all(
+            branch
+                .0
+                .iter()
+                .map(|chain| chain.system_event_log_index.as_ref()),
+        )?;
         let combined_all_event_log =
-            rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-                &combined_user_event_log,
-                &combined_system_event_log,
-            )?;
+            EventLogIndex::combine(&combined_user_event_log, &combined_system_event_log)?;
 
         Ok(BranchDerived {
             user_deploy_ids,
@@ -1500,8 +1466,6 @@ pub fn merge(
         }
         consume_dep
     };
-
-    let state_changes_fn = |chain: &DeployChainIndex| Ok(chain.state_changes.clone());
 
     let mergeable_channels_fn =
         |chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone();
@@ -1740,7 +1704,10 @@ pub fn merge(
         |merge_set: &HashableSet<DeployChainIndex>| -> HashableSet<Branch<DeployChainIndex>> {
             let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
             let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
-                chains_vec.iter().map(|c| &c.event_log_index).collect();
+                chains_vec
+                    .iter()
+                    .map(|c| c.event_log_index.as_ref())
+                    .collect();
             #[allow(clippy::mutable_key_type)]
             let depends_map =
                 merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
@@ -1788,7 +1755,6 @@ pub fn merge(
             let mut rejected = split_unavailable_resolved_branches(
                 resolved,
                 &depends_fn,
-                &state_changes_fn,
                 &mergeable_channels_fn,
                 &|channel| history_reader.get_data_proj_binary(channel),
                 &|consume_channels| {
@@ -2026,7 +1992,7 @@ pub fn merge(
     // Combine surviving diffs and apply to the LFB post-state.
     let new_state = conflict_set_merger::compute_merged_state(
         &resolved,
-        &state_changes_fn,
+        &|chain: &DeployChainIndex| Ok(chain.state_changes.as_ref().clone()),
         &mergeable_channels_fn,
         &compute_trie_actions_fn,
         &apply_trie_actions_fn,
@@ -2389,7 +2355,6 @@ mod tests {
         split_unavailable_branch_consumes(
             branch,
             &depends,
-            &|chain| Ok(chain.state_changes.clone()),
             &|chain| chain.event_log_index.number_channels_data.clone(),
             &|channel| {
                 if channel == &base_channel {
@@ -3463,7 +3428,6 @@ mod tests {
                 split_unavailable_resolved_branches(
                     resolved,
                     &|_, _| false,
-                    &|chain| Ok(chain.state_changes.clone()),
                     &|_| BTreeMap::new(),
                     &|_| Ok(Vec::new()),
                     &|_| Ok(Vec::new()),
@@ -3583,8 +3547,10 @@ mod tests {
                 |c: &DeployChainIndex| c.event_log_index.number_channels_data.clone();
             let compute_branches = |merge_set: &HashableSet<DeployChainIndex>| {
                 let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
-                let event_logs: Vec<&EventLogIndex> =
-                    chains_vec.iter().map(|c| &c.event_log_index).collect();
+                let event_logs: Vec<&EventLogIndex> = chains_vec
+                    .iter()
+                    .map(|c| c.event_log_index.as_ref())
+                    .collect();
                 #[allow(clippy::mutable_key_type)]
                 let depends_map =
                     merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
@@ -3626,7 +3592,6 @@ mod tests {
                     let mut rejected = split_unavailable_resolved_branches(
                         resolved,
                         &depends_fn,
-                        &|c| Ok(c.state_changes.clone()),
                         &mergeable_fn,
                         &base_data,
                         &|_| Ok(Vec::new()),
@@ -3665,7 +3630,6 @@ mod tests {
                 let (kept, rejected) = split_unavailable_branch_consumes(
                     HashableSet(HashSet::from([chain.clone()])),
                     &depends_fn,
-                    &|c| Ok(c.state_changes.clone()),
                     &mergeable_fn,
                     &base_data,
                     &|_| Ok(Vec::new()),
@@ -3749,7 +3713,6 @@ mod tests {
                 Vec::new()
             })
         };
-        let state_changes_fn = |c: &DeployChainIndex| Ok(c.state_changes.clone());
         let no_mergeable = |_: &DeployChainIndex| BTreeMap::new();
         let no_continuations = |_: &Vec<Blake2b256Hash>| Ok(Vec::new());
         let one_branch = |merge_set: &HashableSet<DeployChainIndex>| {
@@ -3784,7 +3747,6 @@ mod tests {
         split_unavailable_resolved_branches(
             &mut together,
             &|_, _| false,
-            &state_changes_fn,
             &no_mergeable,
             &base_data,
             &no_continuations,
@@ -3805,7 +3767,6 @@ mod tests {
         split_unavailable_resolved_branches(
             &mut after_expansion,
             &|_, _| false,
-            &state_changes_fn,
             &no_mergeable,
             &base_data,
             &no_continuations,
@@ -3905,7 +3866,6 @@ mod tests {
                 split_unavailable_resolved_branches(
                     resolved,
                     &depends,
-                    &|chain| Ok(chain.state_changes.clone()),
                     &|_| BTreeMap::new(),
                     &|_| Ok(Vec::new()),
                     &|_| Ok(Vec::new()),

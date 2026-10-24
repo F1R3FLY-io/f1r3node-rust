@@ -50,7 +50,6 @@ impl RholangAndScalaDispatcher {
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
-                    let env = build_env(data_list.clone());
                     let mut randoms =
                         vec![Blake2b512Random::from_bytes(&par_with_rand.random_state)];
                     randoms.extend(
@@ -58,6 +57,7 @@ impl RholangAndScalaDispatcher {
                             .iter()
                             .map(|p| Blake2b512Random::from_bytes(&p.random_state)),
                     );
+                    let env = build_env(data_list);
 
                     let reducer = self
                         .reducer

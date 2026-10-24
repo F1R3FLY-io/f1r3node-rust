@@ -114,12 +114,12 @@ pub fn normalize_collection<'ast>(
         }
 
         let remainder_connective_used = match remainder {
-            Some(ref var) => var.connective_used(var.clone()),
+            Some(ref var) => var.connective_used(),
             None => false,
         };
 
         let remainder_locally_free = match remainder {
-            Some(ref var) => var.locally_free(var.clone(), 0),
+            Some(ref var) => var.locally_free(0),
             None => Vec::new(),
         };
 
