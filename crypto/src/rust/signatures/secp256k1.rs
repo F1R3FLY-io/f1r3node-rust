@@ -591,7 +591,10 @@ mod tests {
         for (key, public, hash, signature) in cases {
             let key = hex::decode(key).unwrap();
             let public = hex::decode(public).unwrap();
-            assert_eq!(secp.to_public(&PrivateKey::from_bytes(&key)).bytes.to_vec(), public);
+            assert_eq!(
+                secp.to_public(&PrivateKey::from_bytes(&key)).bytes.to_vec(),
+                public
+            );
             assert_eq!(hex::encode(secp.sign(hash, &key)), signature);
             assert!(secp.verify(hash, &hex::decode(signature).unwrap(), &public));
         }
