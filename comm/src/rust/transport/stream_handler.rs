@@ -388,9 +388,8 @@ impl StreamHandler {
     /// Retrieves the cached data, decompresses if necessary, and creates a Blob.
     /// Cleans up the cache entry after processing.
     pub async fn restore(msg: &StreamMessage, cache: &StreamCache) -> Result<Blob, CommError> {
-        // Read data from cache
-        let content = match cache.get(&msg.key) {
-            Some(entry) => entry.value().clone(),
+        let content = match cache.remove(&msg.key) {
+            Some((_, content)) => content,
             None => {
                 let error = format!("Could not read streamed data from cache (key: {})", msg.key);
                 tracing::error!(key = %msg.key, "blob stream cache read failed: data not found");
@@ -404,7 +403,6 @@ impl StreamHandler {
                 Ok(data) => data,
                 Err(e) => {
                     tracing::error!(key = %msg.key, error = %e, "blob stream decompression failed");
-                    cache.remove(&msg.key);
                     Self::update_stream_cache_metrics(cache);
                     return Err(e);
                 }
@@ -413,8 +411,6 @@ impl StreamHandler {
         // Create blob using protocol helper
         let blob = protocol_helper::blob(&msg.sender, &msg.type_id, &decompressed_content);
 
-        // Clean up cache entry
-        cache.remove(&msg.key);
         Self::update_stream_cache_metrics(cache);
 
         Ok(blob)
