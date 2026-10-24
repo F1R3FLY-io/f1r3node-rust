@@ -546,9 +546,9 @@ impl SettlePass {
 /// the verdict write, is repaired by the next call.
 pub(crate) fn release_settled(
     dag: &KeyValueDagRepresentation,
-    deploy_storage: &parking_lot::Mutex<KeyValueDeployStorage>,
+    deploy_storage: &KeyValueDeployStorage,
 ) -> Result<usize, CasperError> {
-    let pooled = deploy_storage.lock().sigs().map_err(CasperError::from)?;
+    let pooled = deploy_storage.sigs().map_err(CasperError::from)?;
     let mut settled = Vec::new();
     for sig in pooled {
         if dag
@@ -562,11 +562,10 @@ pub(crate) fn release_settled(
     if settled.is_empty() {
         return Ok(0);
     }
-    let mut pool = deploy_storage.lock();
     let mut released = 0usize;
     for sig in settled {
-        match pool.remove_by_sig(&sig) {
-            Ok(_) => released += 1,
+        match deploy_storage.remove_by_sig(&sig) {
+            Ok(removed) => released += usize::from(removed),
             Err(e) => {
                 metrics::counter!(
                     crate::rust::metrics_constants::DEPLOY_LIFECYCLE_RELEASE_FAILURES_METRIC,
@@ -1735,11 +1734,9 @@ mod settle_and_release_tests {
         let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
             .await
             .expect("dag storage");
-        let pool = parking_lot::Mutex::new(
-            KeyValueDeployStorage::new(&mut kvm)
-                .await
-                .expect("deploy storage"),
-        );
+        let pool = KeyValueDeployStorage::new(&mut kvm)
+            .await
+            .expect("deploy storage");
         let genesis = chain_block(0, None);
         dag_storage
             .insert(&genesis, InsertMode::Approved)
@@ -1749,8 +1746,7 @@ mod settle_and_release_tests {
             crate::rust::util::construct_deploy::basic_deploy_data(1, None, None).expect("deploy");
         let pending =
             crate::rust::util::construct_deploy::basic_deploy_data(2, None, None).expect("deploy");
-        pool.lock()
-            .add(vec![settled.clone(), pending.clone()])
+        pool.add(vec![settled.clone(), pending.clone()])
             .expect("seed pool");
 
         let dag = dag_storage.get_representation().expect("dag");
@@ -1763,8 +1759,8 @@ mod settle_and_release_tests {
         .expect("terminal");
 
         assert_eq!(release_settled(&dag, &pool).expect("release"), 1);
-        assert!(!pool.lock().contains_sig(&settled.sig).expect("lookup"));
-        assert!(pool.lock().contains_sig(&pending.sig).expect("lookup"));
+        assert!(!pool.contains_sig(&settled.sig).expect("lookup"));
+        assert!(pool.contains_sig(&pending.sig).expect("lookup"));
         assert_eq!(
             release_settled(&dag, &pool).expect("second release"),
             0,

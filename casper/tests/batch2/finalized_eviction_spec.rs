@@ -21,7 +21,6 @@ fn test_ftt() -> FtThreshold { FtThreshold::from_ppm(100_000) }
 
 fn pool_holds(node: &TestNode, sig: &Bytes) -> bool {
     node.deploy_storage
-        .lock()
         .read_all()
         .expect("read deploy pool")
         .iter()
@@ -154,7 +153,6 @@ async fn a_pool_copy_left_behind_its_verdict_is_released_by_the_next_cycle() {
 
     nodes[0]
         .deploy_storage
-        .lock()
         .add(vec![deploy])
         .expect("leave a copy behind");
     assert!(pool_holds(&nodes[0], &sig));

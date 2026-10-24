@@ -382,7 +382,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         divergence_monitor: Arc::new(
             crate::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
         ),
-        deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
+        deploy_storage: Arc::new(deploy_storage),
         shard_conf: casper_shard_conf,
     };
     Ok(MultiParentCasperImpl {

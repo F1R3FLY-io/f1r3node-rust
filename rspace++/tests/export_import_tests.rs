@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use shared::rust::{Byte, ByteVector};
 
 // See rspace/src/main/scala/coop/rchain/rspace/examples/StringExamples.scala
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 enum Pattern {
     #[default]
     Wildcard,

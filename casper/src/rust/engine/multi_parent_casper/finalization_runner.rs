@@ -202,7 +202,7 @@ pub struct FinalizationContext {
     pub runtime_manager: Arc<RuntimeManager>,
     pub event_publisher: F1r3flyEvents,
     pub divergence_monitor: Arc<DivergenceMonitor>,
-    pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<KeyValueDeployStorage>,
     pub finalized_bond_cache: super::bond_cache::FinalizedBondCache,
     pub shard_conf: CasperShardConf,
 }
