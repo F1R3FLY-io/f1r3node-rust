@@ -1,4 +1,4 @@
-use k256::elliptic_curve::rand_core::OsRng;
+use k256::elliptic_curve::Generate;
 use k256::schnorr::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 
@@ -59,7 +59,7 @@ impl SchnorrSecp256k1 {
         if bytes.len() != SCHNORR_PUBKEY_LEN {
             return None;
         }
-        VerifyingKey::from_bytes(bytes).ok()
+        VerifyingKey::from_slice(bytes).ok()
     }
 
     fn parse_signature(bytes: &[u8]) -> Option<Signature> {
@@ -106,7 +106,7 @@ impl SignaturesAlg for SchnorrSecp256k1 {
             return Vec::new();
         }
 
-        let Ok(signing_key) = SigningKey::from_bytes(sec) else {
+        let Ok(signing_key) = SigningKey::from_slice(sec) else {
             return Vec::new();
         };
         match signing_key.sign_prehash(data) {
@@ -116,14 +116,14 @@ impl SignaturesAlg for SchnorrSecp256k1 {
     }
 
     fn to_public(&self, sec: &PrivateKey) -> PublicKey {
-        let Ok(signing_key) = SigningKey::from_bytes(&sec.bytes) else {
+        let Ok(signing_key) = SigningKey::from_slice(&sec.bytes) else {
             return PublicKey::from_bytes(&[]);
         };
         PublicKey::from_bytes(&signing_key.verifying_key().to_bytes())
     }
 
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let private_key = PrivateKey::from_bytes(&signing_key.to_bytes());
         let public_key = PublicKey::from_bytes(&signing_key.verifying_key().to_bytes());
         (private_key, public_key)
@@ -200,16 +200,14 @@ mod tests {
         let msg = [0u8; 32];
         let aux = [0u8; 32];
 
-        let sk = SigningKey::from_bytes(&sk_bytes).expect("valid sk");
-        let sig = sk
-            .sign_prehash_with_aux_rand(&msg, &aux)
-            .expect("vector must sign");
+        let sk = SigningKey::from_slice(&sk_bytes).expect("valid sk");
+        let sig = sk.sign_raw(&msg, &aux).expect("vector must sign");
         let pk = sk.verifying_key().to_bytes().to_vec();
 
         assert_eq!(pk, expected_pk);
         assert_eq!(sig.to_bytes().to_vec(), expected_sig);
 
-        let vk = VerifyingKey::from_bytes(&expected_pk).expect("valid vk");
+        let vk = VerifyingKey::from_slice(&expected_pk).expect("valid vk");
         assert!(vk.verify_prehash(&msg, &sig).is_ok());
     }
 
