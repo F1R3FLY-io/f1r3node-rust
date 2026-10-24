@@ -228,11 +228,11 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         );
 
         let mut aux_kvm = InMemoryStoreManager::new();
-        let deploy_storage = std::sync::Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = std::sync::Arc::new(
             KeyValueDeployStorage::new(&mut aux_kvm)
                 .await
                 .expect("Failed to create deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = std::sync::Arc::new(StdMutex::new(
             KeyValueRejectedDeployBuffer::new(&mut aux_kvm)
                 .await
@@ -242,7 +242,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         // D sits in the recovery buffer — the stale entry that the proposer
         // would otherwise re-include via the exemption path.
         {
-            let mut buf = rejected_deploy_buffer.lock().unwrap();
+            let buf = rejected_deploy_buffer.lock().unwrap();
             buf.add(vec![signed_deploy.clone()])
                 .expect("Failed to add deploy to buffer");
         }

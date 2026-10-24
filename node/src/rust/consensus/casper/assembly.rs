@@ -396,8 +396,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 
         let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
-        // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
-        let deploy_storage_arc = Arc::new(parking_lot::Mutex::new(deploy_storage.clone()));
+        let deploy_storage_arc = Arc::new(deploy_storage.clone());
         (deploy_storage, deploy_storage_arc)
     };
 
