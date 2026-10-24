@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Instant;
 
-use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -250,18 +249,15 @@ impl ReplayRuntimeOps {
         // `process_deploy` bracket.  Replay must sweep the same per-
         // deploy state so a mid-replay failure doesn't leak locks,
         // fds, or trailing WAL entries into subsequent deploys.
-        // Scope = Blake2b256(deploy.sig); same derivation as play.
-        let deploy_scope: rholang::rust::interpreter::io::lock::DeployScope = {
-            let digest = Blake2b256::hash(processed_deploy.deploy.sig.to_vec());
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&digest);
-            arr
-        };
+        // The constructor derives a per-execution unique scope from
+        // the deploy sig + an internal 128-bit nonce, so concurrent
+        // play+replay of the same signature against a manager-shared
+        // `SharedLockRegistry` never share scopes.
         let mut wal_scope =
             crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
                 self.runtime_ops.runtime.fs_handles.wal.clone(),
                 self.runtime_ops.runtime.fs_handles.lock_registry.clone(),
-                deploy_scope,
+                &processed_deploy.deploy.sig,
                 processed_deploy.deploy.sig.to_vec(),
                 self.runtime_ops.runtime.fs_handles.clone(),
             );
@@ -537,29 +533,24 @@ impl ReplayRuntimeOps {
 
         // Per-system-deploy RAII guard mirrors
         // `play_system_deploy`'s bracket.  System deploys have no
-        // primary-signer sig, so scope is derived from `BlockData`
-        // fields (sender + seq_num + block_number + time_stamp) —
-        // unique per block, which is adequate under sequential
-        // execution: slash and close in the same block get the same
-        // scope but their guards don't overlap in time.  Not
-        // committed: system deploys don't contribute to the block-
-        // level WAL on triage.
-        let deploy_scope: rholang::rust::interpreter::io::lock::DeployScope = {
-            let mut input = b"replay-system-deploy:".to_vec();
-            input.extend_from_slice(&block_data.sender.bytes);
-            input.extend_from_slice(&block_data.seq_num.to_be_bytes());
-            input.extend_from_slice(&block_data.block_number.to_be_bytes());
-            input.extend_from_slice(&block_data.time_stamp.to_be_bytes());
-            let digest = Blake2b256::hash(input);
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&digest);
-            arr
-        };
+        // primary-signer sig, so the scope seed combines a
+        // replay-system-deploy marker + the block-identifying
+        // `BlockData` fields.  The constructor mixes in a 128-bit
+        // nonce, so even two system deploys in the same block
+        // (slash + close) derive distinct scopes and don't risk
+        // sweeping each other's holders on Drop.  Not committed:
+        // system deploys don't contribute to the block-level WAL on
+        // triage.
+        let mut scope_seed = b"replay-system-deploy:".to_vec();
+        scope_seed.extend_from_slice(&block_data.sender.bytes);
+        scope_seed.extend_from_slice(&block_data.seq_num.to_be_bytes());
+        scope_seed.extend_from_slice(&block_data.block_number.to_be_bytes());
+        scope_seed.extend_from_slice(&block_data.time_stamp.to_be_bytes());
         let _wal_scope =
             crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
                 self.runtime_ops.runtime.fs_handles.wal.clone(),
                 self.runtime_ops.runtime.fs_handles.lock_registry.clone(),
-                deploy_scope,
+                &scope_seed,
                 Vec::new(),
                 self.runtime_ops.runtime.fs_handles.clone(),
             );

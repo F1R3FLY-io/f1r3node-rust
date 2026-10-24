@@ -41,12 +41,27 @@
 // `deploy_scope` MUST be non-sentinel (`!= [0; 32]`).  A
 // sentinel scope would trip the `release_all_for_deploy`
 // debug_assert and could sweep every sentinel-scoped entry on
-// the registry.  Production call sites derive the scope via
-// Blake2b256(deploy.sig); Blake2b256 output is non-sentinel
-// with probability `1 - 2⁻²⁵⁶`, so the enforcement is
-// structural.  The `assert!` is kept out of debug_assert so
-// release builds also catch a future refactor that introduces
-// a sentinel-scope path.
+// the registry.  Scope is derived internally via
+// `Blake2b256(scope_input ‖ 128-bit nonce ‖ domain-tag)`;
+// Blake2b256 output is non-sentinel with probability
+// `1 - 2⁻²⁵⁶`, so the enforcement is structural.  The `assert!`
+// is kept out of debug_assert so release builds also catch a
+// future refactor (e.g., a hash-provider swap) that could
+// introduce a sentinel-scope path.
+//
+// # Per-execution isolation
+//
+// Scope derivation mixes 128 bits of fresh entropy at construction
+// time so two guards built from the same seed get distinct scopes.
+// This is load-bearing when a `SharedLockRegistry` is broadcast
+// across multiple runtimes (via `RuntimeManager::broadcast_fs_slots`)
+// and two of them execute the SAME deploy concurrently — e.g., a
+// leader proposing a block while a follower replays the same block.
+// Without the nonce, both executions would derive identical scopes
+// from `Blake2b256(deploy.sig)`, and dropping either guard would
+// sweep the other's lock holders + waiters.  Scope values are not
+// consensus-observable (never serialized into `WalEntry`), so the
+// per-guard RNG is safe.
 //
 // # Interaction with cost accounting
 //
@@ -58,9 +73,16 @@
 // triage, this guard can grow the matching field and Drop
 // branch without disturbing current callers.
 
+use crypto::rust::hash::blake2b256::Blake2b256;
+use rand::RngCore;
 use rholang::rust::interpreter::io::handle_table::FileHandleTable;
 use rholang::rust::interpreter::io::lock::{DeployScope, SharedLockRegistry};
 use rholang::rust::interpreter::io::wal::{Wal, WalMark};
+
+/// Domain-separation tag mixed into every per-execution scope hash.
+/// Keep this constant stable — a rename would silently invalidate
+/// scope-collision reproducibility in regression tests.
+const SCOPE_DOMAIN_TAG: &[u8] = b"WalDeployScope-v1";
 
 /// RAII guard that cleans up a deploy's filesystem-side state at
 /// scope exit.  Construct via
@@ -80,28 +102,66 @@ pub struct WalDeployScope {
 }
 
 impl WalDeployScope {
-    /// Production constructor.  Called at deploy entry with the
-    /// deploy's derived scope + a sig for the payload-source
-    /// recorder.  Sets the per-runtime deploy cells to
-    /// `(deploy_scope, deploy_sig)` so handlers tag their lock
-    /// acquires + journal_write records correctly, and takes a
-    /// `begin_deploy` mark against the WAL so uncommitted-drop
-    /// can revert.
+    /// Production constructor.  Called at deploy entry with a
+    /// per-deploy-type seed + the deploy sig for the payload-source
+    /// recorder.
     ///
-    /// `deploy_scope` MUST be non-sentinel — see type-level
-    /// docstring for the structural rationale.
+    /// # Per-execution scope isolation
+    ///
+    /// Scope is derived as
+    /// `Blake2b256(scope_input ‖ random_nonce ‖ SCOPE_DOMAIN_TAG)`.
+    /// The 128-bit nonce makes the scope UNIQUE per guard construction
+    /// (collision probability 2⁻¹²⁸), so concurrent executions of the
+    /// same deploy — e.g., play + replay running against separate
+    /// runtimes that share a `SharedLockRegistry` via
+    /// `RuntimeManager::broadcast_fs_slots` — never share scopes.
+    /// Without this isolation, dropping one guard's
+    /// `release_all_for_deploy(&scope)` would sweep the other
+    /// execution's holders and
+    /// `cancel_all_waiters_for_deploy(&scope)` would cancel its
+    /// parked waiters.
+    ///
+    /// # Determinism posture
+    ///
+    /// Scope is NOT consensus-observable: it exists only in the
+    /// `LockRegistry` (per-manager in-memory map) and in each
+    /// runtime's `FileHandleTable.current_deploy_scope` cell.
+    /// Neither surface is replicated across validators nor serialized
+    /// into WAL entries (`WalEntry` has no scope field).  So the
+    /// per-guard RNG is safe — it doesn't drift consensus state.
+    ///
+    /// # Sentinel safety
+    ///
+    /// Blake2b256 output is non-sentinel (`!= [0; 32]`) with
+    /// probability `1 - 2⁻²⁵⁶`.  The `assert!` is retained for
+    /// defense-in-depth against a hypothetical hash-provider swap.
+    ///
+    /// # Parameters
+    ///
+    /// * `scope_input` — a per-deploy-type seed.  For user deploys,
+    ///   pass `&deploy.sig`; for standalone system deploys, pass a
+    ///   domain-tagged derivation like
+    ///   `[b"system-deploy:", state_hash].concat()`.
+    /// * `deploy_sig` — the real signature bytes installed into
+    ///   `FileHandleTable.current_deploy_sig` so `journal_write`'s
+    ///   payload-source recorder keys the `payload_hash → deploy_sig`
+    ///   mapping correctly.  Pass `Vec::new()` for sig-less
+    ///   system deploys.
     pub fn new_with_lock_sweep(
         wal: Wal,
         lock_registry: SharedLockRegistry,
-        deploy_scope: DeployScope,
+        scope_input: &[u8],
         deploy_sig: Vec<u8>,
         fs_handles: FileHandleTable,
     ) -> Self {
+        let deploy_scope = Self::derive_scope(scope_input);
         assert!(
             deploy_scope != [0u8; 32],
-            "WalDeployScope::new_with_lock_sweep called with sentinel scope [0; 32]; \
+            "WalDeployScope::new_with_lock_sweep derived sentinel scope [0; 32]; \
              a sentinel scope would trip the release_all_for_deploy guard on Drop.  \
-             Callers must derive a non-sentinel scope (e.g., Blake2b256(deploy.sig))."
+             This should be structurally impossible — Blake2b256 output is \
+             non-sentinel with probability 1 - 2⁻²⁵⁶ — so a hash-provider regression \
+             is the likely cause."
         );
         let mark = wal.begin_deploy();
         // Compound setter preserves the "(scope, sig) populated
@@ -115,6 +175,25 @@ impl WalDeployScope {
             deploy_scope,
             fs_handles,
         }
+    }
+
+    /// Derive a per-execution scope from a seed.  Mixes 128 bits of
+    /// fresh entropy + a domain-separation tag with the caller's
+    /// seed so two guards built from identical seeds (concurrent
+    /// play + replay of the same deploy sig) still get distinct
+    /// scopes.  Blake2b256 output is 32 bytes.
+    fn derive_scope(scope_input: &[u8]) -> DeployScope {
+        let mut nonce = [0u8; 16];
+        rand::rng().fill_bytes(&mut nonce);
+        let mut input =
+            Vec::with_capacity(scope_input.len() + nonce.len() + SCOPE_DOMAIN_TAG.len());
+        input.extend_from_slice(scope_input);
+        input.extend_from_slice(&nonce);
+        input.extend_from_slice(SCOPE_DOMAIN_TAG);
+        let digest = Blake2b256::hash(input);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest);
+        out
     }
 
     /// Mark the deploy as committed.  Prevents the Drop impl
@@ -183,21 +262,210 @@ mod tests {
 
     use super::*;
 
-    fn mk_scope(byte: u8) -> DeployScope { [byte; 32] }
+    /// Scope derivation is non-sentinel for every input (Blake2b256
+    /// output is non-sentinel with probability 1 − 2⁻²⁵⁶).  Pins the
+    /// structural safety that lets `new_with_lock_sweep` skip the
+    /// pre-derivation sentinel check and rely on the post-derivation
+    /// `assert!`.
+    #[test]
+    fn derive_scope_is_never_sentinel() {
+        for seed in &[
+            &[][..],
+            b"user-deploy-sig",
+            b"system-deploy:\x00\x01\x02",
+            &[0u8; 64][..],
+            &[0xFF; 128][..],
+        ] {
+            let scope = WalDeployScope::derive_scope(seed);
+            assert_ne!(scope, [0u8; 32], "derive_scope({seed:?}) returned sentinel");
+        }
+    }
 
+    /// Two guards built from the SAME seed derive DISTINCT scopes.
+    /// Load-bearing: without this, concurrent play+replay of the same
+    /// deploy would share a scope and sweep each other's holders.
     #[tokio::test]
-    #[should_panic(expected = "sentinel scope [0; 32]")]
-    async fn new_with_lock_sweep_panics_on_sentinel_scope() {
+    async fn two_scopes_from_same_seed_are_distinct() {
         let wal = Wal::new();
         let lock_registry = SharedLockRegistry::new();
-        let fs_handles = FileHandleTable::new();
-        let _ = WalDeployScope::new_with_lock_sweep(
+        let fs_handles_a = FileHandleTable::new();
+        let fs_handles_b = FileHandleTable::new();
+        let seed = b"same-deploy-sig";
+        let guard_a = WalDeployScope::new_with_lock_sweep(
+            wal.clone(),
+            lock_registry.clone(),
+            seed,
+            seed.to_vec(),
+            fs_handles_a,
+        );
+        let guard_b = WalDeployScope::new_with_lock_sweep(
             wal,
             lock_registry,
-            [0u8; 32],
-            Vec::new(),
-            fs_handles,
+            seed,
+            seed.to_vec(),
+            fs_handles_b,
         );
+        assert_ne!(
+            guard_a.deploy_scope(),
+            guard_b.deploy_scope(),
+            "two guards from the same seed must derive distinct scopes"
+        );
+    }
+
+    /// Regression for the cross-execution sweep bug flagged on PR
+    /// review.  Two WalDeployScope guards built from the SAME seed
+    /// (modeling concurrent play + replay of one deploy against a
+    /// manager-shared `SharedLockRegistry`) each take an active lock
+    /// + park a conflicting waiter.  Dropping guard A must NOT
+    /// release guard B's lock nor cancel guard B's parked waiter.
+    #[tokio::test]
+    async fn concurrent_scopes_dont_sweep_each_others_locks() {
+        use rholang::rust::interpreter::io::lock::{AcquireOutcome, HolderId, LockMode};
+
+        let wal = Wal::new();
+        let lock_registry = SharedLockRegistry::new();
+        let fs_handles_a = FileHandleTable::new();
+        let fs_handles_b = FileHandleTable::new();
+        let seed = b"concurrent-deploy-sig";
+        let dev_inode_a = (1u64, 10u64);
+        let dev_inode_b = (1u64, 20u64);
+        let holder_a_lock = HolderId::from_bytes([0xA1; 32]);
+        let holder_b_lock = HolderId::from_bytes([0xB1; 32]);
+        let holder_a_waiter = HolderId::from_bytes([0xA2; 32]);
+        let holder_b_waiter = HolderId::from_bytes([0xB2; 32]);
+        let external_a = HolderId::from_bytes([0xEA; 32]);
+        let external_b = HolderId::from_bytes([0xEB; 32]);
+
+        let guard_a = WalDeployScope::new_with_lock_sweep(
+            wal.clone(),
+            lock_registry.clone(),
+            seed,
+            seed.to_vec(),
+            fs_handles_a,
+        );
+        let scope_a = guard_a.deploy_scope();
+        let guard_b = WalDeployScope::new_with_lock_sweep(
+            wal,
+            lock_registry.clone(),
+            seed,
+            seed.to_vec(),
+            fs_handles_b,
+        );
+        let scope_b = guard_b.deploy_scope();
+
+        // Both guards take an active Write lock on their own
+        // (dev, inode).
+        let _lock_a = lock_registry
+            .try_acquire_range(
+                dev_inode_a,
+                0,
+                1024,
+                LockMode::Write,
+                holder_a_lock,
+                scope_a,
+            )
+            .expect("A acquires");
+        let _lock_b = lock_registry
+            .try_acquire_range(
+                dev_inode_b,
+                0,
+                1024,
+                LockMode::Write,
+                holder_b_lock,
+                scope_b,
+            )
+            .expect("B acquires");
+
+        // Set up a conflicting external holder on each range so each
+        // guard can park a waiter on its own (dev, inode) at a
+        // DIFFERENT offset.
+        let _ext_a = lock_registry
+            .try_acquire_range(
+                dev_inode_a,
+                2048,
+                1024,
+                LockMode::Write,
+                external_a,
+                [0xE1; 32],
+            )
+            .expect("external A acquires");
+        let _ext_b = lock_registry
+            .try_acquire_range(
+                dev_inode_b,
+                2048,
+                1024,
+                LockMode::Write,
+                external_b,
+                [0xE2; 32],
+            )
+            .expect("external B acquires");
+
+        // Each guard parks a waiter.
+        let admit_a = match lock_registry
+            .try_acquire_range_wait(
+                dev_inode_a,
+                2048,
+                1024,
+                LockMode::Write,
+                holder_a_waiter,
+                scope_a,
+            )
+            .expect("A parks")
+        {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            AcquireOutcome::Immediate(_) => panic!("A waiter: expected Parked"),
+        };
+        let admit_b = match lock_registry
+            .try_acquire_range_wait(
+                dev_inode_b,
+                2048,
+                1024,
+                LockMode::Write,
+                holder_b_waiter,
+                scope_b,
+            )
+            .expect("B parks")
+        {
+            AcquireOutcome::Parked { admit, .. } => admit,
+            AcquireOutcome::Immediate(_) => panic!("B waiter: expected Parked"),
+        };
+
+        // Drop guard A — must only sweep A's state, leaving B's
+        // active lock + parked waiter intact.
+        drop(guard_a);
+
+        assert!(
+            !lock_registry.is_locked(dev_inode_a, (0, 1024)),
+            "A's lock swept"
+        );
+        assert!(
+            lock_registry.is_locked(dev_inode_b, (0, 1024)),
+            "B's lock survives drop of A — the regression"
+        );
+        // A's waiter should be cancelled; B's waiter should remain.
+        // We can't `.await` on admit_b indefinitely in a unit test,
+        // so verify by `.try_recv`-style: a resolved admit (via a
+        // non-blocking poll) implies cancellation.  Use `tokio::time::
+        // timeout` with a short deadline to detect "still parked".
+        let a_resolved = tokio::time::timeout(std::time::Duration::from_millis(50), admit_a)
+            .await
+            .expect("A waiter resolved on A drop")
+            .expect("A sender present");
+        assert!(
+            matches!(a_resolved, Err(_)),
+            "A waiter cancelled on A drop: {:?}",
+            a_resolved
+        );
+        let b_still_parked =
+            tokio::time::timeout(std::time::Duration::from_millis(50), admit_b).await;
+        assert!(
+            b_still_parked.is_err(),
+            "B waiter must remain parked after A drops — got {:?}",
+            b_still_parked
+        );
+
+        // Drop guard B — tears down B's state too.
+        drop(guard_b);
     }
 
     /// Dropping an uncommitted scope truncates the WAL back to
@@ -213,7 +481,7 @@ mod tests {
             let _scope = WalDeployScope::new_with_lock_sweep(
                 wal.clone(),
                 lock_registry,
-                mk_scope(0xAB),
+                b"test-sig",
                 b"test-sig".to_vec(),
                 fs_handles,
             );
@@ -250,7 +518,7 @@ mod tests {
             let mut scope = WalDeployScope::new_with_lock_sweep(
                 wal.clone(),
                 lock_registry,
-                mk_scope(0xCD),
+                b"test-sig",
                 b"test-sig".to_vec(),
                 fs_handles,
             );
@@ -278,7 +546,9 @@ mod tests {
     /// Entering a scope sets the per-runtime deploy cells;
     /// dropping clears them back to sentinel.  Pins the
     /// invariant that handlers observe either `(scope, sig)` or
-    /// `([0; 32], Vec::new())`, never a mixed pair.
+    /// `([0; 32], Vec::new())`, never a mixed pair.  The in-scope
+    /// value is observed via `guard.deploy_scope()` since the
+    /// constructor now derives it internally.
     #[tokio::test]
     async fn scope_lifecycle_toggles_deploy_cells() {
         let wal = Wal::new();
@@ -290,17 +560,17 @@ mod tests {
             "pre-scope: sentinel scope"
         );
         {
-            let _scope = WalDeployScope::new_with_lock_sweep(
+            let guard = WalDeployScope::new_with_lock_sweep(
                 wal.clone(),
                 lock_registry,
-                mk_scope(0xEF),
+                b"seed-cells",
                 b"abc".to_vec(),
                 fs_handles.clone(),
             );
             assert_eq!(
                 fs_handles.current_deploy_scope(),
-                mk_scope(0xEF),
-                "in-scope: deploy scope set"
+                guard.deploy_scope(),
+                "in-scope: deploy scope matches derived"
             );
             assert_eq!(
                 fs_handles.current_deploy_sig(),
@@ -329,18 +599,18 @@ mod tests {
         let wal = Wal::new();
         let lock_registry = SharedLockRegistry::new();
         let fs_handles = FileHandleTable::new();
-        let scope = mk_scope(0x12);
         let holder = HolderId::from_bytes([0u8; 32]);
+        let dev_inode = (1u64, 1u64);
         {
-            let _guard = WalDeployScope::new_with_lock_sweep(
+            let guard = WalDeployScope::new_with_lock_sweep(
                 wal,
                 lock_registry.clone(),
-                scope,
+                b"seed-release",
                 b"deploy-sig".to_vec(),
                 fs_handles,
             );
+            let scope = guard.deploy_scope();
             // Acquire a range lock under this deploy scope.
-            let dev_inode = (1u64, 1u64);
             let _lock_id = lock_registry
                 .try_acquire_range(dev_inode, 0, 1024, LockMode::Write, holder, scope)
                 .expect("acquire range lock");
@@ -348,12 +618,12 @@ mod tests {
                 lock_registry.is_locked(dev_inode, (0, 1024)),
                 "lock is held while scope is live"
             );
-            // _guard drops here.
+            // guard drops here.
         }
         // Lock released; is_locked returns false (or the registry
         // evicted the empty FileLockState entry).
         assert!(
-            !lock_registry.is_locked((1u64, 1u64), (0, 1024)),
+            !lock_registry.is_locked(dev_inode, (0, 1024)),
             "lock released on scope drop"
         );
     }
@@ -373,10 +643,9 @@ mod tests {
         let lock_registry = SharedLockRegistry::new();
         let fs_handles = FileHandleTable::new();
 
-        let scope_b = mk_scope(0x55);
-        let scope_a = mk_scope(0xAA);
         let holder_a = HolderId::from_bytes([0xAA; 32]);
         let holder_b = HolderId::from_bytes([0x55; 32]);
+        let scope_a: DeployScope = [0xAA; 32];
         let dev_inode = (1u64, 1u64);
 
         // External holder A takes a Write lock under a DIFFERENT
@@ -386,13 +655,14 @@ mod tests {
             .expect("A acquires");
 
         let admit = {
-            let _guard = WalDeployScope::new_with_lock_sweep(
+            let guard = WalDeployScope::new_with_lock_sweep(
                 wal,
                 lock_registry.clone(),
-                scope_b,
+                b"seed-cancel",
                 b"sig-b".to_vec(),
                 fs_handles,
             );
+            let scope_b = guard.deploy_scope();
             // Under scope_b, holder B tries a conflicting Write — parks.
             match lock_registry
                 .try_acquire_range_wait(dev_inode, 0, 1024, LockMode::Write, holder_b, scope_b)
@@ -401,7 +671,7 @@ mod tests {
                 AcquireOutcome::Parked { admit, .. } => admit,
                 AcquireOutcome::Immediate(_) => panic!("expected Parked, got Immediate"),
             }
-            // _guard drops here -> step 2 cancels B's parked waiter.
+            // guard drops here -> step 2 cancels B's parked waiter.
         };
 
         // Parked waiter resolves to Cancelled (via oneshot sender send).
