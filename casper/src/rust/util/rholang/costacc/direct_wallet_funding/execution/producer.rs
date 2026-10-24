@@ -540,6 +540,7 @@ impl NativeOfferedAttempt<'_, '_> {
         production: NativeOfferedProductionLimits,
         inventory_limits: NativePrepaidInventoryLimits,
         receipt_limits: PrepaidReceiptLimits,
+        resumed: Option<bool>,
     ) -> Result<NativeOfferedCandidateResult, CasperError> {
         let settlement = OfferedSettlementContext::from_block_inputs(&envelope, &self.block_data)?;
         let adopted = self.adopted.clone();
@@ -579,27 +580,102 @@ impl NativeOfferedAttempt<'_, '_> {
         let selected = preflight.selected_terms(&adopted)?;
         let schedule = PhloScheduleBinding::new(selected.schedule(), PhloGenesisPolicy::LIMITS)
             .map_err(invalid)?;
-        self.produce_native_offered_candidate(
-            manager,
-            envelope,
-            snapshot,
-            // Added by DR-134 (DR-65 item 5).
-            later,
-            NativeAttemptSettlementInput {
-                inventory: &inventory,
-                schedule: &schedule,
-                terms: selected.bytes(),
-                retained: &[],
-            },
-            &[],
-            &receipt_snapshot,
-            grants,
-            settlement.reservation_id,
-            &settlement.fee_address,
-            settlement.initial_rand,
-            production,
-        )
-        .await
+        let input = NativeAttemptSettlementInput {
+            inventory: &inventory,
+            schedule: &schedule,
+            terms: selected.bytes(),
+            retained: &[],
+        };
+        match resumed {
+            None => {
+                self.produce_native_offered_candidate(
+                    manager,
+                    envelope,
+                    snapshot,
+                    // Added by DR-134 (DR-65 item 5).
+                    later,
+                    input,
+                    &[],
+                    &receipt_snapshot,
+                    grants,
+                    settlement.reservation_id,
+                    &settlement.fee_address,
+                    settlement.initial_rand,
+                    production,
+                )
+                .await
+            }
+            Some(rolled_back) => {
+                self.produce_resumed_offered_candidate(
+                    manager,
+                    envelope,
+                    snapshot,
+                    later,
+                    input,
+                    &receipt_snapshot,
+                    grants,
+                    settlement.reservation_id,
+                    &settlement.fee_address,
+                    settlement.initial_rand,
+                    production,
+                    rolled_back,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn produce_resumed_offered_candidate(
+        mut self,
+        manager: &RuntimeManager,
+        envelope: DeployEnvelope,
+        snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+        later: &LaterHolds,
+        input: NativeAttemptSettlementInput<'_, '_, '_>,
+        receipt_snapshot: &PrepaidReceiptSnapshot,
+        grants: Option<NativeGrantSettlementInput<'_>>,
+        reservation_id: [u8; 32],
+        fee_address: &VaultAddress,
+        initial_rand: Blake2b512Random,
+        production: NativeOfferedProductionLimits,
+        rolled_back: bool,
+    ) -> Result<NativeOfferedCandidateResult, CasperError> {
+        if rolled_back {
+            self.evaluation.authority_stack_births.clear();
+            self.evaluation.mergeable.clear();
+            self.grant_issuances.clear();
+            self.grant_issue_log = std::sync::Arc::from([]);
+        }
+        let produced = self
+            .produce_native_offered_candidate_inner(
+                manager,
+                envelope,
+                snapshot,
+                later,
+                input,
+                &[],
+                receipt_snapshot,
+                grants,
+                reservation_id,
+                fee_address,
+                initial_rand,
+                production,
+                rolled_back,
+            )
+            .await;
+        let result = match produced {
+            Ok(ProducedOutcome::Settled(candidate)) => Ok(candidate),
+            Ok(ProducedOutcome::GuardFailed) => {
+                Err(invalid("the held-capacity guard failed after the merge"))
+            }
+            Err(error) => Err(error),
+        };
+        if result.is_err() {
+            let baseline = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
+            self.runtime.runtime.reset(&baseline).await?;
+        }
+        result
     }
 
     // Changed by DR-134 (DR-65 item 5): the producer takes the later holds of

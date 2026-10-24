@@ -8,6 +8,7 @@ use super::backend::{block_data, close_block};
 use super::body::StateHash;
 use super::gate::GateVerdict;
 use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::OfferedRun;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +17,7 @@ pub enum EnvelopeOutcome {
     Completed,
     UserFailure,
     Exhausted,
+    RolledBack,
 }
 
 impl EnvelopeOutcome {
@@ -25,6 +27,7 @@ impl EnvelopeOutcome {
             EnvelopeOutcome::Completed => 1,
             EnvelopeOutcome::UserFailure => 2,
             EnvelopeOutcome::Exhausted => 3,
+            EnvelopeOutcome::RolledBack => 4,
         }
     }
 
@@ -34,6 +37,7 @@ impl EnvelopeOutcome {
             1 => Ok(EnvelopeOutcome::Completed),
             2 => Ok(EnvelopeOutcome::UserFailure),
             3 => Ok(EnvelopeOutcome::Exhausted),
+            4 => Ok(EnvelopeOutcome::RolledBack),
             other => Err(format!("unknown envelope outcome {other}")),
         }
     }
@@ -70,6 +74,25 @@ impl ExecutedEnvelope {
             (GateVerdict::Admitted { .. }, _) => Ok(()),
         }
     }
+}
+
+#[derive(Clone)]
+pub struct EnvelopeRun {
+    pub executed: ExecutedEnvelope,
+    pub run: Option<Arc<OfferedRun>>,
+}
+
+impl EnvelopeRun {
+    pub fn recorded(executed: ExecutedEnvelope) -> Self {
+        EnvelopeRun {
+            executed,
+            run: None,
+        }
+    }
+}
+
+pub fn executed_of(runs: &[EnvelopeRun]) -> Vec<ExecutedEnvelope> {
+    runs.iter().map(|run| run.executed.clone()).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,15 +195,17 @@ pub trait Settlement: Send + Sync {
     async fn settle(
         &self,
         block: &BlockMessage,
+        pre_root: &StateHash,
         mid_root: &StateHash,
-        executed: &[ExecutedEnvelope],
+        runs: &[EnvelopeRun],
     ) -> Result<SettlementOutcome, CasperError>;
 
     async fn replay(
         &self,
         block: &BlockMessage,
+        pre_root: &StateHash,
         mid_root: &StateHash,
-        executed: &[ExecutedEnvelope],
+        runs: &[EnvelopeRun],
         outcome: &SettlementOutcome,
     ) -> Result<StateHash, CasperError>;
 }
@@ -202,10 +227,12 @@ impl Settlement for CloseOnlySettlement {
     async fn settle(
         &self,
         block: &BlockMessage,
+        _pre_root: &StateHash,
         mid_root: &StateHash,
-        executed: &[ExecutedEnvelope],
+        runs: &[EnvelopeRun],
     ) -> Result<SettlementOutcome, CasperError> {
-        check_executed(block, executed).map_err(invalid)?;
+        let executed = executed_of(runs);
+        check_executed(block, &executed).map_err(invalid)?;
         let (post_root, _, system_deploys) = self
             .runtime_manager
             .compute_state(
@@ -229,12 +256,14 @@ impl Settlement for CloseOnlySettlement {
     async fn replay(
         &self,
         block: &BlockMessage,
+        _pre_root: &StateHash,
         mid_root: &StateHash,
-        executed: &[ExecutedEnvelope],
+        runs: &[EnvelopeRun],
         outcome: &SettlementOutcome,
     ) -> Result<StateHash, CasperError> {
-        check_executed(block, executed).map_err(invalid)?;
-        check_settled(executed, &outcome.settled).map_err(invalid)?;
+        let executed = executed_of(runs);
+        check_executed(block, &executed).map_err(invalid)?;
+        check_settled(&executed, &outcome.settled).map_err(invalid)?;
         if outcome
             .settled
             .iter()
@@ -297,10 +326,11 @@ mod tests {
             EnvelopeOutcome::Completed,
             EnvelopeOutcome::UserFailure,
             EnvelopeOutcome::Exhausted,
+            EnvelopeOutcome::RolledBack,
         ] {
             assert_eq!(EnvelopeOutcome::from_tag(outcome.tag()).unwrap(), outcome);
         }
-        assert!(EnvelopeOutcome::from_tag(4).is_err());
+        assert!(EnvelopeOutcome::from_tag(5).is_err());
     }
 
     #[test]

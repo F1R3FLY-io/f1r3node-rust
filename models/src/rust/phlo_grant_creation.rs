@@ -54,7 +54,7 @@ pub struct PhloGrantCreationWireProto {
     pub canonical_creation: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VerifiedGrantCreationV1 {
     envelope: Cosigned<PhloGrantCreationV1>,
 }

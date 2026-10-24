@@ -111,7 +111,7 @@ fn prepare(block: &BlockMessage) -> Prepared {
     prepared
 }
 
-fn exhausts(error: &InterpreterError) -> bool {
+pub(crate) fn exhausts(error: &InterpreterError) -> bool {
     match error {
         InterpreterError::OutOfPhlogistonsError => true,
         InterpreterError::AggregateError { interpreter_errors } => {

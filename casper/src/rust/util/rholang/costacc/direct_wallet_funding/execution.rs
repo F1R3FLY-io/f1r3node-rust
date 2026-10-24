@@ -315,6 +315,9 @@ mod funding_groups;
 mod block_gate;
 pub use block_gate::{OfferedAdmission, OfferedHolds};
 
+mod block_settlement;
+pub use block_settlement::{OfferedRun, SettledOffer};
+
 /// Added by DR-114: the bytes of external-service replies that one offered
 /// play may record. The replay telemetry and the clone-byte check of the
 /// deploy log count a record three times, and the replay evidence counts it

@@ -8,6 +8,7 @@ pub mod gate;
 pub mod linearizer;
 pub mod propose;
 pub mod record;
+pub mod rho_settlement;
 pub mod settlement;
 pub mod validity;
 

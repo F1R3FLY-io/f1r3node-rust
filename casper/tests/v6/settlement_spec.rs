@@ -5,7 +5,8 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::rholang::system_deploy_util;
 use casper::rust::v6::gate::GateVerdict;
 use casper::rust::v6::settlement::{
-    CloseOnlySettlement, EnvelopeOutcome, ExecutedEnvelope, SettledEnvelope, Settlement,
+    CloseOnlySettlement, EnvelopeOutcome, EnvelopeRun, ExecutedEnvelope, SettledEnvelope,
+    Settlement,
 };
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -44,7 +45,7 @@ async fn close_only_settlement_matches_the_tranche_1_close_path_and_replays() {
 
     let settlement = CloseOnlySettlement::new(runtime_manager.clone());
     let outcome = settlement
-        .settle(&block, &mid_root, &[])
+        .settle(&block, &mid_root, &mid_root, &[])
         .await
         .expect("close-only settlement");
     assert!(outcome.settled.is_empty());
@@ -72,7 +73,7 @@ async fn close_only_settlement_matches_the_tranche_1_close_path_and_replays() {
     assert_eq!(outcome.post_root, direct_root);
 
     let replayed = settlement
-        .replay(&block, &mid_root, &[], &outcome)
+        .replay(&block, &mid_root, &mid_root, &[], &outcome)
         .await
         .expect("replay of the close-only settlement");
     assert_eq!(replayed, outcome.post_root);
@@ -80,7 +81,7 @@ async fn close_only_settlement_matches_the_tranche_1_close_path_and_replays() {
     let mut wrong = outcome.clone();
     wrong.post_root = Bytes::from_static(&[7; 32]);
     assert!(settlement
-        .replay(&block, &mid_root, &[], &wrong)
+        .replay(&block, &mid_root, &mid_root, &[], &wrong)
         .await
         .is_err());
 
@@ -93,13 +94,15 @@ async fn close_only_settlement_matches_the_tranche_1_close_path_and_replays() {
         operation_journal: Bytes::new(),
     };
     assert!(settlement
-        .settle(&block, &mid_root, std::slice::from_ref(&stray))
+        .settle(&block, &mid_root, &mid_root, &[EnvelopeRun::recorded(
+            stray.clone()
+        )],)
         .await
         .is_err());
     let mut charged = outcome.clone();
     charged.settled = vec![SettledEnvelope::unsettled(stray.envelope_id.clone())];
     assert!(settlement
-        .replay(&block, &mid_root, &[], &charged)
+        .replay(&block, &mid_root, &mid_root, &[], &charged)
         .await
         .is_err());
 }

@@ -54,7 +54,8 @@ pub use execution::{
     NativeOfferedAttempt, NativeOfferedCandidateResult, NativeOfferedFamilyLimits,
     NativeOfferedPreparedResult, NativeOfferedProductionLimits, NativeScopedOfferedResult,
     OfferedAdmission, OfferedEstimateKind, OfferedGate, OfferedGateInput, OfferedGateRejection,
-    OfferedHolds, PendingReplayedNativeSettlement, ReplayedNativeFundedUser,
+    OfferedHolds, OfferedRun, PendingReplayedNativeSettlement, ReplayedNativeFundedUser,
+    SettledOffer,
 };
 
 #[derive(Clone, Copy, Debug)]

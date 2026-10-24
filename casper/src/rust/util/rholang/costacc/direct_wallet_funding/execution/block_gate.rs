@@ -5,7 +5,8 @@ use models::rust::phlo_intent::{PhloConversionCompositionV2, PhloFundingIntentV2
 use models::rust::phlo_schedule::PhloGenesisPolicy;
 use rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding;
 
-use super::funding_groups::{decide_groups, BatchCandidate, GrantDraw};
+use super::funding_groups::{decide_groups, later_holds, BatchCandidate, GrantDraw};
+use super::held_capacity::LaterHolds;
 use super::{OfferedGate, OfferedGateInput};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::{offered_candidate_rejection, RuntimeOps};
@@ -15,13 +16,14 @@ use crate::rust::util::rholang::costacc::offered_grants::{
     offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
 use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
+use crate::rust::util::rholang::costacc::vault_payer::VaultPayer;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub type OfferedHolds = Vec<([u8; 32], u128)>;
 
 pub type OfferedAdmission = Result<OfferedHolds, String>;
 
-fn offered_member_limits() -> OfferedCandidateLimits {
+pub(super) fn offered_member_limits() -> OfferedCandidateLimits {
     let base = models::rust::cost_protocol_limits::offered_funded_v6_limits()
         .envelope
         .payload
@@ -46,7 +48,7 @@ impl RuntimeManager {
         block_time: i64,
         adopted: &AdoptedResourcePolicy,
         runtime: &RuntimeOps,
-    ) -> Result<(BatchCandidate, OfferedGate), CasperError> {
+    ) -> Result<(BatchCandidate, OfferedGate, BTreeMap<[u8; 32], VaultPayer>), CasperError> {
         let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
             return Err(CasperError::RuntimeError(
                 "offered proposal has an unexpected envelope format".to_string(),
@@ -129,6 +131,7 @@ impl RuntimeManager {
                 })
                 .collect(),
         };
+        let payers = snapshot.wallets().authorization().payers().clone();
         Ok((
             BatchCandidate {
                 identity: prepared.envelope_identity,
@@ -138,24 +141,24 @@ impl RuntimeManager {
                 grants,
             },
             gate,
+            payers,
         ))
     }
 
-    pub async fn gate_offered_block(
+    pub(crate) async fn plan_offered_block(
         &self,
         root: [u8; 32],
         block_time: i64,
         adopted: &AdoptedResourcePolicy,
         envelopes: &[Option<&DeployEnvelope>],
-    ) -> Result<Vec<OfferedAdmission>, CasperError> {
+    ) -> Result<OfferedBlockPlan, CasperError> {
         let start_hash = prost::bytes::Bytes::copy_from_slice(&root);
         let runtime = RuntimeOps::new(
             self.spawn_offered_runtime(offered_grant_issue_call_limits())
                 .await?,
         );
         let mut admissions: Vec<OfferedAdmission> = Vec::with_capacity(envelopes.len());
-        let mut candidates = Vec::new();
-        let mut positions = Vec::new();
+        let mut checked = Vec::new();
         let mut seen = BTreeSet::new();
         for envelope in envelopes {
             let Some(envelope) = envelope else {
@@ -172,10 +175,9 @@ impl RuntimeManager {
                 .check_offered_member_at_root(envelope, root, block_time, adopted, &runtime)
                 .await
             {
-                Ok((candidate, gate)) => {
-                    positions.push(admissions.len());
-                    candidates.push(candidate);
+                Ok((candidate, gate, payers)) => {
                     admissions.push(Ok(gate.holds().to_vec()));
+                    checked.push((admissions.len() - 1, candidate, gate, payers));
                 }
                 Err(error) => match offered_candidate_rejection(envelope, &start_hash, error) {
                     CasperError::OfferedCandidateRejected(rejection) => {
@@ -185,6 +187,10 @@ impl RuntimeManager {
                 },
             }
         }
+        let candidates: Vec<BatchCandidate> = checked
+            .iter()
+            .map(|(_, candidate, _, _)| candidate.clone())
+            .collect();
         let decision = decide_groups(&candidates)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let mut causes = BTreeMap::new();
@@ -193,12 +199,78 @@ impl RuntimeManager {
                 causes.insert(member, group.cause.to_string());
             }
         }
-        for (member, cause) in causes {
-            let position = positions.get(member).copied().ok_or_else(|| {
-                CasperError::RuntimeError("a rejected group names an unknown member".to_string())
-            })?;
-            admissions[position] = Err(cause);
+        let mut plan = OfferedBlockPlan {
+            admissions,
+            positions: Vec::new(),
+            candidates: Vec::new(),
+            gates: Vec::new(),
+            payers: BTreeMap::new(),
+        };
+        for (member, (position, candidate, gate, payers)) in checked.into_iter().enumerate() {
+            match causes.remove(&member) {
+                Some(cause) => plan.admissions[position] = Err(cause),
+                None => {
+                    plan.positions.push(position);
+                    plan.candidates.push(candidate);
+                    plan.gates.push(gate);
+                    plan.payers.extend(payers);
+                }
+            }
         }
-        Ok(admissions)
+        if !causes.is_empty() {
+            return Err(CasperError::RuntimeError(
+                "a rejected group names an unknown member".to_string(),
+            ));
+        }
+        Ok(plan)
+    }
+
+    pub async fn gate_offered_block(
+        &self,
+        root: [u8; 32],
+        block_time: i64,
+        adopted: &AdoptedResourcePolicy,
+        envelopes: &[Option<&DeployEnvelope>],
+    ) -> Result<Vec<OfferedAdmission>, CasperError> {
+        Ok(self
+            .plan_offered_block(root, block_time, adopted, envelopes)
+            .await?
+            .admissions)
+    }
+}
+
+pub(crate) struct OfferedBlockPlan {
+    admissions: Vec<OfferedAdmission>,
+    positions: Vec<usize>,
+    candidates: Vec<BatchCandidate>,
+    gates: Vec<OfferedGate>,
+    payers: BTreeMap<[u8; 32], VaultPayer>,
+}
+
+impl OfferedBlockPlan {
+    pub(crate) fn admissions(&self) -> &[OfferedAdmission] { &self.admissions }
+
+    pub(crate) fn position_of(&self, block_position: usize) -> Option<usize> {
+        self.positions
+            .iter()
+            .position(|position| *position == block_position)
+    }
+
+    pub(crate) fn gate(&self, member: usize) -> Result<OfferedGate, CasperError> {
+        self.gates.get(member).cloned().ok_or_else(|| {
+            CasperError::RuntimeError("an admitted envelope has no check".to_string())
+        })
+    }
+
+    pub(crate) fn later(&self) -> Result<Vec<LaterHolds>, CasperError> {
+        let members: Vec<usize> = (0..self.candidates.len()).collect();
+        later_holds(&self.candidates, &members)
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+            .into_iter()
+            .map(|holds| {
+                LaterHolds::new(holds, &self.payers)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            })
+            .collect()
     }
 }
