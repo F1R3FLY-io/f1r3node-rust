@@ -34,13 +34,18 @@ pub mod system_processes;
 pub mod test_utils;
 pub mod util;
 
-pub fn unwrap_option_safe<A: Clone + std::fmt::Debug>(
-    opt: Option<A>,
-) -> Result<A, InterpreterError> {
-    opt.ok_or_else(|| {
-        InterpreterError::UndefinedRequiredProtobufFieldError(format!(
-            "{:?}",
-            std::any::type_name::<A>()
-        ))
-    })
+pub fn unwrap_option_safe<A>(opt: Option<A>) -> Result<A, InterpreterError> {
+    opt.ok_or_else(missing_field::<A>)
+}
+
+/// `unwrap_option_safe` for a field that is only read.
+pub fn unwrap_option_ref<A>(opt: &Option<A>) -> Result<&A, InterpreterError> {
+    opt.as_ref().ok_or_else(missing_field::<A>)
+}
+
+fn missing_field<A>() -> InterpreterError {
+    InterpreterError::UndefinedRequiredProtobufFieldError(format!(
+        "{:?}",
+        std::any::type_name::<A>()
+    ))
 }
