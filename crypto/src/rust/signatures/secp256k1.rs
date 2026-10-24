@@ -1,15 +1,13 @@
 use std::path::Path;
 
-use ed25519_dalek::ed25519::signature::hazmat::PrehashVerifier;
 use eyre::{Result, WrapErr};
-use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
-use k256::elliptic_curve::SecretKey;
+use k256::elliptic_curve::sec1::ToSec1Point;
+use k256::elliptic_curve::{Generate, SecretKey};
 use openssl::pkey::PKey;
 use pem::Pem;
 use pkcs8::DecodePrivateKey;
-use rand_core::OsRng;
 
 use super::signatures_alg::SignaturesAlg;
 use crate::rust::private_key::PrivateKey;
@@ -164,19 +162,19 @@ impl SignaturesAlg for Secp256k1 {
             SecretKey::from_slice(&sec.bytes).expect("Invalid private key");
 
         let public_key = secret_key.public_key();
-        let public_key_bytes = public_key.to_encoded_point(false).as_bytes().to_vec();
+        let public_key_bytes = public_key.to_sec1_point(false).as_bytes().to_vec();
 
         PublicKey::from_bytes(&public_key_bytes)
     }
 
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
-        let secret_key = SecretKey::<k256::Secp256k1>::random(&mut OsRng);
+        let secret_key = SecretKey::<k256::Secp256k1>::generate();
         let raw_public_key = secret_key.public_key();
 
         let private_key = PrivateKey::from_bytes(&secret_key.to_bytes());
 
         let public_key =
-            PublicKey::from_bytes(&raw_public_key.to_encoded_point(false).as_bytes().to_vec());
+            PublicKey::from_bytes(&raw_public_key.to_sec1_point(false).as_bytes().to_vec());
 
         (private_key, public_key)
     }
@@ -198,6 +196,31 @@ mod tests {
 
     fn sec_key_verify(seckey: &[u8]) -> bool {
         seckey.len() == 32 && SigningKey::from_slice(seckey).is_ok()
+    }
+
+    #[test]
+    fn deterministic_signature_matches_k256_0_13_fixture() {
+        let algorithm = Secp256k1;
+        let private_key = PrivateKey::from_bytes(&[1u8; 32]);
+        let message: Vec<u8> = (0..32).collect();
+        let expected_signature = hex::decode(
+            "3044022002559ab98a8908ba4cf0f914eb8b66651405ab69ab7c461dd140e40baa1b5e1d02202ef6ac88a13e2226f76a9d8d49bb9cf3061dac1364c0dfe7b69cd165a8d08f07",
+        )
+        .unwrap();
+        let expected_public_key = hex::decode(
+            "041b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f70beaf8f588b541507fed6a642c5ab42dfdf8120a7f639de5122d47a69a8e8d1",
+        )
+        .unwrap();
+
+        assert_eq!(
+            algorithm.to_public(&private_key).bytes.as_ref(),
+            expected_public_key
+        );
+        assert_eq!(
+            algorithm.sign(&message, &private_key.bytes),
+            expected_signature
+        );
+        assert!(algorithm.verify(&message, &expected_signature, &expected_public_key));
     }
 
     //crypto/src/test/scala/coop/rchain/crypto/signatures/Secp256k1Spec.scala
