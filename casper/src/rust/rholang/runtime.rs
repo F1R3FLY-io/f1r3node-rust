@@ -6,6 +6,7 @@ use std::mem;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
@@ -605,6 +606,29 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
+        // Per-deploy filesystem RAII guard.  Brackets WAL + lock-
+        // registry + handle-table state for this deploy; Drop sweeps
+        // on either the happy path (after `commit()`) or any error-
+        // return path (uncommitted → WAL truncates + locks/fds swept).
+        // Scope = Blake2b256(deploy.sig); non-sentinel with
+        // probability 1 − 2⁻²⁵⁶, so the constructor's structural
+        // assert is a no-op in practice.  Caller holds the guard for
+        // the full `process_deploy` body.
+        let deploy_scope: rholang::rust::interpreter::io::lock::DeployScope = {
+            let digest = Blake2b256::hash(deploy.sig.to_vec());
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&digest);
+            arr
+        };
+        let mut wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                deploy_scope,
+                deploy.sig.to_vec(),
+                self.runtime.fs_handles.clone(),
+            );
+
         // Keep a soft checkpoint before user deploy execution so failed deploy rollback
         // preserves pre-charge side effects required by refundDeploy.
         let fallback = self.runtime.create_soft_checkpoint().await;
@@ -630,9 +654,16 @@ impl RuntimeOps {
             system_deploy_error: None,
         };
 
-        if !eval_succeeded {
+        if eval_succeeded {
+            // Preserve this deploy's WAL contributions for the block
+            // snapshot.  Lock + handle sweeps still fire on Drop.
+            wal_scope.commit();
+        } else {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
             interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
+            // Guard stays uncommitted — Drop at function return
+            // truncates WAL, cancels + releases locks under this
+            // scope, and spawns the fd/dir-stream sweep.
         }
 
         Ok((deploy_result, eval_result.mergeable))
@@ -813,6 +844,39 @@ impl RuntimeOps {
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
             .await?;
+
+        // Per-system-deploy filesystem RAII guard.  System deploys
+        // (slash, closeBlock) have no primary-signer sig, so scope
+        // is derived from the input `state_hash` prefixed by a
+        // system-deploy marker — collision-resistant with user
+        // deploys and other system deploys in the same block.
+        // Guard is bound and never committed: system deploys don't
+        // contribute to the block-level WAL (handlers are expected
+        // not to touch fs-native URNs today), so Drop truncates any
+        // leaked entries, cancels + releases any locks taken, and
+        // spawns the fd/dir-stream sweep.  Non-sentinel scope is
+        // required to avoid tripping the `release_all_for_deploy`
+        // debug_assert.
+        let deploy_scope: rholang::rust::interpreter::io::lock::DeployScope = {
+            let mut input = b"system-deploy:".to_vec();
+            input.extend_from_slice(state_hash);
+            let digest = Blake2b256::hash(input);
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&digest);
+            arr
+        };
+        let _wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                deploy_scope,
+                // System deploys have no signer sig; empty vector
+                // signals journal_write to skip its payload-source
+                // record step while still letting payload_hash land
+                // in the WAL.
+                Vec::new(),
+                self.runtime.fs_handles.clone(),
+            );
 
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
