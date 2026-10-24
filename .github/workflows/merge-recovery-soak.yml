@@ -325,7 +325,18 @@ env:
   #   requires its own LFB to list it as bonded. Companion to f1r3node-rust
   #   #718. No other changes since 942de7b. Verified: descends from 942de7b
   #   (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 20873986abe42d896efbf780bca2b1da188d06a1
+  # 2026-10-24: 2087398 -> 1a35dd9 (system-integration MAIN — the #163 merge
+  #   commit). #162 + #163 move the test shard's heartbeat check-interval and
+  #   max-lfb-age from 5s to 3s (cooldown stays 3s), so blocks and finality
+  #   come faster under every soak and integration leg. #163 also changes
+  #   test_load, which the soak runs: a deploy counts as finalized only when
+  #   all six nodes report it (the phase line keeps its shape, with
+  #   last-node latency), deploys go to all four validators, and the test
+  #   sets no node flags of its own. Expect soak finalization latencies a
+  #   little above the pre-bump baseline from the stricter rule. Also brings
+  #   #161 (dev -> main), which carries #160: an opt-in heartbeat-timing
+  #   harness. Verified: descends from 2087398 (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: 1a35dd9670ab560c114b8d0db8eded83f7cef20e
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
