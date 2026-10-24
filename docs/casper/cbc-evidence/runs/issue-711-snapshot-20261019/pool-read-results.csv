@@ -1,0 +1,5 @@
+pool_size,scope_match,repeats,old_ms,new_ms,speedup,old_full_reads,new_full_reads
+2100,true,3,949.597,230.970,4.111,4,1
+2100,false,3,918.639,445.028,2.064,4,1
+15100,true,3,7111.968,1695.453,4.195,4,1
+15100,false,3,6845.367,3299.509,2.075,4,1
