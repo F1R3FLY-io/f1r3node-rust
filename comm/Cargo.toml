@@ -48,7 +48,3 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
-
-[[bench]]
-name = "stream_reassembly"
-harness = false
