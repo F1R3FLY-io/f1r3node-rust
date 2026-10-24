@@ -4,7 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose;
 use base64::Engine as _;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey};
 use rand_core::OsRng;
@@ -47,7 +48,7 @@ impl CertificateHelper {
     /// but we should still validate the key is well-formed and on the correct curve.
     pub fn is_expected_elliptic_curve(public_key: &P256PublicKey) -> bool {
         // Validate the public key is well-formed by trying to get its encoded point
-        let encoded_point = public_key.to_encoded_point(false);
+        let encoded_point = public_key.to_sec1_point(false);
 
         // Should be 65 bytes: 0x04 prefix + 32-byte x + 32-byte y for uncompressed P-256
         if encoded_point.len() != 65 {
@@ -61,8 +62,8 @@ impl CertificateHelper {
 
         // Try to create a new PublicKey from the SEC1 encoding to validate it's on the curve
         // This validates that the point actually lies on the secp256r1 curve
-        use p256::elliptic_curve::sec1::FromEncodedPoint;
-        let ct_option = P256PublicKey::from_encoded_point(&encoded_point);
+        use p256::elliptic_curve::sec1::FromSec1Point;
+        let ct_option = P256PublicKey::from_sec1_point(&encoded_point);
 
         // CtOption is a constant-time Option equivalent - check if it contains a valid value
         ct_option.is_some().into()
@@ -77,7 +78,7 @@ impl CertificateHelper {
     /// 4. Take last 20 bytes (drop first 12) - Ethereum-style address
     pub fn public_address(public_key: &P256PublicKey) -> Option<Vec<u8>> {
         // Get uncompressed point encoding (0x04 + x + y)
-        let encoded_point = public_key.to_encoded_point(false);
+        let encoded_point = public_key.to_sec1_point(false);
 
         // Should be 65 bytes: 0x04 prefix + 32-byte x + 32-byte y
         if encoded_point.len() != 65 {
@@ -169,9 +170,9 @@ impl CertificateHelper {
         Ok((secret_key, public_key))
     }
 
-    /// Generate a new secp256r1 key pair using the OS CSPRNG (`OsRng`).
+    /// Generate a new secp256r1 key pair using the OS CSPRNG.
     pub fn generate_key_pair() -> (P256SecretKey, P256PublicKey) {
-        let secret_key = P256SecretKey::random(&mut OsRng);
+        let secret_key = P256SecretKey::generate();
 
         let public_key = secret_key.public_key();
         (secret_key, public_key)
@@ -472,7 +473,7 @@ mod tests {
         assert!(CertificateHelper::is_expected_elliptic_curve(&public_key));
 
         let address = CertificateHelper::public_address(&public_key).unwrap();
-        let point = public_key.to_encoded_point(false);
+        let point = public_key.to_sec1_point(false);
         assert_eq!(
             address,
             CertificateHelper::public_address_from_bytes(&point.as_bytes()[1..])
@@ -501,8 +502,8 @@ mod tests {
             CertificateHelper::read_key_pair(key_path.to_str().unwrap()).unwrap();
         assert_eq!(loaded_secret_key.to_bytes(), secret_key.to_bytes());
         assert_eq!(
-            loaded_public_key.to_encoded_point(false),
-            public_key.to_encoded_point(false)
+            loaded_public_key.to_sec1_point(false),
+            public_key.to_sec1_point(false)
         );
     }
 
@@ -547,7 +548,7 @@ mod tests {
     #[test]
     fn normalizes_public_key_coordinates() {
         let (_, public_key) = CertificateHelper::generate_key_pair();
-        let encoded = public_key.to_encoded_point(false).as_bytes().to_vec();
+        let encoded = public_key.to_sec1_point(false).as_bytes().to_vec();
         let coordinates = encoded[1..].to_vec();
 
         assert_eq!(

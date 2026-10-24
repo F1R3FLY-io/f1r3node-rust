@@ -3,7 +3,7 @@
 use std::sync::{Arc, LazyLock};
 
 use crypto::rust::util::certificate_helper::CertificateHelper;
-use p256::elliptic_curve::sec1::FromEncodedPoint;
+use p256::elliptic_curve::sec1::FromSec1Point;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
@@ -344,10 +344,10 @@ impl HostnameTrustManager {
         // Convert to p256::PublicKey
         if public_key_bytes.len() == 65 && public_key_bytes[0] == 0x04 {
             // Uncompressed secp256r1 point format
-            let encoded_point = p256::EncodedPoint::from_bytes(public_key_bytes)
+            let encoded_point = p256::Sec1Point::from_bytes(public_key_bytes)
                 .map_err(|_| CertificateValidationError::WrongAlgorithm)?;
 
-            let public_key = p256::PublicKey::from_encoded_point(&encoded_point);
+            let public_key = p256::PublicKey::from_sec1_point(&encoded_point);
             if public_key.is_some().into() {
                 Ok(public_key.unwrap())
             } else {
