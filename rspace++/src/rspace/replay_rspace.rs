@@ -638,8 +638,8 @@ where
         // any miss falls back to the full clone, preserving behavior.
         let present_produce_hashes: HashSet<Blake2b256Hash> = channels
             .iter()
-            .flat_map(|c| self.get_store().get_data(c))
-            .map(|d| d.source.hash)
+            .flat_map(|c| self.get_store().get_data_arc(c))
+            .map(|d| d.source.hash.clone())
             .collect();
         if present_produce_hashes.is_empty() {
             let recorded = self
@@ -750,18 +750,20 @@ where
      * Put another way, this allows us to speculatively remove matching data
      * without affecting the actual store contents.
      */
-    fn fetch_channel_to_index_data(&self, channels: &[C]) -> HashMap<C, Vec<(Datum<A>, i32)>> {
-        let mut map = HashMap::with_capacity(channels.len());
-        for c in channels {
-            let data = self.get_store().get_data(c);
-            let indexed_data: Vec<(Datum<A>, i32)> = data
-                .into_iter()
-                .enumerate()
-                .map(|(i, d)| (d, i as i32))
-                .collect();
-            map.insert(c.clone(), indexed_data);
-        }
-        map
+    fn fetch_channel_to_index_data(&self, channels: &[C]) -> HashMap<C, IndexedData<A>> {
+        channels
+            .iter()
+            .map(|c| {
+                (
+                    c.clone(),
+                    self.get_store()
+                        .get_data_arc(c)
+                        .into_iter()
+                        .zip(0..)
+                        .collect(),
+                )
+            })
+            .collect()
     }
 
     fn get_comm_and_consume_candidates<'c>(
@@ -777,12 +779,12 @@ where
         channel_patterns: &[(C, P)],
         comm: &COMM,
     ) -> Option<Vec<ConsumeCandidate<C, A>>> {
-        let mut channel_to_indexed_data_map: HashMap<C, Vec<(Datum<A>, i32)>> = channel_patterns
+        let mut channel_to_indexed_data_map: HashMap<C, IndexedData<A>> = channel_patterns
             .iter()
             .map(|(c, _)| {
                 let filtered_data = self
                     .get_store()
-                    .get_data(c)
+                    .get_data_arc(c)
                     .into_iter()
                     .zip(0..)
                     .filter(|(d, _)| self.matches(comm, &d.source, d.persist))
@@ -906,17 +908,17 @@ where
                 let mut candidates = Vec::new();
                 if &c == channel && self.matches(comm, produce_ref, persist) {
                     candidates.push((
-                        Datum {
+                        Arc::new(Datum {
                             a: data.clone(),
                             persist,
                             source: produce_ref.clone(),
-                        },
+                        }),
                         -1,
                     ));
                 }
                 candidates.extend(
                     self.get_store()
-                        .get_data(&c)
+                        .get_data_arc(&c)
                         .into_iter()
                         .zip(0..)
                         .filter(|(datum, _)| self.matches(comm, &datum.source, datum.persist)),
@@ -1281,11 +1283,11 @@ where
             Vec<C>,
         )
             -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
-        fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
+        fetch_matching_data: impl Fn(C) -> (C, IndexedData<A>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         grouped_channels.iter().find_map(|channels| {
             let match_candidates = fetch_matching_continuations(channels.clone());
-            let channel_to_indexed_data: HashMap<C, Vec<(Datum<A>, i32)>> = channels
+            let channel_to_indexed_data: HashMap<C, IndexedData<A>> = channels
                 .iter()
                 .map(|c| fetch_matching_data(c.clone()))
                 .collect();
