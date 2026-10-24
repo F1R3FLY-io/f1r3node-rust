@@ -87,6 +87,15 @@ The preservation review must include the admission tests, recorder tests, and me
 Historical timer evidence below describes the implementation before its retirement.
 The claim remains pending.
 
+Issue #711 moves the full pool read before the scope predicate and statistics calls.
+The scope predicate, statistics, and selection reuse that decoded set.
+The decoded counter continues to count the values returned by each full read, with the existing store label.
+The scope predicate performs no additional storage scan or decode.
+The refactor must preserve the metric names, labels, units, and cap-source results.
+
+The [issue #711 evidence](../casper/cbc-evidence/runs/issue-711-snapshot-20261019/README.md) records the metric regressions and the decoded-count measurement boundary.
+The [review follow-up](../casper/cbc-evidence/runs/issue-711-snapshot-20261019/review-follow-up.md) removes the separate scope scan.
+
 1. Tag `finalization_runner.rs` and `proposer.rs` `cbc=mandatory cbc-weight=high` (decision of the maintainer on 2026-10-07). **Done 2026-10-07.**
 2. S3: each metric has a test with a `DebuggingRecorder`. The test asserts the counter value or the histogram sample for a known event. **Done 2026-10-07** (commits e9e80f8bd and the empty-block build counter): 11 tests in finalization_runner.rs, block_creator.rs, and heartbeat_proposer.rs. Each test failed on the missing metric before its change and passed after it.
 3. S1 and S2: the review of the diff shows that each change adds metric calls only. The existing tests of each artifact pass without change. **Done 2026-10-07:** the diff adds metric calls, metric constants, and tests. The one restructure moves the queued-run loop of the finalizer into `drive_finalizer_runs`, with the same timeout, logs, and rerun rule. `cargo test --release -p casper -p node` passed: 1,896 tests, 0 failures, 21 ignored.
