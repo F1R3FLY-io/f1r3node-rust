@@ -484,10 +484,17 @@ pub async fn prepare_user_deploys(
     allow_ordinary_deploys: bool,
 ) -> Result<PreparedUserDeploys, CasperError> {
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
+    let stored_unfinalized =
+        if allow_ordinary_deploys && normal_ordinary_deploy_cap(casper_snapshot) > 0 {
+            deploy_storage.read_all()?
+        } else {
+            HashSet::new()
+        };
     prepare_user_deploys_with_policy(
         casper_snapshot,
         block_number,
         current_time_millis,
+        stored_unfinalized,
         deploy_storage,
         rejected_deploy_buffer,
         block_store,
@@ -573,6 +580,7 @@ async fn prepare_user_deploys_with_policy(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
+    stored_unfinalized: HashSet<Signed<DeployData>>,
     deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
@@ -591,7 +599,7 @@ async fn prepare_user_deploys_with_policy(
 
     let stored_unfinalized: HashSet<Signed<DeployData>> =
         if allow_ordinary_deploys || allow_in_scope_recovery {
-            deploy_storage.read_all()?
+            stored_unfinalized
         } else {
             HashSet::new()
         };
@@ -1676,16 +1684,11 @@ fn classify_branch_deploy_info(
 
 fn storage_has_unresolved_in_scope_deploys(
     casper_snapshot: &CasperSnapshot,
-    deploy_storage: &Arc<KeyValueDeployStorage>,
-    _rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-) -> Result<bool, CasperError> {
-    let stored_deploys = deploy_storage.read_all()?;
-    for deploy in stored_deploys {
-        if casper_snapshot.deploys_in_scope.contains(&deploy.sig) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    stored_deploys: &HashSet<Signed<DeployData>>,
+) -> bool {
+    stored_deploys
+        .iter()
+        .any(|deploy| casper_snapshot.deploys_in_scope.contains(&deploy.sig))
 }
 
 /// Pure-function filter extracted for unit testing. Keeps an
@@ -2126,12 +2129,11 @@ fn fresh_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: &Arc<KeyValueDeployStorage>,
+    stored_deploys: &HashSet<Signed<DeployData>>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<FreshLocalDeployStats, CasperError> {
-    let stored_deploys = deploy_storage.read_all()?;
     if stored_deploys.is_empty() {
         return Ok(FreshLocalDeployStats::default());
     }
@@ -2145,8 +2147,8 @@ fn fresh_local_deploy_stats(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
-    let candidates: HashSet<Signed<DeployData>> = stored_deploys
-        .into_iter()
+    let candidates: HashSet<&Signed<DeployData>> = stored_deploys
+        .iter()
         .filter(|deploy| {
             !buffered_sigs.contains(&deploy.sig)
                 && !casper_snapshot.deploys_in_scope.contains(&deploy.sig)
@@ -2195,12 +2197,11 @@ fn in_scope_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: &Arc<KeyValueDeployStorage>,
+    stored_deploys: &HashSet<Signed<DeployData>>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<InScopeLocalDeployStats, CasperError> {
-    let stored_deploys = deploy_storage.read_all()?;
     if stored_deploys.is_empty() {
         return Ok(InScopeLocalDeployStats::default());
     }
@@ -2214,8 +2215,8 @@ fn in_scope_local_deploy_stats(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
-    let candidates: HashSet<Signed<DeployData>> = stored_deploys
-        .into_iter()
+    let candidates: HashSet<&Signed<DeployData>> = stored_deploys
+        .iter()
         .filter(|deploy| {
             !buffered_sigs.contains(&deploy.sig)
                 && casper_snapshot.deploys_in_scope.contains(&deploy.sig)
@@ -2916,11 +2917,9 @@ pub async fn create_with_progress(
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
-        let storage_deploys_in_scope = storage_has_unresolved_in_scope_deploys(
-            casper_snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer,
-        )?;
+        let stored_deploys = deploy_storage.read_all()?;
+        let storage_deploys_in_scope =
+            storage_has_unresolved_in_scope_deploys(casper_snapshot, &stored_deploys);
         let stale_in_scope_work = user_deploys_in_scope || storage_deploys_in_scope;
         let user_work_in_flight = stale_in_scope_work;
         // Recovery admission is unconditional: the buffer is OWNER-SCOPED
@@ -2944,7 +2943,7 @@ pub async fn create_with_progress(
             casper_snapshot,
             next_block_num,
             now_millis,
-            &deploy_storage,
+            &stored_deploys,
             &rejected_deploy_buffer,
             block_store,
             floor_ctx.as_ref(),
@@ -2953,7 +2952,7 @@ pub async fn create_with_progress(
             casper_snapshot,
             next_block_num,
             now_millis,
-            &deploy_storage,
+            &stored_deploys,
             &rejected_deploy_buffer,
             block_store,
             floor_ctx.as_ref(),
@@ -3060,6 +3059,7 @@ pub async fn create_with_progress(
             casper_snapshot,
             next_block_num,
             now_millis,
+            stored_deploys,
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             block_store,
@@ -3880,30 +3880,29 @@ mod tests {
         )
         .expect("deploy");
 
+        let empty_capture = deploy_storage.read_all().expect("capture empty pool");
         assert!(!storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("empty storage"));
+            &empty_capture,
+        ));
 
         deploy_storage
             .add(vec![deploy.clone()])
             .expect("seed storage deploy");
         assert!(!storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("stored deploy not yet in scope"));
+            &deploy_storage.read_all().expect("capture deploy pool"),
+        ));
 
         snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        assert!(!storage_has_unresolved_in_scope_deploys(
+            &snapshot,
+            &empty_capture,
+        ));
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("stored deploy in scope"));
+            &deploy_storage.read_all().expect("capture deploy pool"),
+        ));
 
         rejected_deploy_buffer
             .lock()
@@ -3912,10 +3911,8 @@ mod tests {
             .expect("park deploy in rejected buffer");
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
-        )
-        .expect("stored deploy parked in rejected buffer remains unresolved while in scope"));
+            &deploy_storage.read_all().expect("capture deploy pool"),
+        ));
         rejected_deploy_buffer
             .lock()
             .expect("rejected buffer lock")
@@ -3925,10 +3922,198 @@ mod tests {
         snapshot.rejected_in_scope.insert(deploy.sig.clone());
         assert!(storage_has_unresolved_in_scope_deploys(
             &snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer
+            &deploy_storage.read_all().expect("capture deploy pool"),
+        ));
+    }
+
+    #[tokio::test]
+    async fn pool_capture_quarantines_damaged_records_before_scope_check() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(KeyValueDeployStorage::new(&mut kvm).await.unwrap());
+        let snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        let deploys: Vec<_> = (1..=2)
+            .map(|id| {
+                construct_deploy::basic_deploy_data(id, None, Some("test".to_string())).unwrap()
+            })
+            .collect();
+        deploy_storage.add(deploys.clone()).unwrap();
+        let damaged_sig = deploys[1].sig.to_vec();
+        let damaged_key = deploy_storage.store.encode_key(&damaged_sig).unwrap();
+        deploy_storage
+            .store
+            .raw_store()
+            .put_one(damaged_key.clone(), vec![0xff])
+            .unwrap();
+        snapshot.deploys_in_scope.insert(deploys[0].sig.clone());
+
+        let captured = deploy_storage.read_all().unwrap();
+        assert_eq!(captured, HashSet::from([deploys[0].clone()]));
+        assert!(storage_has_unresolved_in_scope_deploys(
+            &snapshot, &captured,
+        ));
+        assert!(deploy_storage
+            .store
+            .raw_store()
+            .get_one(&damaged_key)
+            .unwrap()
+            .is_none());
+
+        snapshot.deploys_in_scope.clear();
+        assert!(!storage_has_unresolved_in_scope_deploys(
+            &snapshot, &captured,
+        ));
+    }
+
+    #[tokio::test]
+    async fn statistics_and_selection_share_the_pool_capture_before_a_later_insert() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(KeyValueDeployStorage::new(&mut kvm).await.unwrap());
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap(),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let deploy = |time_stamp, valid_after_block_number, expiration_timestamp| {
+            Signed::create(
+                DeployData {
+                    term: format!("@{}!(Nil)", time_stamp),
+                    time_stamp,
+                    phlo_price: 1,
+                    phlo_limit: 100_000,
+                    valid_after_block_number,
+                    shard_id: "test".to_string(),
+                    expiration_timestamp,
+                    parameters: Vec::new(),
+                },
+                Box::new(Secp256k1),
+                PrivateKey::from_bytes(&[1; 32]),
+            )
+            .unwrap()
+        };
+        let fresh = deploy(1_000, 60, None);
+        let in_scope = deploy(2_000, 60, None);
+        let buffered = deploy(3_000, 60, None);
+        let future = deploy(4_000, 100, None);
+        let block_expired = deploy(5_000, 50, None);
+        let time_expired = deploy(6_000, 60, Some(9_999));
+        let later = deploy(7_000, 60, None);
+        snapshot.deploys_in_scope.insert(in_scope.sig.clone());
+        rejected_deploy_buffer
+            .lock()
+            .unwrap()
+            .add(vec![buffered.clone()])
+            .unwrap();
+        deploy_storage
+            .add(vec![
+                fresh.clone(),
+                in_scope.clone(),
+                buffered.clone(),
+                future,
+                block_expired.clone(),
+                time_expired.clone(),
+            ])
+            .unwrap();
+
+        let captured = deploy_storage.read_all().unwrap();
+        deploy_storage.add(vec![later.clone()]).unwrap();
+        let fresh_stats = fresh_local_deploy_stats(
+            &snapshot,
+            100,
+            10_000,
+            &captured,
+            &rejected_deploy_buffer,
+            &block_store,
+            None,
         )
-        .expect("stored rejected deploy in scope remains unresolved"));
+        .unwrap();
+        let in_scope_stats = in_scope_local_deploy_stats(
+            &snapshot,
+            100,
+            10_000,
+            &captured,
+            &rejected_deploy_buffer,
+            &block_store,
+            None,
+        )
+        .unwrap();
+        assert_eq!(fresh_stats, FreshLocalDeployStats {
+            count: 1,
+            oldest_age_millis: 9_000
+        });
+        assert_eq!(in_scope_stats, InScopeLocalDeployStats {
+            count: 1,
+            stranded_count: 1,
+            oldest_age_millis: 8_000,
+        });
+        let policy = DeployAdmissionPolicy {
+            allow_ordinary: true,
+            ordinary_cap: normal_ordinary_deploy_cap(&snapshot),
+            allow_in_scope_recovery: true,
+            in_scope_recovery_cap: 8,
+            reserve_tail: false,
+            fallback: false,
+            backpressure: false,
+            ordinary_cap_source: OrdinaryCapSource::Normal,
+            in_scope_recovery_cap_source: OrdinaryCapSource::Base,
+        };
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            100,
+            10_000,
+            captured,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            policy,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.deploys, HashSet::from([fresh.clone(), in_scope]));
+        assert_eq!(prepared.selected_ordinary_count, 1);
+        assert_eq!(prepared.selected_in_scope_recovery_count, 1);
+        assert!(deploy_storage.contains_sig(&later.sig).unwrap());
+        assert!(!deploy_storage.contains_sig(&block_expired.sig).unwrap());
+        assert!(!deploy_storage.contains_sig(&time_expired.sig).unwrap());
+        assert!(rejected_deploy_buffer
+            .lock()
+            .unwrap()
+            .contains_sig(&buffered.sig)
+            .unwrap());
+
+        let next_capture = deploy_storage.read_all().unwrap();
+        let next_fresh_stats = fresh_local_deploy_stats(
+            &snapshot,
+            100,
+            10_000,
+            &next_capture,
+            &rejected_deploy_buffer,
+            &block_store,
+            None,
+        )
+        .unwrap();
+        assert_eq!(next_fresh_stats.count, 2);
+        deploy_storage.remove(vec![fresh.clone()]).unwrap();
+        let next_prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            100,
+            10_000,
+            next_capture,
+            deploy_storage.clone(),
+            rejected_deploy_buffer,
+            &block_store,
+            true,
+            policy,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(next_prepared.deploys.contains(&later));
+        assert!(!deploy_storage.contains_sig(&fresh.sig).unwrap());
     }
 
     #[tokio::test]
@@ -6086,10 +6271,12 @@ mod tests {
 
         deploy_storage.add(deploys).expect("seed deploy storage");
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let prepared = prepare_user_deploys_with_policy(
             &snapshot,
             300,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
@@ -6158,10 +6345,12 @@ mod tests {
 
         deploy_storage.add(deploys).expect("seed deploy storage");
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let prepared = prepare_user_deploys_with_policy(
             &snapshot,
             200,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
@@ -6259,10 +6448,12 @@ mod tests {
             .add(in_scope.into_iter().chain(fresh.into_iter()).collect())
             .expect("seed deploy storage");
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let prepared = prepare_user_deploys_with_policy(
             &snapshot,
             300,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
@@ -6348,10 +6539,12 @@ mod tests {
             .add(vec![deploy.clone()])
             .expect("seed deploy storage");
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let prepared = prepare_user_deploys_with_policy(
             &snapshot,
             300,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
@@ -6439,11 +6632,12 @@ mod tests {
         snapshot.parents = vec![lfb];
         deploy_storage.add(deploys).expect("seed deploy storage");
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let stats = in_scope_local_deploy_stats(
             &snapshot,
             300,
             10_000,
-            &deploy_storage,
+            &stored_deploys,
             &rejected_deploy_buffer,
             &block_store,
             None,
@@ -6455,6 +6649,7 @@ mod tests {
             &snapshot,
             300,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
@@ -6544,11 +6739,12 @@ mod tests {
         snapshot.max_block_num = 299;
         snapshot.parents = vec![user];
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let stats = in_scope_local_deploy_stats(
             &snapshot,
             300,
             10_000,
-            &deploy_storage,
+            &stored_deploys,
             &rejected_deploy_buffer,
             &block_store,
             None,
@@ -6560,6 +6756,7 @@ mod tests {
             &snapshot,
             300,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
@@ -6655,11 +6852,12 @@ mod tests {
                 .expect("canonical wins");
         assert!(!canonical_won.contains(&deploy.sig));
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let stats = in_scope_local_deploy_stats(
             &snapshot,
             301,
             10_000,
-            &deploy_storage,
+            &stored_deploys,
             &rejected_deploy_buffer,
             &block_store,
             None,
@@ -6672,6 +6870,7 @@ mod tests {
             &snapshot,
             301,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
@@ -6747,11 +6946,12 @@ mod tests {
         snapshot.max_block_num = 250;
         snapshot.parents = vec![lfb];
 
+        let stored_deploys = deploy_storage.read_all().expect("read deploy storage");
         let stats = in_scope_local_deploy_stats(
             &snapshot,
             300,
             10_000,
-            &deploy_storage,
+            &stored_deploys,
             &rejected_deploy_buffer,
             &block_store,
             None,
@@ -6763,6 +6963,7 @@ mod tests {
             &snapshot,
             300,
             10_000,
+            stored_deploys,
             deploy_storage,
             rejected_deploy_buffer,
             &block_store,
