@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsResult;
-use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::casper::Casper;
 use casper::rust::synchrony_constraint_checker;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
@@ -46,7 +46,7 @@ async fn lfb_moves_with_running_validators(running: usize, rounds: usize) -> boo
             .unwrap();
     }
 
-    let lfb = nodes[0].casper.last_finalized_block().await.unwrap();
+    let lfb = nodes[0].casper.finalize().await.unwrap();
     lfb.block_hash != genesis_hash
 }
 
@@ -133,7 +133,7 @@ async fn network_with_newcomer_stake(
         .unwrap();
 
     run_rounds(&mut nodes, &shard_id, 0).await;
-    let lfb = nodes[0].casper.last_finalized_block().await.unwrap();
+    let lfb = nodes[0].casper.finalize().await.unwrap();
     let active = nodes[0]
         .runtime_manager
         .get_active_validators(&lfb.body.state.post_state_hash)
@@ -153,7 +153,7 @@ async fn network_with_newcomer_stake(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_validator_bonded_later_that_never_runs_does_not_stall_finalization() {
     let (mut nodes, shard_id) = network_with_a_silent_newcomer(3).await;
-    let before = nodes[0].casper.last_finalized_block().await.unwrap();
+    let before = nodes[0].casper.finalize().await.unwrap();
 
     let deploy = construct_deploy::basic_deploy_data(1000, None, Some(shard_id.clone())).unwrap();
     let carrier = TestNode::propagate_block_at_index(&mut nodes, 1, std::slice::from_ref(&deploy))
@@ -169,7 +169,7 @@ async fn a_validator_bonded_later_that_never_runs_does_not_stall_finalization() 
     );
 
     run_rounds(&mut nodes, &shard_id, ROUNDS).await;
-    let after = nodes[0].casper.last_finalized_block().await.unwrap();
+    let after = nodes[0].casper.finalize().await.unwrap();
     assert!(
         after.body.state.block_number > before.body.state.block_number,
         "finalization stalled at LFB #{} after {ROUNDS} more blocks",
@@ -242,14 +242,14 @@ async fn a_newcomer_that_starts_its_node_is_accepted_and_then_counts() {
 
     let before = nodes[0]
         .casper
-        .last_finalized_block()
+        .finalize()
         .await
         .unwrap()
         .body
         .state
         .block_number;
     run_rounds(&mut nodes, &shard_id, 3000).await;
-    let lfb = nodes[0].casper.last_finalized_block().await.unwrap();
+    let lfb = nodes[0].casper.finalize().await.unwrap();
     assert!(
         lfb.body.state.block_number <= first.body.state.block_number,
         "the newcomer's stake must count from its first block (#{}), but LFB is #{}",
@@ -294,7 +294,7 @@ async fn an_in_model_silent_newcomer_cannot_finalize_a_fork_after_it_returns() {
     let mut lfb_hashes = Vec::new();
     let mut lfb_numbers = Vec::new();
     for node in nodes.iter() {
-        let lfb = node.casper.last_finalized_block().await.unwrap();
+        let lfb = node.casper.finalize().await.unwrap();
         lfb_hashes.push(lfb.block_hash.clone());
         lfb_numbers.push(lfb.body.state.block_number);
     }

@@ -19,6 +19,10 @@ pub struct Datum<A: Clone> {
     pub source: Produce,
 }
 
+/// The data on one channel as the matcher sees it: each datum with its index
+/// in the store, or -1 for the datum being produced.
+pub type IndexedData<A> = Vec<(std::sync::Arc<Datum<A>>, i32)>;
+
 impl<A> Datum<A>
 where A: Clone + Serialize
 {
