@@ -34,8 +34,6 @@ cmp "$tmp/once.py" "$tmp/metrics.py"
 
 for metric in \
     dag_merge_relation_items \
-    deploy_pool_lock_wait_time \
-    deploy_pool_lock_hold_time \
     proposer_queue_depth \
     runtime_scheduler_delay_time \
     compute_parents_post_state_floor_distance \
@@ -108,6 +106,8 @@ registries = {
     and node.targets[0].id in {"METRICS_TO_SCRAPE", "COUNTERS_TO_SCRAPE"}
 }
 histograms = registries["METRICS_TO_SCRAPE"]
+assert "deploy_pool_lock_wait_time" not in histograms
+assert "deploy_pool_lock_hold_time" not in histograms
 counters = registries["COUNTERS_TO_SCRAPE"]
 assert len(histograms) == len(set(histograms))
 assert len(counters) == len(set(counters))

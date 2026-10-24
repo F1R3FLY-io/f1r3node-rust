@@ -74,6 +74,13 @@ The first change let the cap follow the backlog without backpressure. A local `t
 
 ## Discharge plan
 
+Issue #712 removes the outer deploy-pool mutex without changing the admission rules.
+The candidate predicates, caps, retry gates, expiry rules, and FinalityProgress tracker retain their definitions.
+For fixed captured inputs, statements S1 through S8 retain the same results.
+The rejected-buffer mutex still covers its admission check and the pool insert.
+The preservation review must include the existing admission tests and CLAIM-DEPLOY-STORE-CONCURRENCY-001.
+This change does not discharge the pending soak obligations.
+
 Issue #711 reuses one decoded deploy pool set for the scope predicate, statistics, and selection during one proposal.
 The scope predicate searches the captured set and keeps its signature membership rule.
 The two statistics functions borrow the captured set, and selection consumes the same set.

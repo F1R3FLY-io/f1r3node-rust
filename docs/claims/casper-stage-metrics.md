@@ -53,7 +53,8 @@ The floor distance histogram already exists, and TASK-021-17 adds it to `ISSUE24
 
 **S2. No new shared state.** The metrics add no lock, no shared map, and no field to a consensus type. The deploy age uses the timestamp that the deploy already carries. The overlap count reads the existing `finalizer_task_in_progress` flag without a write.
 
-The pool-lock timer reads the clock only, and it does not change when the lock is taken or released. It releases the lock before it records the hold time, so the metric call does not extend the hold. The scheduler delay probe is one task that sleeps and reads the clock. It reads no consensus state, takes no lock, and sends no message.
+Issue #712 removes the pool mutex and its timer.
+The scheduler delay probe is one task that sleeps and reads the clock. It reads no consensus state, takes no lock, and sends no message.
 
 **S3. Counting accuracy.** Each counter increments once for each event that its name states, and each histogram records one value for each measured interval:
 - `block-creator.ordinary-deploys.deferred` adds the number of ordinary candidates that the selection leaves out.
@@ -62,8 +63,8 @@ The pool-lock timer reads the clock only, and it does not change when the lock i
 - `block-creator.deploy-admission.cap-source.<source>` adds one for each admission decision, under the source of its ordinary cap. The sources are normal, base, backlog, soft-backlog, soft-stalled, stale, and hard.
 - `proposer.constraints.time`, `proposer.create.time`, `proposer.validate.time`, and `proposer.effect.time` each record one value in seconds for each proposal.
 - `deploy-lifecycle.observe.time` records one value in seconds for each observed block. `deploy-lifecycle.carrier-prune.time` records one value only when the adopted floor advanced, because only then does the observe call the carrier prune.
-- `deploy-pool.lock-wait.time` records one value in seconds for each proposal preparation: the time to acquire the deploy-pool lock. `deploy-pool.lock-hold.time` records one value in seconds for the same preparation: the time from the acquire to the release.
-- `deploy-store.read-all.decoded` adds, for each `read_all` call, the number of deploys that the call decodes. The label `store` names the store. A decode in the current format verifies one signature (`deploy_codec::decode`, `DeployData::from_proto`). A legacy-format decode does not, and its existing counter counts it. The legacy counter also counts decode attempts in `any` scans. These counters do not measure all signature checks.
+- Issue #712 retires `deploy-pool.lock-wait.time` and `deploy-pool.lock-hold.time` because the pool has no outer mutex.
+- `deploy-store.read-all.decoded` adds, for each `read_all` call, the number of deploys that the call decodes. The label `store` names the store. A decode in the current format verifies one signature (`deploy_codec::decode`, `DeployData::from_proto`). A legacy-format decode does not, and its existing counter counts it. The difference is the number of signature checks of the pool reads.
 - `proposer.queue.depth` records one value for each propose request that the proposer takes from its queue: the number of pending requests before the take.
 - `runtime.scheduler.delay.time` records one value in seconds for each wake of the probe: the time by which the wake is later than its 100 ms interval.
 
@@ -80,10 +81,14 @@ The pool-lock timer reads the clock only, and it does not change when the lock i
 
 ## Discharge plan
 
+Issue #712 removes only the two retired pool-lock histograms and their collection names.
+The remaining metric definitions retain their names, labels, units, and event boundaries.
+The preservation review must include the admission tests, recorder tests, and metric collection script tests.
+Historical timer evidence below describes the implementation before its retirement.
+The claim remains pending.
+
 Issue #711 moves the full pool read before the scope predicate and statistics calls.
 The scope predicate, statistics, and selection reuse that decoded set.
-The existing preparation lock timer still records one wait sample and one hold sample per preparation.
-The snapshot capture uses a separate short lock and does not add preparation timer samples.
 The decoded counter continues to count the values returned by each full read, with the existing store label.
 The scope predicate performs no additional storage scan or decode.
 The refactor must preserve the metric names, labels, units, and cap-source results.
