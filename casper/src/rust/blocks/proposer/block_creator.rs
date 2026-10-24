@@ -32,6 +32,7 @@ use tracing;
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::block_facts::{held_block_facts, BlockFacts};
 use crate::rust::finality::floor_context::{FloorContext, RetryGateBasis};
 use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
@@ -1493,13 +1494,20 @@ async fn prepare_user_deploys_with_policy(
     })
 }
 
-fn scope_has_unfinalized_user_deploys(
+/// The height bounds every unfinalized-cone walk prunes at: the LFB's height (when
+/// this node holds the LFB) and the first height a deploy could still be live at.
+struct UnfinalizedConeBounds {
+    last_finalized_block_number: Option<i64>,
+    earliest_block_number: i64,
+}
+
+fn unfinalized_cone_bounds(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
-) -> Result<bool, CasperError> {
-    let last_finalized_block_number = block_store
-        .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number);
+) -> Result<UnfinalizedConeBounds, CasperError> {
+    let last_finalized_block_number =
+        held_block_facts(block_store, &casper_snapshot.last_finalized_block)?
+            .map(|facts| facts.block_number);
     let current_block_number = casper_snapshot
         .max_block_num
         .checked_add(1)
@@ -1509,15 +1517,26 @@ fn scope_has_unfinalized_user_deploys(
                 casper_snapshot.max_block_num
             ))
         })?;
-    let earliest_block_number = current_block_number
-        .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan);
-    let mut stack: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|parent| parent.block_hash.clone())
-        .collect();
-    let mut seen: HashSet<BlockHash> = HashSet::new();
+    Ok(UnfinalizedConeBounds {
+        last_finalized_block_number,
+        earliest_block_number: current_block_number
+            .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan),
+    })
+}
 
+/// Depth-first walk of the unfinalized cone below `roots`, reading cached block
+/// facts. A block is skipped, and not descended through, when it is the LFB, is
+/// finalized, is not held, or is at or below either bound. `visit` returns
+/// `false` to stop the walk.
+fn walk_unfinalized_cone(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    roots: &[BlockHash],
+    bounds: &UnfinalizedConeBounds,
+    mut visit: impl FnMut(&BlockHash, &BlockFacts) -> bool,
+) -> Result<(), CasperError> {
+    let mut stack: Vec<BlockHash> = roots.to_vec();
+    let mut seen: HashSet<BlockHash> = HashSet::new();
     while let Some(block_hash) = stack.pop() {
         if !seen.insert(block_hash.clone())
             || block_hash == casper_snapshot.last_finalized_block
@@ -1525,27 +1544,49 @@ fn scope_has_unfinalized_user_deploys(
         {
             continue;
         }
-
-        let Some(block) = block_store.get(&block_hash)? else {
+        let Some(facts) = held_block_facts(block_store, &block_hash)? else {
             continue;
         };
-
-        if last_finalized_block_number
-            .map(|lfb_number| block.body.state.block_number <= lfb_number)
-            .unwrap_or(false)
-            || block.body.state.block_number <= earliest_block_number
+        if bounds
+            .last_finalized_block_number
+            .is_some_and(|lfb_number| facts.block_number <= lfb_number)
+            || facts.block_number <= bounds.earliest_block_number
         {
             continue;
         }
-
-        if !block.body.deploys.is_empty() {
-            return Ok(true);
+        if !visit(&block_hash, &facts) {
+            return Ok(());
         }
-
-        stack.extend(block.header.parents_hash_list.iter().cloned());
+        stack.extend(facts.parents.iter().cloned());
     }
+    Ok(())
+}
 
-    Ok(false)
+fn parent_hashes(casper_snapshot: &CasperSnapshot) -> Vec<BlockHash> {
+    casper_snapshot
+        .parents
+        .iter()
+        .map(|parent| parent.block_hash.clone())
+        .collect()
+}
+
+fn scope_has_unfinalized_user_deploys(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+) -> Result<bool, CasperError> {
+    let bounds = unfinalized_cone_bounds(casper_snapshot, block_store)?;
+    let mut found = false;
+    walk_unfinalized_cone(
+        casper_snapshot,
+        block_store,
+        &parent_hashes(casper_snapshot),
+        &bounds,
+        |_, facts| {
+            found = !facts.deploy_sigs.is_empty();
+            !found
+        },
+    )?;
+    Ok(found)
 }
 
 fn newer_branch_deploy_info(
@@ -1566,161 +1607,71 @@ fn newer_branch_deploy_info(
     }
 }
 
-fn collect_branch_user_deploy_sigs(
+/// The newest deploy-carrying block in the unfinalized cone below `root_hash`,
+/// unclassified.
+fn branch_unfinalized_user_deploy_info(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
-    roots: &[BlockHash],
-    earliest_block_number: i64,
-    last_finalized_block_number: Option<i64>,
-    excluded_block_hash: Option<&BlockHash>,
-) -> Result<HashSet<Bytes>, CasperError> {
-    let mut stack: Vec<BlockHash> = roots.to_vec();
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    let mut sigs = HashSet::new();
-
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone())
-            || block_hash == casper_snapshot.last_finalized_block
-            || casper_snapshot.dag.is_finalized(&block_hash)
-        {
-            continue;
-        }
-
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
-
-        if last_finalized_block_number
-            .map(|lfb_number| block.body.state.block_number <= lfb_number)
-            .unwrap_or(false)
-            || block.body.state.block_number <= earliest_block_number
-        {
-            continue;
-        }
-
-        let excluded = excluded_block_hash
-            .map(|excluded_hash| excluded_hash == &block_hash)
-            .unwrap_or(false);
-        if !excluded {
-            for deploy in &block.body.deploys {
-                sigs.insert(deploy.deploy.sig.clone());
+    root_hash: &BlockHash,
+    bounds: &UnfinalizedConeBounds,
+) -> Result<Option<BranchDeployInfo>, CasperError> {
+    let mut latest = None;
+    walk_unfinalized_cone(
+        casper_snapshot,
+        block_store,
+        std::slice::from_ref(root_hash),
+        bounds,
+        |block_hash, facts| {
+            if !facts.deploy_sigs.is_empty() {
+                latest = newer_branch_deploy_info(latest.take(), BranchDeployInfo {
+                    block_hash: block_hash.clone(),
+                    sender: facts.sender.clone(),
+                    block_number: facts.block_number,
+                    timestamp: facts.timestamp,
+                    deploy_sig_count: facts.deploy_sigs.len(),
+                    new_sig_count: 0,
+                    recycled_sig_count: 0,
+                });
             }
-        }
-
-        stack.extend(block.header.parents_hash_list.iter().cloned());
-    }
-
-    Ok(sigs)
+            true
+        },
+    )?;
+    Ok(latest)
 }
 
+/// Counts which of `info`'s deploy sigs appear nowhere else in the unfinalized
+/// cone below every snapshot parent.
 fn classify_branch_deploy_info(
     mut info: BranchDeployInfo,
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
-    earliest_block_number: i64,
-    last_finalized_block_number: Option<i64>,
+    bounds: &UnfinalizedConeBounds,
 ) -> Result<BranchDeployInfo, CasperError> {
-    let Some(block) = block_store.get(&info.block_hash)? else {
+    let Some(facts) = held_block_facts(block_store, &info.block_hash)? else {
         return Ok(info);
     };
-    let deploy_sigs: HashSet<Bytes> = block
-        .body
-        .deploys
-        .iter()
-        .map(|deploy| deploy.deploy.sig.clone())
-        .collect();
-    let parent_frontier: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|parent| parent.block_hash.clone())
-        .collect();
-    let visible_sigs = collect_branch_user_deploy_sigs(
+    let deploy_sigs: HashSet<&Bytes> = facts.deploy_sigs.iter().collect();
+    let mut visible_sigs: HashSet<Bytes> = HashSet::new();
+    walk_unfinalized_cone(
         casper_snapshot,
         block_store,
-        &parent_frontier,
-        earliest_block_number,
-        last_finalized_block_number,
-        Some(&info.block_hash),
+        &parent_hashes(casper_snapshot),
+        bounds,
+        |block_hash, facts| {
+            if block_hash != &info.block_hash {
+                visible_sigs.extend(facts.deploy_sigs.iter().cloned());
+            }
+            true
+        },
     )?;
     let new_sig_count = deploy_sigs
         .iter()
-        .filter(|sig| !visible_sigs.contains(*sig))
+        .filter(|sig| !visible_sigs.contains(**sig))
         .count();
     info.deploy_sig_count = deploy_sigs.len();
     info.new_sig_count = new_sig_count;
     info.recycled_sig_count = deploy_sigs.len().saturating_sub(new_sig_count);
     Ok(info)
-}
-
-fn branch_unfinalized_user_deploy_info(
-    casper_snapshot: &CasperSnapshot,
-    block_store: &KeyValueBlockStore,
-    root_hash: &BlockHash,
-) -> Result<Option<BranchDeployInfo>, CasperError> {
-    let last_finalized_block_number = block_store
-        .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number);
-    let current_block_number = casper_snapshot
-        .max_block_num
-        .checked_add(1)
-        .ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "max_block_num overflow: {} + 1 wraps i64",
-                casper_snapshot.max_block_num
-            ))
-        })?;
-    let earliest_block_number = current_block_number
-        .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan);
-    let mut stack = vec![root_hash.clone()];
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    let mut latest = None;
-
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone())
-            || block_hash == casper_snapshot.last_finalized_block
-            || casper_snapshot.dag.is_finalized(&block_hash)
-        {
-            continue;
-        }
-
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
-
-        if last_finalized_block_number
-            .map(|lfb_number| block.body.state.block_number <= lfb_number)
-            .unwrap_or(false)
-            || block.body.state.block_number <= earliest_block_number
-        {
-            continue;
-        }
-
-        if !block.body.deploys.is_empty() {
-            latest = newer_branch_deploy_info(latest, BranchDeployInfo {
-                block_hash: block_hash.clone(),
-                sender: block.sender.clone(),
-                block_number: block.body.state.block_number,
-                timestamp: block.header.timestamp,
-                deploy_sig_count: block.body.deploys.len(),
-                new_sig_count: 0,
-                recycled_sig_count: 0,
-            });
-        }
-
-        stack.extend(block.header.parents_hash_list.iter().cloned());
-    }
-
-    latest
-        .map(|info| {
-            classify_branch_deploy_info(
-                info,
-                casper_snapshot,
-                block_store,
-                earliest_block_number,
-                last_finalized_block_number,
-            )
-        })
-        .transpose()
 }
 
 fn storage_has_unresolved_in_scope_deploys(
@@ -2083,6 +2034,7 @@ fn deploy_inclusion_progress(
     block_store: &KeyValueBlockStore,
 ) -> Result<DeployInclusionProgress, CasperError> {
     let validators = current_proposal_validators(casper_snapshot);
+    let bounds = unfinalized_cone_bounds(casper_snapshot, block_store)?;
     let mut latest = None;
     for parent in &casper_snapshot.parents {
         if parent.sender.is_empty()
@@ -2091,12 +2043,20 @@ fn deploy_inclusion_progress(
             continue;
         }
 
-        if let Some(info) =
-            branch_unfinalized_user_deploy_info(casper_snapshot, block_store, &parent.block_hash)?
-        {
+        if let Some(info) = branch_unfinalized_user_deploy_info(
+            casper_snapshot,
+            block_store,
+            &parent.block_hash,
+            &bounds,
+        )? {
             latest = newer_branch_deploy_info(latest, info);
         }
     }
+    // The choice above reads only height, timestamp and sender, so only the
+    // winner needs classifying.
+    let latest = latest
+        .map(|info| classify_branch_deploy_info(info, casper_snapshot, block_store, &bounds))
+        .transpose()?;
 
     if let Some(info) = latest {
         let leader = if !info.sender.is_empty()
@@ -2390,10 +2350,10 @@ fn finality_lag_stats(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
 ) -> Result<FinalityLagStats, CasperError> {
-    let last_finalized_block = block_store
-        .get(&casper_snapshot.last_finalized_block)?
-        .map(|block| block.body.state.block_number)
-        .unwrap_or(-1);
+    let last_finalized_block =
+        held_block_facts(block_store, &casper_snapshot.last_finalized_block)?
+            .map(|facts| facts.block_number)
+            .unwrap_or(-1);
     let dag_tip = casper_snapshot.max_block_num;
     Ok(FinalityLagStats {
         dag_tip,
@@ -5190,6 +5150,241 @@ mod tests {
                 recycled_sig_count: 1,
             })
         );
+    }
+
+    /// The decoding implementation `deploy_inclusion_progress` replaced: one cone
+    /// walk per parent over full block decodes, every parent's newest block
+    /// classified. Kept as the oracle for the cached walk.
+    fn decoding_deploy_inclusion_progress(
+        casper_snapshot: &CasperSnapshot,
+        block_store: &KeyValueBlockStore,
+    ) -> DeployInclusionProgress {
+        let lfb_number = block_store
+            .get(&casper_snapshot.last_finalized_block)
+            .expect("store")
+            .map(|block| block.body.state.block_number);
+        let earliest = (casper_snapshot.max_block_num + 1)
+            .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan);
+        let walk = |roots: Vec<BlockHash>,
+                    visit: &mut dyn FnMut(&BlockHash, &BlockMessage) -> bool| {
+            let mut stack = roots;
+            let mut seen: HashSet<BlockHash> = HashSet::new();
+            while let Some(block_hash) = stack.pop() {
+                if !seen.insert(block_hash.clone())
+                    || block_hash == casper_snapshot.last_finalized_block
+                    || casper_snapshot.dag.is_finalized(&block_hash)
+                {
+                    continue;
+                }
+                let Some(block) = block_store.get(&block_hash).expect("store") else {
+                    continue;
+                };
+                if lfb_number.is_some_and(|n| block.body.state.block_number <= n)
+                    || block.body.state.block_number <= earliest
+                {
+                    continue;
+                }
+                if !visit(&block_hash, &block) {
+                    return;
+                }
+                stack.extend(block.header.parents_hash_list.iter().cloned());
+            }
+        };
+        let all_parents: Vec<BlockHash> = casper_snapshot
+            .parents
+            .iter()
+            .map(|p| p.block_hash.clone())
+            .collect();
+        let classify = |mut info: BranchDeployInfo| {
+            let Some(block) = block_store.get(&info.block_hash).expect("store") else {
+                return info;
+            };
+            let sigs: HashSet<Bytes> = block
+                .body
+                .deploys
+                .iter()
+                .map(|d| d.deploy.sig.clone())
+                .collect();
+            let mut visible: HashSet<Bytes> = HashSet::new();
+            walk(all_parents.clone(), &mut |hash, block| {
+                if hash != &info.block_hash {
+                    visible.extend(block.body.deploys.iter().map(|d| d.deploy.sig.clone()));
+                }
+                true
+            });
+            let new = sigs.iter().filter(|s| !visible.contains(*s)).count();
+            info.deploy_sig_count = sigs.len();
+            info.new_sig_count = new;
+            info.recycled_sig_count = sigs.len() - new;
+            info
+        };
+        let validators = current_proposal_validators(casper_snapshot);
+        let mut latest = None;
+        for parent in &casper_snapshot.parents {
+            if parent.sender.is_empty()
+                || (!validators.is_empty() && !validators.iter().any(|v| v == &parent.sender))
+            {
+                continue;
+            }
+            let mut branch_latest = None;
+            walk(vec![parent.block_hash.clone()], &mut |hash, block| {
+                if !block.body.deploys.is_empty() {
+                    branch_latest =
+                        newer_branch_deploy_info(branch_latest.take(), BranchDeployInfo {
+                            block_hash: hash.clone(),
+                            sender: block.sender.clone(),
+                            block_number: block.body.state.block_number,
+                            timestamp: block.header.timestamp,
+                            deploy_sig_count: block.body.deploys.len(),
+                            new_sig_count: 0,
+                            recycled_sig_count: 0,
+                        });
+                }
+                true
+            });
+            if let Some(info) = branch_latest.map(classify) {
+                latest = newer_branch_deploy_info(latest, info);
+            }
+        }
+        if let Some(info) = latest {
+            let leader = if !info.sender.is_empty()
+                && (validators.is_empty() || validators.iter().any(|v| v == &info.sender))
+            {
+                Some(info.sender.clone())
+            } else {
+                validators.first().cloned()
+            };
+            return DeployInclusionProgress {
+                leader,
+                latest_deploy: Some(info),
+            };
+        }
+        let mut any = false;
+        walk(all_parents, &mut |_, block| {
+            any = !block.body.deploys.is_empty();
+            !any
+        });
+        if any {
+            return DeployInclusionProgress {
+                leader: validators.first().cloned(),
+                latest_deploy: None,
+            };
+        }
+        DeployInclusionProgress::default()
+    }
+
+    #[tokio::test]
+    async fn cached_deploy_inclusion_progress_matches_the_decoding_walk_on_generated_dags() {
+        let deploys: Vec<Signed<DeployData>> = (0..6)
+            .map(|i| {
+                crate::rust::util::construct_deploy::basic_deploy_data(
+                    i,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("deploy")
+            })
+            .collect();
+        let mut rng_state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move |bound: u64| {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 7;
+            rng_state ^= rng_state << 17;
+            rng_state % bound
+        };
+        let mut coverage = InclusionProgressCoverage::default();
+        for case in 0u32..300 {
+            let mut kvm = InMemoryStoreManager::new();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+                .await
+                .expect("block store");
+            let mut snapshot =
+                crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            if next(5) > 0 {
+                snapshot.on_chain_state.active_validators =
+                    vec![validator(1), validator(2), validator(3)];
+            }
+            snapshot.on_chain_state.shard_conf.deploy_lifespan = 2 + next(9) as i64;
+            let hash = |i: usize| -> BlockHash {
+                let mut bytes = format!("dip-{case:05}-{i:04}").into_bytes();
+                bytes.resize(32, 0);
+                bytes.into()
+            };
+            let block_count = 4 + next(28) as usize;
+            let mut blocks: Vec<BlockMessage> = Vec::new();
+            for i in 0..block_count {
+                let height = if i == 0 {
+                    1
+                } else {
+                    blocks[i - 1].body.state.block_number + next(2) as i64
+                };
+                let parents: Vec<BlockHash> = if i == 0 {
+                    Vec::new()
+                } else {
+                    let earlier: Vec<usize> = (0..i)
+                        .filter(|&j| blocks[j].body.state.block_number < height)
+                        .collect();
+                    let mut chosen: Vec<BlockHash> = (0..1 + next(3))
+                        .filter_map(|_| earlier.get(next(earlier.len().max(1) as u64) as usize))
+                        .map(|&j| hash(j))
+                        .collect();
+                    chosen.dedup();
+                    chosen
+                };
+                let sender = validator(1 + next(4) as u8);
+                let carried: Vec<ProcessedDeploy> = (0..next(3))
+                    .map(|_| {
+                        ProcessedDeploy::empty(deploys[next(deploys.len() as u64) as usize].clone())
+                    })
+                    .collect();
+                let block = test_block(hash(i), sender, parents, height, carried);
+                if next(10) > 0 {
+                    block_store.put_block_message(&block).expect("put block");
+                }
+                blocks.push(block);
+            }
+            snapshot.last_finalized_block = hash(next(1 + block_count as u64 / 3) as usize);
+            snapshot.max_block_num = blocks.last().expect("blocks").body.state.block_number;
+            snapshot.parents = (0..1 + next(4))
+                .map(|_| blocks[block_count - 1 - next(block_count.min(6) as u64) as usize].clone())
+                .collect();
+
+            let cached = deploy_inclusion_progress(&snapshot, &block_store).expect("progress");
+            let expected = decoding_deploy_inclusion_progress(&snapshot, &block_store);
+            assert_eq!(
+                cached, expected,
+                "case {case} diverged from the decoding walk"
+            );
+            match &cached.latest_deploy {
+                Some(info) if info.recycled_sig_count > 0 => coverage.recycled += 1,
+                Some(_) => coverage.fresh += 1,
+                None if cached.leader.is_some() => coverage.leader_without_deploy += 1,
+                None => coverage.empty += 1,
+            }
+            if !block_store
+                .contains_key(&snapshot.last_finalized_block)
+                .expect("store")
+            {
+                coverage.lfb_not_held += 1;
+            }
+        }
+        assert!(
+            coverage.fresh >= 30 && coverage.recycled >= 30 && coverage.empty >= 5,
+            "generator stopped covering the outcomes: {coverage:?}"
+        );
+        assert!(
+            coverage.lfb_not_held >= 5,
+            "generator stopped covering an unheld LFB: {coverage:?}"
+        );
+    }
+
+    #[derive(Debug, Default)]
+    struct InclusionProgressCoverage {
+        fresh: usize,
+        recycled: usize,
+        leader_without_deploy: usize,
+        empty: usize,
+        lfb_not_held: usize,
     }
 
     /// A bonded validator that PoS still considers active is slashable
