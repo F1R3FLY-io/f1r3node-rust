@@ -136,7 +136,7 @@ impl GenesisBuilder {
             parameters.2.proof_of_stake.min_phlo_price.max(1);
         for vault in parameters.2.vaults.iter_mut() {
             if vault.initial_balance > 0 {
-                vault.initial_balance = OFFERED_TEST_VAULT_BALANCE;
+                vault.initial_balance = u128::from(OFFERED_TEST_VAULT_BALANCE);
             }
         }
     }
@@ -299,6 +299,8 @@ impl GenesisBuilder {
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
+            fs_bundle: Vec::new(),
+            consensus_fs_snapshot_cadence: None,
         })
     }
 
@@ -323,7 +325,7 @@ impl GenesisBuilder {
         //     parameters.2.proof_of_stake.min_phlo_price = 1;
         //     for vault in parameters.2.vaults.iter_mut() {
         //         if vault.initial_balance > 0 {
-        //             vault.initial_balance = OFFERED_TEST_VAULT_BALANCE;
+        //             vault.initial_balance = u128::from(OFFERED_TEST_VAULT_BALANCE);
         //         }
         //     }
         // }

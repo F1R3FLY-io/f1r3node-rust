@@ -103,6 +103,7 @@ pub fn classify_errors(
             | ArgumentOutOfRange(_)
             | BundlePermissionError(_)
             | ValueTypeError(_)
+            | BitmaskBitsCleared { .. }
             | TermStructureError(_) => (Some(PhloFailure::User), None),
             OutOfPhlogistonsError | RSpaceError(SpaceError::OutOfPhlogistons) => {
                 (Some(PhloFailure::Certificate), None)

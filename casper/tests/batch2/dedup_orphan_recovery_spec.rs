@@ -29,10 +29,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
 // Added by DR-134 (DR-65, gap G2): the offered checkpoint takes pending
 // candidates.
 use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 // Changed by DR-134 (DR-65, gap G2): the snapshot takes the offered shard
 // configuration (`offered_shard_conf`), so `CasperShardConf` is not named.

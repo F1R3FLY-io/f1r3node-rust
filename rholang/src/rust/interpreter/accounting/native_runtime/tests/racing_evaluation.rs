@@ -177,6 +177,19 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for InFligh
         self.inner.create_checkpoint().await
     }
 
+    async fn get_data_at(
+        &self,
+        checkpoint: &rspace_plus_plus::rspace::checkpoint::SoftCheckpoint<
+            Par,
+            BindPattern,
+            ListParWithRandom,
+            TaggedContinuation,
+        >,
+        channel: &Par,
+    ) -> Vec<Datum<ListParWithRandom>> {
+        self.inner.get_data_at(checkpoint, channel).await
+    }
+
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
         self.inner.get_data(channel).await
     }
@@ -333,6 +346,7 @@ async fn native_parallel_branches_run_concurrently() {
         &mut Vec::new(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .expect("the play environment starts");

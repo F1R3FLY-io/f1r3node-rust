@@ -133,10 +133,10 @@ pub(crate) fn has_chain_level_conflict(chains: &[DeployChainIndex]) -> bool {
 pub(crate) fn base_number(
     reader: &RhoHistoryReader,
     channel: &Blake2b256Hash,
-) -> Result<i64, HistoryError> {
+) -> Result<num_bigint::BigInt, HistoryError> {
     let read_number =
         RholangMergingLogic::convert_to_read_number(|hash: &Blake2b256Hash| reader.get_data(hash));
-    Ok(read_number(channel)?.unwrap_or(0))
+    Ok(read_number(channel)?.unwrap_or_default())
 }
 
 /// The fast path. `Ok(None)` sends the merge to the slow path. An error is
@@ -230,7 +230,7 @@ pub(crate) fn try_compose(i: &FastPathInputs<'_>) -> Result<Option<FastPathOutco
         return Ok(None);
     }
     // F13 (P8): the full set's sign splits fit, one merge type per channel,
-    // and every contributor channel ends in [0, i64::MAX].
+    // and every contributor channel ends in [0, 2^INTEGER_ADD_BITS - 1].
     let mut purse_ledger = PurseLedger::default();
     if !branches.iter().all(|branch| purse_ledger.try_add(branch)) {
         return Ok(None);

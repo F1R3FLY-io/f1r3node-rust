@@ -1,7 +1,7 @@
 ---
 doc_type: completed_tasks
 version: "1.0"
-last_updated: 2026-08-19
+last_updated: 2026-10-23
 ---
 
 # Completed Tasks
@@ -19,6 +19,348 @@ This document archives completed epics and tasks for historical reference and pr
 ## Completed Epics
 
 <!-- Epics are listed in reverse chronological order (newest first) -->
+
+---
+
+### EPIC-026: Hierarchical CbC Attributes (Nested .gitattributes Files)
+
+```yaml
+---
+epic_id: EPIC-026
+title: "Hierarchical CbC Attributes (Nested .gitattributes Files)"
+status: complete
+completed_date: 2026-10-23
+priority: p2
+user_story: null
+blocked_by: []
+created_at: 2026-10-12
+updated_at: 2026-10-23
+plan: docs/plans/cbc-hierarchical-attributes.md
+claimed_by: claude-session-f1r3node-rust-epic026
+claimed_at: 2026-10-22T13:00:00Z
+previous_claim: "claude-session-dfac55a4 (2026-10-12T14:00:00Z), the session that opened the epic"
+claim_publication: "The claim and the cross-repository messages for R7 publish to the INBOX entry in top-level-gitlab-profile docs/ToDos.md on the dev branch: https://gitlab.com/smart-assets.io/gitlab-profile/-/tree/dev"
+branch: chore/cbc-hierarchical-attributes
+pr_base_branch: dev
+origin: "On 2026-10-12 the maintainer asked to move the cbc=mandatory tags out of the flat root .gitattributes (160 lines) into .gitattributes files in subdirectories, following the new CbC workflow in top-level-gitlab-profile."
+roles:
+  design: "top-level-gitlab-profile owns the design, the tooling change, and its tests (its docs/ToDos.md INBOX entry of 2026-10-12)."
+  implementation: "This epic. It applies the ratified design to this repository and reorganizes the .gitattributes files."
+execution_contract:
+  design_policy: "No change to any .gitattributes file before the maintainer approves the design. The rule moves follow docs/plans/cbc-hierarchical-attributes.md. The revised R1 to R7 apply: the owner map routes proposals only, existing rules keep their coverage, and R7 is a separate change."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+decisions:
+  - "2026-10-12: the user approved the revised R1 to R6 and the shared tooling plan (top-level-gitlab-profile INBOX entry). R7 is deferred."
+  - "2026-10-22: the maintainer approved the owner map of plan section 4: formal/, scripts/, casper/, crypto/, rspace++/, .github/, block-storage/, node/, shared/. The root keeps rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
+  - "2026-10-22: the maintainer added rholang/ and docs/ as owners for those two paths. The root file keeps no cbc rule, so the shared lint reports no potential_override for the owner files."
+  - "2026-10-22: the maintainer approved R7. A per-path cbc-evidence attribute selects the evidence directory. Precedence: the attribute, then CBC_EVIDENCE_DIR, then docs/cbc-evidence. The value is a repository-relative directory inside the worktree. The implementation goes to top-level-gitlab-profile (gitlab.com/smart-assets.io/gitlab-profile) as a merge request into dev and a new tag."
+tooling: "top-level-gitlab-profile e8ba49f: cbc.sh attributes snapshot, compare, lint, route, apply. Tag v2026.10.12 points to 9b056f4, which contains e8ba49f with byte-identical CbC tooling."
+baseline:
+  root_file: "On 2026-10-22 (branch head c7ceb2f40), .gitattributes has 166 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 130) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
+  snapshot: "2026-10-22, c7ceb2f40: 3849 tracked files, 408 cbc=mandatory paths (346 high, 62 medium), no errors, no ambient sources. Per owner: formal/ 155, scripts/ 104, casper/ 68, crypto/ 27, rspace++/ 19, .github/ 16, block-storage/ 8, node/ 5, shared/ 4, root 2."
+  evidence_dirs: "docs/cbc-evidence/ (tooling default) and docs/casper/cbc-evidence/ (selected through CBC_EVIDENCE_DIR in docs/casper/README.md)."
+  acceptance: "No entry sets cbc-acceptance yet."
+tasks:
+  - id: TASK-026-1
+    title: "Record the attribute baseline"
+    status: complete
+    progress:
+      - "2026-10-22: PR #700 comment 6349907432 records the c7ceb2f40 baseline: tooling e8ba49f, 408 mandatory paths, per-owner counts, and the SHA-256 of the working-tree snapshot (7b54b81a8313b3ec5b97a509553b9eccdd18a78b50b2395520c47b3639dea449) and the index snapshot (b905a048e7486f0f8567ea89837d08e1d6be66fe32a6fd66cc1d52380118cf7a)."
+    blocked_by: []
+    acceptance:
+      - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
+  - id: TASK-026-2
+    title: "Declare the owner directories"
+    status: complete
+    blocked_by: []
+    acceptance:
+      - "Each of the eleven owner directories of plan section 4 has a .gitattributes file after TASK-026-3."
+      - "cbc.sh attributes route sends a candidate path in each owner directory to that owner file."
+      - "This repository adds no owner configuration. The snapshot diff stays empty."
+    decision: "2026-10-22: Option A. The owner files route proposals through the R1 nearest-ancestor rule. The shared tooling reads attribute_owners only from its own config."
+  - id: TASK-026-3
+    title: "Move the rules into the owner .gitattributes files"
+    status: complete
+    progress:
+      - "2026-10-22 formal/: 4 glob rules, 155 paths (6a54ca309). compare shows no change on an existing path, for the working tree and the index."
+      - "2026-10-22 scripts/: 16 rules, 104 paths, including both copies of the scripts/ci/check-tla-invariants.sh duplicate for TASK-026-4 (710a9f309)."
+      - "2026-10-22 casper/: 64 rules, 68 paths (e0f236bdf)."
+      - "2026-10-22 crypto/: 27 rules, 27 paths. Every tracked crypto/ file has a tag (f911c862b)."
+      - "2026-10-22 rspace++/: 19 rules, 19 paths (570a35c7e)."
+      - "2026-10-22 .github/: 17 rules, 16 paths, including both copies of the /workflows/slashing-tests.yml duplicate for TASK-026-4 (50a2fbd85)."
+      - "2026-10-22 block-storage/: 8 rules, 8 paths (e622ed516)."
+      - "2026-10-22 node/ (5 rules), shared/ (4), rholang/ (1), and docs/ (1) in one commit at the maintainer request. compare after each owner showed no change on an existing path. The empty root .gitattributes is removed. All 408 mandatory paths keep their values."
+    blocked_by: []
+    acceptance:
+      - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
+      - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
+      - "No owner file uses an [attr] macro."
+      - "After each commit, compare reports no change on an existing path, for the working tree and the index. The only new paths are the owner .gitattributes files."
+      - "rholang/.gitattributes holds /src/rust/interpreter/reduce.rs and docs/.gitattributes holds /crypto/README.md."
+      - "The root file keeps no cbc rule."
+  - id: TASK-026-4
+    title: "Remove the duplicate lines"
+    status: complete
+    progress:
+      - "2026-10-22: removed line 8 of .github/.gitattributes and line 11 of scripts/.gitattributes. Both paths keep cbc=mandatory and cbc-weight=high. compare shows no change on an existing path, and lint reports no diagnostic."
+    blocked_by: [TASK-026-3]
+    acceptance:
+      - "A separate commit removes the second copy of /workflows/slashing-tests.yml in .github/.gitattributes and /ci/check-tla-invariants.sh in scripts/.gitattributes."
+      - "compare reports no change on an existing path."
+  - id: TASK-026-5
+    title: "Prove that the migration is exact"
+    status: complete
+    progress:
+      - "2026-10-22 snapshot: compare against the c7ceb2f40 baseline shows no change on an existing path, for the working tree and the index (39157e82f). The only changed paths are the eleven owner files and the removed root file."
+      - "2026-10-22 lint: cbc.sh attributes lint and lint --cached report no diagnostic and no error at 39157e82f."
+      - "2026-10-22 gate: cbc discharge --strict --json over all 408 mandatory files gives the same result at c7ceb2f40 and at 39157e82f: 217 discharged, 85 pending, 93 none, 14 waived, 179 gaps, exit 4 at both. The per-file results are identical. One of the 14 waived rows has a null path (see the TASK-026-7 defect note), so the output has 409 rows."
+      - "2026-10-22 verifier: the independent verifier (top-level-gitlab-profile agent, tooling e8ba49f9af9e) returned pass for base c7ceb2f40 and head c50b4604c. No effective policy difference by path, working tree and index equivalent, 408 mandatory paths (346 high, 62 medium), head lint clean, rules 166 to 164 (two exact duplicates removed), strict discharge output identical (sorted items SHA-256 9d3dac802b69d9bb86760bacd01d0fedcd0db390100bf6ef808891276d7c8c07), source checkouts unchanged."
+      - "The result confirms migration equivalence, not a passing gate. The 179 gaps existed before the migration."
+    blocked_by: [TASK-026-4]
+    acceptance:
+      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work and the new owner .gitattributes files. Each such path is recorded with its commit. A new owner file is a new tracked path with no cbc attribute."
+      - "Both working-tree and index snapshots are compared against their respective baselines. The index comparison uses --cached for both snapshot and compare commands."
+      - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
+      - "cbc discharge --strict gives the same result at the branch base and the branch head."
+      - "The independent verifier in top-level-gitlab-profile confirms the result."
+  - id: TASK-026-6
+    title: "Set the evidence directory per path"
+    status: complete
+    blocked_by: []
+    decisions:
+      - "2026-10-22: the maintainer chose shared-tooling support for several claims on one artifact (D1 option a). The consumer does not drop or merge claims. The request goes to top-level-gitlab-profile."
+      - "2026-10-22: TASK-026-6 stays on PR #700 (chore/cbc-hierarchical-attributes). No separate consumer branch."
+    decision: "2026-10-22: the maintainer approved the canonical R7 tooling release at top-level-gitlab-profile bb830b285a3dc831a34826975b18a4f4a296b011, with the recorded advisory scan limitations. The approval covers the canonical tooling only, not the GitHub skill-mirror publication."
+    progress:
+      - "2026-10-22 profile agent: R7 work is based on top-level-gitlab-profile 95c5a089. A focused fix is not committed yet: ledgers compare by filesystem identity, duplicate summary rows are suppressed, and four regression tests are added. Generated resources need a regeneration, and two generated summaries omit case-equivalent filenames. Blocker: the guarded sandbox has no cached PyYAML. Not ready for adoption and not approved for release. Keep the current tooling pin."
+      - "2026-10-22 review F1: /cbc runs from the local top-level-gitlab-profile checkout, which is at 2130175 on dev. The R7 routing and the stricter ledger parser therefore already apply to /cbc runs here. The e8ba49f pin is a record only and does not hold R7 back."
+      - "2026-10-22 review F2: the casper/src/rust/util/rholang/interpreter_util.rs ledger holds two records (waived, then discharged). e8ba49f reports discharged. 551b1845 reports invalid_record. The other 407 statuses and the 179 gaps are unchanged."
+      - "2026-10-22 recheck at bb830b2: F1 to F6 resolved. The design requires an immutable tooling checkout with a recorded full commit ID for consumer acceptance and migration runs, and forbids repair by selecting a favorable record."
+      - "2026-10-22 C1: three artifacts have independent ledgers in docs/cbc-evidence and docs/casper/cbc-evidence with conflicting statuses: .github/workflows/slashing-tests.yml (pending vs discharged), scripts/bench/write-soak-summary.sh (pending vs discharged), scripts/ci/check-tla-invariants.sh (discharged vs pending)."
+      - "2026-10-22 C2: ten Casper ledgers use lowercase filenames, for example formal-tlaplus-casper-soak-campaign-campaigncontrol-tla.md, while the tooling slug keeps the path case (CampaignControl). The lookup works on a case-insensitive filesystem only, so the gate result depends on the platform."
+      - "2026-10-22: tag cbc-r7-bb830b2 (bb830b285a3d) is released and verified. An immutable copy of the tagged tree is extracted for adoption runs."
+      - "2026-10-22 adoption review: the interpreter_util.rs ledger and the three C1 ledger pairs record two independent claims per artifact, not duplicate records. Keeping one ledger would drop a claim. The default selection hides a pending claim on scripts/ci/check-tla-invariants.sh."
+      - "2026-10-22 adoption review: check-casper-claims.rs derives ledger names with case kept and has a lowercase exception for scripts/casper-soak/Cargo.toml. The C2 renames therefore change CbC-mandatory code and need a CbC review package and acceptance."
+      - "2026-10-22 C2 done, pending acceptance: ten Casper ledgers and their docs/cbc-evidence symlinks use the tooling slug with case kept. check-casper-claims.rs uses the shared slug rule without the Cargo.toml exception (126 of 127 audited slugs unchanged). The claim audit, the regression tests, and the cbc-r7-bb830b2 strict discharge give unchanged results. Review package: docs/casper/cbc-evidence/runs/casper-claims-ledger-slug-20261022-01/report.json."
+      - "2026-10-22 C2 accepted: jltatbeach accepted the review package on PR #700 (comment 6351702378) at revision 56ff30370. The check-casper-claims.rs ledger records digest 67408ac6 with acceptance record runs/casper-claims-ledger-slug-acceptance-20261022-01."
+      - "2026-10-22 R8 adopted: tag cbc-r8-8a64da8 (8a64da86482a, annotated, tag pipeline 2978758874 succeeded), extracted read-only. The four two-claim artifacts are named collections in their routed Casper ledgers with explicit claim IDs. The moved docs/cbc-evidence ledgers are symlinks, and each original ledger is cited by its Git blob at a59d92667. Strict discharge stays at 179 gaps. interpreter_util.rs changes from invalid_record to waived, and check-tla-invariants.sh changes from discharged to pending because its pending claim is now counted."
+      - "2026-10-22 R8 auditor: check-casper-claims.rs selects the audited claim record from a named ledger and fails closed on other layouts. Review package runs/casper-r8-named-claims-20261022-01, pending acceptance."
+      - "2026-10-23 binding pin: the Slashing test suite (run 39873743499) failed because check-casper-soak-bindings.sh pinned the claims suite to 3 passed, and it failed with no message. The pin is 4, a mismatch names the suite and both result lines, and a failed container prints its output. The script joins the R8 review package. Mergify cancelled the queue request of 2026-10-22 23:24Z because commits were pushed after it."
+      - "2026-10-23 R8 accepted: jltatbeach accepted the review package on PR #700 (comment 6363192996) at revision c49e736c2, after CI run 39940746978 and Slashing test suite run 39940746980 passed. The check-casper-claims.rs, claims.rs, and check-casper-soak-bindings.sh ledgers use acceptance record runs/casper-r8-named-claims-acceptance-20261023-01."
+      - "2026-10-23 tooling pin: the record moves from e8ba49f to tag cbc-r8-8a64da8 (8a64da86482aaa9dbf55fc9cf30a4ebc23d28d34). The tag contains R7. The verification runs use a read-only git archive of the tag."
+      - "2026-10-23 routing (maintainer decision: route all): the owner files set cbc-evidence=docs/casper/cbc-evidence on the 184 mandatory Casper artifacts that were not routed. formal /tlaplus/casper_soak/** and scripts /casper-soak/** carry the attribute on their glob lines. casper /src/rust/finality/** keeps its glob, and two exact lines route deploy_lifecycle.rs and floor_context.rs. Twenty exact lines in .github, casper, node, and scripts get the attribute."
+      - "2026-10-23 routing check with cbc-r8-8a64da8: attributes compare reports 184 changed paths, and each change only adds cbc-evidence. attributes lint reports no error, override, duplicate, or diagnostic. No non-Casper mandatory file is routed to docs/casper/cbc-evidence."
+      - "2026-10-23 symlinks (recorded decision: remove): the 193 docs/cbc-evidence symlinks into docs/casper/cbc-evidence are removed. Five of them belong to artifacts that are not cbc=mandatory (two deleted Python files, two design documents, and test-soak-disk-admission.sh). Two live references now use docs/casper/cbc-evidence (formal/tlaplus/soak_disk/README.md and the references list of CLAIM-SOAK-001). Historical run records keep their old paths."
+      - "2026-10-23 discharge check: cbc discharge --strict over the 408 mandatory files, with CBC_EVIDENCE_DIR unset, gives 408 rows and 179 gaps (exit 4) before and after. The per-file statuses are identical. check-casper-claims exits 0, and the models, claims, and interruption tests pass (4, 4, 2)."
+    acceptance:
+      - "Adoption runs use an immutable checkout of the R7 tag with no tracked changes, and the full tooling commit ID is recorded."
+      - "interpreter_util.rs and the three C1 artifacts keep both claims in one ledger, in the multi-claim format of the shared tooling. No claim is dropped, and each artifact status is its weakest claim."
+      - "C2 (complete, accepted 2026-10-22): each Casper ledger and docs/cbc-evidence symlink uses the tooling slug, including its case. A discharge run on a case-sensitive filesystem gives the same statuses as on macOS."
+      - "The tooling pin moves to the tag that contains R7."
+      - "The owner files set cbc-evidence=docs/casper/cbc-evidence on the Casper claim paths. compare reports only cbc-evidence changes on those paths."
+      - "cbc discharge --strict gives the same per-file statuses as before the change, without CBC_EVIDENCE_DIR."
+      - "check-casper-claims and check-casper-soak-bindings.sh pass. The docs/cbc-evidence symlinks are kept or removed by a recorded decision."
+    notes:
+      - "2026-10-12: deferred. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the migration does not need R7."
+  - id: TASK-026-7
+    title: "Verify the /cbc commands against the migrated layout"
+    status: complete
+    blocked_by: [TASK-026-5]
+    notes:
+      - "2026-10-22: added at the maintainer request. The migration is complete only when the current /cbc slash commands work with the owner files."
+      - "Known defect, before the migration and unchanged by it: the ledger docs/casper/cbc-evidence/casper-src-rust-util-rholang-interpreter-util-rs.md holds two JSON records. cbc discharge then emits an extra waived row with path null. Record it as a defect in this task."
+      - "2026-10-23 check run: tooling top-level-gitlab-profile tag cbc-r8-8a64da8 (8a64da86482aaa9dbf55fc9cf30a4ebc23d28d34), a read-only git archive. Base d75bb6cfc (merge base with dev), head 8401cf73e plus five routes. The base runs use an extracted base tree with a temporary index."
+      - "2026-10-23 identify: /cbc identify over all tracked files finds the same 408 CbC-mandatory files at base (root .gitattributes) and at head (owner files)."
+      - "2026-10-23 discharge and status: discharge --strict without CBC_EVIDENCE_DIR gives 408 rows, 179 gaps, and exit 4 at base and head. /cbc status gives 322 rows at base and head. The only status differences are the two R8 changes that the R8 package records and the maintainer accepted: interpreter_util.rs invalid_record to waived, and check-tla-invariants.sh discharged to pending."
+      - "2026-10-23 defect found and fixed: after the symlink removal, /cbc status hid the five Casper ledgers of artifacts that are not cbc=mandatory. Exact lines in docs/.gitattributes and scripts/.gitattributes now route them with cbc-evidence only, and status parity holds."
+      - "2026-10-23 review and scaffold: cbc-identify-critical.sh proposes 14 new tags. Each goes to the nearest owner file with an anchored exact-file rule, and none goes to the root file. cbc-scaffold.sh --dry-run plans the same 14 rules (12 in casper, 2 in crypto) and changes no file. attributes lint reports no error, override, duplicate, or diagnostic."
+      - "2026-10-23 known defect: the extra waived row with path null does not occur at base or head. The R8 named claims make both interpreter_util.rs claims readable."
+      - "2026-10-23 observations for the tooling owner, not failures: the scanner proposes crypto/.gitattributes itself as a candidate, and the 14 candidates include crypto/src/rust/hash/merkle.rs from PR #815. Tag ratification is outside this task."
+    acceptance:
+      - "The check records the top-level-gitlab-profile revision of the /cbc commands that it uses."
+      - "/cbc identify finds the same CbC-mandatory files at the branch base and at the branch head, for the same scope."
+      - "/cbc status and /cbc discharge --strict give the same ledger result at the branch base and at the branch head."
+      - "/cbc:review (cbc-identify-critical.sh) proposes each new tag in the nearest owner .gitattributes file with an anchored pattern, and not in the root file."
+      - "/cbc:scaffold in dry-run mode routes a new tag to the nearest owner file and changes no file."
+      - "/cbc attributes lint reports no error, no override, and no duplicate."
+      - "Each failure is recorded as a defect against the shared tooling or this repository before the epic closes."
+---
+```
+
+---
+
+### EPIC-020: Node Log and Accept-Path Self-Limits
+
+```yaml
+---
+epic_id: EPIC-020
+title: "Node Log and Accept-Path Self-Limits"
+status: complete
+completed_date: 2026-10-06
+priority: p0
+user_story: US-009
+user_flow: FLOW-002
+blocked_by: []
+created_at: 2026-09-23
+updated_at: 2026-10-06
+claimed_by: null
+branch: fix/node-log-and-accept-backoff
+pr_base_branch: dev
+stack_order: "Branches from dev and merges to dev before PR #447. PR #447 then merges dev. The soak branch inherits the fix through its next merge of the observation branch."
+origin: "On 2026-09-23 a nine-day compose network from a system-integration checkout filled 2.7 TB in one day. Its bootstrap ran out of file descriptors, the transport accept loop retried with no backoff and logged one ERROR line per attempt, the node wrote every line to its data volume and to stdout, and the container's json-file log had no size cap."
+execution_contract:
+  base_branch: dev
+  scope: "Make the node self-limiting under an error storm: backoff and rate-limited logging on accept failures, a byte-bounded file log, one sink per deployment, and a repository check that every node compose service caps its container log. Harness enforcement belongs to EPIC-017 on the soak branch."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  cbc_policy: "The transport server and the logging module carry no cbc tag today. Propose cbc=mandatory for the accept path with a pending claim before the fix lands, or record the maintainer decision that the change stays untagged."
+  cbc_decision: "The maintainer decided on 2026-09-30 that the accept path stays untagged for TASK-020-1. The regression tests in f1r3fly_server_resource_tests.rs are the verification."
+tasks:
+  - id: TASK-020-1
+    title: "Back off and rate-limit the transport accept-error path"
+    status: complete
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-30T00:40:00Z
+    verification_claimed_by: 01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    verification_claimed_at: 2026-09-30T01:03:01Z
+    verification_status: in_progress
+    blocked_by: []
+    work_log: docs/work-logs/archived/EPIC-020/transport-accept-resource-review-20260923.md
+    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. The approved story and flow repair now links EPIC-020 to US-009 and FLOW-002."
+    hosted_verification: docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json
+    hosted_run: 36651370411
+    hosted_job: 109688126217
+    unit_tests: [comm/src/rust/transport/f1r3fly_server_resource_tests.rs]
+    completion_blocker: null
+    remaining: []
+    files:
+      - comm/src/rust/transport/f1r3fly_server.rs
+    acceptance:
+      - "On an accept error the listener sleeps with exponential backoff, capped at one second, before the next accept."
+      - "Under sustained descriptor exhaustion the listener emits at most one ERROR line per backoff window and one summary line per minute with the suppressed count."
+      - "A test injects descriptor exhaustion against the listener and asserts the bounded line count and the recovery once descriptors return."
+      - "Ordinary accept throughput is unchanged. No backoff applies to a successful accept."
+    implementation_plan:
+      - "Step 1. Add a backoff state to the listener task: reset on success, double on error from 10 ms to 1 s."
+      - "Step 2. Route accept errors through a rate limiter that logs the first error, suppresses repeats inside the window, and logs a periodic summary with the suppressed count."
+      - "Step 3. Add the descriptor-exhaustion test with a lowered RLIMIT_NOFILE in a child process or a socket-pair fixture, and a regression that the current code fails."
+    completion_gaps: []
+    completed_date: 2026-09-30
+  - id: TASK-020-2
+    title: "Bound the file log by bytes, not only by time"
+    status: complete
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T01:20:37Z
+    blocked_by: []
+    work_log: docs/work-logs/archived/EPIC-020/task-020-2-byte-bounded-logging-20260930.md
+    files:
+      - shared/src/rust/tracing_init/mod.rs
+      - shared/src/rust/tracing_init/bounded_file.rs
+      - node/src/main/resources/defaults.conf
+      - node/src/rust/configuration/mod.rs
+    acceptance:
+      - "logging.file accepts a maximum size per file and a maximum total size for the log directory, with defaults that bound a node to a few gigabytes."
+      - "When the total bound is reached the oldest rotated file is removed before the appender writes further."
+      - "A test drives a hot error loop through the appender and asserts the directory never exceeds the bound."
+      - "The defaults comment no longer describes minutely rotation as the only way to bound disk use."
+    implementation_plan:
+      - "Step 1. Extend the rotation configuration with size-based rolling alongside the existing period."
+      - "Step 2. Enforce the total directory bound in the appender with an oldest-first eviction."
+      - "Step 3. Add the appender test and update the configuration test that pins daily rotation."
+    unit_tests: [shared/src/rust/tracing_init/mod.rs, shared/src/rust/tracing_init/bounded_file.rs, node/src/rust/configuration/mod.rs]
+    completion_gaps: []
+    completed_date: 2026-09-30
+  - id: TASK-020-3
+    title: "One sink per deployment and a container log cap check"
+    status: complete
+    completed_on: "2026-09-30"
+    recorded_by: claude-session-f3cbc961
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T02:23:57Z
+    claimed_at_source: clock_checkpoint_after_claim
+    blocked_by: []
+    work_log: docs/work-logs/archived/EPIC-020/task-020-3-deployment-log-caps-20260930.md
+    implementation_status: "The node deployment commands and repository guards pass at 7d64c9d03. The external single-sink change merged into system-integration dev on 2026-09-30. Its main promotion is pending and is appended when it lands."
+    external_handoff: docs/handoffs/task-020-3-system-integration-20260930.md
+    external_main_revision: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+    external_single_sink_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
+    external_change:
+      repository: F1R3FLY-io/system-integration
+      pull_request: 146
+      branch: fix/single-log-sink-per-deployment
+      base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
+      receiver: claude-session-fbb1f4d0
+      dev_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
+      dev_merged_at: 2026-09-30T22:10:44Z
+      main_promotion_revision: null
+      request_record: "system-integration docs/ToDos.md, section REQUEST: one node log sink per deployment (SI-TASK-020-3)"
+    sink_contract:
+      compose_and_smoke_test: "stdout through sink = stdout in conf/rust.conf and conf/standalone-dev.conf, bounded by json-file 100m x 3, read by docker logs and shardctl"
+      integration_docker_provider: "file through --log-sink=file before run at 6 launch sites (NODE_LOG_SINK_ARGS in integration-tests/test/infra/compose.py), read from /var/lib/rnode/logs/node.log*"
+      integration_subprocess_provider: "stdout through the conf, read from the captured process output"
+      development_override: "both only through an explicit --log-sink=both before run"
+    external_verification:
+      - "unit-tests/test_log_sink_policy.py at ccd717195: 34 passed (run from a git archive export with the repository Poetry environment)."
+      - "poetry run pytest unit-tests at the PR head: 355 passed. ruff 0.16.0 check and format clean."
+      - "docker compose config for the 5 node variants: 11 node services, all json-file 100m and 3 files, Compose files unchanged."
+      - "Live suites (system-integration commit e7163d57): test_heartbeat passed in PR CI. test_token_metadata standalone and shared, and test_shard_degradation: 15 of 15 passed locally with F1R3FLY_NODE_DEFAULTS_CONF set."
+    node_verification_at_7d64c9d03:
+      - "scripts/ci/test-compose-log-policy.sh: shard-vps2 3, ci-shard 5, ci-standalone 1 node services passed."
+      - "cargo nextest run -p node --test log_sink_cli: 3 passed."
+      - "scripts/supply-chain cargo test --test repository: 18 passed."
+      - "Pre-commit fmt, clippy, test, and deny passed at the merge commit 7d64c9d03 (dev ccd4a4823 merged)."
+    remaining_outside_this_task:
+      - "The byte limits of node commit 6e1c8833a reach system-integration runs through the next node repin of SYSTEM_INTEGRATION_REF. TASK-020-4 on formal/soak-casper-consensus enforces them in the harness."
+      - "Append the system-integration main promotion revision to external_change when it lands."
+    unit_tests: [scripts/supply-chain/tests/repository.rs, scripts/supply-chain/tests/support/compose_logging.rs, node/tests/log_sink_cli.rs]
+    files:
+      - Cargo.lock
+      - scripts/supply-chain/Cargo.toml
+      - scripts/supply-chain/tests/repository.rs
+      - scripts/supply-chain/tests/support/compose_logging.rs
+      - scripts/ci/test-compose-log-policy.sh
+      - node/tests/log_sink_cli.rs
+      - docker/shard.yml
+      - docker/standalone.yml
+      - docker/observer.yml
+      - docker/validator4.yml
+      - docker/shard.vps1.yml
+      - docker/shard.vps2.yml
+      - docs/node/README.md
+    acceptance:
+      - "Every compose service in this repository that runs a node image sets logging.options.max-size and max-file."
+      - "A repository test fails when a node compose service lacks the cap, in the same style as the workflow cache-write test."
+      - "Deployment defaults use one sink. The sink both is documented as a development setting that doubles disk use."
+      - "The system-integration compose file receives the same cap through a coordinated change in that repository, recorded here with its merge revision."
+    notes:
+      - "The six base Compose files already cap at 100m and three files. The CI port overlays inherit these limits."
+      - "The monitoring Compose file has no blockchain node service. Its storage policy is outside this task."
+      - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
+  - id: TASK-020-4
+    title: "Harness enforcement of node log growth under EPIC-017"
+    status: complete
+    completed_at: 2026-10-05
+    reopened_at: 2026-10-05
+    reopened_reason: "The PR #622 review of 2026-10-05 found two probe defects. A container that stopped during a sample caused a false breach. An unreadable rotated container log was skipped without a report. The fix changes the driver and the disk fixture, so the acceptance of 2026-10-04 does not cover the new bytes."
+    resolution: "First version implemented in 83a41b564 (PR #622). Review package casper-soak-log-budget-guardian-20261004-01 at 6ea45dc8f, accepted by jltatbeach in PR #622 comment 5983133741. The acceptance package casper-soak-log-budget-guardian-acceptance-20261004-01 and the ledger records of the driver and the disk fixture carry the new digests. The probe fix 82fe22a0a has review package casper-soak-log-budget-guardian-20261005-01 at 1a04095da, accepted by jltatbeach in PR #622 comment 6005866151. The acceptance package casper-soak-log-budget-guardian-acceptance-20261005-01 and the two ledger records carry the new digests."
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-04T14:36:28Z
+    claim_history: "claude-session-f3cbc961 claimed the task on 2026-10-02 and committed the design (e7e376a69). The user transferred the claim on 2026-10-04 for implementation on chore/finish-TASK-020-4-log-growth."
+    mirrored_as: TASK-017-17
+    design: docs/casper/design/soak-log-budget-guardian.md
+    implementation_status: "Implemented on chore/finish-TASK-020-4-log-growth on 2026-10-04. The driver samples the container json-file log and the node log directory of each owned container, refuses admission on an unreadable probe, and breaches on 3 strikes or one sample at two times the budget. Ten log scenarios in scripts/bench/test-soak-disk-admission.sh pass in the disposable container, and the breach and refusal scenarios fail against the previous driver. CLAIM-SOAK-001 records the log caps as enforced. The 2026-10-05 fix skips a container that stops during a sample and fails the probe on a rotated log that exists but cannot be read. Scenarios log-probe-vanished and log-rotated-unreadable pass, and both fail against the driver at 514eb3026. All 12 log scenarios pass. The maintainer accepted the fix on 2026-10-05."
+    owner_branch: formal/soak-casper-consensus
+    blocked_by: []
+    blockers_cleared: "TASK-020-1 and TASK-020-2 are complete. The implementation runs as TASK-017-17 on the soak branch."
+    acceptance:
+      - "The soak guardian samples the node log directory and the container json-file size, not only free space, and stops the run when either exceeds its budget."
+      - "A soak fixture injects descriptor exhaustion into a node and asserts the guardian and the node limits hold."
+      - "CLAIM-SOAK-001 records the log cap as an enforced check instead of an assumption."
+    notes:
+      - "This task is tracked here for ordering only. The downstream agent mirrors it into EPIC-017 on the soak branch, where the claim and the driver live."
+---
+```
+
+**Current state (archived 2026-10-06):** TASK-020-1, TASK-020-2, and TASK-020-3 merged to dev through PR #451 on 2026-10-03 and reached master with the soak stack. TASK-020-4 is implemented on PR #622: the soak guardian samples the node log directory and the container json-file size, and CLAIM-SOAK-001 records the log caps as enforced. The maintainer accepted the first version on 2026-10-04 and the probe fix on 2026-10-05. Soak 37343966570 runs the guardian for the first time. Also open: the TASK-020-1 verification status and the system-integration main promotion revision of TASK-020-3.
 
 ---
 
@@ -393,6 +735,8 @@ tasks:
 | Period | Epics Completed | Tasks Completed | Notes |
 |--------|------------------|-----------------|-------|
 | 2026-03 | 3 | 9 | Repo bootstrap: extraction, tooling, CI |
+| 2026-08 | 4 | 12 | EPIC-001, EPIC-002, EPIC-005, EPIC-011 |
+| 2026-10 | 1 | 4 | EPIC-020 node log and accept-path self-limits |
 
 ---
 

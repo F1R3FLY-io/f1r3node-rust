@@ -342,6 +342,8 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
 
     // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6 with the
@@ -599,7 +601,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             // Changed by DR-134 (DR-66 item 1): the vault funds the hold of
             // an offer at its signed limit.
             // initial_balance: 9_000_000,
-            initial_balance: OFFERED_VAULT_BALANCE,
+            initial_balance: u128::from(OFFERED_VAULT_BALANCE),
         }],
         supply: i64::MAX,
         // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6.
@@ -608,6 +610,8 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
 
     // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6 with the
@@ -919,6 +923,8 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
 
     // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6 with the
@@ -1173,6 +1179,8 @@ async fn run_visible_blocks_scope_test() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
 
     // Changed by DR-134 (DR-66 item 5): test genesis uses protocol 6 with the

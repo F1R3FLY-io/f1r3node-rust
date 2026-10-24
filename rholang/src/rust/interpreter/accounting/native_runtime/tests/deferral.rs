@@ -114,6 +114,7 @@ async fn native_play(
         &mut Vec::new(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .expect("the play environment starts");
@@ -357,6 +358,7 @@ async fn native_dropped_play_aborts_its_deferred_tasks() {
         &mut Vec::new(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .expect("the play environment starts");

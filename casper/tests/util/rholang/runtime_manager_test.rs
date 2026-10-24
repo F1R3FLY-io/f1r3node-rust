@@ -141,7 +141,7 @@ async fn compute_offered_state(
 ) -> (StateHash, ProcessedUserDeploy) {
     let time_stamp = deploy.envelope.body().time_stamp;
     let adopted = adopted_policy(runtime_manager, &genesis_context.genesis_block).await;
-    let (new_state_hash, processed_deploys, _system, _bonds) = runtime_manager
+    let (new_state_hash, processed_deploys, _system, _bonds, _leaves) = runtime_manager
         .compute_state_with_bonds_envelopes(
             state_hash,
             vec![PendingDeployCandidate::Envelope(deploy.envelope)],
@@ -192,6 +192,81 @@ async fn replay_offered_state(
             Some(expected_post_state),
         )
         .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_parameters_compute_and_replay_the_same_state() {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signed::Cosigned;
+    use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+    use models::rust::deploy_envelope::DeployEnvelopeRef;
+    use models::rust::deploy_parameters::{DeployMapEntry, DeployParameter, RholangValue};
+    use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
+
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let pre_state = genesis_block.body.state.post_state_hash;
+            let offer = offered_deploy::source_deploy_now_full(
+                "new input(`rho:deploy:param:input`) in { @\"parameter-result\"!(*input) }".into(),
+                Some(1_000_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let DeployEnvelopeRef::OfferedFunded(offer) = offer.envelope.view() else {
+                panic!("expected an offer");
+            };
+            let mut data = offer.data.body().clone();
+            data.parameters = vec![DeployParameter {
+                name: "input".into(),
+                value: RholangValue::Tuple(vec![
+                    RholangValue::Nil,
+                    RholangValue::Uri("rho:io:stdout".into()),
+                    RholangValue::List(vec![RholangValue::Int(-1), RholangValue::Bytes(vec![255])]),
+                    RholangValue::Set(vec![RholangValue::Int(2), RholangValue::Int(1)]),
+                    RholangValue::Map(vec![DeployMapEntry {
+                        key: RholangValue::String("key".into()),
+                        value: RholangValue::Bool(false),
+                    }]),
+                ]),
+            }];
+            let payload = OfferedFundedDeploy::new(
+                data,
+                offer.data.funding_intent().to_vec(),
+                offer.data.phlo_limit(),
+                offer.data.phlo_price(),
+                offered_funded_v6_limits().envelope.payload,
+            )
+            .unwrap();
+            let signed = Cosigned::create_single_envelope(
+                payload,
+                Box::new(Secp256k1),
+                construct_deploy::DEFAULT_SEC.clone(),
+            )
+            .unwrap();
+            let deploy = OfferedDeploy::from_proto(OfferedFundedDeploy::to_proto(&signed).unwrap());
+            let (post_state, processed) =
+                compute_offered_state(&mut runtime_manager, &genesis_context, deploy, &pre_state)
+                    .await;
+            assert!(!processed.is_failed());
+            let processed = ProcessedUserDeploy::from_proto(processed.to_proto()).unwrap();
+            let replay_state = replay_offered_state(
+                &mut runtime_manager,
+                &genesis_context,
+                processed,
+                &pre_state,
+                &post_state,
+            )
+            .await
+            .unwrap();
+            assert_ne!(post_state, pre_state);
+            assert_eq!(replay_state, post_state);
+        },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -251,6 +326,183 @@ async fn comput_state_should_charge_for_deploys() {
             .unwrap();
 
             assert!(new_state_hash != gen_post_state && replay_state_hash == new_state_hash);
+        },
+    )
+    .await
+    .unwrap()
+}
+
+fn bitmask_flags_deploy(body: &str) -> OfferedDeploy {
+    offered_deploy::source_deploy_now_full(
+        format!(r#"new t(`rho:system:bitmaskMergeableTag`) in {{ {body} }}"#),
+        Some(100000),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+async fn play_and_replay_bitmask_deploy(
+    runtime_manager: &mut RuntimeManager,
+    genesis_context: &GenesisContext,
+    body: &str,
+    state_hash: &StateHash,
+) -> (StateHash, bool) {
+    let (new_state_hash, processed_deploy) = compute_offered_state(
+        runtime_manager,
+        genesis_context,
+        bitmask_flags_deploy(body),
+        state_hash,
+    )
+    .await;
+    let is_failed = processed_deploy.is_failed();
+    let replay_state_hash = replay_offered_state(
+        runtime_manager,
+        genesis_context,
+        processed_deploy,
+        state_hash,
+        &new_state_hash,
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay_state_hash, new_state_hash);
+    (new_state_hash, is_failed)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deploy_that_clears_bitmask_or_bits_fails_in_play_and_replay() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let rewrite = |value: i64| {
+                format!(r#"for (@_ <- @(*t, "flags-534")) {{ @(*t, "flags-534")!({value}) }}"#)
+            };
+
+            let (with_flags, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "flags-534")!(5)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(4),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "clearing bit 0 of a BitmaskOr channel must fail the deploy"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(7),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                !failed,
+                "setting bits on a BitmaskOr channel must still succeed"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "own-534")!(5) | for (@_ <- @(*t, "own-534")) { @(*t, "own-534")!(4) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed, "a deploy may clear bits it set itself");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "consuming a BitmaskOr value without putting it back must fail"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { @(*t, "flags-534")!({"k": 1}) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "replacing a BitmaskOr value with non-numeric data must fail"
+            );
+
+            let (with_join, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534") & @_ <- @"go-534") { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed);
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@"go-534"!(Nil)"#,
+                &with_join,
+            )
+            .await;
+            assert!(
+                failed,
+                "draining a BitmaskOr value through a waiting join must fail"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bitmask_or_writes_that_keep_every_bit_still_succeed() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+
+            let (with_leaf, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "leaf-534")!(0)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "leaf-534")) { @(*t, "leaf-534")!({"k": 1}) }"#,
+                &with_leaf,
+            )
+            .await;
+            assert!(!failed, "a zero bitmap may become a TreeHashMap leaf");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"new insert(`rho:registry:insertArbitrary`), uri in { insert!("value-534", *uri) }"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed, "a registry insert must still succeed");
         },
     )
     .await
@@ -326,7 +578,7 @@ async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
             // funding group. The zero budget stops the batch after its first
             // member, the group then holds a shipped and a dropped member, and
             // the first member runs again from the block pre-state alone (O-10).
-            // let (_state, processed, _sys, _bonds) = runtime_manager
+            // let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
             //     .compute_state_with_bonds(
             //         &gen_post_state,
             //         deploys,
@@ -342,7 +594,7 @@ async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
             //     )
             //     .await
             //     .unwrap();
-            let (_state, processed, _sys, _bonds) = runtime_manager
+            let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
                 .compute_state_with_bonds_envelopes(
                     &gen_post_state,
                     deploys
@@ -390,7 +642,7 @@ async fn an_ample_play_budget_carries_the_whole_pool() {
             let adopted = adopted_policy(&runtime_manager, &genesis_context.genesis_block).await;
 
             // Changed by DR-134 (DR-65, gap G2): the offered play of the batch.
-            // let (_state, processed, _sys, _bonds) = runtime_manager
+            // let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
             //     .compute_state_with_bonds(
             //         &gen_post_state,
             //         deploys,
@@ -406,7 +658,7 @@ async fn an_ample_play_budget_carries_the_whole_pool() {
             //     )
             //     .await
             //     .unwrap();
-            let (_state, processed, _sys, _bonds) = runtime_manager
+            let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
                 .compute_state_with_bonds_envelopes(
                     &gen_post_state,
                     deploys
@@ -727,7 +979,7 @@ async fn balance_deploy_should_compute_rev_balances() {
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[]),
                 },
-                |result| *result == 9000000,
+                |result| *result == 9000000.into(),
             )
             .await
             .unwrap();
@@ -889,42 +1141,51 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
             //     .compute_state(
             //         &gps,
             //         deploys0,
-            let (play_state_hash_0, processed_deploys_0, processed_sys_deploys_0, _bonds_0) =
-                runtime_manager
-                    .compute_state_with_bonds_envelopes(
-                        &gps,
-                        deploys0
-                            .into_iter()
-                            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
-                            .collect(),
-                        vec![
-                            casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                                CloseBlockDeploy {
-                                    initial_rand:
-                                        system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                            genesis_context.validator_pks()[0].clone(),
-                                            0,
-                                        ),
-                                },
-                            ),
-                        ],
-                        BlockData {
-                            time_stamp: time,
-                            block_number: 0,
-                            sender: genesis_context.validator_pks()[0].clone(),
-                            seq_num: 0,
-                        },
-                        None,
-                        // Added by DR-134 (DR-65, gap G2): no play budget, as
-                        // `compute_state` passes none, and the adopted policy.
-                        None,
-                        Some(&adopted),
-                    )
-                    .await
-                    .expect("block 0 plays");
+            let (
+                play_state_hash_0,
+                processed_deploys_0,
+                processed_sys_deploys_0,
+                _bonds_0,
+                _leaves,
+            ) = runtime_manager
+                .compute_state_with_bonds_envelopes(
+                    &gps,
+                    deploys0
+                        .into_iter()
+                        .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+                        .collect(),
+                    vec![
+                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                            CloseBlockDeploy {
+                                initial_rand:
+                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                        genesis_context.validator_pks()[0].clone(),
+                                        0,
+                                    ),
+                            },
+                        ),
+                    ],
+                    BlockData {
+                        time_stamp: time,
+                        block_number: 0,
+                        sender: genesis_context.validator_pks()[0].clone(),
+                        seq_num: 0,
+                    },
+                    None,
+                    // Added by DR-134 (DR-65, gap G2): no play budget, as
+                    // `compute_state` passes none, and the adopted policy.
+                    None,
+                    Some(&adopted),
+                )
+                .await
+                .expect("block 0 plays");
             // Added by DR-134 (DR-65, gap G2): the block carries all three
             // offers.
-            assert_eq!(processed_deploys_0.len(), 3, "block 0 carries its whole batch");
+            assert_eq!(
+                processed_deploys_0.len(),
+                3,
+                "block 0 carries its whole batch"
+            );
 
             let bonds0 = runtime_manager
                 .compute_bonds(&play_state_hash_0)
@@ -982,40 +1243,49 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
             //     .compute_state(
             //         &play_state_hash_0,
             //         deploys1,
-            let (play_state_hash_1, processed_deploys_1, processed_sys_deploys_1, _bonds_1) =
-                runtime_manager
-                    .compute_state_with_bonds_envelopes(
-                        &play_state_hash_0,
-                        deploys1
-                            .into_iter()
-                            .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
-                            .collect(),
-                        vec![
-                            casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                                CloseBlockDeploy {
-                                    initial_rand:
-                                        system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                            genesis_context.validator_pks()[0].clone(),
-                                            0,
-                                        ),
-                                },
-                            ),
-                        ],
-                        BlockData {
-                            time_stamp: time,
-                            block_number: 0,
-                            sender: genesis_context.validator_pks()[0].clone(),
-                            seq_num: 0,
-                        },
-                        None,
-                        // Added by DR-134 (DR-65, gap G2).
-                        None,
-                        Some(&adopted),
-                    )
-                    .await
-                    .expect("block 1 plays");
+            let (
+                play_state_hash_1,
+                processed_deploys_1,
+                processed_sys_deploys_1,
+                _bonds_1,
+                _leaves,
+            ) = runtime_manager
+                .compute_state_with_bonds_envelopes(
+                    &play_state_hash_0,
+                    deploys1
+                        .into_iter()
+                        .map(|deploy| PendingDeployCandidate::Envelope(deploy.envelope))
+                        .collect(),
+                    vec![
+                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                            CloseBlockDeploy {
+                                initial_rand:
+                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                        genesis_context.validator_pks()[0].clone(),
+                                        0,
+                                    ),
+                            },
+                        ),
+                    ],
+                    BlockData {
+                        time_stamp: time,
+                        block_number: 0,
+                        sender: genesis_context.validator_pks()[0].clone(),
+                        seq_num: 0,
+                    },
+                    None,
+                    // Added by DR-134 (DR-65, gap G2).
+                    None,
+                    Some(&adopted),
+                )
+                .await
+                .expect("block 1 plays");
             // Added by DR-134 (DR-65, gap G2).
-            assert_eq!(processed_deploys_1.len(), 2, "block 1 carries its whole batch");
+            assert_eq!(
+                processed_deploys_1.len(),
+                2,
+                "block 1 carries its whole batch"
+            );
 
             let bonds2 = runtime_manager
                 .compute_bonds(&play_state_hash_1)
@@ -1224,7 +1494,7 @@ async fn capture_result_should_return_the_value_at_the_specified_channel_after_a
                 .unwrap();
 
             assert!(result1.len() == 1);
-            assert!(result1[0] == ParBuilderUtil::mk_term("37").unwrap());
+            assert!(result1[0] == ParBuilderUtil::mk_term("37n").unwrap());
         },
     )
     .await
@@ -1404,7 +1674,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
             //     .compute_state(
             //         &genesis_post_state,
             //         vec![deploy],
-            let (play_post_state, processed_deploys, processed_system_deploys, _bonds) =
+            let (play_post_state, processed_deploys, processed_system_deploys, _bonds, _leaves) =
                 runtime_manager
                     .compute_state_with_bonds_envelopes(
                         &genesis_post_state,
@@ -1631,7 +1901,7 @@ async fn compute_state_should_charge_deploys_separately() {
             //             None,
             //         )
             //         .unwrap()],
-            let (_, first_deploy, _, _) = runtime_manager
+            let (_, first_deploy, _, _, _leaves) = runtime_manager
                 .compute_state_with_bonds_envelopes(
                     &genesis_post_state,
                     vec![PendingDeployCandidate::Envelope(
@@ -1684,7 +1954,7 @@ async fn compute_state_should_charge_deploys_separately() {
             //             None,
             //         )
             //         .unwrap()],
-            let (_, second_deploy, _, _) = runtime_manager
+            let (_, second_deploy, _, _, _leaves) = runtime_manager
                 .compute_state_with_bonds_envelopes(
                     &genesis_post_state,
                     vec![PendingDeployCandidate::Envelope(
@@ -1727,7 +1997,7 @@ async fn compute_state_should_charge_deploys_separately() {
             //     .compute_state(
             //         &genesis_post_state,
             //         vec![deploy0, deploy1],
-            let (_, compound_deploy, _, _) = runtime_manager
+            let (_, compound_deploy, _, _, _leaves) = runtime_manager
                 .compute_state_with_bonds_envelopes(
                     &genesis_post_state,
                     vec![
@@ -2056,7 +2326,7 @@ async fn invalid_offered_replay(
 
             let invalid_blocks = HashMap::new();
 
-            let (play_post_state, processed_deploys, processed_system_deploys, _bonds) =
+            let (play_post_state, processed_deploys, processed_system_deploys, _bonds, _leaves) =
                 runtime_manager
                     .compute_state_with_bonds_envelopes(
                         &gen_post_state,
@@ -2337,20 +2607,21 @@ async fn joins_should_be_replayed_correctly() {
             //     .compute_state(
             //         &gen_post_state,
             //         vec![deploy],
-            let (state_hash, processed_deploys, processed_sys_deploys, _bonds) = runtime_manager
-                .compute_state_with_bonds_envelopes(
-                    &gen_post_state,
-                    vec![PendingDeployCandidate::Envelope(deploy.envelope)],
-                    Vec::new(), // No system deploys
-                    block_data.clone(),
-                    Some(invalid_blocks.clone()),
-                    // Added by DR-134 (DR-66 item 1): no play budget, as
-                    // `compute_state` passes none, and the adopted policy.
-                    None,
-                    Some(&adopted),
-                )
-                .await
-                .unwrap();
+            let (state_hash, processed_deploys, processed_sys_deploys, _bonds, _leaves) =
+                runtime_manager
+                    .compute_state_with_bonds_envelopes(
+                        &gen_post_state,
+                        vec![PendingDeployCandidate::Envelope(deploy.envelope)],
+                        Vec::new(), // No system deploys
+                        block_data.clone(),
+                        Some(invalid_blocks.clone()),
+                        // Added by DR-134 (DR-66 item 1): no play budget, as
+                        // `compute_state` passes none, and the adopted policy.
+                        None,
+                        Some(&adopted),
+                    )
+                    .await
+                    .unwrap();
 
             // Changed by DR-134 (DR-66 item 1): the offered replay checks the
             // post-state that play computed.
@@ -2445,7 +2716,7 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
         //         play_block_data.clone(),
         //         None,
         //     )
-        let (play_post, play_deploys, play_sys_deploys, _bonds) = rm_play
+        let (play_post, play_deploys, play_sys_deploys, _bonds, _leaves) = rm_play
             .compute_state_with_bonds_envelopes(
                 &genesis_post_state,
                 vec![PendingDeployCandidate::Envelope(deploy.envelope)],
@@ -2562,7 +2833,7 @@ async fn cross_deploy_bridge_full_admin_flow() {
     //     .compute_state(
     //         &current_state,
     //         vec![deploy1],
-    let (post_state_1, pd1_vec, _, _bonds) = rm
+    let (post_state_1, pd1_vec, _, _bonds, _leaves) = rm
         .compute_state_with_bonds_envelopes(
             &current_state,
             vec![PendingDeployCandidate::Envelope(deploy1.envelope)],
@@ -2780,7 +3051,7 @@ in {{
         //     .compute_state(
         //         &current_state,
         //         vec![deploy],
-        let (post_state_n, pdn_vec, _, _bonds) = rm
+        let (post_state_n, pdn_vec, _, _bonds, _leaves) = rm
             .compute_state_with_bonds_envelopes(
                 &current_state,
                 vec![PendingDeployCandidate::Envelope(deploy.envelope)],
@@ -4218,7 +4489,7 @@ async fn parallel_replay_determinism() {
             //     .compute_state(
             //         &gps,
             //         vec![deploy],
-            let (play_state, processed_deploys, processed_sys_deploys, _bonds) = runtime_manager
+            let (play_state, processed_deploys, processed_sys_deploys, _bonds, _leaves) = runtime_manager
                 .compute_state_with_bonds_envelopes(
                     &gps,
                     vec![PendingDeployCandidate::Envelope(deploy.envelope)],
@@ -5106,7 +5377,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
     use casper::rust::engine::block_retriever::BlockRetriever;
@@ -5310,7 +5581,7 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
     //     .compute_state(
     //         &genesis_post_state,
     //         vec![deploy],
-    let (post_state, processed_deploys, processed_system_deploys, _bonds) = rm
+    let (post_state, processed_deploys, processed_system_deploys, _bonds, _leaves) = rm
         .compute_state_with_bonds_envelopes(
             &genesis_post_state,
             vec![PendingDeployCandidate::Envelope(deploy.envelope)],
@@ -5487,7 +5758,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     //     .compute_state(
     //         &genesis_post_state,
     //         vec![deploy],
-    let (post_state, processed_deploys, processed_system_deploys, _bonds) = rm
+    let (post_state, processed_deploys, processed_system_deploys, _bonds, _leaves) = rm
         .compute_state_with_bonds_envelopes(
             &genesis_post_state,
             vec![PendingDeployCandidate::Envelope(deploy.envelope)],

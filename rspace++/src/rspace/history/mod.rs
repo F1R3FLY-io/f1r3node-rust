@@ -1,3 +1,4 @@
+pub mod checkpoint_writer;
 pub mod history;
 pub mod history_reader;
 pub mod history_repository;

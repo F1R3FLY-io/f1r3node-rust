@@ -192,6 +192,7 @@ impl DeployRuntime {
                 shard_id: shard_id.to_string(),
                 expiration_timestamp: None,
                 authority_presentations: Vec::new(),
+                parameters: Vec::new(),
             };
             let signed =
                 match owner_direct_offer(private_key, body, phlo_limit, phlo_price, &schedule) {

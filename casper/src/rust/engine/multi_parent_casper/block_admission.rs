@@ -58,6 +58,19 @@ pub(crate) fn admit_buffer_contains<T: TransportLayer + Send + Sync>(
     this.casper_buffer_storage.contains(&block_hash_serde)
 }
 
+pub(crate) fn admit_buffer_waits_on_dependency<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    hash: &BlockHash,
+) -> bool {
+    this.casper_buffer_storage
+        .get_parents(&BlockHashSerde(hash.clone()))
+        .is_some_and(|parents| {
+            parents
+                .iter()
+                .any(|parent| !admit_dag_contains(this, &BlockHash::from(parent.0.clone())))
+        })
+}
+
 pub(crate) fn admit_get_approved_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<&BlockMessage, CasperError> {
@@ -109,7 +122,8 @@ pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
     if deploy_is_known(this, &deploy_id)? {
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
-    let normalizer_env = normalizer_env_from_envelope(&envelope);
+    let normalizer_env = normalizer_env_from_envelope(&envelope)
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
     if let Err(interpreter_error) = interpreter_util::mk_term(&envelope.body().term, normalizer_env)
     {
         return Ok(Either::Left(DeployError::parsing_error(format!(
@@ -152,8 +166,7 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
         return Ok(true);
     }
     this.rejected_deploy_buffer
-        .lock()
-        .map_err(|error| CasperError::LockError(error.to_string()))?
+        .lock()?
         .contains_sig(deploy_id)
         .map_err(Into::into)
 }
@@ -172,6 +185,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // finalization_runner), so an accepted-but-orphaned deploy can be
     // re-proposed via the canonical-won record before it is lost.
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
+    let insert_start = std::time::Instant::now();
     let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
         &this.block_dag_storage,
         block,
@@ -181,6 +195,15 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             block_hash_serde,
         ),
     )?;
+    let insert_ms = insert_start.elapsed().as_millis();
+    if insert_ms >= 1_000 {
+        tracing::warn!(
+            target: "f1r3fly.casper.lifecycle.timing",
+            "DAG insert slow: block_number={}, insert_ms={}",
+            block.body.state.block_number,
+            insert_ms
+        );
+    }
     record_dag_cardinality_metrics(&updated_dag);
 
     // Advance the deploy-lifecycle register: the insert above already
@@ -410,8 +433,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
 
     let rejected = this
         .rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()
         .map_err(|e| {
             CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))

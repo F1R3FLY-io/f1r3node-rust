@@ -200,8 +200,9 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
     use std::sync::Mutex as StdMutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    };
     use casper::rust::blocks::proposer::block_creator;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 

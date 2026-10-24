@@ -7,12 +7,14 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 comm = { path = "../comm" }
 crypto = { path = "../crypto" }
 graphz = { path = "../graphz" }
 models = { path = "../models" }
 rholang = { path = "../rholang" }
+num-bigint = { workspace = true }
 rspace_plus_plus = { path = "../rspace++" }
 block-storage = { path = "../block-storage" }
 shared = { path = "../shared" }
@@ -56,6 +58,7 @@ proptest = { workspace = true }
 k256 = { workspace = true }
 serial_test = { workspace = true }
 env_logger = "0.11.8"
+heed = { workspace = true }
 tempfile = { workspace = true }
 # Exhaustive thread-interleaving model checker for the slashing
 # atomic-RMW property (T-9.2). See

@@ -761,6 +761,14 @@ impl BlockAPI {
             ));
         }
         let dag = casper.block_dag().await?;
+        casper.get_validator().ok_or_else(|| {
+            offered_validation_error("Deploy was rejected because node has no validator key.")
+        })?;
+        if !casper.is_local_validator_bonded(&dag)? {
+            return Err(offered_validation_error(
+                "Deploy was rejected because node's validator is not bonded.",
+            ));
+        }
         let next_block_number = dag.latest_block_number() + 1;
         if deploy_is_block_expired(
             envelope.body().valid_after_block_number,

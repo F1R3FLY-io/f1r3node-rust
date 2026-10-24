@@ -208,6 +208,7 @@ fn signed_native_family_checks_maximum_holds_before_selecting_charged_or_zero_br
         let family =
             check_phlo_funding_family(&sources, &cases, u128::from(hold), family_limits).unwrap();
         let body = DeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,
@@ -453,6 +454,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             funding: intent_limits,
         };
         let body = DeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,

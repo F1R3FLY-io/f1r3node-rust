@@ -323,6 +323,7 @@ fn owner_offer_priced_with_lanes(
     })
     .expect("the funding intent encodes");
     let body = DeployData {
+        parameters: Vec::new(),
         term,
         language: "rholang".to_string(),
         time_stamp,

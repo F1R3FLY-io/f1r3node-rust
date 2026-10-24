@@ -263,6 +263,7 @@ async fn native_agreement(
         &mut Vec::new(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .map_err(|error| format!("play environment: {error}"))?;

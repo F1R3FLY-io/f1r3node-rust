@@ -6,6 +6,9 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::{Cosigned, Signed, ToMessage};
 
 use super::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
+use super::deploy_parameters::{
+    parameters_to_par, DeployParameter, HasDeployParameters, ParameterError,
+};
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{
@@ -86,8 +89,23 @@ fn build_cosigners_list_par(pks: &[&PublicKey]) -> Par {
     }])
 }
 
-pub fn normalizer_env_from_deploy<A>(deploy: &Signed<A>) -> HashMap<String, Par> {
-    legacy_normalizer_env(&deploy.pk, &deploy.sig)
+pub fn normalizer_env_from_deploy<A: HasDeployParameters>(
+    deploy: &Signed<A>,
+) -> Result<HashMap<String, Par>, ParameterError> {
+    with_parameters(
+        legacy_normalizer_env(&deploy.pk, &deploy.sig),
+        deploy.data.deploy_parameters(),
+    )
+}
+
+fn with_parameters(
+    mut env: HashMap<String, Par>,
+    parameters: &[DeployParameter],
+) -> Result<HashMap<String, Par>, ParameterError> {
+    for (parameter, value) in parameters.iter().zip(parameters_to_par(parameters)?) {
+        env.insert(format!("rho:deploy:param:{}", parameter.name), value);
+    }
+    Ok(env)
 }
 
 fn legacy_normalizer_env(public_key: &PublicKey, signature: &[u8]) -> HashMap<String, Par> {
@@ -138,9 +156,11 @@ fn legacy_normalizer_env(public_key: &PublicKey, signature: &[u8]) -> HashMap<St
 /// - `rho:system:cosigners` — full `List[DeployerId]` of every signer in
 ///   canonical order. This is the channel Rholang programs use to introspect
 ///   the full cosigner set.
-pub fn normalizer_env_from_cosigned_deploy<A: std::fmt::Debug + serde::Serialize + ToMessage>(
+pub fn normalizer_env_from_cosigned_deploy<
+    A: std::fmt::Debug + serde::Serialize + ToMessage + HasDeployParameters,
+>(
     deploy: &Cosigned<A>,
-) -> HashMap<String, Par> {
+) -> Result<HashMap<String, Par>, ParameterError> {
     if !deploy.is_envelope_bound() {
         let mut env = legacy_normalizer_env(&deploy.primary().pk, &deploy.primary().sig);
         let signers = deploy
@@ -152,18 +172,23 @@ pub fn normalizer_env_from_cosigned_deploy<A: std::fmt::Debug + serde::Serialize
             SYSTEM_COSIGNERS_URI.to_string(),
             build_cosigners_list_par(&signers),
         );
-        return env;
+        return with_parameters(env, deploy.data.deploy_parameters());
     }
 
     let identity = deploy
         .envelope_commitment()
         .expect("validated protocol-v6 envelope identity");
-    bound_normalizer_env(deploy, &identity)
+    with_parameters(
+        bound_normalizer_env(deploy, &identity),
+        deploy.data.deploy_parameters(),
+    )
 }
 
-pub fn normalizer_env_from_envelope(deploy: &DeployEnvelope) -> HashMap<String, Par> {
+pub fn normalizer_env_from_envelope(
+    deploy: &DeployEnvelope,
+) -> Result<HashMap<String, Par>, ParameterError> {
     let identity = deploy.identity().as_bytes();
-    match deploy.view() {
+    let env = match deploy.view() {
         DeployEnvelopeRef::Legacy(_) => {
             let mut env = legacy_normalizer_env(&deploy.primary().pk, deploy.identity().as_bytes());
             let signers = deploy
@@ -180,7 +205,8 @@ pub fn normalizer_env_from_envelope(deploy: &DeployEnvelope) -> HashMap<String, 
         DeployEnvelopeRef::BodyV61(deploy) => bound_normalizer_env(deploy, identity),
         DeployEnvelopeRef::Funded(deploy) => bound_normalizer_env(deploy, identity),
         DeployEnvelopeRef::OfferedFunded(deploy) => bound_normalizer_env(deploy, identity),
-    }
+    };
+    with_parameters(env, &deploy.body().parameters)
 }
 
 fn bound_normalizer_env<A: std::fmt::Debug + serde::Serialize + ToMessage>(
@@ -394,6 +420,7 @@ mod tests {
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
                 authority_presentations: Vec::new(),
+                parameters: Vec::new(),
             },
             pk: PublicKey::from_bytes(&[1, 2, 3, 4]),
             sig: Bytes::from(vec![5, 6, 7, 8]),
@@ -403,6 +430,7 @@ mod tests {
 
     fn deploy_data_fixture() -> DeployData {
         DeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,
@@ -479,7 +507,7 @@ mod tests {
     #[test]
     fn normalizer_env_from_deploy_should_include_legacy_aliases() {
         let deploy = signed_deploy_fixture();
-        let env = normalizer_env_from_deploy(&deploy);
+        let env = normalizer_env_from_deploy(&deploy).unwrap();
 
         let system_deploy_id = env
             .get(SYSTEM_DEPLOY_ID_URI)
@@ -511,6 +539,7 @@ mod tests {
         let (sk1, pk1) = secp.new_key_pair();
         let (sk2, pk2) = secp.new_key_pair();
         let data = DeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,
@@ -534,7 +563,7 @@ mod tests {
             sig_algorithm: Box::new(secp.clone()),
         };
         let cosigned = Cosigned::from_signed_data(data, vec![signer1, signer2]).expect("valid");
-        let env = normalizer_env_from_cosigned_deploy(&cosigned);
+        let env = normalizer_env_from_cosigned_deploy(&cosigned).unwrap();
 
         let cosigners_par = env
             .get(SYSTEM_COSIGNERS_URI)
@@ -582,8 +611,8 @@ mod tests {
         let deploy = signed_deploy_fixture();
         let cosigned = Cosigned::from_single_signer(deploy.clone()).expect("legacy uplift");
 
-        let env_legacy = normalizer_env_from_deploy(&deploy);
-        let env_cosigned = normalizer_env_from_cosigned_deploy(&cosigned);
+        let env_legacy = normalizer_env_from_deploy(&deploy).unwrap();
+        let env_cosigned = normalizer_env_from_cosigned_deploy(&cosigned).unwrap();
 
         assert!(!env_legacy.contains_key(SYSTEM_COSIGNERS_URI));
         assert_eq!(
@@ -604,7 +633,7 @@ mod tests {
     fn v61_multi_signer_environment_exposes_only_collective_authority() {
         let envelope = threshold_envelope(&[1, 2], 2);
         let unsigned = envelope.signers()[0].pk.clone();
-        let env = normalizer_env_from_cosigned_deploy(&envelope);
+        let env = normalizer_env_from_cosigned_deploy(&envelope).unwrap();
 
         assert!(env.contains_key(SYSTEM_DEPLOY_ID_URI));
         assert!(env.contains_key(SYSTEM_AUTHORITY_ID_URI));
@@ -637,7 +666,7 @@ mod tests {
         let envelope =
             Cosigned::create_single_envelope(deploy_data_fixture(), Box::new(secp), private_key)
                 .unwrap();
-        let env = normalizer_env_from_cosigned_deploy(&envelope);
+        let env = normalizer_env_from_cosigned_deploy(&envelope).unwrap();
         let principal = &env[SYSTEM_DEPLOYER_ID_URI].unforgeables[0].unf_instance;
 
         assert!(matches!(principal, Some(UnfInstance::GPrincipalIdBody(_))));

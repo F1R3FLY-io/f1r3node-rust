@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
@@ -41,6 +42,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::multi_parent_casper::bond_cache::FinalizedBondCache;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
@@ -87,6 +89,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub deploy_lifecycle: Arc<crate::rust::finality::deploy_lifecycle::DeployLifecycle>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
+    pub finalized_bond_cache: FinalizedBondCache,
     // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
     pub approved_block: BlockMessage,

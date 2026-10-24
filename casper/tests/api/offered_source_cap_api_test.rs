@@ -153,6 +153,7 @@ fn funded_offer(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term: COST_TERM.to_owned(),
         language: "rholang".to_owned(),
         time_stamp: 1,

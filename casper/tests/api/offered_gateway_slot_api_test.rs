@@ -119,6 +119,7 @@ fn signed_direct_offer(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term,
         language: "rholang".to_owned(),
         time_stamp: timestamp,
@@ -346,6 +347,7 @@ fn offered_gateway_call(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term: "new deployerId(`rho:system:deployerId`) in { @\"agent-trigger\"!(0, *deployerId) }"
             .to_owned(),
         language: "rholang".to_owned(),

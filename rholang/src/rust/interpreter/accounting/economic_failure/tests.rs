@@ -69,6 +69,9 @@ fn typed_variants_define_charge_class_without_message_heuristics() {
         InterpreterError::BundlePermissionError(text.clone()),
         InterpreterError::ValueTypeError(text.clone()),
         InterpreterError::TermStructureError(text.clone()),
+        InterpreterError::BitmaskBitsCleared {
+            cleared: vec![(text.clone(), 1)],
+        },
     ];
     let platform = vec![
         InterpreterError::BugFoundError(text.clone()),

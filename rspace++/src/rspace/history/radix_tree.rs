@@ -989,7 +989,13 @@ impl RadixTreeImpl {
      *
      * If detected collision with older KVDB data - execute Exception
      */
-    pub fn prepare_commit(&self) -> Result<Vec<(ByteVector, ByteVector)>, RadixTreeError> {
+    pub fn commit(&self) -> Result<(), RadixTreeError> {
+        let pending = self.pending_writes()?;
+        self.store.put(pending)?;
+        Ok(())
+    }
+
+    pub fn pending_writes(&self) -> Result<Vec<(ByteVector, ByteVector)>, RadixTreeError> {
         fn collision_panic(collisions: Vec<(ByteVector, ByteVector)>) -> RadixTreeError {
             RadixTreeError::CollisionError(format!(
                 "{} collisions in KVDB (first collision with key = {}.",
@@ -1076,11 +1082,6 @@ impl RadixTreeImpl {
             }
         }
         Ok(writes)
-    }
-
-    pub fn commit(&self) -> Result<(), RadixTreeError> {
-        self.store.put(self.prepare_commit()?)?;
-        Ok(())
     }
 
     /**
@@ -1725,7 +1726,7 @@ mod native_commit_tests {
         let node = empty_node();
         let (key, value) = hash_node(&node);
         assert_eq!(tree.save_node(node), key);
-        assert_eq!(tree.prepare_commit().unwrap(), vec![(key.clone(), value.clone())]);
+        assert_eq!(tree.pending_writes().unwrap(), vec![(key.clone(), value.clone())]);
         assert_eq!(store.get_one(&key).unwrap(), None);
         assert_eq!(
             tree.prepare_native_commit()
@@ -1735,7 +1736,7 @@ mod native_commit_tests {
         assert_eq!(store.get_one(&key).unwrap(), None);
 
         store.put_one(key.clone(), vec![1]).unwrap();
-        assert!(matches!(tree.prepare_commit(), Err(RadixTreeError::CollisionError(_))));
+        assert!(matches!(tree.pending_writes(), Err(RadixTreeError::CollisionError(_))));
         assert!(matches!(
             tree.prepare_native_commit(),
             Err(RSpaceError::RadixTreeError(RadixTreeError::CollisionError(_)))
@@ -1743,7 +1744,7 @@ mod native_commit_tests {
         assert_eq!(store.get_one(&key).unwrap(), Some(vec![1]));
 
         store.put_one(key.clone(), value).unwrap();
-        assert!(tree.prepare_commit().unwrap().is_empty());
+        assert!(tree.pending_writes().unwrap().is_empty());
         assert!(
             tree.prepare_native_commit()
                 .expect("native commit preparation")

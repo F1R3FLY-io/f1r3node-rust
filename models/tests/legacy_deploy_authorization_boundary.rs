@@ -7,6 +7,7 @@ use prost::Message;
 #[test]
 fn legacy_casper_accepts_legacy_wire_and_rejects_cost_authorization() {
     let body = DeployData {
+        parameters: Vec::new(),
         term: "Nil".to_string(),
         time_stamp: 1,
         phlo_price: 1,

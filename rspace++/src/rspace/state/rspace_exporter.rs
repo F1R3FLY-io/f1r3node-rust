@@ -55,8 +55,13 @@ impl RSpaceExporterInstance {
                     ));
                 }
 
+                let Some(&size_byte) = prefix_vec[0].bytes().first() else {
+                    return Err(RadixTreeError::PrefixError(
+                        "RSpace Exporter: Invalid path during export".to_string(),
+                    ));
+                };
                 let (size_prefix, vec): (usize, Vec<Blake2b256Hash>) =
-                    (prefix_vec[0].bytes()[0] as usize & 0xff, prefix_vec[1..].to_vec());
+                    (size_byte as usize & 0xff, prefix_vec[1..].to_vec());
 
                 let mut prefix128 = vec[0].bytes();
                 prefix128.extend(vec[1].bytes());
@@ -187,7 +192,8 @@ impl RSpaceExporterInstance {
         };
 
         // Format the hash as hex and get the first 8 bytes
-        let hash_str = hex::encode(&hash.bytes()[..8]);
+        let bytes = hash.bytes();
+        let hash_str = hex::encode(&bytes[..bytes.len().min(8)]);
 
         // Return the formatted string
         format!("{}:{}", idx_str, hash_str)

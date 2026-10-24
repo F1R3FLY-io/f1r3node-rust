@@ -49,7 +49,7 @@ async fn play_batch(
     ),
     CasperError,
 > {
-    let (state, users, systems, _bonds) = runtime_manager
+    let (state, users, systems, _bonds, leaves) = runtime_manager
         .compute_state_with_bonds_envelopes(
             start,
             members
@@ -63,6 +63,16 @@ async fn play_batch(
             Some(adopted),
         )
         .await?;
+    let expected = users
+        .iter()
+        .map(casper::rust::util::proto_util::hash_processed_user_deploy_leaf)
+        .chain(
+            systems
+                .iter()
+                .map(casper::rust::util::proto_util::hash_processed_system_deploy_leaf),
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(leaves, expected);
     Ok((state, users, systems))
 }
 
@@ -113,6 +123,29 @@ async fn a_same_signer_pair_plays_and_replays_as_one_batch() {
             .expect("the batch plays");
             assert_eq!(users.len(), 2, "both members ship");
             assert!(users.iter().all(|user| !user.is_failed()));
+            use prost::Message;
+            let mut stripped = users[0].to_proto();
+            assert!(stripped.native_cost_evidence.take().is_some());
+            assert_ne!(
+                casper::rust::util::proto_util::hash_processed_user_deploy_leaf(&users[0]),
+                crypto::rust::hash::merkle::hash_leaf_tagged(0x10, &stripped.encode_to_vec()),
+            );
+            let mut block = genesis_block.clone();
+            block.body.deploys = users.clone();
+            block.body.system_deploys = systems.clone();
+            let leaves = users
+                .iter()
+                .map(casper::rust::util::proto_util::hash_processed_user_deploy_leaf)
+                .chain(
+                    systems
+                        .iter()
+                        .map(casper::rust::util::proto_util::hash_processed_system_deploy_leaf),
+                )
+                .collect::<Vec<_>>();
+            assert_eq!(
+                casper::rust::util::proto_util::hash_block(&block),
+                casper::rust::util::proto_util::hash_block_with_leaves(&block, &leaves),
+            );
             // Dev's replay cache answers a replay of the same block on the node
             // that played it. Without the mergeable entry the cache falls back to
             // the full replay, as for a validator.

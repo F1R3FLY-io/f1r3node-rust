@@ -682,6 +682,7 @@ impl RuntimeManager {
                 false,
             )
             .await
+            .map(|(root, channels, _)| (root, channels))
     }
 
     pub(crate) async fn replay_offered_envelope_state(

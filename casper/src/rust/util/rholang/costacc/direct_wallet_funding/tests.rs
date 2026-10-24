@@ -183,6 +183,7 @@ fn offered(custody: &[u8], time_stamp: i64) -> Cosigned<OfferedFundedDeploy> {
         quote_evidence_bytes: limits.funding.wire.field_bytes,
     };
     let body = DeployData {
+        parameters: Vec::new(),
         term: "Nil".to_string(),
         language: "rholang".to_string(),
         time_stamp,

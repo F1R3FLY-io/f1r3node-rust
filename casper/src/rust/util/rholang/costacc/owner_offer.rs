@@ -182,6 +182,7 @@ mod tests {
 
     fn body() -> DeployData {
         DeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,

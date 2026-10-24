@@ -21,7 +21,7 @@ in {
           ("Deposit should work as expected", *test_deposit),
           ("Split should work as expected", *test_split),
           ("be able to set a log channel and receive notifications", *test_log_set),
-          ("In case of overflow, no tranfer occurs", *test_overflow_deposit)
+          ("Deposits past 2^63-1 do not overflow", *test_overflow_deposit)
         ])
     }
   } |
@@ -44,8 +44,8 @@ in {
     new aliceAPurse, bobBPurse,
         aliceAPurseBalance, bobBPurseBalance
     in {
-      match (100, 50) {
-        (aliceAmt, bobAmt) => {
+      match (1000000000000000000000000000000n, 50, 50n) {
+        (aliceAmt, bobAmt, bobBalance) => {
           @mintA!("makePurse", aliceAmt, *aliceAPurse) |
           @mintB!("makePurse", bobAmt, *bobBPurse) |
           for(aliceAPurse <- aliceAPurse & bobBPurse <- bobBPurse) {
@@ -54,7 +54,7 @@ in {
             rhoSpec!("assertMany",
               [
                 ((aliceAmt, "== <-", *aliceAPurseBalance), "alice should have the initial balance"),
-                ((bobAmt, "== <-", *bobBPurseBalance), "bob should have the initial balance")
+                ((bobBalance, "== <-", *bobBPurseBalance), "bob should have the initial balance")
               ], *ackCh)
           }
         }
@@ -100,8 +100,8 @@ in {
           rhoSpec!("assertMany",
             [
               (depositResult, "deposit should succeed"),
-              ((10, "== <-", *aliceAPurseBalance), "0 + 10 = 10"),
-              ((40, "== <-", *bobAPurseBalance), "50 - 10 = 40"),
+              ((10n, "== <-", *aliceAPurseBalance), "0 + 10 = 10"),
+              ((40n, "== <-", *bobAPurseBalance), "50 - 10 = 40"),
             ],
             *ackCh)
         }
@@ -124,8 +124,8 @@ in {
           @aliceAPurse5!("getBalance", *aliceAPurse5Balance) |
           rhoSpec!("assertMany",
             [
-              ((5, "== <-", *aliceAPurse5Balance), "0 + 5 = 5"),
-              ((45, "== <-", *aliceAPurseBalance), "50 - 5 = 45")
+              ((5n, "== <-", *aliceAPurse5Balance), "0 + 5 = 5"),
+              ((45n, "== <-", *aliceAPurseBalance), "50 - 5 = 45")
             ],
             *ackCh
           )
@@ -179,53 +179,37 @@ in {
         mint1!("makePurse", 10, *let2) | for (purse1 <- let2) {
           purse1!("deposit", 5, *fakePurse, *depositCh) | for (@depositOk <- depositCh) {
             purse1!("getBalance", *let3) | for (@bal <- let3) {
-              rhoSpec!("assert", (bal, "==", 10), "real purse balance should not increase", *ackCh)
+              rhoSpec!("assert", (bal, "==", 10n), "real purse balance should not increase", *ackCh)
             }
           }
         }
       }
     }
   } |
-  // In case of an overflow during a deposit, no funds should be transferred.
+  // Balances are BigInt, so a deposit past 2^63-1 succeeds and keeps the exact sum.
   contract test_overflow_deposit(rhoSpec, @(*mint, _), ackCh) = {
     new alicePurseCh, bobPurseCh, successCh,
-        initialAlicePurseBalanceCh, initialBobPurseBalanceCh,
         finalAlicePurseBalanceCh, finalBobPurseBalanceCh
     in {
-      match (9223372036854775807, 1000) {
-        (aliceAmt, bobAmt) => {
-          // Alice's purse has maximum balance.
-          mint!("makePurse", aliceAmt, *alicePurseCh) |
-          mint!("makePurse", bobAmt, *bobPurseCh) |
-          for (alicePurse <- alicePurseCh &
-               bobPurse   <- bobPurseCh) {
-            alicePurse!("getBalance", *initialAlicePurseBalanceCh) |
-            bobPurse!("getBalance", *initialBobPurseBalanceCh) |
-            for (@initialAlicePurseBalance <- initialAlicePurseBalanceCh &
-                 @initialBobPurseBalance   <- initialBobPurseBalanceCh) {
-              // Depositing any funds to Alice results in overflow.
-              alicePurse!("deposit", 1, *bobPurse, *successCh) |
-              for (@false <- successCh) {
-                alicePurse!("getBalance", *finalAlicePurseBalanceCh) |
-                bobPurse!("getBalance", *finalBobPurseBalanceCh) |
-                for (@finalAlicePurseBalance <- finalAlicePurseBalanceCh &
-                     @finalBobPurseBalance   <- finalBobPurseBalanceCh) {
-                  rhoSpec!("assertMany",
-                    [
-                      ((aliceAmt, "==", initialAlicePurseBalance), "Alice should have the initial balance"),
-                      ((bobAmt, "==", initialBobPurseBalance), "Bob should have the initial balance"),
-                      ((finalAlicePurseBalance, "==", initialAlicePurseBalance), "Alice's balance should not change"),
-                      ((finalBobPurseBalance, "==", initialBobPurseBalance), "Bob's balance should not change")
-                    ],
-                    *ackCh
-                  )
-                }
-              }
-            }
-          }
+      // Alice's purse starts at 2^63-1.
+      mint!("makePurse", 9223372036854775807, *alicePurseCh) |
+      mint!("makePurse", 1000, *bobPurseCh) |
+      for (alicePurse <- alicePurseCh &
+           bobPurse   <- bobPurseCh) {
+        alicePurse!("deposit", 1, *bobPurse, *successCh) |
+        for (@success <- successCh) {
+          alicePurse!("getBalance", *finalAlicePurseBalanceCh) |
+          bobPurse!("getBalance", *finalBobPurseBalanceCh) |
+          rhoSpec!("assertMany",
+            [
+              ((true, "==", success), "deposit past 2^63-1 should succeed"),
+              ((9223372036854775808n, "== <-", *finalAlicePurseBalanceCh), "Alice's balance should be 2^63"),
+              ((999n, "== <-", *finalBobPurseBalanceCh), "Bob's balance should decrease by 1")
+            ],
+            *ackCh
+          )
         }
       }
     }
   }
 }
-

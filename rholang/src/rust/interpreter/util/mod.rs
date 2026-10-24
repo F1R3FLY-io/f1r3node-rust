@@ -205,7 +205,9 @@ pub fn allocate_new_bindings(
             Some(value) => value.clone(),
             None => match new.injections.get(urn) {
                 Some(value) => {
-                    if let Some(unforgeable) = RhoUnforgeable::unapply(value) {
+                    if value == &Par::default() {
+                        Par::default()
+                    } else if let Some(unforgeable) = RhoUnforgeable::unapply(value) {
                         let instance = unforgeable.unf_instance.ok_or_else(|| {
                             InterpreterError::BugFoundError(
                                 "unf_instance field is None".to_string(),

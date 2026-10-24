@@ -91,7 +91,7 @@ curl http://localhost:40403/api/status
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8,
   "lastFinalizedBlockNumber": 28,
-  "isValidator": false,
+  "isValidator": true,
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 2,
@@ -113,7 +113,7 @@ curl http://localhost:40403/api/status
 | `nativeTokenSymbol` | string | Token ticker symbol |
 | `nativeTokenDecimals` | int | Decimal places (dust per token = 10^decimals) |
 | `lastFinalizedBlockNumber` | int | LFB block number. `-1` if casper not yet initialized |
-| `isValidator` | bool | `true` if the node can propose blocks |
+| `isValidator` | bool | `true` if the node has a configured validator key; this does not confirm current bond status |
 | `isReadOnly` | bool | `true` if running in read-only mode |
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
@@ -150,6 +150,12 @@ curl "http://localhost:40403/api/block/3bfdf56f...?view=summary"
 ```
 
 Full response includes `blockInfo` (header with `isFinalized`) + `deploys` array. Summary omits `deploys`.
+
+Each deploy includes `parameters` when its signed data contains named values.
+The JSON format matches [`data.parameters`](#deploy-parameters) in deploy submissions.
+The node omits empty parameter arrays.
+Full block lists and trace reports use the same parameter format.
+Summary block responses omit deploy data, including parameters.
 
 | Status | Condition |
 |--------|-----------|
@@ -243,6 +249,7 @@ Submit a signed deploy to the network. Validator nodes only.
 | `data.phloLimit` | int | yes | Maximum phlogiston to consume |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
+| `data.parameters` | array | no | Named Rholang values. The default is an empty array. |
 | `deployer` | string | yes | Deployer public key (hex) |
 | `signature` | string | yes | Deploy signature (hex) |
 | `sigAlgorithm` | string | yes | Signature algorithm (`"secp256k1"`) |
@@ -268,10 +275,87 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, phlo price below minimum, deploy expired, body-only deploy on a protocol-6 node (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `400` | Malformed body or invalid field value: read-only node, unbonded validator, wrong shard ID, forbidden key, phlo price below minimum, deploy expired, body-only deploy on a protocol-6 node (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
+
+Deploy admission checks the node's validator against the last finalized block's committee. Proposal checks the selected parent's committee. These sets can differ during the finality gap after a bond change.
+
+##### Deploy parameters
+
+A deploy parameter supplies a typed value through `rho:deploy:param:<name>`.
+The deploy signature covers parameter names, values, and array order.
+The node rejects changes to these fields after signing.
+
+```json
+{
+  "parameters": [
+    {"name": "items", "value": {"type": "list", "value": [
+      {"type": "int", "value": -42},
+      {"type": "nil"}
+    ]}}
+  ]
+}
+```
+
+```rholang
+new items(`rho:deploy:param:items`), stdout(`rho:io:stdout`) in {
+  stdout!(*items)
+}
+```
+
+| JSON `type` | JSON `value` |
+|-------------|--------------|
+| `bool` | A Boolean. |
+| `int` | A signed 64-bit integer. |
+| `string` | A string. |
+| `bytes` | An array of integers from 0 through 255. |
+| `tuple`, `list`, `set` | An array of typed values. |
+| `map` | An array of objects with typed `key` and `value` fields. |
+| `nil` | Omit the `value` field. |
+| `uri` | A URI string, used as a Rholang value. |
+
+Lists and tuples preserve element order.
+Sets remove duplicate values and use Rholang ordering.
+Maps use Rholang key ordering and reject duplicate keys, including equivalent set keys.
+A URI parameter does not grant access to a system process.
+
+Parameter names must be unique and match `[A-Za-z_][A-Za-z0-9_]*`.
+Each name can contain at most 256 bytes.
+A deploy can contain at most 50 parameters, 32 nesting levels, and 10,000 values.
+The total data budget is 1 MiB, including names, string data, byte data, and eight bytes per value.
+Transport limits also apply.
+
+Deploys without parameters retain their protobuf bytes and signatures.
+JSON output omits an empty parameter array.
+
+The deploy storage and rejected buffer can read existing records without parameters.
+Both stores write every new record as protobuf with the `F1R3DEP` prefix and version byte `0x01`.
+This storage format also applies to deploys without parameters.
+Nodes that support only the old storage format cannot read these new records.
+Reading a legacy record does not rewrite that record.
+
+The `deploy.storage.legacy_decode` counter records each attempt to decode legacy bincode data in either store.
+The counter includes repeated reads and failed attempts.
+Retain legacy support until active nodes show no legacy decode attempts over an agreed observation period.
+A zero increase without store reads does not prove that legacy records are absent.
+
+The earlier Scala implementation used protobuf field 13 for parameters.
+This Rust schema uses field 13 for `expirationTimestamp` and field 22 for parameters.
+Primitive value fields retain their original numbers, including `sint64` for integers.
+
+To migrate a client from that Scala schema:
+
+1. Generate the client types from this repository's protobuf files.
+2. Encode parameters in field 22 with the recursive value schema.
+3. Apply the name, size, and nesting limits above.
+4. Sign the deploy again with its new protobuf bytes.
+
+The Scala implementation permitted larger byte parameters.
+Clients must apply the total data budget before they sign a deploy for this schema.
+Nodes that use the earlier schema cannot validate these parameter signatures.
+All validators must use a compatible schema before the network accepts deploy parameters.
 
 #### `POST /api/deploy/offered`
 
@@ -371,6 +455,7 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
 | `transfers` | array/null | Transfer list or null on validators (full only) |
+| `parameters` | array | Named Rholang values from the signed deploy. The node omits this field in summary responses and when no parameters exist. |
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
 
@@ -416,6 +501,9 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 #### `GET /api/pending-deploys`
 
 Bulk snapshot of deploys currently queued in the node's local proposer pools: `deploy_storage` (submitted, not yet proposed) and `rejected_deploy_buffer` (recovering after a merge conflict). Each entry carries an `isRejected` flag so consumers can distinguish fresh deploys from recovery-backlog deploys.
+
+This HTTP response does not include deploy parameters.
+After block inclusion, use the full deploy or block response to read parameters.
 
 The queue is **node-local**: deploys never gossip between nodes, so an observer (read-only) node always answers `{"deploys": [], "totalAvailable": 0}` — it rejects `doDeploy`, so it never holds pending deploys. Route this request to a validator. For deploy status that is consistent across nodes, use `GET /api/deploy-finalization-status/{sig}` instead, which is DAG-derived.
 
@@ -956,7 +1044,7 @@ curl -X POST http://localhost:40405/api/propose
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled. A proto whose `authorizationV61.formatVersion` is the offered-funded format goes to offered admission (as `POST /api/deploy/offered`); a protocol-6 node refuses a body-only deploy (DR-66) |
+| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy to a validator in the last finalized block's committee. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled. A proto whose `authorizationV61.formatVersion` is the offered-funded format goes to offered admission (as `POST /api/deploy/offered`); a protocol-6 node refuses a body-only deploy (DR-66) |
 | `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo` (header + deploys). Transfers enriched on readonly |
 | `getBlocks` | `BlocksQuery` | `stream BlockInfoResponse` | Get recent blocks by depth. Streaming. Returns `LightBlockInfo` (headers only) |
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |

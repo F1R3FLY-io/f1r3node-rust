@@ -227,9 +227,11 @@ async fn run_block_creator_create_memory_profile() {
             .expect("Failed to create deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("Failed to create rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("Failed to create rejected deploy buffer"),
     ));
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -285,7 +287,7 @@ async fn run_block_creator_create_memory_profile() {
         vaults: vec![Vault {
             vault_address: VaultAddress::from_public_key(&validator_pk)
                 .expect("Failed to create the deploy signer's vault address"),
-            initial_balance: OFFERED_VAULT_BALANCE,
+            initial_balance: u128::from(OFFERED_VAULT_BALANCE),
         }],
         supply: i64::MAX,
         // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6.
@@ -294,6 +296,8 @@ async fn run_block_creator_create_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
     // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6 with the
     // offered-funded resource policy.
@@ -596,7 +600,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         vaults: vec![Vault {
             vault_address: VaultAddress::from_public_key(&validator_pk)
                 .expect("Failed to create the deploy signer's vault address"),
-            initial_balance: OFFERED_VAULT_BALANCE,
+            initial_balance: u128::from(OFFERED_VAULT_BALANCE),
         }],
         supply: i64::MAX,
         // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6.
@@ -605,6 +609,8 @@ async fn run_block_creator_phase_split_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
     // Changed by DR-134 (DR-66 item 1): test genesis uses protocol 6 with the
     // offered-funded resource policy.

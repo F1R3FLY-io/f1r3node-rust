@@ -82,7 +82,7 @@ fn merge_changes(
 ) -> Result<Datum<ListParWithRandom>, HistoryError> {
     let action = RholangMergingLogic::calculate_number_channel_merge(
         &datum(0, None, None).source.channel_hash,
-        diff,
+        &num_bigint::BigInt::from(diff),
         merge_type,
         &changes,
         |_| Ok(base.clone()),

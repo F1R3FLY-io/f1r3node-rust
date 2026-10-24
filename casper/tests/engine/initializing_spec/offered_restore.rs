@@ -38,9 +38,9 @@ pub(super) async fn offered_block(fixture: &TestFixture) -> BlockMessage {
     block.header.timestamp = 1;
     block.body.state.block_number = 1;
     block.body.state.pre_state_hash = fixture.genesis.body.state.post_state_hash.clone();
-    block.sender = fixture.validator_pk.bytes.clone().into();
+    block.sender = fixture.validator_pk.bytes.clone();
     block.seq_num = 1;
-    let (post_state, deploys, system_deploys, bonds) = fixture
+    let (post_state, deploys, system_deploys, bonds, _leaves) = fixture
         .runtime_manager
         .compute_state_with_bonds_envelopes(
             &block.body.state.pre_state_hash,

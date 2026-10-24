@@ -61,6 +61,10 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_buffer_contains(self, hash)
     }
 
+    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> bool {
+        super::block_admission::admit_buffer_waits_on_dependency(self, hash)
+    }
+
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         super::block_admission::admit_get_approved_block(self)
     }
@@ -231,8 +235,11 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
-        super::finalization_runner::compute_last_finalized_block(
-            super::finalization_runner::build_finalization_context(self),
+        super::finalization_runner::observe_api_lfb(
+            &self.finalizer_task_in_progress,
+            super::finalization_runner::compute_last_finalized_block(
+                super::finalization_runner::build_finalization_context(self),
+            ),
         )
         .await
     }
@@ -241,6 +248,13 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         self.block_dag_storage
             .get_representation()
             .map_err(Into::into)
+    }
+
+    fn is_local_validator_bonded(
+        &self,
+        dag: &KeyValueDagRepresentation,
+    ) -> Result<bool, CasperError> {
+        self.finalized_bond_cache.is_bonded(dag)
     }
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
@@ -261,8 +275,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
         self.rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .lock()?
             .contains_sig(sig)
             .map_err(Into::into)
     }

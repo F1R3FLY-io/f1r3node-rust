@@ -99,7 +99,7 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
         //     )
         //     .await
         //     .unwrap();
-        let (post_state_hash, processed_deploys, _, _) = runtime_manager
+        let (post_state_hash, processed_deploys, _, _, _leaves) = runtime_manager
             .compute_state_with_bonds_envelopes(
                 &base_state,
                 user_deploys,

@@ -19,6 +19,7 @@ use prost::Message;
 
 fn payload(time_stamp: i64) -> DeployData {
     DeployData {
+        parameters: Vec::new(),
         term: "Nil".to_string(),
         language: "rholang".to_string(),
         time_stamp,

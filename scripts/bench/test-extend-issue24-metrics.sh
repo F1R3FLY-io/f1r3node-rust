@@ -34,6 +34,27 @@ cmp "$tmp/once.py" "$tmp/metrics.py"
 
 for metric in \
     dag_merge_relation_items \
+    deploy_pool_lock_wait_time \
+    deploy_pool_lock_hold_time \
+    proposer_queue_depth \
+    runtime_scheduler_delay_time \
+    compute_parents_post_state_floor_distance \
+    deploy_store_read_all_decoded \
+    proposer_create_time \
+    proposer_effect_time \
+    deploy_lifecycle_observe_time \
+    deploy_lifecycle_carrier_prune_time \
+    block_creator_deploy_admission_cap_source_soft_stalled \
+    block_creator_deploy_admission_cap_source_hard \
+    finalizer_run_time \
+    finalizer_api_lfb_time \
+    deploy_selection_age_time \
+    finalizer_run_timeouts \
+    finalizer_api_lfb_overlaps \
+    block_creator_ordinary_deploys_deferred \
+    block_creator_empty_block_skipped \
+    block_creator_empty_block_built \
+    heartbeat_proposals \
     dag_merge_rejection_selection_time \
     dag_merge_apply_trie_actions_time \
     block_replay_phase_user_deploys_work \
@@ -51,14 +72,12 @@ for metric in \
     history_checkpoint_leaf_write_time \
     history_checkpoint_history_lock_wait_time \
     history_checkpoint_history_process_time \
-    history_checkpoint_roots_lock_wait_time \
     history_checkpoint_root_commit_time \
     history_checkpoint_actions \
     history_checkpoint_serialized_bytes \
     history_repository_current_history_lock_wait_ns \
     history_repository_roots_repository_lock_wait_ns \
     history_repository_roots_repository_reset_hold_ns \
-    history_repository_roots_repository_checkpoint_wait_ns \
     history_repository_current_history_history_reader_calls \
     history_roots_store_write_ns \
     history_roots_store_writes \
@@ -94,13 +113,29 @@ assert len(histograms) == len(set(histograms))
 assert len(counters) == len(set(counters))
 assert not set(histograms) & set(counters)
 root = Path(sys.argv[2])
-for filename in ["casper/src/rust/metrics_constants.rs", "rspace++/src/rspace/metrics_constants.rs"]:
+release_path = {
+    "CASPER_BUFFER_PARK_TIME_METRIC": histograms,
+    "RELEASE_QUEUE_WAIT_METRIC": histograms,
+    "CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC": histograms,
+    "BLOCK_REQUESTS_RECOVERY_METRIC": counters,
+}
+release_path_seen = set()
+for filename in [
+    "casper/src/rust/metrics_constants.rs",
+    "rspace++/src/rspace/metrics_constants.rs",
+    "block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs",
+    "node/src/rust/instances/release_queue.rs",
+]:
     for constant, name in re.findall(r'pub const (\w+): &str =\s*"([^"]+)";', (root / filename).read_text()):
         exported = re.sub(r"[.-]", "_", name)
-        if (constant.startswith(("HISTORY_CHECKPOINT_", "BLOCK_REPLAY_RUNTIME_")) and constant.endswith("_METRIC")) or (constant.startswith("REPEAT_DEPLOY_") and constant.endswith("_TIME_METRIC")) or constant == "BLOCK_ARRIVAL_DEPTH_METRIC":
+        if (constant.startswith(("HISTORY_CHECKPOINT_", "BLOCK_REPLAY_RUNTIME_")) and constant.endswith("_METRIC") and constant != "BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC") or (constant.startswith("REPEAT_DEPLOY_") and constant.endswith("_TIME_METRIC")) or constant == "BLOCK_ARRIVAL_DEPTH_METRIC":
             assert exported in histograms, constant
-        if constant.startswith("HISTORY_REPO_") or constant == "BLOCK_ARRIVED_UNCITABLE_METRIC":
+        if constant.startswith("HISTORY_REPO_") or constant in ("BLOCK_ARRIVED_UNCITABLE_METRIC", "BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC"):
             assert exported in counters, constant
+        if constant in release_path:
+            assert exported in release_path[constant], constant
+            release_path_seen.add(constant)
+assert release_path_seen == set(release_path), sorted(set(release_path) - release_path_seen)
 assert "is_mergeable_channel_calls" in counters
 module = runpy.run_path(sys.argv[1])
 compute = module["compute_metric_deltas"]

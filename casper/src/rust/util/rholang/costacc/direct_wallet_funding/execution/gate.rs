@@ -346,7 +346,8 @@ fn run_estimate(
 ) -> Result<CostEstimate, OfferedGateRejection> {
     estimate_term(
         &envelope.body().term,
-        normalizer_env_from_envelope(envelope),
+        normalizer_env_from_envelope(envelope)
+            .map_err(|error| OfferedGateRejection::Invalid(error.to_string()))?,
         Tools::user_envelope_rng(envelope),
         funding,
         schedule,

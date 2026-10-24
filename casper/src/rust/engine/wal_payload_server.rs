@@ -29,6 +29,7 @@
 // signal or stay silent.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -222,6 +223,219 @@ impl rholang::rust::interpreter::io::wal::PayloadPersistence for InMemoryPayload
     fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> { Ok(self.insert(bytes.to_vec())) }
 }
 
+/// Directory-backed store.  Bytes live under `<dir>/<hex(hash)>`.
+/// Matches the on-disk shape of the snapshot dir; fits the
+/// operator-provisioned content case cleanly.
+///
+/// # Security posture
+///
+/// **Path traversal:** [`path_for`](Self::path_for) joins
+/// `hex(hash)` which is `[0-9a-f]{64}` only — no separator
+/// characters, cannot escape `self.dir`.
+///
+/// **Symlink races:** an attacker with write access to `self.dir`
+/// could plant a symlink to redirect writes elsewhere, but such
+/// an attacker already owns the node's data directory (via the
+/// broader `<data-dir>` control implied by the setup.rs boot
+/// pipeline).  Pre-existing environmental assumption.
+///
+/// **Concurrent same-hash writes:** two deploys writing identical
+/// bytes on Consensus caps produce the same hash → same file path
+/// → interleaved `std::fs::write` calls with byte-identical
+/// content.  A concurrent reader mid-write could see partial
+/// bytes, but the joiner-side re-hash check (see
+/// [`serve_payload`]) rejects partial content, so the reader just
+/// asks another peer.  No correctness bug.
+///
+/// **Sync IO in an async caller:** [`insert`](Self::insert) calls
+/// `std::fs::write` which blocks the caller thread for the
+/// duration of the write.  Callers are typically async fs
+/// handlers on a multi-threaded tokio runtime — a large write
+/// (up to `MAX_PAYLOAD_BYTES = 64 MiB`) blocks a worker for
+/// potentially hundreds of milliseconds on slow disk.  Consistent
+/// with the existing fs-handler pattern (they use
+/// `nix::unistd::write` synchronously); a future async migration
+/// of the whole fs stack would move this behind `spawn_blocking`.
+///
+/// **Unbounded disk growth:** [`insert`](Self::insert) has no
+/// retention policy.  A Consensus deploy writing MAX_WAL_ENTRIES
+/// (65,536) × maximum payload (64 MiB) can produce ~4 TiB of
+/// on-disk cache per runtime lifetime.  Per-deploy cost
+/// accounting bounds this in practice (any such deploy would
+/// exhaust the block's REV budget).  Snapshot-retention-driven
+/// pruning via [`prune_payload_store`] is the operational
+/// mitigation; until an automated eviction policy lands, operators
+/// should monitor `<data-dir>/wal_payload_store/` size.
+#[derive(Debug, Clone)]
+pub struct DirectoryPayloadStore {
+    dir: PathBuf,
+}
+
+impl DirectoryPayloadStore {
+    pub fn new(dir: PathBuf) -> Self { Self { dir } }
+
+    fn path_for(&self, hash: &[u8; 32]) -> PathBuf { self.dir.join(hex::encode(hash)) }
+
+    /// Content-addressed write.  Creates the dir if needed.
+    pub fn insert(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("mkdir {:?}: {e}", self.dir))?;
+        let h = hash_bytes(bytes);
+        let p = self.path_for(&h);
+        std::fs::write(&p, bytes).map_err(|e| format!("write {p:?}: {e}"))?;
+        Ok(h)
+    }
+}
+
+impl PayloadLookup for DirectoryPayloadStore {
+    fn get(&self, payload_hash: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        let p = self.path_for(payload_hash);
+        match std::fs::read(&p) {
+            Ok(b) => Ok(Some(b)),
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("read {p:?}: {e}")),
+        }
+    }
+}
+
+/// Bridges the casper-crate directory payload store to the
+/// rholang-crate WAL journaling path.  A leader validator's
+/// `journal_write` calls [`persist`] after computing
+/// `PayloadRef::hash(bytes)` so the bytes are stashed
+/// content-addressed on disk for later peer fetches.
+impl rholang::rust::interpreter::io::wal::PayloadPersistence for DirectoryPayloadStore {
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> { self.insert(bytes) }
+}
+
+/// A bundled handle to a payload store that lets the same
+/// underlying bytes be reached through TWO trait objects —
+/// [`rholang::rust::interpreter::io::wal::PayloadPersistence`]
+/// (the write path, called from the interpreter's `journal_write`)
+/// and [`PayloadLookup`] (the read path, called from the
+/// wire-message dispatch).
+///
+/// The bundle exists because Rust's trait-object system can't
+/// automatically coerce `Arc<dyn PayloadPersistence>` into
+/// `Arc<dyn PayloadLookup>` even when the concrete type
+/// implements both, and the two traits live in different crates
+/// (`PayloadPersistence` in rholang, `PayloadLookup` in casper)
+/// so they can't share a supertrait.  Construction sites clone
+/// one concrete `Arc<T>` twice and coerce each clone to the
+/// appropriate trait object.
+#[derive(Clone)]
+pub struct PayloadStoreBundle {
+    /// Write-side handle used by the interpreter's fs-write
+    /// handlers via `FileHandleTable::payload_store`.
+    pub persistence: Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+    /// Read-side handle used by the wire dispatch's
+    /// [`serve_payload`] / [`has_wal_payload_announcement`] via
+    /// the (future) `WalPayloadContext::payload_lookup`.
+    pub lookup: Arc<dyn PayloadLookup>,
+}
+
+impl std::fmt::Debug for PayloadStoreBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PayloadStoreBundle").finish_non_exhaustive()
+    }
+}
+
+impl PayloadStoreBundle {
+    /// Build a bundle from a [`DirectoryPayloadStore`] (the boot
+    /// pipeline's normal path).  Both trait objects point at the
+    /// same underlying directory.
+    pub fn from_directory(store: DirectoryPayloadStore) -> Self {
+        let arc = Arc::new(store);
+        Self {
+            persistence: arc.clone()
+                as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+            lookup: arc as Arc<dyn PayloadLookup>,
+        }
+    }
+
+    /// Build a bundle from an in-memory store (test / dev-mode
+    /// path).  Both trait objects point at the same underlying
+    /// `HashMap` guarded by a std `RwLock`.
+    pub fn from_in_memory(store: InMemoryPayloadStore) -> Self {
+        let arc = Arc::new(store);
+        Self {
+            persistence: arc.clone()
+                as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+            lookup: arc as Arc<dyn PayloadLookup>,
+        }
+    }
+}
+
+/// Delete any content-addressed payload files in `payload_dir`
+/// whose hex-hash filename is NOT in `keep`.  Files whose name
+/// does not decode as a 64-char hex string are left untouched
+/// (defensive: operators may have leftover tmp files, symlinks,
+/// README snippets, etc.).  Symlinks are skipped for the same
+/// reason snapshot-dir pruning skips them — attacker-planted
+/// symlinks to unrelated targets should not get followed.
+///
+/// The `keep` set typically comes from the snapshot layer's
+/// retained-payload-hashes enumeration (union of the hashes
+/// sidecars across all retained snapshots).
+///
+/// Returns the number of files removed.  Individual `remove_file`
+/// failures are logged, not propagated — retention is bounded by
+/// future passes anyway.
+pub fn prune_payload_store(
+    payload_dir: &Path,
+    keep: &std::collections::HashSet<[u8; 32]>,
+) -> std::io::Result<usize> {
+    let read_dir = match std::fs::read_dir(payload_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut removed = 0;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() || file_type.is_dir() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if name.len() != 64 || !name.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        let hash = match hex::decode(name) {
+            Ok(v) if v.len() == 32 => {
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&v);
+                buf
+            }
+            _ => continue,
+        };
+        if keep.contains(&hash) {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::warn!(
+                target: "f1r3fly.fs_wal.payload_store",
+                path = %path.display(),
+                error = %e,
+                "prune_payload_store: failed to remove non-retained payload; continuing"
+            ),
+        }
+    }
+    Ok(removed)
+}
+
+/// Trap-check that the `Path` argument compiles into public API.
+/// Callers pass a `&Path` down as `dir` when constructing a
+/// [`DirectoryPayloadStore`]; keep the alias so a future refactor
+/// doesn't accidentally lose the ergonomic constructor shape.
+#[allow(dead_code)]
+fn _shape_check(p: &Path) -> DirectoryPayloadStore { DirectoryPayloadStore::new(p.to_path_buf()) }
+
 fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     let h = Blake2b256::hash(bytes.to_vec());
     assert_eq!(h.len(), 32, "Blake2b256 must produce 32-byte digest");
@@ -348,5 +562,80 @@ mod tests {
         }
         let err = serve_payload(&[0xAB; 32], &AlwaysFails).expect_err("must fail");
         assert!(matches!(err, ServeError::BackingStoreFailed(_)));
+    }
+
+    #[test]
+    fn directory_store_round_trips_through_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let bytes = b"disk-backed payload".to_vec();
+        let hash = store.insert(&bytes).expect("insert");
+        let fetched = store.get(&hash).unwrap().expect("round trip");
+        assert_eq!(fetched, bytes);
+    }
+
+    #[test]
+    fn directory_store_lookup_returns_none_for_unknown_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let result = store.get(&[0xFF; 32]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn directory_store_persist_hashes_the_bytes() {
+        use rholang::rust::interpreter::io::wal::PayloadPersistence;
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let bytes = b"persisted via trait".to_vec();
+        let hash = store.persist(&bytes).expect("persist");
+        assert_eq!(hash, Blake2b256::hash(bytes.clone()).as_slice());
+        let fetched = store.get(&hash).unwrap().expect("fetched");
+        assert_eq!(fetched, bytes);
+    }
+
+    #[test]
+    fn payload_store_bundle_shares_bytes_across_trait_objects() {
+        let in_mem = InMemoryPayloadStore::new();
+        let bundle = PayloadStoreBundle::from_in_memory(in_mem);
+        let bytes = b"shared through both trait objects".to_vec();
+        let hash = bundle.persistence.persist(&bytes).expect("persist");
+        let fetched = bundle.lookup.get(&hash).unwrap().expect("round trip");
+        assert_eq!(fetched, bytes);
+    }
+
+    #[test]
+    fn prune_payload_store_removes_non_retained_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let keep = store.insert(b"kept bytes").expect("insert keep");
+        let drop = store.insert(b"drop bytes").expect("insert drop");
+        let keep_set: std::collections::HashSet<[u8; 32]> = [keep].into_iter().collect();
+        let removed = prune_payload_store(dir.path(), &keep_set).expect("prune");
+        assert_eq!(removed, 1);
+        assert!(store.get(&keep).unwrap().is_some());
+        assert!(store.get(&drop).unwrap().is_none());
+    }
+
+    #[test]
+    fn prune_payload_store_leaves_non_hex_files_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DirectoryPayloadStore::new(dir.path().to_path_buf());
+        let keep = store.insert(b"content").expect("insert");
+        std::fs::write(dir.path().join("README.md"), b"operator notes").unwrap();
+        std::fs::write(dir.path().join("tempfile.tmp"), b"junk").unwrap();
+        let keep_set: std::collections::HashSet<[u8; 32]> = [keep].into_iter().collect();
+        let removed = prune_payload_store(dir.path(), &keep_set).expect("prune");
+        assert_eq!(removed, 0);
+        assert!(dir.path().join("README.md").exists());
+        assert!(dir.path().join("tempfile.tmp").exists());
+    }
+
+    #[test]
+    fn prune_payload_store_tolerates_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let ghost = dir.path().join("never-created");
+        let removed = prune_payload_store(&ghost, &Default::default()).expect("prune");
+        assert_eq!(removed, 0);
     }
 }

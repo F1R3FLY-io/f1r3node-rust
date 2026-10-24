@@ -148,3 +148,9 @@ docs/discoveries/*.md
 .pi/
 graphify-out/
 /graphify-out
+docs/work-logs/*.md
+docs/handoffs/
+docs/tdd-plans/
+
+# CbC R8 named-claim ledger locks (operational, never evidence)
+*.claims.lock

@@ -378,7 +378,13 @@ pub async fn validate_block_checkpoint(
     block_store: &KeyValueBlockStore,
     s: &mut CasperSnapshot,
     runtime_manager: &RuntimeManager,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     // This node's validator identity. The rejected-deploy buffer is
     // OWNER-SCOPED: only the sender of a rejected copy's carrier buffers
@@ -404,7 +410,13 @@ pub async fn validate_block_checkpoint_with_policy(
     block_store: &KeyValueBlockStore,
     s: &mut CasperSnapshot,
     runtime_manager: &RuntimeManager,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     local_validator: Option<&Validator>,
     adopted: Option<&AdoptedResourcePolicy>,
@@ -828,6 +840,12 @@ pub struct DeploysCheckpoint {
     // and consensus-checked at validation beside the rejected records.
     pub applied_from_scope: Vec<Bytes>,
     pub merge_base: Option<BlockHash>,
+    // Per-deploy Merkle leaves in commit order (user deploys first,
+    // then system deploys).  Fed to `proto_util::hash_block_with_leaves`
+    // in `block_creator::package_block` to avoid rehashing the body at
+    // block-hash time.  See the Merkle-block-hash scheme in
+    // `proto_util.rs::hash_block`.
+    pub block_hash_leaves: Vec<[u8; 32]>,
 }
 
 pub struct DeploysEnvelopeCheckpoint {
@@ -839,6 +857,7 @@ pub struct DeploysEnvelopeCheckpoint {
     pub bonds: Vec<Bond>,
     pub applied_from_scope: Vec<Bytes>,
     pub merge_base: Option<BlockHash>,
+    pub block_hash_leaves: Vec<[u8; 32]>,
 }
 
 pub async fn compute_deploys_checkpoint(
@@ -850,7 +869,13 @@ pub async fn compute_deploys_checkpoint(
     runtime_manager: &RuntimeManager,
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     local_validator: Option<&Validator>,
 ) -> Result<DeploysCheckpoint, CasperError> {
@@ -891,6 +916,7 @@ pub async fn compute_deploys_checkpoint(
         bonds: checkpoint.bonds,
         applied_from_scope: checkpoint.applied_from_scope,
         merge_base: checkpoint.merge_base,
+        block_hash_leaves: checkpoint.block_hash_leaves,
     })
 }
 
@@ -906,7 +932,13 @@ pub async fn compute_deploys_checkpoint_envelopes(
     adopted_policy: Option<&AdoptedResourcePolicy>,
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     local_validator: Option<&Validator>,
 ) -> Result<DeploysEnvelopeCheckpoint, CasperError> {
@@ -1011,7 +1043,8 @@ pub async fn compute_deploys_checkpoint_envelopes(
         .await?;
     let compute_state_ms = compute_state_started.elapsed().as_millis();
 
-    let (post_state_hash, processed_deploys, processed_system_deploys, bonds) = result;
+    let (post_state_hash, processed_deploys, processed_system_deploys, bonds, block_hash_leaves) =
+        result;
     tracing::debug!(
         target: "f1r3fly.casper.compute_deploys_checkpoint.timing",
         "compute_deploys_checkpoint timing: parents_post_state_ms={}, compute_state_ms={}, total_ms={}, processed_deploys={}, processed_system_deploys={}, rejected_deploys={}",
@@ -1032,6 +1065,7 @@ pub async fn compute_deploys_checkpoint_envelopes(
         bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves,
     })
 }
 
@@ -1231,7 +1265,13 @@ pub async fn compute_parents_post_state(
     // propose, the block's recorded justifications at validate) — NEVER the live
     // DAG view. The finalized floor is derived from this so it is node-identical.
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     // The caller's per-operation derivation context. When present, the
     // floor (and its post-state) come from it instead of a second
     // derivation, and the settled-sig probes share its memo. `None`
@@ -3698,6 +3738,7 @@ mod backstop_tests {
         use crypto::rust::private_key::PrivateKey;
         use crypto::rust::signatures::signed::Cosigned;
         let body = models::rust::cost_deploy_data::DeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp,

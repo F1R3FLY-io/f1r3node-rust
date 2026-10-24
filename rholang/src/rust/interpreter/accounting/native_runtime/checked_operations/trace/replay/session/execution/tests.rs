@@ -198,6 +198,7 @@ async fn replay_process_logged(
         &mut extra_processes(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .unwrap();
@@ -261,6 +262,7 @@ async fn replay_process_logged(
             replay_budget,
             ExternalServices::noop(),
             logger,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         )
         .await
         .unwrap();

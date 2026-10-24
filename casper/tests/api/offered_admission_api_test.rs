@@ -153,6 +153,7 @@ fn permissioned_offer(
     })
     .expect("the funding intent encodes");
     let body = DeployData {
+        parameters: Vec::new(),
         term: term.to_string(),
         language: "rholang".to_string(),
         time_stamp,
@@ -355,7 +356,7 @@ async fn estimated_counts(
         .expect("an offered runtime spawns");
     let estimate = estimate_offered_term(
         &envelope.body().term,
-        models::rust::normalizer_env::normalizer_env_from_envelope(&envelope),
+        models::rust::normalizer_env::normalizer_env_from_envelope(&envelope).unwrap(),
         casper::rust::util::rholang::tools::Tools::user_envelope_rng(&envelope),
         &funding,
         &selected_schedule(),
@@ -1324,6 +1325,7 @@ fn sponsored_offer(
     })
     .expect("the funding intent encodes");
     let body = DeployData {
+        parameters: Vec::new(),
         term: term.to_string(),
         language: "rholang".to_string(),
         time_stamp,

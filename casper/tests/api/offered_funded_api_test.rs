@@ -48,7 +48,7 @@ use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
 // };
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -101,6 +101,7 @@ fn offered_grpc_service(node: &TestNode) -> DeployGrpcServiceV1Impl {
         "F1R3".to_string(),
         8,
         false,
+        false,
         node.engine_cell.clone(),
         report_api(node),
         models::rhoapi::Par::default(),
@@ -126,6 +127,7 @@ fn offered_web_api(node: &TestNode) -> WebApiImpl {
         "F1R3".to_string(),
         "F1R3".to_string(),
         8,
+        false,
         false,
         report_api(node),
         models::rhoapi::Par::default(),
@@ -214,6 +216,7 @@ fn signed_offer_at(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term: "new x in { x!(0) }".to_string(),
         language: "rholang".to_string(),
         time_stamp,
@@ -377,6 +380,7 @@ async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
     assert_eq!(checked.data.phlo_price(), 2);
     let body_only = Signed::create(
         models::rust::casper::protocol::casper_message::DeployData {
+            parameters: Vec::new(),
             term: checked.data.body().term.clone(),
             time_stamp: checked.data.body().time_stamp,
             phlo_price: 2,
@@ -622,7 +626,12 @@ async fn offered_direct_rev_api_proposal_validator_replay_and_receipt() {
         .unwrap();
     assert_eq!(observed.len(), 1);
     assert_eq!(
-        u64::try_from(RhoNumber::unapply(&observed[0]).unwrap()).unwrap(),
+        u64::try_from(
+            RhoBigInt::unapply(&observed[0])
+                .or_else(|| RhoNumber::unapply(&observed[0]).map(num_bigint::BigInt::from))
+                .unwrap(),
+        )
+        .unwrap(),
         producer_receipt.purses[0].post_balance
     );
 }
@@ -1309,7 +1318,12 @@ async fn vault_balance(
         .await
         .unwrap();
     assert_eq!(observed.len(), 1);
-    u64::try_from(RhoNumber::unapply(&observed[0]).unwrap()).unwrap()
+    u64::try_from(
+        RhoBigInt::unapply(&observed[0])
+            .or_else(|| RhoNumber::unapply(&observed[0]).map(num_bigint::BigInt::from))
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 /// DR-101: a deposit into a vault is system residue of the deployment that
@@ -3792,6 +3806,7 @@ async fn a_cli_owner_direct_offer_is_admitted_proposed_and_replayed() {
     let offer = cli_owner_direct_offer(
         &owner_secret,
         DeployData {
+            parameters: Vec::new(),
             term: "new x in { x!(1) }".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,

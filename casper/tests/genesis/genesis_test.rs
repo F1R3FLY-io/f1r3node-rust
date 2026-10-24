@@ -269,6 +269,8 @@ async fn from_input_files(
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
 
     // Changed by DR-134 (DR-66 item 5): a genesis requires the active
@@ -654,7 +656,7 @@ async fn genesis_from_input_files_should_parse_the_wallets_file_and_create_corre
             |vault| match (parsed_vaults.contains(vault), vault.initial_balance) {
                 (false, balance) if balance > 0 => Vault {
                     vault_address: vault.vault_address.clone(),
-                    initial_balance: OFFERED_TEST_VAULT_BALANCE,
+                    initial_balance: u128::from(OFFERED_TEST_VAULT_BALANCE),
                 },
                 _ => vault.clone(),
             },
@@ -675,7 +677,7 @@ async fn genesis_from_input_files_should_parse_the_wallets_file_and_create_corre
     let on_chain_balance = rev_vault_balance(&mut node, &shard_id, KNOWN_REV_ADDRESS).await;
     assert_eq!(
         on_chain_balance,
-        KNOWN_BALANCE.to_string(),
+        format!("{}n", KNOWN_BALANCE),
         "genesis REV vault for {} must hold the wallets-file balance {}",
         KNOWN_REV_ADDRESS,
         KNOWN_BALANCE

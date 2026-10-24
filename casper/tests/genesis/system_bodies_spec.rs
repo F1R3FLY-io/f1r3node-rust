@@ -84,13 +84,18 @@ fn only_either_runs_a_process_held_in_a_variable() {
         &genesis.native_token_name,
         &genesis.native_token_symbol,
         genesis.native_token_decimals,
+        &genesis.fs_bundle,
+        genesis.consensus_fs_snapshot_cadence,
     );
     let either = standard_deploys::either(&genesis.shard_id).data.term;
     let mut either_sites = 0;
     let mut other_sites = Vec::new();
     for (index, deploy) in terms.iter().enumerate() {
-        let term = mk_term(&deploy.data.term, normalizer_env_from_deploy(deploy))
-            .expect("a genesis term normalizes");
+        let term = mk_term(
+            &deploy.data.term,
+            normalizer_env_from_deploy(deploy).unwrap(),
+        )
+        .expect("a genesis term normalizes");
         let sites = variables_run_as_processes(&term);
         if deploy.data.term == either {
             either_sites += sites.len();
@@ -314,9 +319,11 @@ fn genesis_sends_that_mix_the_values_of_several_data_are_listed() {
         &genesis.native_token_name,
         &genesis.native_token_symbol,
         genesis.native_token_decimals,
+        &genesis.fs_bundle,
+        genesis.consensus_fs_snapshot_cadence,
     );
     // The order of `Genesis::default_blessed_terms_with_policy`: eleven
-    // standard deploys, the vault deploys, and the PoS deploy last.
+    // standard deploys, the vault deploys, PoS, and FsGenesis.
     const NAMES: [&str; 11] = [
         "Registry",
         "VersionedRegistry",
@@ -335,11 +342,15 @@ fn genesis_sends_that_mix_the_values_of_several_data_are_listed() {
     for (index, deploy) in terms.iter().enumerate() {
         let name = match NAMES.get(index) {
             Some(name) => *name,
-            None if index + 1 == terms.len() => "PoS",
+            None if index + 1 == terms.len() => "FsGenesis",
+            None if index + 2 == terms.len() => "PoS",
             None => "vaults",
         };
-        let term = mk_term(&deploy.data.term, normalizer_env_from_deploy(deploy))
-            .expect("a genesis term normalizes");
+        let term = mk_term(
+            &deploy.data.term,
+            normalizer_env_from_deploy(deploy).unwrap(),
+        )
+        .expect("a genesis term normalizes");
         for site in sends_that_mix_data(&term) {
             *counts.entry(name).or_default() += 1;
             sites.push(format!("{name}: {site}"));
@@ -386,8 +397,9 @@ fn the_check_finds_a_send_that_mixes_two_data() {
 /// mint, stack and PoS state updates. A change in genesis that adds or
 /// removes such a site changes these numbers, and the site then gets the
 /// review that DR-135 records.
-const MIXED_DATA_SITES: [(&str, usize); 8] = [
+const MIXED_DATA_SITES: [(&str, usize); 9] = [
     ("Either", 13),
+    ("FsGenesis", 56),
     ("MakeMint", 3),
     ("MultiSigSystemVault", 7),
     ("PoS", 6),

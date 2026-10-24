@@ -147,6 +147,11 @@ mod tests {
             },
             storage: Storage {
                 data_dir: PathBuf::from("/tmp/test"),
+                file_io_provisioning: Default::default(),
+                cli_oracle_static_files: Vec::new(),
+                cli_oracle_static_dirs: Vec::new(),
+                cli_consensus_static_files: Vec::new(),
+                cli_consensus_static_dirs: Vec::new(),
             },
             tls: TlsConf {
                 certificate_path: PathBuf::from("/tmp/cert.pem"),

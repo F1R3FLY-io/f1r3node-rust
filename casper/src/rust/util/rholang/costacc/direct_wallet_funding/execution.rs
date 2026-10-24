@@ -721,13 +721,16 @@ impl RuntimeManager {
                 envelope.identity().as_bytes(),
                 &prepared.funding_root,
             );
-            let evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
+            let mut evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
                 Ok(evaluation) => evaluation,
                 Err(error) => {
                     runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
                     return Err(error);
                 }
             };
+            runtime
+                .reject_bitmask_clears(&checkpoint, &mut evaluation)
+                .await;
             let noted = binding.take_notes();
             if noted.is_empty() || !table.has_room() {
                 break (binding, checkpoint, evaluation);
@@ -939,13 +942,16 @@ impl RuntimeManager {
             .await?;
         check_execution_root(&root, &runtime.runtime.get_root().await.bytes())?;
         let checkpoint = runtime.runtime.create_soft_checkpoint().await;
-        let evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
+        let mut evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
             Ok(evaluation) => evaluation,
             Err(error) => {
                 runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
                 return Err(error);
             }
         };
+        runtime
+            .reject_bitmask_clears(&checkpoint, &mut evaluation)
+            .await;
         if !evaluation.byte_observations.has_complete_measurements()
             || evaluation.native_phlo_usage.is_none()
             || runtime.runtime.get_root().await.bytes() != root

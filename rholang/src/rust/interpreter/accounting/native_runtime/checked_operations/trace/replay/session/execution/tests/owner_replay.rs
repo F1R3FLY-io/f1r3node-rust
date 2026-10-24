@@ -148,6 +148,7 @@ async fn play(store: &str, run: &str, seed: &[u8], binding: &Arc<OwnerFundingBin
         &mut extra_processes(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .expect("the play environment");

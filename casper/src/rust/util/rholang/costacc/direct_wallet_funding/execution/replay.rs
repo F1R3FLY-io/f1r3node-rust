@@ -2096,7 +2096,7 @@ impl RuntimeManager {
         super::check_execution_root(&before.bytes(), &history.root().bytes())?;
         let parsed = InterpreterImpl::parse_source(
             &processed.envelope().body().term,
-            normalizer_env_from_envelope(processed.envelope()),
+            normalizer_env_from_envelope(processed.envelope()).map_err(invalid)?,
         )?;
         let mut offered_definitions =
             vec![grant_issue_definition(offered_grant_issue_call_limits())];
@@ -2104,7 +2104,7 @@ impl RuntimeManager {
         let mut replay =
             rholang::rust::interpreter::rho_runtime::create_native_replay_env_with_logger(
                 trace,
-                history,
+                history.clone(),
                 Arc::new(Box::new(Matcher)),
                 Arc::new(RwLock::new(HashMap::new())),
                 self.mergeable_tags.clone(),
@@ -2112,6 +2112,7 @@ impl RuntimeManager {
                 cost,
                 ExternalServices::noop(),
                 user_run_logger,
+                runtime.runtime.fs_handles.clone(),
             )
             .await?;
         #[cfg(any(test, feature = "test-utils"))]
@@ -2133,9 +2134,10 @@ impl RuntimeManager {
             processed.identity_bytes(),
             &prepared.funding_root,
         );
-        let evaluation = replay
+        let mut evaluation = replay
             .evaluate(parsed, Tools::user_envelope_rng(processed.envelope()))
             .await?;
+        RuntimeOps::reject_replayed_bitmask_clears(&history, &replay, &mut evaluation).await?;
         let failures = evaluation
             .economic_failures
             .union(classify_errors(&evaluation.errors).map_err(invalid)?);
@@ -2314,13 +2316,13 @@ impl RuntimeManager {
         super::check_execution_root(&before.bytes(), &history.root().bytes())?;
         let parsed = InterpreterImpl::parse_source(
             &envelope.body().term,
-            normalizer_env_from_envelope(envelope),
+            normalizer_env_from_envelope(envelope).map_err(invalid)?,
         )?;
         let mut offered_definitions =
             vec![grant_issue_definition(offered_grant_issue_call_limits())];
         let mut replay = create_native_replay_env(
             trace,
-            history,
+            history.clone(),
             Arc::new(Box::new(Matcher)),
             Arc::new(RwLock::new(HashMap::new())),
             self.mergeable_tags.clone(),
@@ -2334,9 +2336,10 @@ impl RuntimeManager {
             .set_invalid_blocks(context.invalid_blocks.clone())
             .await;
         *replay.deploy_data.write().await = DeployData::from_envelope(envelope);
-        let evaluation = replay
+        let mut evaluation = replay
             .evaluate(parsed, Tools::user_envelope_rng(envelope))
             .await?;
+        RuntimeOps::reject_replayed_bitmask_clears(&history, &replay, &mut evaluation).await?;
         let exported = replay.export().await?;
         let root = settlement_root(
             before,

@@ -32,7 +32,8 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
-    new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
+    new_elist_par, new_emap_par, new_gbigint_expr, new_gint_expr, new_gint_par, new_gstring_par,
+    union,
 };
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
@@ -105,15 +106,17 @@ use super::metrics_constants::{
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
 use super::rho_runtime::RhoISpace;
+use super::rho_type::{bigint_to_bytes, bytes_to_bigint};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::{
     allocate_new_bindings, evaluation_random, owned_evaluation_terms, GeneratedMessage,
 };
 use crate::rust::interpreter::accounting::costs::{
-    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
-    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
-    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
+    add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
+    interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
+    nth_method_call_cost, remove_cost, size_method_cost, slice_cost, take_cost, to_byte_array_cost,
+    to_list_cost, union_cost, valid_utf8_prefix_len_cost,
 };
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
@@ -159,9 +162,8 @@ impl<F: Future> Future for StackGrowingFuture<F> {
     }
 }
 
-/// Added by DR-132 (dev `reduce.rs:117-133`): a spawned task handle that
-/// aborts the task when the handle is dropped before the task completes, so
-/// cancelling an owner cancels the tasks it spawned.
+/// A spawned task handle that aborts the task when the handle is dropped before
+/// the task completes, so cancelling an owner cancels the tasks it spawned.
 struct AbortOnDrop<T>(JoinHandle<T>);
 
 impl<T> Future for AbortOnDrop<T> {
@@ -177,6 +179,17 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 type DispatchHandle = AbortOnDrop<Result<DispatchType, InterpreterError>>;
+
+/// Returns the current deferred-dispatch scope when the dispatch of
+/// `continuation` can be deferred. It cannot for a system-process continuation
+/// (its `DispatchType` updates the produce event) or without a scope (a direct
+/// `eval` call without `inj`); such a dispatch runs inline.
+fn deferral_scope(continuation: &TaggedContinuation) -> Option<Arc<DeferredDispatches>> {
+    match continuation.tagged_cont {
+        Some(TaggedCont::ParBody(_)) => DEFERRED_DISPATCHES.try_with(Arc::clone).ok(),
+        _ => None,
+    }
+}
 
 #[derive(Default)]
 struct DeferredState {
@@ -286,10 +299,9 @@ tokio::task_local! {
     static DEFERRED_DISPATCHES: Arc<DeferredDispatches>;
 }
 
-/// Added by DR-132 (dev `reduce.rs:199-211`): spawns a task that inherits the
-/// deferred-dispatch scope of the caller, if any. Every spawn in the evaluator
-/// must go through this function: a task without the scope runs COMM bodies
-/// inline and rebuilds the nested-future chain.
+/// Spawns a task that inherits the deferred-dispatch scope of the caller, if any.
+/// Every spawn in the evaluator must go through this function: a task without
+/// the scope runs COMM bodies inline and rebuilds the nested-future chain.
 fn spawn_in_dispatch_scope<F>(future: F) -> AbortOnDrop<F::Output>
 where
     F: Future + std::marker::Send + 'static,
@@ -318,7 +330,6 @@ where
     })
 }
 
-/// Added by DR-132 (dev `reduce.rs:213-219`).
 fn join_error(err: JoinError) -> InterpreterError {
     if err.is_cancelled() {
         InterpreterError::ReduceError(format!("task cancelled: {}", err))
@@ -482,6 +493,20 @@ pub struct ReducerCore {
     /// body binds, by env position (Rule H, H0 and H3). Empty without a
     /// binding.
     pub(crate) held: HeldMap,
+    /// Slice 31: phase-scoped URN visibility.  When `true` (the
+    /// default), `eval_new` refuses to resolve any URN whose
+    /// string starts with `FS_NATIVE_URN_PREFIX`
+    /// (`rho:io:fs:native:1.0.0/`).  Genesis composition needs
+    /// those URNs to bind the raw fs primitives into FsGenesis's
+    /// new-scope; user deploys must not, because that would bypass
+    /// Fs.rho's sandbox / mode-cap / bundle checks.  A yet-to-land
+    /// runtime slice will toggle the flag off before running
+    /// genesis-time deploys and back on afterwards; state-execution
+    /// deploys leave it at the default.
+    ///
+    /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
+    /// system-process closures that clone the reducer.
+    pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Application = Option<(
@@ -957,6 +982,48 @@ impl ReducerCore {
         (self.aggregate_evaluator_errors(errors).map(|_| ()), summary)
     }
 
+    /// Spawns the dispatch of a Rholang-body continuation as a task of `scope`
+    /// (from `deferral_scope`). A `ParBody` dispatch always returns
+    /// `DispatchType::DeterministicCall` or an error, so the caller does not need
+    /// its result.
+    fn spawn_deferred_dispatch(
+        &self,
+        scope: Arc<DeferredDispatches>,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) {
+        let reducer = self.clone();
+        let handle = spawn_in_dispatch_scope(async move {
+            reducer
+                .dispatch(continuation, data_list, is_replay, previous_output)
+                .await
+        });
+        scope.push(handle);
+    }
+
+    async fn dispatch_or_defer(
+        &self,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) -> Result<DispatchType, InterpreterError> {
+        if let Some(scope) = deferral_scope(&continuation) {
+            self.spawn_deferred_dispatch(
+                scope,
+                continuation,
+                data_list,
+                is_replay,
+                previous_output,
+            );
+            return Ok(DispatchType::DeterministicCall);
+        }
+        self.dispatch(continuation, data_list, is_replay, previous_output)
+            .await
+    }
+
     /**
      * Materialize a send in the store, optionally returning the matched continuation.
      *
@@ -1207,6 +1274,7 @@ impl ReducerCore {
 
         match res {
             Some((continuation, data_list, peek)) => {
+                self.register_bitmask_channels(&data_list).await;
                 if persistent {
                     // Added by DR-114 (P2): a recorded external-service call is
                     // one linear request with one reply. A persistent send to
@@ -1246,23 +1314,26 @@ impl ReducerCore {
                         >,
                     > = vec![];
 
-                    futures.push(Box::pin(async move {
-                        self_clone1
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay_flag,
-                                previous_output_clone,
-                            )
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send
-                                    + 'static,
-                            >,
-                        >);
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay_flag,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone1
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay_flag,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
 
                     futures.push(Box::pin(async move {
                         self_clone2
@@ -1306,22 +1377,38 @@ impl ReducerCore {
                                     + 'static,
                             >,
                         >,
-                    > = vec![Box::pin(async move {
-                        self_clone
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay,
-                                previous_output_clone,
-                            )
-                            .await
-                    })];
+                    > = vec![];
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
                     futures.extend(self.produce_peeks(data_list, 1).await);
 
                     self.run_parallel_dispatches(futures).await
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
@@ -1377,23 +1464,26 @@ impl ReducerCore {
                         >,
                     > = vec![];
 
-                    futures.push(Box::pin(async move {
-                        self_clone1
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay_flag,
-                                previous_output_clone,
-                            )
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send
-                                    + 'static,
-                            >,
-                        >);
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay_flag,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone1
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay_flag,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
 
                     futures.push(Box::pin(async move {
                         self_clone2
@@ -1433,22 +1523,38 @@ impl ReducerCore {
                                     + 'static,
                             >,
                         >,
-                    > = vec![Box::pin(async move {
-                        self_clone
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay,
-                                previous_output_clone,
-                            )
-                            .await
-                    })];
+                    > = vec![];
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
                     futures.extend(self.produce_peeks(data_list, 1).await);
 
                     self.run_parallel_dispatches(futures).await
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
@@ -1612,6 +1718,20 @@ impl ReducerCore {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);
+        }
+    }
+
+    async fn register_bitmask_channels(
+        &self,
+        data_list: &[(Par, ListParWithRandom, ListParWithRandom, bool)],
+    ) {
+        for (chan, _, _, _) in data_list {
+            if self.is_mergeable_channel(chan) == Some(MergeType::BitmaskOr) {
+                self.merge_chs
+                    .write()
+                    .await
+                    .insert(chan.clone(), MergeType::BitmaskOr);
+            }
         }
     }
 
@@ -2387,6 +2507,29 @@ impl ReducerCore {
         mut rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
+        // Slice 31: phase-scoped URN visibility.  Reject fs-native
+        // URNs during state-execution deploys so user code cannot
+        // bypass Fs.rho's sandbox by binding the raw primitives.
+        // Genesis composition toggles the flag off (yet-to-land
+        // runtime slice) so FsGenesis can bind `fsRead`/`fsWrite`/...
+        // directly in its outer new-scope.
+        if self
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            for urn in &new.uri {
+                if urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
+                    return Err(InterpreterError::TermStructureError(format!(
+                        "urn `{urn}` is not resolvable in this phase; \
+                         rho:io:fs:native:* URNs are reserved for the \
+                         genesis-blessed FsGenesis deploy — user code \
+                         must instead go through the Fs cap published \
+                         at genesis"
+                    )));
+                }
+            }
+        }
+
         // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural
         // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the
         // consensus consumed cost). §7.4 re-pins 9→8 precisely because the
@@ -4261,6 +4404,181 @@ impl ReducerCore {
         }
 
         Box::new(BytesToHexMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // concatBytes (on List of ByteArrays) — spec §Native buffer helpers.
+    // Concatenates elements in order.  Empty list → zero-length ByteArray.
+    // Non-List receiver or non-ByteArray element raises MethodNotDefined.
+    // Ported from fileio (Wave 5 PR 5.73).
+    // -------------------------------------------------------------------
+    fn concat_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ConcatBytesMethod<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for ConcatBytesMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("concatBytes"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::EListBody(elist) => {
+                            // Two-pass: total length, then a single allocation.
+                            let mut segments: Vec<Vec<u8>> = Vec::with_capacity(elist.ps.len());
+                            for elem in &elist.ps {
+                                match single_expr(elem) {
+                                    Some(Expr {
+                                        expr_instance: Some(ExprInstance::GByteArray(bytes)),
+                                    }) => segments.push(bytes),
+                                    _ => {
+                                        return Err(InterpreterError::MethodNotDefined {
+                                            method: String::from("concatBytes"),
+                                            other_type: String::from("non-ByteArray element"),
+                                        });
+                                    }
+                                }
+                            }
+                            let total: usize = segments.iter().map(|s| s.len()).sum();
+                            self.outer
+                                .metering
+                                .reserve_incremental_primitive(concat_bytes_cost(total))?;
+                            let mut out = Vec::with_capacity(total);
+                            for s in segments {
+                                out.extend_from_slice(&s);
+                            }
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GByteArray(out)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("concatBytes"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ConcatBytesMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // validUtf8PrefixLen (on ByteArray) — spec §Native buffer helpers.
+    // Total on ByteArray; never raises.  Returns the length of the
+    // longest valid-UTF-8 prefix of the receiver.
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn valid_utf8_prefix_len_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ValidUtf8PrefixLenMethod<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for ValidUtf8PrefixLenMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("validUtf8PrefixLen"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer.metering.reserve_incremental_primitive(
+                                valid_utf8_prefix_len_cost(&bytes),
+                            )?;
+                            let prefix = match std::str::from_utf8(&bytes) {
+                                Ok(_) => bytes.len(),
+                                Err(e) => e.valid_up_to(),
+                            };
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GInt(prefix as i64)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("validUtf8PrefixLen"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ValidUtf8PrefixLenMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // decodeUtf8 (on ByteArray) — spec §Native buffer helpers.  Total on
+    // ByteArray; ill-formed sequences substituted with U+FFFD, per Unicode
+    // §3.9 (matches Rust `String::from_utf8_lossy`).
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn decode_utf8_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct DecodeUtf8Method<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for DecodeUtf8Method<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("decodeUtf8"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer
+                                .metering
+                                .reserve_incremental_primitive(decode_utf8_cost(&bytes))?;
+                            let decoded = String::from_utf8_lossy(&bytes).into_owned();
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GString(decoded)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("decodeUtf8"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(DecodeUtf8Method { outer: self })
     }
 
     fn to_utf8_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -7786,6 +8104,51 @@ impl ReducerCore {
         Box::new(LengthMethod { outer: self })
     }
 
+    fn to_bigint_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ToBigIntMethod<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for ToBigIntMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("toBigInt"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let result = match base_expr.expr_instance {
+                    Some(ExprInstance::GInt(v)) => {
+                        new_gbigint_expr(bigint_to_bytes(&num_bigint::BigInt::from(v)))
+                    }
+                    Some(ExprInstance::GBigInt(bytes)) => new_gbigint_expr(bytes),
+                    Some(other) => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: get_type(other),
+                        })
+                    }
+                    None => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: String::from("None"),
+                        })
+                    }
+                };
+                Ok(Par::default().with_exprs(vec![result]))
+            }
+        }
+
+        Box::new(ToBigIntMethod { outer: self })
+    }
+
     fn slice_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SliceMethod<'a> {
             outer: &'a ReducerCore,
@@ -8307,6 +8670,12 @@ impl ReducerCore {
         table.insert("toByteArray".to_string(), self.to_byte_array_method());
         table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
         table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
+        table.insert("concatBytes".to_string(), self.concat_bytes_method());
+        table.insert(
+            "validUtf8PrefixLen".to_string(),
+            self.valid_utf8_prefix_len_method(),
+        );
+        table.insert("decodeUtf8".to_string(), self.decode_utf8_method());
         table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
         table.insert("union".to_string(), self.union_method());
         table.insert("diff".to_string(), self.diff_method());
@@ -8359,6 +8728,7 @@ impl ReducerCore {
         table.insert("toSet".to_string(), self.to_set_method());
         table.insert("toMap".to_string(), self.to_map_method());
         table.insert("toString".to_string(), self.to_string_method());
+        table.insert("toBigInt".to_string(), self.to_bigint_method());
         table
     }
 
@@ -8700,6 +9070,9 @@ impl ReducerCore {
             caller: None,
             // Added by G3 (DR-135, S3b): nor held values.
             held: super::accounting::owner_funding::HeldMap::default(),
+            // Default: reject fs native URNs.  Genesis composition
+            // flips the flag off via a yet-to-land runtime slice.
+            filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -8899,23 +9272,6 @@ fn par_contains_nan_double(par: &Par) -> bool {
         }),
         _ => false,
     })
-}
-
-fn bytes_to_bigint(bytes: &[u8]) -> num_bigint::BigInt {
-    if bytes.is_empty() {
-        num_bigint::BigInt::from(0)
-    } else {
-        num_bigint::BigInt::from_signed_bytes_be(bytes)
-    }
-}
-
-fn bigint_to_bytes(n: &num_bigint::BigInt) -> Vec<u8> {
-    use num_traits::Zero;
-    if n.is_zero() {
-        vec![0]
-    } else {
-        n.to_signed_bytes_be()
-    }
 }
 
 fn make_bigint_expr(bytes: Vec<u8>, _op: &str) -> Result<Expr, InterpreterError> {

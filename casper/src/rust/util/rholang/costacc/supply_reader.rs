@@ -127,18 +127,26 @@ impl SupplyReader for RuntimeManagerSupplyReader<'_> {
                     "SystemVault balance response is not singular".into(),
                 ));
             };
-            let balance = rholang::rust::interpreter::rho_type::RhoNumber::unapply(value)
+            let balance = rholang::rust::interpreter::rho_type::RhoBigInt::unapply(value)
+                .or_else(|| {
+                    rholang::rust::interpreter::rho_type::RhoNumber::unapply(value)
+                        .map(num_bigint::BigInt::from)
+                })
                 .ok_or_else(|| {
                     CasperError::RuntimeError(
                         "SystemVault balance response is not an integer".into(),
                     )
                 })?;
-            if balance < 0 {
+            if balance.sign() == num_bigint::Sign::Minus {
                 return Err(CasperError::RuntimeError(
                     "SystemVault balance is negative".into(),
                 ));
             }
-            inventory.balance = Some(balance);
+            inventory.balance = Some(i64::try_from(balance).map_err(|_| {
+                CasperError::RuntimeError(
+                    "SystemVault balance exceeds the cost settlement range".into(),
+                )
+            })?);
             Ok(inventory)
         })
     }

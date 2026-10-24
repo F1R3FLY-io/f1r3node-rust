@@ -89,6 +89,7 @@ async fn play_native(
         &mut Vec::new(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .expect("the play environment starts");

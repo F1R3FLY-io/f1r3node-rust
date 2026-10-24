@@ -157,6 +157,7 @@ fn signed_offer(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term: term.to_owned(),
         language: "rholang".to_owned(),
         time_stamp: timestamp,

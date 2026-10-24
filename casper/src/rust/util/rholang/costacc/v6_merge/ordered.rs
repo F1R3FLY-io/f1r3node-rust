@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
+use num_bigint::{BigInt, Sign};
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use shared::rust::hashable_set::HashableSet;
@@ -306,12 +307,12 @@ pub(crate) fn ordered_pass_witnessed(
     ))
 }
 
-fn diff_on(chain: &DeployChainIndex, channel: &Blake2b256Hash) -> Option<i64> {
+fn diff_on<'a>(chain: &'a DeployChainIndex, channel: &Blake2b256Hash) -> Option<&'a BigInt> {
     chain
         .event_log_index
         .number_channels_data
         .get(channel)
-        .map(|(diff, _)| *diff)
+        .map(|(diff, _)| diff)
 }
 
 fn adds_on(chain: &DeployChainIndex, channel: &Blake2b256Hash) -> bool {
@@ -346,7 +347,7 @@ fn repair(
     kept: &mut Vec<Branch<DeployChainIndex>>,
     rejected: &mut Rejections,
 ) -> Result<(), CasperError> {
-    let mut base_values: BTreeMap<Blake2b256Hash, i64> = BTreeMap::new();
+    let mut base_values: BTreeMap<Blake2b256Hash, BigInt> = BTreeMap::new();
     let mut recheck_conflicts = false;
     loop {
         if close_lineage(i, kept, rejected)? {
@@ -374,10 +375,10 @@ fn repair(
         }
         let failure = PurseLedger::from_branches(kept_sets.iter().copied())
             .first_failure(&mut |channel| match base_values.get(channel) {
-                Some(value) => Ok(*value),
+                Some(value) => Ok(value.clone()),
                 None => {
                     let value = base_number(i.history_reader, channel)?;
-                    base_values.insert(channel.clone(), value);
+                    base_values.insert(channel.clone(), value.clone());
                     Ok(value)
                 }
             })
@@ -387,11 +388,11 @@ fn repair(
         };
         let victim = match failure {
             Failure::Negative => last_by_k(kept, i.pinned, |chain| {
-                diff_on(chain, &channel).is_some_and(|diff| diff < 0)
+                diff_on(chain, &channel).is_some_and(|diff| diff.sign() == Sign::Minus)
             })
             .or_else(|| last_by_k(kept, i.pinned, |chain| diff_on(chain, &channel).is_some())),
             Failure::Overflow => last_by_k(kept, i.pinned, |chain| {
-                diff_on(chain, &channel).is_some_and(|diff| diff > 0)
+                diff_on(chain, &channel).is_some_and(|diff| diff.sign() == Sign::Plus)
             }),
         }
         .ok_or_else(|| repair_error("contributor", &channel))?;

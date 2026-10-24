@@ -225,6 +225,7 @@ async fn play_and_replay(call: Call<'_>, forge: impl FnOnce(&mut Vec<Event>)) ->
         &mut extra_processes(),
         budget.clone(),
         call.play,
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .expect("the play environment");

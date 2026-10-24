@@ -413,6 +413,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         | BundlePermissionError(_)
         | ValueTypeError(_)
         | TermStructureError(_)
+        | BitmaskBitsCleared { .. }
         | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }

@@ -106,7 +106,7 @@ impl OfferedFundedDeploy {
                 let limit = proto.phlo_limit;
                 let price = proto.phlo_price;
                 Self::new(
-                    DeployData::_from_proto(proto),
+                    DeployData::_from_proto(proto)?,
                     funding.to_vec(),
                     limit,
                     price,

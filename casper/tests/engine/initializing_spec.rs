@@ -675,3 +675,260 @@ fn transition_to_initializing_invokes_init_immediately() {
         .join()
         .unwrap();
 }
+
+fn signed_approved_block(fixture: &TestFixture) -> ApprovedBlock {
+    let candidate = fixture.approved_block_candidate.clone();
+    let mut candidate_bytes = Vec::new();
+    Message::encode(&candidate.clone().to_proto(), &mut candidate_bytes)
+        .expect("Failed to encode candidate");
+    let sig = Secp256k1.sign(
+        &Blake2b256::hash(candidate_bytes),
+        &fixture.validator_sk.bytes,
+    );
+    ApprovedBlock {
+        candidate,
+        floor_seed: None,
+        sigs: vec![Signature {
+            public_key: fixture.validator_pk.bytes.clone(),
+            algorithm: "secp256k1".to_string(),
+            sig: sig.into(),
+        }],
+    }
+}
+
+/// Every chunk of the approved state, built the way the responder builds it.
+fn honest_store_items(
+    fixture: &TestFixture,
+    approved_block: &ApprovedBlock,
+) -> Vec<StoreItemsMessage> {
+    use rspace_plus_plus::rspace::shared::trie_exporter::TrieExporter;
+    use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+
+    let rspace_store = &fixture.rspace_store;
+    let exporter = RSpaceExporterStore::create(
+        rspace_store.history.clone(),
+        rspace_store.cold.clone(),
+        rspace_store.roots.clone(),
+    );
+    let history_store = rspace_store.history.clone();
+    let get_from_history =
+        Arc::new(move |key: &ByteVector| history_store.get_one(key).ok().flatten());
+
+    let root = Blake2b256Hash::from_bytes_prost(
+        &approved_block.candidate.block.body.state.post_state_hash,
+    );
+    let mut start_path = vec![(root, None::<u8>)];
+    let mut chunks = Vec::new();
+    loop {
+        let nodes = RSpaceExporterInstance::traverse_history(
+            start_path.clone(),
+            0,
+            lfs_tuple_space_requester::PAGE_SIZE,
+            get_from_history.clone(),
+        );
+        let last = nodes.last().expect("honest path has nodes").clone();
+        let (leafs, non_leafs): (Vec<_>, Vec<_>) = nodes.into_iter().partition(|node| node.is_leaf);
+        let history_items = exporter
+            .get_history_items(non_leafs.into_iter().map(|node| node.hash).collect())
+            .expect("history items");
+        let data_items = exporter
+            .get_data_items(leafs.into_iter().map(|node| node.hash).collect())
+            .expect("data items");
+        let mut last_path = last.path.clone();
+        last_path.push((last.hash.clone(), None));
+
+        chunks.push(StoreItemsMessage {
+            start_path: start_path.clone(),
+            last_path: last_path.clone(),
+            history_items: history_items
+                .into_iter()
+                .map(|(hash, bytes)| (hash, Bytes::from(bytes)))
+                .collect(),
+            data_items: data_items
+                .into_iter()
+                .map(|(hash, bytes)| (hash, Bytes::from(bytes)))
+                .collect(),
+        });
+
+        if last_path.is_empty() || last_path == start_path {
+            return chunks;
+        }
+        start_path = last_path;
+        assert!(chunks.len() < 1024, "too many tuple-space chunks");
+    }
+}
+
+fn stranger() -> comm::rust::peer_node::PeerNode {
+    use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+    PeerNode {
+        id: NodeIdentifier {
+            key: Bytes::from_static(b"issue-713-not-the-bootstrap"),
+        },
+        endpoint: Endpoint::new("stranger.invalid".to_string(), 40400, 40404),
+    }
+}
+
+async fn start_restore(
+    fixture: &TestFixture,
+    engine_cell: &Arc<EngineCell>,
+    approved_block: &ApprovedBlock,
+) -> tokio::task::JoinHandle<Result<(), CasperError>> {
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let initializing = create_initializing_engine(fixture, the_init, engine_cell.clone())
+        .await
+        .expect("Failed to create Initializing engine");
+    engine_cell.set(initializing).await;
+
+    let engine = engine_cell.get().await;
+    let (local, approved_block) = (fixture.local.clone(), approved_block.clone());
+    tokio::spawn(async move {
+        engine
+            .handle(local, CasperMessage::ApprovedBlock(approved_block))
+            .await
+    })
+}
+
+async fn deliver(
+    engine_cell: &EngineCell,
+    from: &comm::rust::peer_node::PeerNode,
+    chunks: &[StoreItemsMessage],
+) {
+    for chunk in chunks {
+        engine_cell
+            .get()
+            .await
+            .handle(
+                from.clone(),
+                CasperMessage::StoreItemsMessage(chunk.clone()),
+            )
+            .await
+            .expect("StoreItemsMessage handling");
+    }
+}
+
+/// The block requester accepts only a block it asked for, so wait for the ask.
+async fn deliver_genesis_once_requested(fixture: &TestFixture, engine_cell: &EngineCell) {
+    let block_requested = || {
+        fixture
+            .transport_layer
+            .get_all_requests()
+            .iter()
+            .any(|request| {
+                matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
+                    if packet.type_id == "BlockRequest")
+            })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !block_requested() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the restore asks for the genesis block");
+    engine_cell
+        .get()
+        .await
+        .handle(
+            fixture.local.clone(),
+            CasperMessage::BlockMessage(fixture.genesis.clone()),
+        )
+        .await
+        .expect("BlockMessage handling");
+}
+
+/// Issue #713: a corrupt chunk is rejected and asked for again. The restore
+/// completes from the honest chunk that follows, with no restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_corrupt_store_items_chunk_is_rejected_and_the_restore_completes() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let engine_cell = Arc::new(EngineCell::init());
+    let approved_block = signed_approved_block(&fixture);
+    let honest = honest_store_items(&fixture, &approved_block);
+
+    let mut corrupt = honest[0].clone();
+    assert!(
+        corrupt.data_items.pop().is_some(),
+        "first chunk carries data items"
+    );
+
+    let restore = start_restore(&fixture, &engine_cell, &approved_block).await;
+    deliver_genesis_once_requested(&fixture, &engine_cell).await;
+    deliver(&engine_cell, &fixture.local, &[corrupt]).await;
+    deliver(&engine_cell, &fixture.local, &honest).await;
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(120), restore)
+        .await
+        .expect("restore finishes");
+    assert!(
+        matches!(outcome, Ok(Ok(()))),
+        "a corrupt chunk must not end the restore: {:?}",
+        outcome
+    );
+    assert!(
+        engine_cell.get().await.with_casper().is_some(),
+        "the joiner reaches Running from the honest chunks"
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
+/// Issue #713: state chunks are asked only of the bootstrap, so a chunk from
+/// any other peer has no effect on the restore.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn store_items_from_a_peer_that_was_not_asked_are_ignored() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let engine_cell = Arc::new(EngineCell::init());
+    let approved_block = signed_approved_block(&fixture);
+    let honest = honest_store_items(&fixture, &approved_block);
+
+    let mut corrupt = honest[0].clone();
+    corrupt.data_items.pop();
+
+    let restore = start_restore(&fixture, &engine_cell, &approved_block).await;
+    deliver_genesis_once_requested(&fixture, &engine_cell).await;
+    deliver(&engine_cell, &stranger(), &[corrupt]).await;
+    deliver(&engine_cell, &stranger(), &honest).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let root_request = StoreItemsMessageRequest {
+        start_path: honest[0].start_path.clone(),
+        skip: 0,
+        take: lfs_tuple_space_requester::PAGE_SIZE,
+    }
+    .to_proto()
+    .encode_to_vec();
+    let followed_up = fixture
+        .transport_layer
+        .get_all_requests()
+        .iter()
+        .any(|request| {
+            matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
+            if packet.type_id == "StoreItemsMessageRequest" && packet.content != root_request)
+        });
+    assert!(
+        !followed_up,
+        "a chunk from a peer that was not asked must not advance the restore"
+    );
+    assert!(
+        !restore.is_finished(),
+        "the restore still waits for the bootstrap"
+    );
+    assert!(engine_cell.get().await.with_casper().is_none());
+
+    deliver(&engine_cell, &fixture.local, &honest).await;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(120), restore)
+        .await
+        .expect("restore finishes");
+    assert!(
+        matches!(outcome, Ok(Ok(()))),
+        "restore outcome: {:?}",
+        outcome
+    );
+    assert!(engine_cell.get().await.with_casper().is_some());
+
+    InitializingSpec::after_each(&fixture);
+}

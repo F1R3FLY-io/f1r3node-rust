@@ -43,6 +43,7 @@ use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloResourceClassV1, PhloSc
 use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
+use num_bigint::{BigInt, Sign};
 use parking_lot::RwLock as PlRwLock;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -59,7 +60,9 @@ use rspace_plus_plus::rspace::hot_store_trie_action::{
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
-use rspace_plus_plus::rspace::merger::merging_logic::{self, MergeType, NumberChannelsDiff};
+use rspace_plus_plus::rspace::merger::merging_logic::{
+    self, MergeType, NumberChannelsDiff, INTEGER_ADD_BITS,
+};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use rspace_plus_plus::rspace::serializers::serializers;
@@ -130,6 +133,8 @@ fn consume(channel: u8, salt: u8) -> Consume {
 
 /// An encoded numeric datum on `channel`; `seed` gives it its own random
 /// state, so two datums with one value still differ.
+fn integer_add_max() -> BigInt { (BigInt::from(1) << INTEGER_ADD_BITS) - 1 }
+
 fn number_datum(channel: &Blake2b256Hash, value: i64, seed: u8) -> Vec<u8> {
     let rnd = Blake2b512Random::create_from_bytes(&[seed; 32]);
     let par_with_rnd = ListParWithRandom {
@@ -206,16 +211,16 @@ impl ChainSpec {
         self
     }
 
-    fn number(mut self, channel: u8, diff: i64, merge_type: MergeType) -> Self {
+    fn number(mut self, channel: u8, diff: impl Into<BigInt>, merge_type: MergeType) -> Self {
         self.user_log
             .number_channels_data
-            .insert(hash32(channel), (diff, merge_type));
+            .insert(hash32(channel), (diff.into(), merge_type));
         self
     }
 
-    fn system_number(mut self, channel: u8, diff: i64) -> Self {
+    fn system_number(mut self, channel: u8, diff: impl Into<BigInt>) -> Self {
         self.system_numbers
-            .insert(hash32(channel), (diff, MergeType::IntegerAdd));
+            .insert(hash32(channel), (diff.into(), MergeType::IntegerAdd));
         self
     }
 
@@ -738,6 +743,7 @@ fn offered_deploy(fee_next_cursor: Option<u32>, time_stamp: i64) -> ProcessedUse
     })
     .expect("the funding intent encodes");
     let body = DeployData {
+        parameters: Vec::new(),
         term: "Nil".to_string(),
         language: "rholang".to_string(),
         time_stamp,
@@ -1106,7 +1112,7 @@ fn folded_mixing_rejects_plain_change() {
         .expect("reader")
         .get_data(&channel)
         .expect("read");
-    let values: Vec<i64> = data
+    let values: Vec<BigInt> = data
         .iter()
         .filter_map(|datum| {
             rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic::try_get_number_with_rnd(&datum.a)
@@ -1115,7 +1121,7 @@ fn folded_mixing_rejects_plain_change() {
         .collect();
     assert_eq!(
         values,
-        vec![15],
+        vec![BigInt::from(15)],
         "the plain value 7 is lost without the claim check"
     );
 }
@@ -1151,7 +1157,7 @@ fn ledger_prevents_compose_overflow() {
         .chain(
             ChainSpec::new(0x41, 0x11, 1)
                 .cost(3)
-                .number(0x61, i64::MAX, MergeType::IntegerAdd)
+                .number(0x61, integer_add_max(), MergeType::IntegerAdd)
                 .build(),
         )
         .chain(
@@ -1181,13 +1187,18 @@ fn ledger_prevents_compose_overflow() {
     let kept: Vec<&HashableSet<DeployChainIndex>> = resolved.to_merge.iter().collect();
     let ledger_of_kept = PurseLedger::from_branches(kept.iter().copied());
     assert!(ledger_of_kept
-        .first_failure(&mut |_| Ok(0))
+        .first_failure(&mut |_| Ok(BigInt::default()))
         .expect("no read")
         .is_none());
     // The control: the kept diffs fold in every order without overflow,
     // while the full set's net total fits but its fold overflows.
-    assert!(merging_logic::combine_mergeable_value(i64::MAX, 1, MergeType::IntegerAdd).is_none());
-    assert_eq!(i128::from(i64::MAX) + 1 - 1, i128::from(i64::MAX));
+    assert!(merging_logic::combine_mergeable_value(
+        &integer_add_max(),
+        &BigInt::from(1),
+        MergeType::IntegerAdd
+    )
+    .is_none());
+    assert_eq!(integer_add_max() + 1 - 1, integer_add_max());
 }
 
 /// Control (C3): a branch whose net total fits can still overflow its chain
@@ -1195,7 +1206,7 @@ fn ledger_prevents_compose_overflow() {
 #[test]
 fn branch_net_totals_miss_chain_overflow() {
     let first = ChainSpec::new(0x41, 0x11, 1)
-        .number(0x61, i64::MAX, MergeType::IntegerAdd)
+        .number(0x61, integer_add_max(), MergeType::IntegerAdd)
         .produces(0x31, 1)
         .build();
     let second = ChainSpec::new(0x42, 0x12, 2)
@@ -1208,15 +1219,19 @@ fn branch_net_totals_miss_chain_overflow() {
         .consumed(produce(0x32, 2))
         .build();
     let branch = HashableSet(HashSet::from([first.clone(), second.clone(), third]));
-    let net: i128 = branch
+    let net: BigInt = branch
         .0
         .iter()
-        .map(|chain| i128::from(chain.event_log_index.number_channels_data[&hash32(0x61)].0))
+        .map(|chain| {
+            chain.event_log_index.number_channels_data[&hash32(0x61)]
+                .0
+                .clone()
+        })
         .sum();
-    assert!(net <= i128::from(i64::MAX), "the branch's net total fits");
+    assert!(net <= integer_add_max(), "the branch's net total fits");
     assert!(
         !ledger::branch_valid(&branch),
-        "the sign split exceeds i64::MAX"
+        "the sign split exceeds integer_add_max()"
     );
     assert!(
         EventLogIndex::combine(&first.event_log_index, &second.event_log_index).is_err(),
@@ -1233,7 +1248,7 @@ fn branch_precheck_rejects_without_error() {
         .block(0x12, 2, &[0x11])
         .chain(
             ChainSpec::new(0x41, 0x11, 1)
-                .number(0x61, i64::MAX, MergeType::IntegerAdd)
+                .number(0x61, integer_add_max(), MergeType::IntegerAdd)
                 .produces(0x31, 1)
                 .build(),
         )
@@ -1264,8 +1279,8 @@ fn branch_precheck_rejects_without_error() {
 #[test]
 fn branch_valid_bounds_user_and_system_parts() {
     let first = ChainSpec::new(0x41, 0x11, 1)
-        .number(0x61, i64::MAX, MergeType::IntegerAdd)
-        .system_number(0x61, -i64::MAX)
+        .number(0x61, integer_add_max(), MergeType::IntegerAdd)
+        .system_number(0x61, -integer_add_max())
         .produces(0x31, 1)
         .build();
     let second = ChainSpec::new(0x42, 0x12, 2)
@@ -1274,7 +1289,7 @@ fn branch_valid_bounds_user_and_system_parts() {
         .build();
     assert_eq!(
         first.event_log_index.number_channels_data[&hash32(0x61)].0,
-        0
+        BigInt::from(0)
     );
     let branch = HashableSet(HashSet::from([first.clone(), second.clone()]));
     assert!(!ledger::branch_valid(&branch));
@@ -1282,10 +1297,10 @@ fn branch_valid_bounds_user_and_system_parts() {
         .0
         .iter()
         .fold(SignSplit::default(), |mut split, chain| {
-            let diff = chain.event_log_index.number_channels_data[&hash32(0x61)].0;
-            match diff > 0 {
-                true => split.pos += i128::from(diff),
-                false => split.neg += i128::from(diff),
+            let diff = &chain.event_log_index.number_channels_data[&hash32(0x61)].0;
+            match diff.sign() == Sign::Plus {
+                true => split.pos += diff,
+                false => split.neg += diff,
             }
             split
         });
@@ -1376,7 +1391,7 @@ fn negative_base_repair_drops_any_contributor() {
             .event_log_index
             .number_channels_data
             .get(&channel)
-            .is_some_and(|(diff, _)| *diff < 0)
+            .is_some_and(|(diff, _)| diff.sign() == Sign::Minus)
     });
     assert_eq!(sign_only, None, "no negative contributor exists");
 }
@@ -1869,7 +1884,7 @@ struct ChainDraw {
     produce_on: Option<u8>,
     consume_on: Option<u8>,
     race_on: Option<u8>,
-    numbers: Vec<(u8, i64)>,
+    numbers: Vec<(u8, BigInt)>,
     system_number: Option<(u8, i64)>,
     replaces_cell: bool,
     losses: u64,
@@ -1885,11 +1900,11 @@ struct Scenario {
     base_numbers: Vec<i64>,
 }
 
-fn diff_strategy() -> impl Strategy<Value = i64> {
+fn diff_strategy() -> impl Strategy<Value = BigInt> {
     prop_oneof![
-        8 => -3i64..=3,
-        1 => Just(i64::MAX),
-        1 => Just(i64::MIN + 1),
+        8 => (-3i64..=3).prop_map(BigInt::from),
+        1 => Just(integer_add_max()),
+        1 => Just(-integer_add_max()),
     ]
 }
 
@@ -1962,8 +1977,8 @@ fn calm(mut scenario: Scenario, signed: bool) -> Scenario {
         draw.replaces_cell = draw.replaces_cell && index == 0;
         for (_, diff) in draw.numbers.iter_mut() {
             *diff = match signed {
-                true => (*diff).clamp(-3, 3),
-                false => (*diff).clamp(0, 3),
+                true => diff.clone().clamp(BigInt::from(-3), BigInt::from(3)),
+                false => diff.clone().clamp(BigInt::from(0), BigInt::from(3)),
             };
         }
         if let Some((_, diff)) = draw.system_number.as_mut() {
@@ -2030,10 +2045,10 @@ fn scenario_world(scenario: &Scenario) -> (World, Vec<DeployChainIndex>) {
             // before any adjudication (dag_merger.rs:1215-1222), and an overflow
             // there is a dev abort that the arbiter reported to the Casper team.
             let diff = match draw.settled {
-                true => diff.clamp(&-3, &3),
-                false => diff,
+                true => diff.clone().clamp(BigInt::from(-3), BigInt::from(3)),
+                false => diff.clone(),
             };
-            spec = spec.number(0x60 + channel, *diff, MergeType::IntegerAdd);
+            spec = spec.number(0x60 + channel, diff, MergeType::IntegerAdd);
         }
         if let Some((channel, diff)) = draw.system_number {
             spec = spec.system_number(0x60 + channel, diff);
@@ -2230,7 +2245,7 @@ fn ledger_fails(
     candidate: &HashableSet<DeployChainIndex>,
 ) -> bool {
     let mut types: HashMap<Blake2b256Hash, MergeType> = HashMap::new();
-    let mut splits: HashMap<Blake2b256Hash, (i128, i128)> = HashMap::new();
+    let mut splits: HashMap<Blake2b256Hash, (BigInt, BigInt)> = HashMap::new();
     for branch in earlier
         .iter()
         .map(|b| &**b)
@@ -2242,16 +2257,16 @@ fn ledger_fails(
                     return true;
                 }
                 let split = splits.entry(channel.clone()).or_default();
-                match *diff > 0 {
-                    true => split.0 += i128::from(*diff),
-                    false => split.1 += i128::from(*diff),
+                match diff.sign() == Sign::Plus {
+                    true => split.0 += diff,
+                    false => split.1 += diff,
                 }
             }
         }
     }
     splits.iter().any(|(channel, (pos, neg))| {
         types[channel] == MergeType::IntegerAdd
-            && (*pos > i128::from(i64::MAX) || *neg < i128::from(i64::MIN))
+            && (pos.bits() > INTEGER_ADD_BITS || neg.bits() > INTEGER_ADD_BITS)
     })
 }
 
@@ -2389,14 +2404,14 @@ fn assert_witnesses_hold(
                     witnesses,
                     |w| matches!(w, Witness::Balance(c, f) if c == channel && f == failure),
                 );
-                let diffs: Vec<i64> = group
+                let diffs: Vec<BigInt> = group
                     .0
                     .iter()
                     .filter_map(|c| {
                         c.event_log_index
                             .number_channels_data
                             .get(channel)
-                            .map(|(diff, _)| *diff)
+                            .map(|(diff, _)| diff.clone())
                     })
                     .collect();
                 assert!(
@@ -2404,7 +2419,7 @@ fn assert_witnesses_hold(
                     "a balance victim contributes to the channel"
                 );
                 if let Failure::Overflow = failure {
-                    assert!(diffs.iter().any(|diff| *diff > 0));
+                    assert!(diffs.iter().any(|diff| diff.sign() == Sign::Plus));
                 }
             }
         }

@@ -4682,6 +4682,7 @@ mod funding_sig_tests {
         members.sort_by_key(|(signer, _)| signer.principal_bytes_v61().unwrap());
         let bitmap = [0b0000_0110];
         let data = DeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,
