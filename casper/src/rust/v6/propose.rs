@@ -88,6 +88,7 @@ mod tests {
             max_envelopes: 10,
             max_records: 1,
             max_record_bytes: 1024,
+            ordered_only: false,
         };
         let none = |_: &Bytes| false;
         let picked = select_envelopes(

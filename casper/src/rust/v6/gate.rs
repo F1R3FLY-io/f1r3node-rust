@@ -32,6 +32,7 @@ impl<'a> From<&'a ProcessedUserDeploy> for GateInput<'a> {
         match deploy {
             ProcessedUserDeploy::Legacy(_) => GateInput::Legacy,
             ProcessedUserDeploy::Offered(offered) => GateInput::Offered(offered.envelope()),
+            ProcessedUserDeploy::Ordered(envelope) => GateInput::Offered(envelope),
         }
     }
 }

@@ -516,6 +516,16 @@ async fn replay_block(
     dag: &mut KeyValueDagRepresentation,
     runtime_manager: &RuntimeManager,
 ) -> Result<Either<ReplayFailure, StateHash>, CasperError> {
+    if block
+        .body
+        .deploys
+        .iter()
+        .any(|deploy| deploy.as_ordered().is_some())
+    {
+        return Ok(Either::Left(ReplayFailure::InternalError {
+            msg: "a block that runs its deploys cannot carry an ordered envelope".to_string(),
+        }));
+    }
     // Extract deploys and system deploys from the block
     let internal_deploys = proto_util::deploys(block);
     let internal_system_deploys = proto_util::system_deploys(block);

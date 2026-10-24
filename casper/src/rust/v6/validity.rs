@@ -12,6 +12,7 @@ pub struct Limits {
     pub max_envelopes: usize,
     pub max_records: usize,
     pub max_record_bytes: usize,
+    pub ordered_only: bool,
 }
 
 impl Default for Limits {
@@ -21,6 +22,7 @@ impl Default for Limits {
             max_envelopes: 256,
             max_records: 64,
             max_record_bytes: 8 * 1024 * 1024,
+            ordered_only: false,
         }
     }
 }
@@ -67,6 +69,9 @@ pub fn check_structure<R: ExecutionRecord>(
     }
     let mut demand: i64 = 0;
     for deploy in &body.deploys {
+        if limits.ordered_only && deploy.as_ordered().is_none() {
+            return Err("a v6 block may carry only ordered envelopes".to_string());
+        }
         if deploy.cost().cost != 0
             || !deploy.deploy_log().is_empty()
             || deploy.is_failed()
@@ -296,6 +301,51 @@ mod tests {
         };
         let err = check(&b, &tight).expect_err("the record bytes exceed the cap");
         assert!(err.contains("record bytes"), "{err}");
+    }
+
+    fn ordered_offer() -> models::rust::casper::protocol::casper_message::ProcessedUserDeploy {
+        use crate::rust::util::rholang::costacc::genesis_resource_policy::shard_resource_schedule;
+        use crate::rust::util::rholang::costacc::owner_offer::owner_direct_offer;
+
+        let body = models::rust::cost_deploy_data::DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let proto = owner_direct_offer(
+            &crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),
+            body,
+            1000,
+            1,
+            &shard_resource_schedule("root", 8),
+        )
+        .unwrap();
+        let envelope = models::rust::deploy_envelope::DeployEnvelope::from_proto(
+            proto,
+            models::rust::cost_protocol_limits::offered_funded_v6_limits().envelope,
+        )
+        .unwrap();
+        models::rust::casper::protocol::casper_message::ProcessedUserDeploy::ordered(envelope)
+            .unwrap()
+    }
+
+    #[test]
+    fn an_ordered_only_body_refuses_every_other_kind_of_deploy() {
+        let ordered_only = Limits {
+            ordered_only: true,
+            ..Limits::default()
+        };
+        let mut b = block(&ext(vec![]), "r", "r");
+        b.body.deploys = vec![ordered_offer()];
+        assert!(check(&b, &ordered_only).is_ok());
+        b.body.deploys = vec![ordered_offer(), fresh_envelope().into()];
+        let err = check(&b, &ordered_only).expect_err("a legacy deploy is refused");
+        assert!(err.contains("only ordered envelopes"), "{err}");
+        assert!(check(&b, &Limits::default()).is_ok());
     }
 
     #[test]

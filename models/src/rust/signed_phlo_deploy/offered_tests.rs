@@ -466,3 +466,78 @@ fn offered_ethereum_signatures_bind_the_same_offer_fields() {
     proto.phlo_price = 1;
     assert!(OfferedFundedDeploy::from_proto(proto, limits()).is_err());
 }
+
+#[test]
+fn an_ordered_envelope_round_trips_and_its_unrun_form_is_unique() {
+    use std::num::NonZeroUsize;
+
+    use crate::casper::EventProto;
+    use crate::rhoapi::PCost;
+    use crate::rust::casper::protocol::casper_message::ProcessedUserDeploy;
+    use crate::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeLimits};
+
+    let envelope_limits = DeployEnvelopeLimits {
+        payload: limits(),
+        members: NonZeroUsize::new(4).unwrap(),
+    };
+    let envelope = DeployEnvelope::from_proto(
+        OfferedFundedDeploy::to_proto(&signed_offer(10, 2)).unwrap(),
+        envelope_limits,
+    )
+    .unwrap();
+    let ordered = ProcessedUserDeploy::ordered(envelope.clone()).unwrap();
+    let proto = ordered.to_proto();
+    assert!(proto.native_cost_evidence.is_none());
+    let decoded = ProcessedUserDeploy::from_proto(proto.clone()).unwrap();
+    assert_eq!(decoded, ordered);
+    assert_eq!(decoded.as_ordered(), Some(&envelope));
+    assert!(decoded.as_offered().is_none() && decoded.as_legacy().is_none());
+    assert_eq!(decoded.identity_bytes(), envelope.identity().as_bytes());
+    assert_eq!(decoded.envelope(), Some(&envelope));
+    assert_eq!(decoded.phlo_limit(), 10);
+    assert_eq!(decoded.phlo_price(), 2);
+    assert_eq!(decoded.cost().cost, 0);
+    assert!(decoded.deploy_log().is_empty() && !decoded.is_failed());
+    assert_eq!(decoded.to_proto(), proto);
+
+    let mut costed = proto.clone();
+    costed.cost = Some(PCost { cost: 1 });
+    let mut costless = proto.clone();
+    costless.cost = None;
+    let mut logged = proto.clone();
+    logged.deploy_log = vec![EventProto::default()];
+    let mut failed = proto.clone();
+    failed.errored = true;
+    let mut platform = proto.clone();
+    platform.system_deploy_error = "boom".to_string();
+    for ambiguous in [costed, costless, logged, failed, platform] {
+        assert!(ProcessedUserDeploy::from_proto(ambiguous).is_err());
+    }
+    let mut empty_evidence = proto;
+    empty_evidence.native_cost_evidence = Some(Vec::new().into());
+    assert!(ProcessedUserDeploy::from_proto(empty_evidence).is_err());
+}
+
+#[test]
+fn only_an_offered_funded_envelope_can_be_ordered() {
+    use crate::rust::casper::protocol::casper_message::ProcessedUserDeploy;
+    use crate::rust::cost_deploy_data::DeployData;
+    use crate::rust::deploy_envelope::DeployEnvelope;
+
+    let body = Cosigned::create_single_envelope(
+        DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        },
+        Box::new(Secp256k1),
+        PrivateKey::from_bytes(&[1; 32]),
+    )
+    .unwrap();
+    let legacy = DeployEnvelope::from_body_envelope(body).unwrap();
+    assert!(ProcessedUserDeploy::ordered(legacy).is_err());
+}

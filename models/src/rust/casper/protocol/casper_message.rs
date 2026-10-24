@@ -2,7 +2,7 @@
 
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
-use crypto::rust::signatures::signed::{Signed, ToMessage};
+use crypto::rust::signatures::signed::{Cosigned, Signed, ToMessage};
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::{Blake2b256Hash, LENGTH as HASH_LENGTH};
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -14,8 +14,9 @@ use crate::rhoapi::PCost;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
 use crate::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
 use crate::rust::cost_protocol_limits::offered_funded_v6_limits;
-use crate::rust::deploy_envelope::{DeployEnvelopeFormat, DeployEnvelopeLimits};
+use crate::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat, DeployEnvelopeLimits};
 use crate::rust::phlo_wire::PhloWireLimits;
+use crate::rust::signed_phlo_deploy::OfferedFundedDeploy;
 
 // TODO: Use type ByteString from models crate
 type ByteString = prost::bytes::Bytes;
@@ -1177,24 +1178,47 @@ impl ProcessedDeploy {
 pub enum ProcessedUserDeploy {
     Legacy(ProcessedDeploy),
     Offered(OfferedProcessedDeploy),
+    Ordered(DeployEnvelope),
+}
+
+static UNRUN_COST: PCost = PCost { cost: 0 };
+
+fn decode_offered(
+    proto: ProcessedDeployProto,
+    envelope_limits: DeployEnvelopeLimits,
+    evidence_limits: PhloWireLimits,
+) -> Result<ProcessedUserDeploy, String> {
+    if proto.native_cost_evidence.is_some() {
+        return OfferedProcessedDeploy::from_proto(proto, envelope_limits, evidence_limits)
+            .map(ProcessedUserDeploy::Offered);
+    }
+    if proto.cost != Some(UNRUN_COST.clone())
+        || !proto.deploy_log.is_empty()
+        || proto.errored
+        || !proto.system_deploy_error.is_empty()
+    {
+        return Err("an offered envelope without cost evidence must not have run".to_string());
+    }
+    let envelope = DeployEnvelope::from_processed_proto_with_limits(
+        proto
+            .deploy
+            .ok_or_else(|| "Missing deploy field".to_string())?,
+        envelope_limits,
+    )?;
+    Ok(ProcessedUserDeploy::Ordered(envelope))
 }
 
 impl ProcessedUserDeploy {
-    pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
-        let version = proto
-            .deploy
-            .as_ref()
-            .and_then(|deploy| deploy.authorization_v61.as_ref())
-            .map(|authorization| authorization.format_version);
-        match DeployEnvelopeFormat::from_authorization_version(version)? {
-            DeployEnvelopeFormat::Legacy => ProcessedDeploy::from_proto(proto).map(Self::Legacy),
-            DeployEnvelopeFormat::OfferedFunded => {
-                let limits = offered_funded_v6_limits();
-                OfferedProcessedDeploy::from_proto(proto, limits.envelope, limits.evidence)
-                    .map(Self::Offered)
-            }
-            _ => Err("processed deploy authorization format is not active".to_string()),
+    pub fn ordered(envelope: DeployEnvelope) -> Result<Self, String> {
+        if envelope.format() != DeployEnvelopeFormat::OfferedFunded {
+            return Err("an ordered envelope must be offered-funded".to_string());
         }
+        Ok(Self::Ordered(envelope))
+    }
+
+    pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        let limits = offered_funded_v6_limits();
+        Self::from_proto_with_limits(proto, limits.envelope, limits.evidence)
     }
 
     pub fn from_proto_with_limits(
@@ -1210,8 +1234,7 @@ impl ProcessedUserDeploy {
         match DeployEnvelopeFormat::from_authorization_version(version)? {
             DeployEnvelopeFormat::Legacy => ProcessedDeploy::from_proto(proto).map(Self::Legacy),
             DeployEnvelopeFormat::OfferedFunded => {
-                OfferedProcessedDeploy::from_proto(proto, envelope_limits, evidence_limits)
-                    .map(Self::Offered)
+                decode_offered(proto, envelope_limits, evidence_limits)
             }
             _ => Err("processed deploy authorization format is not active".to_string()),
         }
@@ -1221,102 +1244,119 @@ impl ProcessedUserDeploy {
         match self {
             Self::Legacy(deploy) => deploy.clone().to_proto(),
             Self::Offered(deploy) => deploy.to_proto_verified(),
+            Self::Ordered(envelope) => ProcessedDeployProto {
+                deploy: Some(envelope.to_proto().expect("an ordered envelope encodes")),
+                cost: Some(UNRUN_COST.clone()),
+                deploy_log: Vec::new(),
+                errored: false,
+                system_deploy_error: String::new(),
+                native_cost_evidence: None,
+            },
         }
+    }
+
+    pub fn envelope(&self) -> Option<&DeployEnvelope> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Offered(deploy) => Some(deploy.envelope()),
+            Self::Ordered(envelope) => Some(envelope),
+        }
+    }
+
+    fn offered_envelope(&self) -> &DeployEnvelope {
+        self.envelope()
+            .expect("only a legacy deploy has no offered envelope")
+    }
+
+    fn signed_offer(&self) -> &Cosigned<OfferedFundedDeploy> {
+        let crate::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
+            self.offered_envelope().view()
+        else {
+            unreachable!("an offered or ordered deploy carries an offered-funded envelope")
+        };
+        signed
     }
 
     pub fn identity_bytes(&self) -> &[u8] {
         match self {
             Self::Legacy(deploy) => &deploy.deploy.sig,
-            Self::Offered(deploy) => deploy.identity_bytes(),
+            _ => self.offered_envelope().identity().as_bytes(),
         }
     }
 
     pub fn valid_after_block_number(&self) -> i64 {
         match self {
             Self::Legacy(deploy) => deploy.deploy.data.valid_after_block_number,
-            Self::Offered(deploy) => deploy.envelope().body().valid_after_block_number,
+            _ => self.offered_envelope().body().valid_after_block_number,
         }
     }
 
     pub fn shard_id(&self) -> &str {
         match self {
             Self::Legacy(deploy) => &deploy.deploy.data.shard_id,
-            Self::Offered(deploy) => &deploy.envelope().body().shard_id,
+            _ => &self.offered_envelope().body().shard_id,
         }
     }
 
     pub fn phlo_price(&self) -> i64 {
         match self {
             Self::Legacy(deploy) => deploy.deploy.data.phlo_price,
-            Self::Offered(deploy) => {
-                let crate::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
-                    deploy.envelope().view()
-                else {
-                    unreachable!("verified offered processed deploy")
-                };
-                signed.data.phlo_price()
-            }
+            _ => self.signed_offer().data.phlo_price(),
         }
     }
 
     pub fn phlo_limit(&self) -> i64 {
         match self {
             Self::Legacy(deploy) => deploy.deploy.data.phlo_limit,
-            Self::Offered(deploy) => {
-                let crate::rust::deploy_envelope::DeployEnvelopeRef::OfferedFunded(signed) =
-                    deploy.envelope().view()
-                else {
-                    unreachable!("verified offered processed deploy")
-                };
-                signed.data.phlo_limit()
-            }
+            _ => self.signed_offer().data.phlo_limit(),
         }
     }
 
     pub fn term(&self) -> &str {
         match self {
             Self::Legacy(deploy) => &deploy.deploy.data.term,
-            Self::Offered(deploy) => &deploy.envelope().body().term,
+            _ => &self.offered_envelope().body().term,
         }
     }
 
     pub fn expiration_timestamp(&self) -> Option<i64> {
         match self {
             Self::Legacy(deploy) => deploy.deploy.data.expiration_timestamp,
-            Self::Offered(deploy) => deploy.envelope().body().expiration_timestamp,
+            _ => self.offered_envelope().body().expiration_timestamp,
         }
     }
 
     pub fn timestamp(&self) -> i64 {
         match self {
             Self::Legacy(deploy) => deploy.deploy.data.time_stamp,
-            Self::Offered(deploy) => deploy.envelope().body().time_stamp,
+            _ => self.offered_envelope().body().time_stamp,
         }
     }
 
     pub fn deployer_bytes(&self) -> &[u8] {
         match self {
             Self::Legacy(deploy) => &deploy.deploy.pk.bytes,
-            Self::Offered(deploy) => &deploy.envelope().primary().pk.bytes,
+            _ => &self.offered_envelope().primary().pk.bytes,
         }
     }
 
     pub fn to_deploy_info(&self) -> DeployInfo {
         match self {
             Self::Legacy(deploy) => deploy.clone().to_deploy_info(),
-            Self::Offered(deploy) => {
-                let body = deploy.envelope().body();
+            _ => {
+                let envelope = self.offered_envelope();
+                let body = envelope.body();
                 DeployInfo {
                     deployer: PrettyPrinter::build_string_no_limit(self.deployer_bytes()),
                     term: body.term.clone(),
                     timestamp: body.time_stamp,
                     sig: PrettyPrinter::build_string_no_limit(self.identity_bytes()),
-                    sig_algorithm: deploy.envelope().primary().sig_algorithm.name(),
+                    sig_algorithm: envelope.primary().sig_algorithm.name(),
                     phlo_price: self.phlo_price(),
                     phlo_limit: self.phlo_limit(),
                     valid_after_block_number: body.valid_after_block_number,
-                    cost: deploy.cost().cost,
-                    errored: deploy.is_failed(),
+                    cost: self.cost().cost,
+                    errored: self.is_failed(),
                     system_deploy_error: String::new(),
                     transfers: Vec::new(),
                     transfers_available: false,
@@ -1330,6 +1370,7 @@ impl ProcessedUserDeploy {
         match self {
             Self::Legacy(deploy) => &deploy.deploy_log,
             Self::Offered(deploy) => deploy.deploy_log(),
+            Self::Ordered(_) => &[],
         }
     }
 
@@ -1337,6 +1378,7 @@ impl ProcessedUserDeploy {
         match self {
             Self::Legacy(deploy) => &deploy.cost,
             Self::Offered(deploy) => deploy.cost(),
+            Self::Ordered(_) => &UNRUN_COST,
         }
     }
 
@@ -1344,20 +1386,28 @@ impl ProcessedUserDeploy {
         match self {
             Self::Legacy(deploy) => deploy.is_failed,
             Self::Offered(deploy) => deploy.is_failed(),
+            Self::Ordered(_) => false,
         }
     }
 
     pub fn as_legacy(&self) -> Option<&ProcessedDeploy> {
         match self {
             Self::Legacy(deploy) => Some(deploy),
-            Self::Offered(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_offered(&self) -> Option<&OfferedProcessedDeploy> {
         match self {
-            Self::Legacy(_) => None,
             Self::Offered(deploy) => Some(deploy),
+            _ => None,
+        }
+    }
+
+    pub fn as_ordered(&self) -> Option<&DeployEnvelope> {
+        match self {
+            Self::Ordered(envelope) => Some(envelope),
+            _ => None,
         }
     }
 }
