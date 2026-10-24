@@ -818,6 +818,7 @@ dependencies = [
  "proptest",
  "prost 0.14.4",
  "rand 0.9.5",
+ "rayon",
  "regex",
  "rholang",
  "rspace_plus_plus",
