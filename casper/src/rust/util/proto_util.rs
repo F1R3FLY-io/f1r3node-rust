@@ -1987,4 +1987,108 @@ mod merkle_block_hash_tests {
         const EXPECTED: &str = "e1959261b81b13412671713f51402b701fee1e1e261970e0f9215df87b051d23";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
+
+    // ---------------------------------------------------------------
+    // Performance guard: micro-bench of hash_block / hash_block_with_leaves
+    // across representative block shapes.  Marked #[ignore] so it only
+    // runs on explicit invocation (prints wall-clock timings to stdout):
+    //
+    //   cargo test --release -p casper -- --ignored --nocapture \
+    //       merkle_block_hash_tests::hash_block_timing
+    //
+    // The paper's targets (capnp-vs-protobuf.pdf §6 Table 7, 2 vCPU Xeon
+    // 2.8 GHz baseline): end-of-block hash check on a 32-deploy block
+    // falls from ~463 us (old serial scheme) to ~7 us (new scheme, when
+    // the leaves were computed during replay).  We don't try to match
+    // those absolute numbers on arbitrary developer hardware; instead
+    // this test enforces a *loose* ceiling that regressions in the hash
+    // path would blow past.  Tighten the thresholds if the implementation
+    // gets noticeably faster.
+    // ---------------------------------------------------------------
+
+    fn bench_block(n_user: usize, n_system: usize) -> BlockMessage {
+        let mut b = empty_block();
+        b.body.deploys = (0..n_user as i64).map(processed_deploy).collect();
+        b.body.system_deploys = (0..n_system)
+            .map(|i| {
+                if i % 2 == 0 {
+                    processed_system_deploy_close()
+                } else {
+                    processed_system_deploy_slash((i as u8).wrapping_add(1))
+                }
+            })
+            .collect();
+        b
+    }
+
+    fn time_us<F: FnMut()>(iters: u32, mut f: F) -> u128 {
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters {
+            f();
+        }
+        t0.elapsed().as_micros() / iters as u128
+    }
+
+    #[test]
+    #[ignore]
+    fn hash_block_timing() {
+        // Warm up prost allocator paths once so the first measurement
+        // isn't dominated by first-call setup noise.
+        let warmup = bench_block(4, 1);
+        for _ in 0..100 {
+            std::hint::black_box(hash_block(&warmup));
+        }
+
+        let shapes = [(0usize, 0usize), (1, 0), (8, 1), (32, 1), (200, 1)];
+        println!();
+        println!(
+            "{:>8} {:>8}  {:>10}  {:>12}  {:>12}",
+            "n_user", "n_system", "recompute", "fast_path", "ratio"
+        );
+        println!(
+            "{:>8} {:>8}  {:>10}  {:>12}  {:>12}",
+            "------", "--------", "---------", "---------", "-----"
+        );
+        for (n_user, n_system) in shapes {
+            let b = bench_block(n_user, n_system);
+            let leaves = deploys_root_leaves(&b);
+            let iters: u32 = if n_user >= 32 { 50 } else { 500 };
+
+            let recompute_us = time_us(iters, || {
+                std::hint::black_box(hash_block(&b));
+            });
+            let fast_us = time_us(iters, || {
+                std::hint::black_box(hash_block_with_leaves(&b, &leaves));
+            });
+            let ratio = if fast_us > 0 {
+                recompute_us as f64 / fast_us as f64
+            } else {
+                f64::INFINITY
+            };
+            println!(
+                "{:>8} {:>8}  {:>8} us  {:>10} us  {:>12.1}x",
+                n_user, n_system, recompute_us, fast_us, ratio
+            );
+        }
+
+        // Loose regression ceiling.  The paper reports a 32-deploy
+        // end-of-block check at 7 us when leaves are pre-computed (the
+        // fast path).  Even on a slow laptop with a 10x slowdown
+        // allowance, this should stay well under 1 ms.  If this trips,
+        // either (a) something regressed on the hot path, or (b) the
+        // test is running on contended CI hardware with less headroom
+        // than the 100x slack suggests — in which case loosen deliberately
+        // rather than papering over a real slowdown.
+        const CEILING_US: u128 = 1_000;
+        let b32 = bench_block(32, 1);
+        let leaves32 = deploys_root_leaves(&b32);
+        let fast_32_us = time_us(100, || {
+            std::hint::black_box(hash_block_with_leaves(&b32, &leaves32));
+        });
+        assert!(
+            fast_32_us <= CEILING_US,
+            "hash_block_with_leaves on 32-user+1-system block took {fast_32_us} us, \
+             exceeds regression ceiling {CEILING_US} us (paper target ~7 us)"
+        );
+    }
 }
