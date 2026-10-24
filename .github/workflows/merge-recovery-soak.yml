@@ -336,7 +336,14 @@ env:
   #   little above the pre-bump baseline from the stricter rule. Also brings
   #   #161 (dev -> main), which carries #160: an opt-in heartbeat-timing
   #   harness. Verified: descends from 2087398 (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 1a35dd9670ab560c114b8d0db8eded83f7cef20e
+  # 2026-10-24: 1a35dd9 -> 2d3a8d4 (system-integration MAIN — the #164 merge
+  #   commit). #164 removes the two duplicate genesis wallets (V4's, added by
+  #   #163, and 111125xD9x…) and makes the genesis writer reject a repeated
+  #   address: the node loses credits to a duplicated vault (f1r3node-rust
+  #   #851), which failed test_validator_lifecycle on 1a35dd9. Verified:
+  #   descends from 1a35dd9; test_validator_lifecycle passes locally without
+  #   the duplicate.
+  SYSTEM_INTEGRATION_REF: 2d3a8d45f80a30d0a167683b1ece320e64a6c71c
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
