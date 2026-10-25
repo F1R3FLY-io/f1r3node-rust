@@ -189,11 +189,11 @@ The cost-accounting release train of issue #764 adds two long-lived branches. `c
 
 | Flow | Command | Temporary branch |
 |---|---|---|
-| Promotion from `ca-canary` to `ca-release` | `just ca-promote` | `promote/ca-release-<UTC timestamp>` |
+| Promotion from `ca-canary` to `ca-release` | `just ca-promote`, or operation `ca-promote` | `promote/ca-release-<UTC timestamp>` |
 | Back-merge from `ca-release` to `ca-canary` | `just ca-backmerge` | `backmerge/ca-release-<12-character SHA>` |
-| Occasional sync from `dev` to `ca-canary` | `just ca-sync` | `ca/sync-dev-<12-character SHA>` |
+| Occasional sync from `dev` to `ca-canary` | `just ca-sync`, or operation `ca-sync` | `ca/sync-dev-<12-character SHA>` |
 
-The commands run the same scripts as `just promote` and `just backmerge`. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
+The commands run the same scripts as `just promote` and `just backmerge`. The operations are inputs of the **Promote and Back-merge** workflow, which runs the same scripts from `master` with the promotion app token. Do not open a pull request with head `dev` into `ca-canary`, because the protected head guard closes it. Use `ca-sync` instead. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
 
 CI treats the two branches like `dev` and `master`:
 

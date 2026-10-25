@@ -182,6 +182,10 @@ fail_if(rerun && rerun_env["WANT_HEAVY"] != "${{ contains(github.event.pull_requ
 fail_if(rerun && rerun["permissions"] != {"actions" => "write", "contents" => "read"}, "CI Heavy Label must hold only actions: write and contents: read")
 fail_if(rerun && rerun.fetch("steps", []).any? { |step| step.dig("with", "ref") }, "CI Heavy Label must check out the base branch")
 fail_if(!File.read(ci_path).include?("pull_request_has_heavy_label"), "Resolve Target must read the current ci-heavy label for a rerun")
+promote_flow = YAML.load_file("#{File.dirname(ci_path)}/promote-and-backmerge.yml")
+fail_if(trigger(promote_flow).dig("workflow_dispatch", "inputs", "operation", "options") != %w[promote backmerge ca-promote ca-sync], "Promote and Back-merge must offer promote, backmerge, ca-promote, and ca-sync")
+open_step = promote_flow.dig("jobs", "open", "steps").to_a.find { |step| step["name"] == "Open the pull request" }
+fail_if(open_step.nil? || open_step["run"].to_s !~ /ca-sync\)\s*\n\s*BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-canary \\\n.*open-backmerge-pr\.sh/m, "The ca-sync operation must open a dev -> ca-canary sync with open-backmerge-pr.sh")
 fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "target_sha", "default") != "", "CI dispatch must accept an optional exact target SHA")
 fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "top_pull_request", "default") != "", "CI dispatch must accept an optional top pull request")
 build_base = ci.dig("jobs", "build_base")
