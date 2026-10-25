@@ -136,7 +136,7 @@ impl CommitPublicationV1 {
         if durable_index_tail < INDEX_HEADER_LEN_V1 {
             return Err(LogPackFormatError::IndexTailBeforeHeader(durable_index_tail));
         }
-        if (durable_index_tail - INDEX_HEADER_LEN_V1) % INDEX_RECORD_LEN_V1 != 0 {
+        if !(durable_index_tail - INDEX_HEADER_LEN_V1).is_multiple_of(INDEX_RECORD_LEN_V1) {
             return Err(LogPackFormatError::IndexTailUnaligned(durable_index_tail));
         }
         if current_state_canonical_bytes > retained_canonical_bytes {

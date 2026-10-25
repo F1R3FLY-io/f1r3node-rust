@@ -75,22 +75,22 @@ const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 /// empty journal. Implementations with one shared state lock should override
 /// `HotStore::pending_deltas` to read all three roots under that lock.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PendingDeltas {
-    pub data: Option<BagDelta>,
-    pub continuations: Option<BagDelta>,
-    pub continuation_content: Option<PathMap<ContentTransition>>,
-    pub continuation_source_bytes: Option<PathMap<Arc<[u8]>>>,
-    pub joins: Option<BagDelta>,
+pub struct PendingDeltas {
+    pub(crate) data: Option<BagDelta>,
+    pub(crate) continuations: Option<BagDelta>,
+    pub(crate) continuation_content: Option<PathMap<ContentTransition>>,
+    pub(crate) continuation_source_bytes: Option<PathMap<Arc<[u8]>>>,
+    pub(crate) joins: Option<BagDelta>,
 }
 
 /// One coherent read-boundary observation of the journal and the post-state
 /// endpoint counts needed to invert its deltas. The count maps contain only
 /// endpoints named by the journal, never a materialized copy of a namespace.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PendingMutationObservation {
-    pub pending: PendingDeltas,
-    pub data_counts: PathMap<u64>,
-    pub join_counts: PathMap<u64>,
+pub struct PendingMutationObservation {
+    pub(crate) pending: PendingDeltas,
+    pub(crate) data_counts: PathMap<u64>,
+    pub(crate) join_counts: PathMap<u64>,
 }
 
 struct JournalIdentityV1;
@@ -180,6 +180,7 @@ impl DurableJournalStateV1 {
 /// Build one exact three-namespace mutation batch from a coherent hot-store
 /// journal snapshot. The caller supplies authoritative base Bags; no typed
 /// record projection or continuation re-encoding occurs here.
+#[cfg(test)]
 pub(crate) fn mutation_batch_from_pending(
     base: StateVersionV1,
     data_base: &super::bag::Bag,
@@ -2271,6 +2272,10 @@ impl Default for DurableHotStoreBootstrapLimits {
 }
 
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "the variant payloads are diagnostic context read only by the derived Debug impl"
+)]
 pub(crate) enum DurableHotStoreBootstrapError {
     AuthenticatedRead(crate::rspace::persistence::ClosureError<DurableObjectReadErrorV1>),
     Data(DataIndexError),
@@ -2300,6 +2305,13 @@ impl HotStoreInstances {
     /// generation-pinned durable view. The complete namespace enumeration is
     /// performed before publication; any authenticated read or checked Bag
     /// failure aborts construction and cannot become an empty fallback.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests call this bootstrap until task 7931 wires it into RSpace"
+        )
+    )]
     pub(crate) fn create_from_durable<C, P, A, K>(
         authority: &DurableAuthorityViewV1<RSpaceSemanticProfile<C, P, A, K>>,
         limits: DurableHotStoreBootstrapLimits,
@@ -2337,11 +2349,13 @@ impl HotStoreInstances {
             .join_entries(limits.max_steps, limits.max_endpoints)
             .map_err(DurableHotStoreBootstrapError::AuthenticatedRead)?;
 
-        let mut state = InMemHotStoreState::default();
-        state.durable_journal = Some(Box::new(DurableJournalStateV1::new(
-            authority.catalog(),
-            authority.generation_leases(),
-        )));
+        let mut state = InMemHotStoreState {
+            durable_journal: Some(Box::new(DurableJournalStateV1::new(
+                authority.catalog(),
+                authority.generation_leases(),
+            ))),
+            ..InMemHotStoreState::default()
+        };
         let mut data_groups: HashMap<C, Vec<(Datum<A>, super::bag::Multiplicity)>> = HashMap::new();
         for (channel, datum, multiplicity) in data_entries {
             let multiplicity = super::bag::Multiplicity::new(multiplicity.get())

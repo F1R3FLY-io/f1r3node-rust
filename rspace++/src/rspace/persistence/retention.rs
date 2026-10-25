@@ -251,6 +251,10 @@ pub struct RetainedRootV1 {
 
 impl RetainedRootV1 {
     pub const fn root(self) -> ObjectRefV1 { self.root }
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn kind(self) -> RetainedRootKind { self.kind }
     pub const fn lease_id(self) -> u64 { self.lease_id }
 }
@@ -265,6 +269,10 @@ impl RetainedRootSnapshotV1 {
     pub const fn revision(&self) -> u64 { self.revision }
     pub fn roots(&self) -> &[RetainedRootV1] { &self.roots }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this method yet"
+    )]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = RetainedRootV1> + '_ {
         self.roots.iter().copied()
     }
@@ -410,6 +418,10 @@ impl RetainedRootRegistryV1 {
             .all(|candidate| state.roots.get(&candidate.lease_id) == Some(candidate)))
     }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this method yet"
+    )]
     pub fn release(&self, lease: &mut RootLeaseV1) -> Result<(), RetentionRegistryError> {
         lease.release()
     }

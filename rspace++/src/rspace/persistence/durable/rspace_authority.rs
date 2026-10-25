@@ -36,6 +36,10 @@ pub(crate) struct DurableRSpacePublicationLimitsV1 {
 }
 
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "most variant payloads are diagnostic context read only by the derived Debug impl"
+)]
 pub(crate) enum DurableRSpaceTransactionError {
     Mutation(MutationError),
     Canonical(crate::rspace::persistence::CanonicalFormatError),

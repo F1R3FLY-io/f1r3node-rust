@@ -1044,12 +1044,8 @@ impl RadixTreeImpl {
             let collisions = entries
                 .iter()
                 .zip(&observed)
-                .filter_map(|((key, value), actual)| {
-                    actual
-                        .as_ref()
-                        .is_some_and(|actual| actual != value)
-                        .then(|| (key.clone(), value.clone()))
-                })
+                .filter(|((_, value), actual)| matches!(actual, Some(actual) if actual != value))
+                .map(|((key, value), _)| (key.clone(), value.clone()))
                 .collect::<Vec<_>>();
             if !collisions.is_empty() {
                 return Err(RadixTreeError::CollisionError(format!(

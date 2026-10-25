@@ -2118,6 +2118,7 @@ impl<'a, S: AsRef<[u8]>, V: EpmPayload> PendingEpmDecode<'a, S, V> {
     }
 }
 
+#[cfg(test)]
 impl PendingEpmDecode<'static, Bytes> {
     pub(crate) fn new(snapshot: Bytes, validate_canonical: bool) -> Result<Self, TrieCodecError> {
         Self::new_with_provider(

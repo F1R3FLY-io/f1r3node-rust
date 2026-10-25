@@ -64,7 +64,7 @@
     "formal/verus/rmp2_par_bag_transcript.rs": "fc52e634869bcc5b39ab6b976a2623910f08886be7091bbcf100e36d4af3efcb",
     "models/tests/match_path_cursor.rs": "fb4095c10ab61716aa51be5634a0ce6f91cca609a556cd3e73d8dae3d682774a",
     "models/tests/match_path_structure.rs": "23b1720e90adafec0ddd0699134d726fc84dfb69265e05716a3a43273db6af9d",
-    "rspace++/src/rspace/data_index.rs": "636c93212e8185de4e0a5568f1b9c5c1ddb4c2aa352e2cfd4c376e5ab0a0e5ba"
+    "rspace++/src/rspace/data_index.rs": "7d7da143fc22a6beb8274e406ebbda72f88d3c885d93053656ddd4d6e1f96cdb"
   },
   "tla_obligations": [],
   "verus_obligations": [

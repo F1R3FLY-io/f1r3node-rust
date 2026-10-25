@@ -241,6 +241,10 @@ pub(crate) enum GenerationCheckpointPublicationErrorV1 {
 /// Catalog publication is intentionally a later phase so a caller can retain
 /// the old authority until PREPARE, index, and commit ordering is complete.
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "the variant payloads are diagnostic context read only by the derived Debug impl"
+)]
 pub(crate) enum IncrementalAppendErrorV1 {
     Io(DurableIoError),
     LogPack(Box<LogPackFormatError>),
@@ -248,6 +252,10 @@ pub(crate) enum IncrementalAppendErrorV1 {
 }
 
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "most variant payloads are diagnostic context read only by the derived Debug impl"
+)]
 pub(crate) enum IncrementalPublicationErrorV1 {
     Append(IncrementalAppendErrorV1),
     Io(DurableIoError),
@@ -693,6 +701,10 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
     /// named façade intentionally delegates to the same authenticated
     /// checkpoint publication protocol; compaction never changes semantic
     /// object bytes or Merkle identities.
+    #[expect(
+        dead_code,
+        reason = "unit tests compact through the writer's compact_generation_v1 instead"
+    )]
     pub(crate) fn compact_generation_v1(
         self,
         recovery_limits: DurableLimits,

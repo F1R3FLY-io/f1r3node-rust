@@ -567,6 +567,10 @@ impl<'a> CanonicalDagNodeView<'a> {
         })
     }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn canonical_bytes(self) -> &'a [u8] { self.bytes }
 
     pub const fn prefix(self) -> &'a [u8] { self.prefix }
@@ -664,6 +668,10 @@ impl CanonicalBlob {
 
     pub const fn kind(&self) -> CanonicalBlobKind { self.kind }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub fn payload(&self) -> &[u8] { &self.bytes }
 
     pub fn object_ref(&self) -> ObjectRefV1 {
@@ -717,6 +725,10 @@ impl<'a> CanonicalBlobView<'a> {
 
     pub const fn payload(self) -> &'a [u8] { self.payload }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn canonical_bytes(self) -> &'a [u8] { self.bytes }
 
     pub fn object_ref(self) -> ObjectRefV1 {

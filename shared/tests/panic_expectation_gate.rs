@@ -126,9 +126,11 @@ const CATCH_UNWIND_ALLOWLIST: &[Allowed] = &[
         "PRODUCTION, NOT A TEST. The import and five calls enforce guarded \
          PathMap ownership invariants. AnchorRoot::drop and retire_pathmap \
          quarantine populated raw headers and abort if final iterative teardown \
-         unwinds, preventing an unsafe recursive drop. The two write-cursor \
-         entry points normalize a live empty root before resuming a caller's \
-         panic. set_val_at disposes an incoming value if the mutation fails \
+         unwinds, preventing an unsafe recursive drop. with_write_cursor \
+         normalizes a live empty root before resuming a caller's panic; \
+         with_write_cursor_at does the same but is compiled only for unit \
+         tests, because no production caller remains. set_val_at disposes an \
+         incoming value if the mutation fails \
          before transfer and then resumes the panic. The two test expectations \
          formerly in this file run in isolated child processes.",
     ),

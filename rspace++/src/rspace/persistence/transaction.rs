@@ -162,6 +162,10 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
 
     pub const fn version(self) -> StateVersionV1 { self.version }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn admission_report(self) -> SemanticValidationReport { self.admission }
 
     /// Borrow the exact object store sealed by this admission token.  The
@@ -173,6 +177,10 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
     /// trie.  The caller supplies the root and canonical byte key; no trie is
     /// flattened or reconstructed.  This is the primitive used by read-only
     /// durable projections before a legacy hash-key bridge is selected.
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this method yet"
+    )]
     pub(crate) fn lookup_endpoint(
         &self,
         root: ObjectRefV1,

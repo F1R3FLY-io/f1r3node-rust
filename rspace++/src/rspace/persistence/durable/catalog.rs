@@ -69,7 +69,7 @@ impl CatalogPackStateV1 {
             return Err(DurableFormatError::ZeroCatalogIndexGeneration);
         }
         if durable_index_tail < INDEX_HEADER_LEN_V1 ||
-            (durable_index_tail - INDEX_HEADER_LEN_V1) % INDEX_RECORD_LEN_V1 != 0
+            !(durable_index_tail - INDEX_HEADER_LEN_V1).is_multiple_of(INDEX_RECORD_LEN_V1)
         {
             return Err(DurableFormatError::CatalogIndexTail(durable_index_tail));
         }

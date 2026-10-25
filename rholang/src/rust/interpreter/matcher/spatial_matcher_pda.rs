@@ -5442,11 +5442,9 @@ impl ListTargetIndex {
                 self.position_groups
                     .iter()
                     .enumerate()
-                    .filter_map(|(position, id)| {
-                        selected[id.index()].then(|| {
-                            u64::try_from(position)
-                                .expect("a target position fits the Bag cardinality")
-                        })
+                    .filter(|(_, id)| selected[id.index()])
+                    .map(|(position, _)| {
+                        u64::try_from(position).expect("a target position fits the Bag cardinality")
                     })
                     .collect()
             } else {

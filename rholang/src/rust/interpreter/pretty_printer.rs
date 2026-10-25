@@ -2609,7 +2609,10 @@ mod drive {
         let decoded_components = Arena::new();
         let encoded_plans = Arena::new();
         let encoded_expr_children = Arena::new();
+        #[cfg(test)]
         let mut stats = PrettyDriveStats::default();
+        #[cfg(not(test))]
+        let mut stats = PrettyDriveStats;
         run_with_arena(
             pp,
             seed,
@@ -4065,7 +4068,7 @@ mod drive {
     }
 
     fn map_cut_sequence(plan: &ProtobufCutPlan) -> bool {
-        if plan.cuts().len() % 2 != 0 {
+        if !plan.cuts().len().is_multiple_of(2) {
             return false;
         }
         let Some(entries_tag) = schema_field_tag(&EMAP_RHO_MATCH_PROGRAM, "kvs") else {

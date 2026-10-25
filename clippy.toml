@@ -37,6 +37,39 @@
 # invariant above by making either cache semantic must delete this entry;
 # `models`'s `Hash`/`Eq` and EPM1 snapshot tests are what would catch it.
 #
+# ─────────────────────────────────────────────────────────────────────────────
+# `ignore-interior-mutability` — why `ParBag` and `ParBagOwnerKey` are listed
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `Par` now stores its components in a `ParBag`, and the same reachability walk
+# finds two more kinds of cell (53 sites across casper, node, models, rholang
+# and rspace_rhotypes):
+#
+#     Par -> ParBag -> Bag -> GuardedPathMap -> PathMap (UnsafeCell root)
+#     Par -> ParBag -> Arc<ParBagAux> -> OnceLock<...> projection caches
+#     ParBagOwnerKey -> Arc<ParBagAux> -> OnceLock<...> projection caches
+#
+# None of them is observable through a key's `Hash` or `Eq`:
+#
+# - `ParBag`'s `PartialEq`, `Ord` and `Hash` read only its `components` Bag
+#   (models/src/rust/par_bag.rs). The `ParBagAux` caches are derived
+#   projections that clones share and a successful mutation detaches.
+# - A `Bag` is mutated only through copy-on-write: `GuardedPathMap::
+#   fresh_map_mut` is `Arc::make_mut` (rspace++/src/rspace/guarded_pathmap.rs),
+#   so the PathMap a map key holds is never changed in place. PathMap's
+#   `UnsafeCell` only materializes an empty root, which leaves its content as
+#   it was.
+# - `ParBagOwnerKey`'s `PartialEq` is `Arc::ptr_eq` and its `Hash` hashes the
+#   `Arc` pointer; both are fixed for as long as the key holds the `Arc`.
+#
+# The rule stated for `EPathMap` applies here too: whoever makes one of these
+# cells semantic must delete the corresponding entry.
+#
 # ⚠ This setting REPLACES clippy's default rather than extending it, so
 # `bytes::Bytes` — the default — is restated.
-ignore-interior-mutability = ["bytes::Bytes", "models::rust::rhoapi_ext::EPathMap"]
+ignore-interior-mutability = [
+    "bytes::Bytes",
+    "models::rust::rhoapi_ext::EPathMap",
+    "models::rust::par_bag::ParBag",
+    "models::rust::par_bag::ParBagOwnerKey",
+]

@@ -1119,6 +1119,7 @@ impl EntryTrie {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn try_insert_entry_replacing(
         &mut self,
         par: Par,
@@ -1257,7 +1258,7 @@ impl EntryTrie {
         let EPathMapRepr::Map(map) = self.representation_mut() else {
             unreachable!("set mode was rejected and empty mode was specialized")
         };
-        let replaced = native_insert(map, &encoded_key, value);
+        let replaced = native_insert(map, encoded_key, value);
         if replaced.is_none() {
             self.len += 1;
         } else {
@@ -3100,6 +3101,7 @@ impl EPathMap {
             .replace_subtrie(cursor_segments, cursor_kind, &source.ps)
     }
 
+    #[cfg(test)]
     #[allow(deprecated)]
     pub(crate) fn try_insert_entry_replacing(&mut self, par: Par) -> Result<Par, DecodeError> {
         self.ps

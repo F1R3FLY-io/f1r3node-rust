@@ -372,6 +372,10 @@ impl ObjectIndexRecordV1 {
 
     pub const fn location(self) -> ObjectLocationV1 { self.location }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this bound check yet"
+    )]
     pub fn checked_object_end(self) -> Result<u64, IndexFormatError> {
         self.location
             .canonical_offset
@@ -456,7 +460,7 @@ impl<'a> ObjectIndexFileViewV1<'a> {
             });
         }
         if durable_tail < INDEX_HEADER_LEN_V1 ||
-            (durable_tail - INDEX_HEADER_LEN_V1) % INDEX_RECORD_LEN_V1 != 0
+            !(durable_tail - INDEX_HEADER_LEN_V1).is_multiple_of(INDEX_RECORD_LEN_V1)
         {
             return Err(IndexFormatError::UnalignedDurableTail(durable_tail));
         }
@@ -473,6 +477,10 @@ impl<'a> ObjectIndexFileViewV1<'a> {
 
     pub const fn header(self) -> ObjectIndexHeaderV1 { self.header }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this tail accessor yet"
+    )]
     pub const fn durable_tail(self) -> u64 { self.durable_tail }
 
     pub const fn ignored_tail_bytes(self) -> u64 { self.ignored_tail_bytes }
@@ -584,7 +592,7 @@ impl ObjectIndexPrefixVerifierV1 {
         available: u64,
     ) -> Result<Self, IndexFormatError> {
         if appointed_tail < INDEX_HEADER_LEN_V1 ||
-            (appointed_tail - INDEX_HEADER_LEN_V1) % INDEX_RECORD_LEN_V1 != 0
+            !(appointed_tail - INDEX_HEADER_LEN_V1).is_multiple_of(INDEX_RECORD_LEN_V1)
         {
             return Err(IndexFormatError::UnalignedDurableTail(appointed_tail));
         }
@@ -681,7 +689,7 @@ impl<'prepared, 'transaction, 'mutation, P: SemanticProfile>
             });
         }
         if old_tail < INDEX_HEADER_LEN_V1 ||
-            (old_tail - INDEX_HEADER_LEN_V1) % INDEX_RECORD_LEN_V1 != 0
+            !(old_tail - INDEX_HEADER_LEN_V1).is_multiple_of(INDEX_RECORD_LEN_V1)
         {
             return Err(IndexFormatError::UnalignedDurableTail(old_tail));
         }

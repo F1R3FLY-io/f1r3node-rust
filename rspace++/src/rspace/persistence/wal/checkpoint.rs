@@ -184,6 +184,10 @@ impl GenerationCheckpointPrepareIdentityV1 {
 
     pub(crate) const fn digest(self) -> PhysicalDigest { self.digest }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub(crate) const fn crc32c(self) -> u32 { self.crc32c }
 }
 

@@ -207,6 +207,7 @@ impl GroupInput {
         }
     }
 
+    #[cfg(test)]
     fn rotated(&self, by: usize) -> Self {
         let mut records = self.production_records();
         if !records.is_empty() {
@@ -388,7 +389,14 @@ impl<const SEPARATE_IDENTITY: bool> ControlStore<SEPARATE_IDENTITY> {
     fn insert(&mut self, input: &GroupInput, record: &(Vec<u8>, Vec<u8>, u64)) -> bool {
         let inserted = self
             .store
-            .insert(&input.prefix, Arc::clone(&input.key), &record.0, record.1.clone(), record.2)
+            .insert(
+                &input.prefix,
+                Arc::clone(&input.key),
+                &record.0,
+                record.1.clone(),
+                record.2,
+                None,
+            )
             .expect("registered experiment insertion is valid");
         self.kinds.insert(&input.prefix, input.kind);
         inserted

@@ -847,7 +847,7 @@
       "checker": "scripts/check-epathmap-core-obligations.py",
       "family": "epathmap_core",
       "manifest": "formal/epathmap_core_obligations.generated.json",
-      "manifest_sha256": "04d7d60aa44b8a1be5790634beebbf5d19960f5d4d4f36eeab35f85aad658b66",
+      "manifest_sha256": "182a94fe036698018524d19bd682725a7ced98673a75a0b75e01878c53c94333",
       "obligations": {
         "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
         "delegated_epm1_positional_tla": {
@@ -1625,7 +1625,7 @@
         ],
         "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
         "source_sha256": {
-          "formal/epm1_positional_obligations.generated.json": "851a243f4ab70949b39c54e08bb05498430c7678e023e883c061ddc325c697c4",
+          "formal/epm1_positional_obligations.generated.json": "d4998b1be29ead7925c3374bf4ee1b5235909e1a3ac65f948ca6241220a4da24",
           "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
           "formal/rocq/stack_safe_pda/theories/EPathMap.v": "a0ba6d8381867c02971d94bbb5545f4495b739ed82ab69859da4c109b3b1a6b7",
           "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
@@ -1716,7 +1716,7 @@
       "checker": "scripts/check-epm1-positional-obligations.py",
       "family": "epm1_positional",
       "manifest": "formal/epm1_positional_obligations.generated.json",
-      "manifest_sha256": "851a243f4ab70949b39c54e08bb05498430c7678e023e883c061ddc325c697c4",
+      "manifest_sha256": "d4998b1be29ead7925c3374bf4ee1b5235909e1a3ac65f948ca6241220a4da24",
       "obligations": {
         "causal_mutants": [
           {
@@ -1870,7 +1870,7 @@
           "formal/tlaplus/stack_safe_pda/Epm1PositionalSkipEndpointMutant.cfg": "0a8c7b89f239be5ee137f9cd6d259c880d60e9d3a99d770289853fc220af2f7a",
           "formal/tlaplus/stack_safe_pda/Epm1PositionalWrongEndpointMutant.cfg": "02b1ecc394cdf5504a4b039774590ec4b780bfae8dd12ef7f1b4c67378c4af33",
           "formal/verus/epm1_positional_association.rs": "72130ff0aae6160e68594fe804a15d219d4bf18b9aa7e38d6c24cadb7ecb374c",
-          "models/src/rust/epathmap_trie_codec.rs": "38848c5e2310eabf0d23a6cb2d4df260a0cb8bcbdebde961dbe15e1785aa7863",
+          "models/src/rust/epathmap_trie_codec.rs": "620ffa58b33e10fc0e70e8c2d34832b5fee69c7c484d924695b2b792de570f18",
           "models/src/rust/mod.rs": "9da24730ef273c25720e873e2b0287379d3d94c802aba26bf437cbecc1eb07d2",
           "models/tests/formal_equivalence_manifest.rs": "0e393d815af5164ceec1e8e9bf7d7bac208896ab4f4be6dde7c0938839c91205"
         },
@@ -5536,7 +5536,7 @@
       "checker": "scripts/check-rmp2-obligations.py",
       "family": "rmp2",
       "manifest": "formal/rmp2_obligations.generated.json",
-      "manifest_sha256": "d038888212b5076ad7c5382230f3508c6696f28e1c1b2295a3c7bdd78dd06578",
+      "manifest_sha256": "24d6bc6bac29bf3157658ddc00f311f8101e281ab2c68f6d1cb54deb18abcbbe",
       "obligations": {
         "causal_mutants": [],
         "rocq_print_assumptions": [
@@ -5603,7 +5603,7 @@
           "formal/verus/rmp2_par_bag_transcript.rs": "fc52e634869bcc5b39ab6b976a2623910f08886be7091bbcf100e36d4af3efcb",
           "models/tests/match_path_cursor.rs": "fb4095c10ab61716aa51be5634a0ce6f91cca609a556cd3e73d8dae3d682774a",
           "models/tests/match_path_structure.rs": "23b1720e90adafec0ddd0699134d726fc84dfb69265e05716a3a43273db6af9d",
-          "rspace++/src/rspace/data_index.rs": "636c93212e8185de4e0a5568f1b9c5c1ddb4c2aa352e2cfd4c376e5ab0a0e5ba"
+          "rspace++/src/rspace/data_index.rs": "7d7da143fc22a6beb8274e406ebbda72f88d3c885d93053656ddd4d6e1f96cdb"
         },
         "tla_obligations": [],
         "verus_obligations": [
@@ -6235,7 +6235,7 @@
       "checker": "scripts/check-split-index-authority-obligations.py",
       "family": "split_index_authority",
       "manifest": "formal/split_index_authority_obligations.generated.json",
-      "manifest_sha256": "1c59a67375dbae8dffae7fe9793edb299bd0079a9b70d396f4252e61845ce2c7",
+      "manifest_sha256": "8baa1379c62849c6ac855216ad97e4ef5e4064acaa68ed966cdd16cc4495fa60",
       "obligations": {
         "causal_mutants": [
           {
@@ -6333,14 +6333,14 @@
           }
         ],
         "runtime": "rspace++/src/rspace/record_index.rs",
-        "runtime_sha256": "b101e496bbc18b277a20242a04235c893fcd3cfdbb6bc59eb1621461ea3e16d5"
+        "runtime_sha256": "8d32d108927963d267911ea0591b17f20b5ecb316cd9f85ccc16cc34c9ec5624"
       }
     },
     {
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "a17c73724f0351630af582fa4c7536f39e68257e851ded0ce8899705e78036f7",
+      "manifest_sha256": "55a0f7ee49d1c70b869741476503671beea0db30f027babb5be1f53987249508",
       "obligations": {
         "controls": [
           {
@@ -6699,7 +6699,7 @@
           "rholang/tests/epathmap_replay_equivalence_spec.rs": "660beba8782f1e658313e6a73bae0321b1bdc2d7736d968a5a43aedb9308192d",
           "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
           "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
-          "rspace++/src/rspace/persistence/mod.rs": "02c9ff3ec44c767eabe46f51ad2abc800932c6f7f23109a403dcbae0e6340332",
+          "rspace++/src/rspace/persistence/mod.rs": "b336e1309fffed0170750810c6cd5e4fba7b579afd98a6ef14a75a4e72f5c355",
           "rspace++/src/rspace/state/rspace_state_authority.rs": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992",
           "rspace++/tests/persistence/generation_checkpoint_properties.rs": "2f4080420cdd91c233e0137c2941abd67864d1190ec1cb6483f528138b65388b",
           "rspace++/tests/persistence/mod.rs": "04e260d7a9bedecc34909d5c489d8be820e255e5d25a9ffa43212abc92261687",

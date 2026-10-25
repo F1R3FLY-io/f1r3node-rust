@@ -869,7 +869,7 @@ pub(crate) fn decode_data_endpoint<A: Clone + ColdStoreDecode>(
             });
         }
     };
-    let datum = decode_datum::<A>(&view.datum_identity()).map_err(|error| {
+    let datum = decode_datum::<A>(view.datum_identity()).map_err(|error| {
         CanonicalFormatError::SemanticKey {
             namespace: SemanticNamespace::DataBag.name(),
             detail: error.to_string(),

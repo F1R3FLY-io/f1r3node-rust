@@ -685,6 +685,7 @@ fn visit_sequence_frames_with_prefix(
     scratch.frame.clear();
 }
 
+#[cfg(any(test, feature = "candidate-continuation-experiment"))]
 fn visit_product_values(
     cursor: &mut CandidateProductCursor<'_, '_>,
     mut visitor: impl FnMut(CandidatePosition),

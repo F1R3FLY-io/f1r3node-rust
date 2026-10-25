@@ -113,10 +113,18 @@ pub(crate) struct IndexBoundPhysicalRecoveryV1 {
 impl IndexBoundPhysicalRecoveryV1 {
     pub(crate) const fn store_id(&self) -> StoreId { self.recovery.store_id() }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this profile accessor yet"
+    )]
     pub(crate) const fn profile_id(&self) -> SemanticProfileId { self.recovery.profile_id() }
 
     pub(crate) const fn state(&self) -> StateVersionV1 { self.recovery.state() }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this terminal accessor yet"
+    )]
     pub(crate) const fn terminal(&self) -> PackTerminalIdentityV1 { self.recovery.terminal() }
 
     pub(crate) const fn terminal_address(&self) -> LogPackAddress {
@@ -688,7 +696,6 @@ fn recover_index_bound_v1(
         consumed_physical_read_bytes,
         second.read_work().physical_read_bytes(),
     )?;
-    drop(second);
     drop(installed);
 
     #[cfg(test)]

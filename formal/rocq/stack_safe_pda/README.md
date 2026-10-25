@@ -2085,6 +2085,8 @@ universal in-place removal proposal. Structural removal publishes a freshly cons
 filtered trie; value-only updates retain a guarded cursor. `with_write_cursor` and
 `with_write_cursor_at` both close/reset their cursor, normalize a truly empty **whole map**,
 and then return the original result or resume the original panic. Normalization is not rollback.
+Since 2026-10-17 `with_write_cursor_at` is compiled only for unit tests, because no production
+caller remains; `with_write_cursor` is the one live write gateway.
 
 The separate live-write subsection of `PathMapPhysicalOwnership.v` adds four printed
 capstones; it does not alter the existing eleven-entry ownership catalog. Its state records

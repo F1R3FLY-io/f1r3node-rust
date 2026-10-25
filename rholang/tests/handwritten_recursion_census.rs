@@ -340,48 +340,53 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         ],
         disposition: Disposition::Measured("canonical-path validation is an explicit frame machine and EPathMap adoption is zipper/iterator based; canonical-path and EPM1 depth gates drive this exact cross-file component"),
     },
-    ComponentDisposition {
-        label: "models.canonical_path+models.epathmap_trie_codec+models.rhoapi_ext+rholang.reduce+rspace++.pathmap_codec-and-cursor-adapters",
-        members: members![
-            ("models/src/rust/canonical_path.rs", "encode_segment", 0),
-            ("models/src/rust/canonical_path.rs", "encode_trie_path", 0),
-            ("models/src/rust/canonical_path.rs", "encode_trie_path_with_stability", 0),
-            ("models/src/rust/canonical_path.rs", "run", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "encode_with_layout", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "from", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "from", 1),
-            ("models/src/rust/epathmap_trie_codec.rs", "from_parts", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "layout_with_certified_value_count", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "new", 1),
-            ("models/src/rust/epathmap_trie_codec.rs", "new", 4),
-            ("models/src/rust/epathmap_trie_codec.rs", "new", 5),
-            ("models/src/rust/epathmap_trie_codec.rs", "new_with_provider", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "parse_indexed_canonical_snapshot_prefix", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "parse_pending_framing", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "read_indexed_len", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "read_len", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "read_protobuf_varint", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "take", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "try_from", 0),
-            ("models/src/rust/epathmap_trie_codec.rs", "validate_canonical_act_summary", 0),
-            ("models/src/rust/rhoapi_ext.rs", "epm_layout", 0),
-            ("models/src/rust/rhoapi_ext.rs", "get_map_value", 0),
-            ("models/src/rust/rhoapi_ext.rs", "get_map_value", 1),
-            ("models/src/rust/rhoapi_ext.rs", "trie_snapshot", 0),
-            ("models/src/rust/rhoapi_ext.rs", "trie_snapshot", 1),
-            ("rholang/src/rust/interpreter/reduce.rs", "ascend", 0),
-            ("rholang/src/rust/interpreter/reduce.rs", "get", 0),
-            ("rholang/src/rust/interpreter/reduce.rs", "get_or_else", 0),
-            ("rspace++/src/rspace/bag.rs", "get_or_insert", 0),
-            ("rspace++/src/rspace/bag.rs", "get_or_insert_from_cursor", 0),
-            ("rspace++/src/rspace/guarded_pathmap.rs", "with_write_cursor", 0),
-            ("rspace++/src/rspace/pathmap_mutation.rs", "move_to_path", 0),
-            ("rspace++/src/rspace/pathmap_mutation.rs", "new", 0),
-            ("rspace++/src/rspace/pathmap_mutation.rs", "new_counted", 0),
-            ("rspace++/src/rspace/pathmap_mutation.rs", "with_authority", 0),
-        ],
-        disposition: Disposition::NotATermDepthCycle("receiver erasure joins codec constructors and parser helpers named new/from/take with Bag and PathMap cursor operations and reducer get/get_or_else; the crate dependency direction rholang -> models -> rspace++ rules out the reported cross-crate back-edge, while canonical-path encoding uses EncMachine ops and EPM1 map-value encoding uses the iterative protobuf writer, both covered by the trie escape-arm and EPM1 depth-4096 small-stack gates"),
-    },
+    // Retired 2026-10-17: `PendingEpmDecode::<'static, Bytes>::new` is now `#[cfg(test)]`
+    // (clippy reported it never used outside unit tests), and the census excludes `cfg(test)`
+    // items, so the receiver-erased `new` edges that joined this component no longer exist.
+    // The component dissolved; its two remaining same-spelling self-edges are declared as
+    // `models.rhoapi_ext.get_map_value` and `rholang.interpreter.reduce.get_or_else`.
+    // ComponentDisposition {
+    //     label: "models.canonical_path+models.epathmap_trie_codec+models.rhoapi_ext+rholang.reduce+rspace++.pathmap_codec-and-cursor-adapters",
+    //     members: members![
+    //         ("models/src/rust/canonical_path.rs", "encode_segment", 0),
+    //         ("models/src/rust/canonical_path.rs", "encode_trie_path", 0),
+    //         ("models/src/rust/canonical_path.rs", "encode_trie_path_with_stability", 0),
+    //         ("models/src/rust/canonical_path.rs", "run", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "encode_with_layout", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "from", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "from", 1),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "from_parts", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "layout_with_certified_value_count", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "new", 1),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "new", 4),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "new", 5),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "new_with_provider", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "parse_indexed_canonical_snapshot_prefix", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "parse_pending_framing", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "read_indexed_len", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "read_len", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "read_protobuf_varint", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "take", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "try_from", 0),
+    //         ("models/src/rust/epathmap_trie_codec.rs", "validate_canonical_act_summary", 0),
+    //         ("models/src/rust/rhoapi_ext.rs", "epm_layout", 0),
+    //         ("models/src/rust/rhoapi_ext.rs", "get_map_value", 0),
+    //         ("models/src/rust/rhoapi_ext.rs", "get_map_value", 1),
+    //         ("models/src/rust/rhoapi_ext.rs", "trie_snapshot", 0),
+    //         ("models/src/rust/rhoapi_ext.rs", "trie_snapshot", 1),
+    //         ("rholang/src/rust/interpreter/reduce.rs", "ascend", 0),
+    //         ("rholang/src/rust/interpreter/reduce.rs", "get", 0),
+    //         ("rholang/src/rust/interpreter/reduce.rs", "get_or_else", 0),
+    //         ("rspace++/src/rspace/bag.rs", "get_or_insert", 0),
+    //         ("rspace++/src/rspace/bag.rs", "get_or_insert_from_cursor", 0),
+    //         ("rspace++/src/rspace/guarded_pathmap.rs", "with_write_cursor", 0),
+    //         ("rspace++/src/rspace/pathmap_mutation.rs", "move_to_path", 0),
+    //         ("rspace++/src/rspace/pathmap_mutation.rs", "new", 0),
+    //         ("rspace++/src/rspace/pathmap_mutation.rs", "new_counted", 0),
+    //         ("rspace++/src/rspace/pathmap_mutation.rs", "with_authority", 0),
+    //     ],
+    //     disposition: Disposition::NotATermDepthCycle("receiver erasure joins codec constructors and parser helpers named new/from/take with Bag and PathMap cursor operations and reducer get/get_or_else; the crate dependency direction rholang -> models -> rspace++ rules out the reported cross-crate back-edge, while canonical-path encoding uses EncMachine ops and EPM1 map-value encoding uses the iterative protobuf writer, both covered by the trie escape-arm and EPM1 depth-4096 small-stack gates"),
+    // },
     ComponentDisposition {
         label: "models.channel_image.channel_identity_from_par",
         members: members![
@@ -556,6 +561,13 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: QUALIFIED_DELEGATION,
     },
     ComponentDisposition {
+        label: "models.rhoapi_ext.get_map_value",
+        members: members![
+            ("models/src/rust/rhoapi_ext.rs", "get_map_value", 1),
+        ],
+        disposition: QUALIFIED_DELEGATION,
+    },
+    ComponentDisposition {
         label: "models.rhoapi_ext.insert_entry",
         members: members![
             ("models/src/rust/rhoapi_ext.rs", "insert_entry", 1),
@@ -659,13 +671,16 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         ],
         disposition: QUALIFIED_DELEGATION,
     },
-    ComponentDisposition {
-        label: "models.rhoapi_ext.try_insert_entry_replacing",
-        members: members![
-            ("models/src/rust/rhoapi_ext.rs", "try_insert_entry_replacing", 1),
-        ],
-        disposition: QUALIFIED_DELEGATION,
-    },
+    // Retired 2026-10-17: both `try_insert_entry_replacing` definitions are now `#[cfg(test)]`
+    // (clippy reported them never used outside unit tests), and the census excludes
+    // `cfg(test)` items, so this delegation self-edge is no longer derived.
+    // ComponentDisposition {
+    //     label: "models.rhoapi_ext.try_insert_entry_replacing",
+    //     members: members![
+    //         ("models/src/rust/rhoapi_ext.rs", "try_insert_entry_replacing", 1),
+    //     ],
+    //     disposition: QUALIFIED_DELEGATION,
+    // },
     ComponentDisposition {
         label: "models.rholang.implicits.single_bundle",
         members: members![
@@ -1009,6 +1024,13 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         label: "rholang.interpreter.reduce.expr_locally_free_ref",
         members: members![
             ("rholang/src/rust/interpreter/reduce.rs", "expr_locally_free_ref", 0),
+        ],
+        disposition: QUALIFIED_DELEGATION,
+    },
+    ComponentDisposition {
+        label: "rholang.interpreter.reduce.get_or_else",
+        members: members![
+            ("rholang/src/rust/interpreter/reduce.rs", "get_or_else", 0),
         ],
         disposition: QUALIFIED_DELEGATION,
     },

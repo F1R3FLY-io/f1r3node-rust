@@ -956,14 +956,17 @@ impl<'a> ContinuationPathView<'a> {
         decode_frame(self.encoded_continuation_identity)
     }
 
+    #[cfg(test)]
     pub(crate) const fn encoded_identity_frame(&self) -> &'a [u8] {
         self.encoded_continuation_identity
     }
 
+    #[cfg(test)]
     pub(crate) fn identity_matches(&self, identity: &[u8]) -> bool {
         frame_equals(self.encoded_continuation_identity, identity)
     }
 
+    #[cfg(test)]
     pub(crate) fn channel_positions<'q>(
         &self,
         channel_identity: &'q [u8],

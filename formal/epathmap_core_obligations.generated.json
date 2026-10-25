@@ -775,7 +775,7 @@
   ],
   "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
   "source_sha256": {
-    "formal/epm1_positional_obligations.generated.json": "851a243f4ab70949b39c54e08bb05498430c7678e023e883c061ddc325c697c4",
+    "formal/epm1_positional_obligations.generated.json": "d4998b1be29ead7925c3374bf4ee1b5235909e1a3ac65f948ca6241220a4da24",
     "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
     "formal/rocq/stack_safe_pda/theories/EPathMap.v": "a0ba6d8381867c02971d94bbb5545f4495b739ed82ab69859da4c109b3b1a6b7",
     "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",

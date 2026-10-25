@@ -138,8 +138,16 @@ pub struct PreparedDagRewrite<'a, S: ImmutableObjectStore> {
 }
 
 impl<'a, S: ImmutableObjectStore> PreparedDagRewrite<'a, S> {
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn base(&self) -> super::mutation::StateVersionV1 { self.product.base }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn target_generation(&self) -> u64 { self.product.target_generation }
 
     pub const fn roots(&self) -> SemanticRoots { self.product.roots }

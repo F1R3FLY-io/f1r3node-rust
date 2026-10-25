@@ -425,6 +425,10 @@ pub(crate) enum RecoveryError<E> {
         expected: u64,
         actual: u64,
     },
+    #[expect(
+        dead_code,
+        reason = "Display prints a fixed message, so only the derived Debug reads these fields"
+    )]
     CatalogTerminal {
         expected_sequence: LogPackSequence,
         actual_sequence: LogPackSequence,
@@ -1149,6 +1153,10 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::boxed_local,
+    reason = "the phased caller boxes the CRC, Blake2b and error state to keep the stack flat"
+)]
 #[inline(never)]
 fn finish_incremental_prepare_primary<R: DurableReadAt>(
     reader: &R,
@@ -1841,7 +1849,7 @@ where
             RecoveryReadClassV1::PrimaryAuthenticated,
         )?;
         record_crc.update(&reference_bytes);
-        record_hasher.update(&reference_bytes);
+        record_hasher.update(reference_bytes);
         let mut reference_cursor = ReadCursor::new(&reference_bytes);
         let reference =
             ObjectRefV1::parse(&mut reference_cursor).map_err(LogPackFormatError::from)?;

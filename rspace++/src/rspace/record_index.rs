@@ -390,6 +390,13 @@ impl<R> StoredRecord<R> {
     /// The prefix and suffix share the authoritative PathMap allocation; the
     /// caller can keep the returned record alive while handing this borrowed
     /// slice to a durable staging sink, avoiding decode/re-encode work.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests call this until task 7931 wires persistence into RSpace"
+        )
+    )]
     pub(crate) fn canonical_bytes(&self) -> &[u8] {
         &self.path[self.prefix_len..self.prefix_len + self.canonical_len]
     }
@@ -1268,6 +1275,13 @@ where
     /// PathMap path. The returned Arc keeps the canonical suffix allocation
     /// alive while a persistence adapter stages the bytes; no decode or
     /// re-encoding is required.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests call this until task 7931 wires persistence into RSpace"
+        )
+    )]
     pub(crate) fn source_record(
         &self,
         channels: &[C],
@@ -1365,7 +1379,7 @@ where
         })
     }
 
-    #[cfg(any(test, feature = "record-order-index-experiment"))]
+    #[cfg(test)]
     pub(crate) fn try_visit_loaded_canonical_records(
         &self,
         mut visitor: impl FnMut(CanonicalRecordGroup) -> Result<(), RecordIndexError>,
@@ -1587,7 +1601,7 @@ where C: Clone + RhoPathEncode + Send + Sync
         })
     }
 
-    #[cfg(any(test, feature = "record-order-index-experiment"))]
+    #[cfg(test)]
     pub(crate) fn try_visit_loaded_canonical_records(
         &self,
         mut visitor: impl FnMut(CanonicalRecordGroup) -> Result<(), RecordIndexError>,

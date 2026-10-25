@@ -25,6 +25,25 @@ ignore = [
     "RUSTSEC-2026-0099", # wildcard-name constraints
     "RUSTSEC-2026-0104", # CRL parsing panic
 
+    # rustls-webpki may accept certificate paths through the distrusted emSign
+    # intermediates, whose private keys are public. Neither copy below has a
+    # patched release: 0.101.7 is reached only through the legacy reqwest 0.11
+    # clients above (hocon, opentelemetry-zipkin and rholang), and comm
+    # declares 0.102.8 but no comm source refers to webpki. The maintained line
+    # is locked at 0.103.16, which rejects those paths, and [bans] refuses its
+    # vulnerable range.
+    "RUSTSEC-2026-0382", # distrusted emSign intermediates (rustls-webpki 0.101.7 and 0.102.8)
+
+    # crypto-bigint 0.5.5 (elliptic-curve 0.13 under k256 0.13 and p256 0.13)
+    # can branch on secret values in subtraction, zero counting, division and
+    # Montgomery multiplication, depending on the compiler and target CPU. It
+    # is reachable: crypto's Secp256k1 signer does its secret-scalar arithmetic
+    # in it, and p256 holds the TLS identity keys. No 0.5 release is patched;
+    # the fix (crypto-bigint >= 0.7.6) needs the k256/p256 0.14 upgrade, pgmcp
+    # bug 11884. Accepted until then by user decision (2026-10-25):
+    # exploiting it requires observing the node's own signing.
+    "RUSTSEC-2026-0387", # crypto-bigint 0.5.5 constant-time branches
+
     # Unmaintained advisories accepted for now (transitive deps from upstream
     # crates we don't own). Track upstream remediation; revisit on next sync.
     "RUSTSEC-2024-0437", # protobuf 2.x stack overflow on untrusted input (transitive via rust-bert -> rust_tokenizers; rust-bert hasn't bumped)
@@ -40,6 +59,31 @@ ignore = [
     # the global rng with a custom logger; the unsafe path is unreachable in
     # this codebase. Track upstream rand fix.
     "RUSTSEC-2026-0097",
+
+    # Legacy reqwest 0.11 client chain (hocon, opentelemetry-zipkin and
+    # rholang -> reqwest 0.11 -> hyper 0.14 / hyper-rustls 0.24). Neither
+    # h2 0.3 nor rustls 0.21 has a patched release. The maintained lines are
+    # locked at their patched versions (h2 0.4.16, rustls 0.23.46) and
+    # [bans] refuses their vulnerable ranges, so these entries accept only
+    # the legacy copies.
+    "RUSTSEC-2026-0258", # h2 0.3.27 queues empty DATA frames on undrained streams; hyper 0.14 is reached only through the reqwest 0.11 client
+    "RUSTSEC-2026-0346", # rustls 0.21.12 derived Debug for client session values; only custom ClientSessionStore impls that Debug-print them leak, the workspace defines none, and the built-in cache's Debug output is redacted
+    "RUSTSEC-2026-0349", # rustls 0.21.12 can be steered off X25519MLKEM768; 0.21 implements no post-quantum group (ALL_KX_GROUPS is X25519, P-256, P-384), so there is no hybrid exchange to lose
+
+    # zip 3.0.0 is only a build-dependency of utoipa-swagger-ui 9.0.2 (node's
+    # Swagger UI), which requires zip "3.0". Its build script copies the
+    # Swagger UI release archive entry by entry (`by_index` plus
+    # `enclosed_name`) and never calls `ZipArchive::extract` or
+    # `ZipStreamReader::extract`, the functions these advisories concern.
+    # The patched releases are zip >= 9.0.0.
+    "RUSTSEC-2026-0367", # extract() preserves SUID/SGID bits
+    "RUSTSEC-2026-0368", # extract() creates symlinks outside the destination
+    "RUSTSEC-2026-0369", # extract() applies permissions through symlinks
+
+    # proc-macro-error2 2.0.1 is unmaintained and has no successor release.
+    # It is a compile-time dependency of the getset proc-macro, reached
+    # through comm -> local-ip-address 0.6.13 -> neli 0.7.4.
+    "RUSTSEC-2026-0173",
 ]
 
 # ---------------------------------------------------------------------------
@@ -106,7 +150,13 @@ multiple-versions = "warn"
 wildcards = "warn"
 highlight = "all"
 allow = []
-deny = []
+# The legacy advisory exceptions above cover only h2 0.3 and rustls 0.21;
+# the maintained lines must keep the fixes.
+deny = [
+    { crate = "h2:>=0.4.0, <0.4.16", reason = "RUSTSEC-2026-0258 is fixed in h2 0.4.16; the exception covers only h2 0.3.27" },
+    { crate = "rustls:>=0.23.0, <0.23.46", reason = "RUSTSEC-2026-0346 and RUSTSEC-2026-0349 are fixed in rustls 0.23.46; the exceptions cover only rustls 0.21.12" },
+    { crate = "rustls-webpki:>=0.103.0, <0.103.16", reason = "RUSTSEC-2026-0382 is fixed in rustls-webpki 0.103.16; the exception covers only 0.101.7 and 0.102.8" },
+]
 skip = []
 skip-tree = []
 

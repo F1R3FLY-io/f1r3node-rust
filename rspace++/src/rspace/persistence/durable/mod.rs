@@ -29,35 +29,39 @@ mod rspace_authority;
 mod startup;
 
 pub(crate) use admission::{
-    AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
-    DurableAdmissionLimitKindV1, DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1,
+    AdmittedCheckpointSourceV1, DurableAdmissionErrorV1, DurableAdmissionLimitsV1,
     DurableAdmissionReportV1, DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1,
-    DurableObjectReadErrorV1, DurableTransactionPreparationError, InventoryMismatchKindV1,
-    SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
+    DurableObjectReadErrorV1, SemanticallyAdmittedDurableWriterV1,
+};
+#[cfg(test)]
+pub(crate) use admission::{
+    DurableAdmissionLimitKindV1, DurableTransactionPreparationError, InventoryMismatchKindV1,
+    copy_verified_canonical_with,
 };
 #[cfg(test)]
 pub(crate) use admission::{
     admit_physical_source, admit_physical_writer, copy_verified_canonical_with_scratch,
 };
-pub use catalog::{
-    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
-    CatalogSelectionV1, CatalogSlotV1,
-};
+pub use catalog::{CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogSlotV1};
+#[cfg(test)]
+pub(crate) use catalog::{CatalogPackStateV1, CatalogSelectionV1};
 pub use error::DurableFormatError;
+pub(crate) use index::CommittedObjectIndexV1;
+#[cfg(test)]
 pub(crate) use index::{
-    CanonicalIndexStreamV1, CommittedObjectIndexV1, ObjectIndexPrefixVerifierV1,
-    PreparedGenerationCheckpointIndexV1, PreparedGenerationCheckpointIndexVisitErrorV1,
-    PreparedIndexAppendV1,
+    CanonicalIndexStreamV1, ObjectIndexPrefixVerifierV1, PreparedGenerationCheckpointIndexV1,
+    PreparedGenerationCheckpointIndexVisitErrorV1, PreparedIndexAppendV1,
 };
-pub use index::{
-    IndexFormatError, IndexGenerationV1, ObjectIndexFileViewV1, ObjectIndexHeaderV1,
-    ObjectIndexRecordIter, ObjectIndexRecordV1, ObjectLocationV1,
-};
+pub use index::{IndexFormatError, IndexGenerationV1, ObjectIndexHeaderV1, ObjectIndexRecordV1};
+#[cfg(test)]
+pub(crate) use index::{ObjectIndexFileViewV1, ObjectLocationV1};
 #[cfg(test)]
 pub(crate) use index::{committed_index_constructions, reset_committed_index_constructions};
+#[cfg(all(test, windows))]
+pub(crate) use io::{CATALOG_FILE_NAME_V1, DurableIoOperation, WRITER_LOCK_FILE_NAME_V1};
+#[cfg(test)]
 pub(crate) use io::{
-    CATALOG_FILE_NAME_V1, CatalogSlotIndexV1, DurableDirectoryV1, DurableFileV1, DurableIoError,
-    DurableIoOperation, DurableWriterLeaseV1, FileLengthExpectation, WRITER_LOCK_FILE_NAME_V1,
+    DurableDirectoryV1, DurableIoError, DurableWriterLeaseV1, FileLengthExpectation,
     index_file_name, pack_file_name,
 };
 #[cfg(test)]
@@ -69,10 +73,11 @@ pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, Durabl
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
 #[cfg(test)]
 pub(crate) use publication::require_incremental_retention_manifest;
+#[cfg(test)]
 pub(crate) use publication::{
     GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationOutcomeV1,
-    IncrementalAppendErrorV1, IncrementalPublicationErrorV1, append_incremental_prepare_and_index,
-    publish_incremental_from_lease_v1, publish_incremental_with_terminal_v1,
+    IncrementalPublicationErrorV1, publish_incremental_from_lease_v1,
+    publish_incremental_with_terminal_v1,
 };
 #[cfg(test)]
 pub(crate) use publication::{
@@ -80,22 +85,22 @@ pub(crate) use publication::{
     arm_generation_checkpoint_publication_hook, start_generation_checkpoint_publication_trace,
     take_generation_checkpoint_publication_trace,
 };
-pub(crate) use reclaim::{RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1};
+pub(crate) use reclaim::ReclamationCandidateV1;
+#[cfg(test)]
 pub(crate) use recovery::{
     CatalogPackProviderV1, DurableReadAt, IncrementalLayoutTranscriptV1, RecoveryError,
     replay_catalog_authorized_pack_chain, scan_catalog_authorized_pack_chain,
-    stage_catalog_verified_data_in_source_order,
 };
+pub(crate) use rspace_authority::DurableRSpaceAuthorityV1;
 #[cfg(test)]
 pub(crate) use rspace_authority::hooks as journal_owner_hooks;
+#[cfg(test)]
 pub(crate) use rspace_authority::{
-    DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
-    JournalPublicationPhaseV1,
+    DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, JournalPublicationPhaseV1,
 };
 #[cfg(test)]
 pub(crate) use startup::{
-    DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
-    IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1,
+    DurableStartupErrorV1, IndexBindingDispositionV1, PhysicallyRecoveredDurableWriterV1,
     recover_physical_from_lease_v1, recover_physical_with_lease_v1,
 };
 #[cfg(test)]
@@ -148,6 +153,10 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// Acquire a lease for this exact recovered physical generation. The
     /// caller must retain the returned token for as long as any pack/index
     /// handle or decoded view may still be used.
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this lease accessor yet"
+    )]
     pub(crate) fn acquire_generation_lease(
         &self,
     ) -> Result<GenerationLeaseV1, GenerationLeaseError> {
@@ -251,7 +260,7 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
                         },
                     )
                 })?;
-                result.extend(std::iter::repeat(datum).take(count));
+                result.extend(std::iter::repeat_n(datum, count));
                 Ok(())
             },
         )?;

@@ -125,6 +125,7 @@ impl fmt::Debug for SourceTreeWindow<'_> {
 impl<'src> SourceTreeWindow<'src> {
     pub(crate) fn empty() -> Self { Self::default() }
 
+    #[cfg(test)]
     pub(crate) fn from_borrowed(
         bytes: &'src [u8],
         source: u32,
@@ -295,6 +296,7 @@ impl<'src> SourceTreeWindow<'src> {
         Some(Self::from_root(join_optional(first, last)?))
     }
 
+    #[cfg(test)]
     pub(crate) fn split(&self, cut: usize) -> Option<(Self, Self)> {
         if cut > self.len {
             return None;

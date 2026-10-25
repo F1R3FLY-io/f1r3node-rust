@@ -8,6 +8,13 @@ pub mod data_index;
 pub mod hashing;
 pub mod pathmap_codec;
 pub mod pathmap_mutation;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only unit tests exercise this substrate until task 7931 wires it into RSpace"
+    )
+)]
 pub(crate) mod persistence;
 pub mod history;
 pub mod hot_store;

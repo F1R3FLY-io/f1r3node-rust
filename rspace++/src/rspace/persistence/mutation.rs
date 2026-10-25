@@ -365,6 +365,10 @@ where
 /// from that observer. `max_physical_read_bytes` admits the complete primary
 /// extent before the first read and each exact prior-key reread before it is
 /// issued.
+#[expect(
+    clippy::result_large_err,
+    reason = "MutationStreamFailureV1 (128+ B) holds the error, stop cursor and 3 read counters"
+)]
 pub(crate) fn stream_mutation_batch_v1<R, F>(
     source: &mut R,
     source_offset: u64,
@@ -1526,8 +1530,16 @@ pub struct MutationBatchPlanV1 {
 }
 
 impl MutationBatchPlanV1 {
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn base(&self) -> StateVersionV1 { self.base }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn target_generation(&self) -> u64 { self.target_generation }
 
     /// Digest used as the WAL transaction identifier.  This is not a

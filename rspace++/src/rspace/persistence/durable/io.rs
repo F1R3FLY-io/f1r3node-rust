@@ -200,6 +200,13 @@ pub(crate) enum DurableIoError {
         expected: u32,
         actual: u32,
     },
+    #[cfg_attr(
+        unix,
+        expect(
+            dead_code,
+            reason = "every constructor of this variant is compiled only on non-Unix targets"
+        )
+    )]
     UnsupportedPlatform {
         operation: DurableIoOperation,
         path: PathBuf,
@@ -1226,7 +1233,7 @@ impl DurableWriterLeaseV1 {
             .map_err(|error| DurableIoError::Io {
                 operation: DurableIoOperation::Metadata,
                 path: self.directory.path.clone(),
-                source: io::Error::new(io::ErrorKind::Other, error.to_string()),
+                source: io::Error::other(error.to_string()),
             })?
         {
             return Ok(ReclamationOutcomeV1 {

@@ -356,7 +356,7 @@
     "rholang/tests/epathmap_replay_equivalence_spec.rs": "660beba8782f1e658313e6a73bae0321b1bdc2d7736d968a5a43aedb9308192d",
     "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
     "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
-    "rspace++/src/rspace/persistence/mod.rs": "02c9ff3ec44c767eabe46f51ad2abc800932c6f7f23109a403dcbae0e6340332",
+    "rspace++/src/rspace/persistence/mod.rs": "b336e1309fffed0170750810c6cd5e4fba7b579afd98a6ef14a75a4e72f5c355",
     "rspace++/src/rspace/state/rspace_state_authority.rs": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992",
     "rspace++/tests/persistence/generation_checkpoint_properties.rs": "2f4080420cdd91c233e0137c2941abd67864d1190ec1cb6483f528138b65388b",
     "rspace++/tests/persistence/mod.rs": "04e260d7a9bedecc34909d5c489d8be820e255e5d25a9ffa43212abc92261687",

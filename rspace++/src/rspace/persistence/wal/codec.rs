@@ -409,6 +409,10 @@ impl<'transaction, 'mutation, P: SemanticProfile>
 
     pub const fn receipt(&self) -> SealedTransitionV1 { self.transaction.receipt() }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn incremental_validation_canonical_bytes(&self) -> u64 {
         self.transaction.diagnostics().closure.canonical_bytes
     }
@@ -417,6 +421,10 @@ impl<'transaction, 'mutation, P: SemanticProfile>
         self.transaction.retention_manifest()
     }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub(crate) fn objects(&self) -> &[crate::rspace::persistence::SealedObject] {
         self.transaction.objects()
     }

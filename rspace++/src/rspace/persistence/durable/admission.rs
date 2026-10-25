@@ -1152,6 +1152,10 @@ pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
 }
 
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "the variant payloads are diagnostic context read only by the derived Debug impl"
+)]
 pub(crate) enum SuccessorInventoryError {
     Staging(StagingStoreError<DurableObjectReadErrorV1>),
     Closure(ClosureError<StagingStoreError<DurableObjectReadErrorV1>>),
@@ -1277,6 +1281,10 @@ impl ImmutableObjectStore for SuccessorInventoryStoreV1<'_> {
 }
 
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this path accessor yet"
+    )]
     pub(crate) fn directory_path(&self) -> std::path::PathBuf {
         self.lease.directory().path().to_path_buf()
     }
@@ -1326,6 +1334,10 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         self.source.retention_manifest_bytes()
     }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this closure accessor yet"
+    )]
     pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
         self.source.retained_closure()
     }
@@ -1351,6 +1363,10 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
             .seal_transaction(&self.lease, mutation, limits, admission_limits)
     }
 
+    #[expect(
+        dead_code,
+        reason = "callers bind through AdmittedCheckpointSourceV1 with an explicit lease"
+    )]
     pub(crate) fn bind_durable_transaction<'mutation>(
         &self,
         sealed: SealedDagTransaction<'mutation, P>,
@@ -1770,7 +1786,6 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         object_reads: report.object_reads,
         object_read_bytes: report.object_read_bytes,
     };
-    drop(bounded);
     Ok(AdmittedCheckpointSourceV1 {
         store,
         registry: lease.generation_leases(),

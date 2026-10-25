@@ -69,6 +69,13 @@ enum IndexedByteBacking<'a> {
         len: usize,
         root_end: CanonicalByteProvenance,
     },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "production completions build source-backed Composed regions (67035c57b), so frozen backings originate only in the test-only from_frozen control and are otherwise only re-windowed or joined"
+        )
+    )]
     Frozen {
         root: FrozenCanonicalBytes,
         start: usize,
@@ -219,6 +226,7 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn is_empty(&self) -> bool { self.len() == 0 }
 
+    #[cfg(test)]
     pub(crate) fn try_coalesce(&self, right: &Self) -> Option<Self> {
         match (&self.backing, &right.backing) {
             (
@@ -896,8 +904,10 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
 }
 
 /// An indexed region whose storage has no borrow from its originating arena.
+#[cfg(test)]
 pub(crate) type OwnedIndexedByteRegion = IndexedByteRegion<'static>;
 
+#[cfg(test)]
 impl IndexedByteRegion<'static> {
     pub(crate) fn from_frozen(
         root: FrozenCanonicalBytes,

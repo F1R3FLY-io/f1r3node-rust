@@ -151,6 +151,8 @@ impl PathMapMatchSummary {
 
     pub const fn len(self) -> u64 { self.len }
 
+    pub const fn is_empty(self) -> bool { self.len == 0 }
+
     pub const fn digest(self) -> [u8; 32] { self.digest }
 }
 

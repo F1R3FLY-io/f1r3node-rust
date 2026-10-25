@@ -110,6 +110,10 @@ impl GenerationCheckpointCommitRecordV1 {
 
     pub(crate) const fn digest(&self) -> PhysicalDigest { self.digest }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this method yet"
+    )]
     pub(crate) fn write_to<S: CanonicalSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         sink.write_all(&self.bytes)
     }

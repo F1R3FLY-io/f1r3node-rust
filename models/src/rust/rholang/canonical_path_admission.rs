@@ -516,6 +516,7 @@ impl PersistentCheckpoints {
         }
     }
 
+    #[cfg(test)]
     const fn len(&self) -> usize { self.direct.len() + self.linked.len() }
 
     fn get(&self, id: PathStateId, stamp: usize) -> PersistentFocusedPath {

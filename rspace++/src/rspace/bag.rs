@@ -431,6 +431,7 @@ impl Bag {
         self.entries.with_read_cursor(operation)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_read_cursor_at<'path, R>(
         &self,
         path: &'path [u8],
@@ -439,10 +440,12 @@ impl Bag {
         self.entries.with_read_cursor_at(path, operation)
     }
 
+    #[cfg(test)]
     pub(crate) fn prefix_value_count(&self, prefix: &[u8]) -> usize {
         self.with_read_cursor_at(prefix, |cursor| cursor.val_count())
     }
 
+    #[cfg(test)]
     fn prefix_metrics(&self, prefix: &[u8]) -> (usize, u128) {
         self.with_read_cursor_at(prefix, |mut cursor| {
             let mut distinct = usize::from(cursor.val().is_some());
@@ -723,6 +726,7 @@ impl Bag {
     /// one prefix-rooted write zipper consumes the prepared Bag's borrowed,
     /// canonical suffix order. Neither complete keys nor entries are projected
     /// into an intermediate collection.
+    #[cfg(test)]
     pub(crate) fn replace_prefix_with_relative(
         &mut self,
         prefix: &[u8],

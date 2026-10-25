@@ -47,6 +47,10 @@ pub struct LegacyHistoryRoot([u8; OBJECT_DIGEST_LEN]);
 impl LegacyHistoryRoot {
     pub const fn from_array(bytes: [u8; OBJECT_DIGEST_LEN]) -> Self { Self(bytes) }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this conversion yet"
+    )]
     pub fn from_legacy_hash(hash: &Blake2b256Hash) -> Result<Self, CanonicalFormatError> {
         let actual = hash.0.len();
         let bytes = hash
@@ -59,6 +63,10 @@ impl LegacyHistoryRoot {
 
     pub const fn as_bytes(&self) -> &[u8; OBJECT_DIGEST_LEN] { &self.0 }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this conversion yet"
+    )]
     pub fn to_legacy_hash(self) -> Blake2b256Hash { Blake2b256Hash::from_bytes(self.0.to_vec()) }
 }
 
@@ -163,12 +171,24 @@ impl SemanticStateManifestV1 {
         })
     }
 
+    #[expect(
+        dead_code,
+        reason = "unit tests read this field through SemanticStateManifestView instead"
+    )]
     pub const fn schema_epoch(self) -> u64 { self.schema_epoch }
 
+    #[expect(
+        dead_code,
+        reason = "unit tests read this field through SemanticStateManifestView instead"
+    )]
     pub const fn profile_id(self) -> SemanticProfileId { self.profile_id }
 
     pub const fn roots(self) -> SemanticRoots { self.roots }
 
+    #[expect(
+        dead_code,
+        reason = "unit tests read this field through SemanticStateManifestView instead"
+    )]
     pub const fn legacy_history_root(self) -> Option<LegacyHistoryRoot> { self.legacy_history_root }
 
     pub fn object_ref(&self) -> ObjectRefV1 {
@@ -347,10 +367,22 @@ impl AcceleratorManifestV1 {
         })
     }
 
+    #[expect(
+        dead_code,
+        reason = "unit tests read this field through AcceleratorManifestView instead"
+    )]
     pub const fn semantic_manifest(&self) -> ObjectRefV1 { self.semantic_manifest }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn accelerator_epoch(&self) -> u64 { self.accelerator_epoch }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub fn artifacts(&self) -> &[AcceleratorArtifact] { &self.artifacts }
 
     pub fn object_ref(&self) -> ObjectRefV1 {
@@ -426,10 +458,18 @@ impl<'a> AcceleratorManifestView<'a> {
 
     pub const fn semantic_manifest(self) -> ObjectRefV1 { self.semantic_manifest }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub const fn accelerator_epoch(self) -> u64 { self.accelerator_epoch }
 
     pub const fn artifact_count(self) -> usize { self.count }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this accessor yet"
+    )]
     pub fn artifacts(self) -> AcceleratorArtifactIter<'a> {
         AcceleratorArtifactIter {
             chunks: self.artifacts.chunks_exact((8 + OBJECT_REF_LEN) as usize),

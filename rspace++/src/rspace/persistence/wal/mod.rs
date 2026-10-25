@@ -18,27 +18,31 @@ pub(crate) use checkpoint::GenerationCheckpointSourceTestSealV1;
 pub(crate) use checkpoint::{
     GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1, GenerationCheckpointLayoutVisitErrorV1,
     GenerationCheckpointObjectLayoutV1, GenerationCheckpointPrepareIdentityV1,
-    GenerationCheckpointPreparePreflightV1, GenerationCheckpointPrepareRecordViewV1,
-    GenerationCheckpointPrepareWriteErrorV1, GenerationCheckpointSourceCopyErrorV1,
+    GenerationCheckpointPreparePreflightV1, GenerationCheckpointPrepareWriteErrorV1,
     GenerationCheckpointSourceV1, PreparedGenerationCheckpointV1,
     preflight_generation_checkpoint_prepare_v1,
+};
+#[cfg(test)]
+pub(crate) use checkpoint::{
+    GenerationCheckpointPrepareRecordViewV1, GenerationCheckpointSourceCopyErrorV1,
 };
 pub(crate) use checkpoint_commit::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
     GenerationCheckpointCommitViewV1,
 };
 pub use codec::{
-    COMMIT_DISCRIMINATOR_LEN_V1, CommitRecordKindV1, LogPackObjectIter, LogPackObjectView,
+    COMMIT_DISCRIMINATOR_LEN_V1, CommitRecordKindV1, LogPackObjectView,
     PREPARE_DISCRIMINATOR_LEN_V1, PrepareRecordIdentityV1, PrepareRecordKindV1,
     PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
     TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
-    TransactionPrepareRecordViewV1, decode_commit_kind_v1, decode_prepare_kind_v1,
-    preflight_prepare_record_len_v1, preflight_prepare_record_v1,
+    decode_commit_kind_v1, decode_prepare_kind_v1, preflight_prepare_record_v1,
 };
 pub(crate) use codec::{
     LogPackObjectHeaderV1, OBJECT_RECORD_HEADER_LEN_V1, PrepareRecordPreflightV1,
     PreparedObjectLayoutV1, validate_streamed_mutation_receipt_v1,
 };
+#[cfg(test)]
+pub(crate) use codec::{TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1};
 pub use disposition::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectDispositionV1,
     LogPackObjectPlanError, LogPackObjectPlanV1,

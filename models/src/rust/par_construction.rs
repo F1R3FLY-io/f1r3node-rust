@@ -39,10 +39,12 @@ use rspace_plus_plus::rspace::pathmap_mutation::BarrierProvider;
 
 use super::canonical_path::tag as path_tag;
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr, EpmReprOwner};
+#[cfg(test)]
+use super::par_bag::ParBag;
 use super::par_bag::{
     canonical_ezipper_region_parts, CanonicalKeyMetadata, CanonicalParBagAccumulator,
-    CanonicalParBagKey, Multiplicity, OwnedCanonicalEzipper, ParBag, ParBagCodecError,
-    ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
+    CanonicalParBagKey, Multiplicity, OwnedCanonicalEzipper, ParBagCodecError, ParBagComponent,
+    ParComponentTag, PAR_BAG_KEY_DOMAIN,
 };
 use super::rholang::canonical_par_identity::insert_semantic_par_identity;
 use super::rholang::canonical_semantics::{
@@ -4028,6 +4030,7 @@ impl ParConstruction {
         self.par_from_occurrence_root(root, locally_free, connective_used)
     }
 
+    #[cfg(test)]
     pub(crate) fn insert_protobuf_component(
         &mut self,
         parent: &mut ProtobufParBuilder,
@@ -4748,6 +4751,7 @@ impl ParConstruction {
         out
     }
 
+    #[cfg(test)]
     fn component_key(&self, component: PlannedComponent) -> Result<Vec<u8>, ParConstructionError> {
         let mut out = Vec::new();
         self.component_key_into(component, &mut out)?;

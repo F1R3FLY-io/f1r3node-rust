@@ -155,6 +155,10 @@ impl LogPackObjectPlanV1 {
 
     pub const fn len(&self) -> usize { self.dispositions.len() }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this method yet"
+    )]
     pub const fn is_empty(&self) -> bool { self.dispositions.is_empty() }
 
     pub const fn inline_count(&self) -> u64 { self.inline_count }

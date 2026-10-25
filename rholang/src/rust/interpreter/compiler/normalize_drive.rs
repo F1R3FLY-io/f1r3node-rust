@@ -935,10 +935,7 @@ pub(crate) fn norm_drive_from<'ast>(
                     Some(v) => v,
                     None => unreachable!("norm_drive: a Combine ran with an empty value stack"),
                 };
-                let step = match run_combine(kont, value, construction, env, parser) {
-                    Ok(s) => s,
-                    Err(e) => return Err(e),
-                };
+                let step = run_combine(kont, value, construction, env, parser)?;
                 // A continuation that has just absorbed its LAST child must
                 // produce a value; one that has not must schedule exactly one
                 // more child. Both directions are asserted, because only the
@@ -960,10 +957,7 @@ pub(crate) fn norm_drive_from<'ast>(
             }
             descend => {
                 descends -= 1;
-                match run_descend(descend, construction, env, parser) {
-                    Ok(s) => s,
-                    Err(e) => return Err(e),
-                }
+                run_descend(descend, construction, env, parser)?
             }
         };
 

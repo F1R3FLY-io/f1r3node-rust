@@ -293,6 +293,7 @@ where
     #[inline]
     fn fresh_map_mut(&mut self) -> &mut AnchorRoot<V, D, B> { Arc::make_mut(&mut self.anchor) }
 
+    #[cfg(test)]
     #[inline]
     pub fn is_empty(&self) -> bool { self.map().is_empty() }
 
@@ -308,6 +309,7 @@ where
     /// Visit the complete logical trie in canonical byte preorder without
     /// allocating a traversal stack.  Value-free leaves are included because
     /// they are part of PathMap's observable prefix-closed topology.
+    #[cfg(test)]
     fn visit_topology(&self, mut visit: impl FnMut(&[u8], Option<&V>, bool)) {
         let mut source = self.map().read_zipper();
         loop {
@@ -335,6 +337,7 @@ where
     /// Count endpoints iteratively.  This is deliberately independent of
     /// PathMap's depth-recursive subtree count and validates the guarded
     /// endpoint authority before a rebuilt root can be published.
+    #[cfg(test)]
     fn iterative_value_count(&self) -> usize {
         let mut count = 0usize;
         self.visit_topology(|_, value, _| {
@@ -356,6 +359,7 @@ where
     /// Removed values are never cloned.  The caller's fold runs only after the
     /// candidate has been built and validated, against the still-immutable
     /// source image.
+    #[cfg(test)]
     fn rebuild_filter_fold<R, F, P>(
         &self,
         should_remove: P,
@@ -492,6 +496,7 @@ where
     /// the cursor cannot ascend above that immutable root.  This narrows the
     /// authority of the ordinary root cursor without exposing raw PathMap,
     /// owned-subtree, graft, or detach operations.
+    #[cfg(test)]
     pub(crate) fn with_write_cursor_at<'path, R>(
         &mut self,
         path: &'path [u8],
@@ -548,6 +553,7 @@ where
 
     /// Creates a value-free path.  Such topology is intentionally preserved
     /// and participates in final iterative teardown.
+    #[cfg(test)]
     pub fn create_path<K: AsRef<[u8]>>(&mut self, path: K) -> bool {
         self.with_write_cursor(|mut cursor| {
             cursor.move_to_path(path.as_ref());
@@ -557,6 +563,7 @@ where
 
     /// Remove one value and then remove its newly dangling path one logical
     /// edge at a time.  Every detached value goes through the disposal policy.
+    #[cfg(test)]
     pub(crate) fn remove_val_at_and_prune<K: AsRef<[u8]>>(&mut self, path: K) -> bool {
         let path = path.as_ref();
         if self.get(path).is_none() {
@@ -575,6 +582,7 @@ where
     /// immutable source only after the candidate is complete and validated.
     /// Publishing retires the old authority through the named stack-safe
     /// disposal path once no alias retains it.
+    #[cfg(test)]
     pub(crate) fn remove_prefix_fold<K, R, F>(
         &mut self,
         prefix: K,
@@ -653,6 +661,7 @@ where
     #[inline]
     pub(crate) fn get_val(&self) -> Option<&V> { self.inner.val() }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn val_count(&self) -> usize { self.inner.val_count() }
 
@@ -730,6 +739,7 @@ where
         self.inner.replace_copy(value);
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn create_path(&mut self) { self.inner.create_path(); }
 
@@ -746,6 +756,7 @@ where
     pub(crate) fn ascend_byte(&mut self) -> bool { self.inner.ascend_byte() }
 
     /// Remove the focused value and prune only newly dangling logical edges.
+    #[cfg(test)]
     pub(crate) fn remove_val_and_prune(&mut self) -> bool { self.inner.remove_val_and_prune() }
 }
 

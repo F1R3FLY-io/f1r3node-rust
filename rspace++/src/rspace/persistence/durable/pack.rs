@@ -85,6 +85,10 @@ impl PackHeaderV1 {
         })
     }
 
+    #[expect(
+        dead_code,
+        reason = "no code in the crate, unit tests included, calls this store id accessor yet"
+    )]
     pub const fn store_id(self) -> StoreId { self.store_id }
 
     pub const fn pack_id(self) -> PackId { self.pack_id }

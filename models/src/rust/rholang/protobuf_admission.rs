@@ -3612,6 +3612,13 @@ fn drive_admission<'src>(
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "d693151fc added this private standalone canonical-key root without activating the importer, which remains open under task 6018"
+    )
+)]
 fn validate_canonical_path_indexed(
     input: AdmissionRegion<'_>,
 ) -> Result<(CanonicalPathSummary, CanonicalProtobufAdmissionStats), CanonicalProtobufAdmissionError>

@@ -4682,6 +4682,7 @@ impl ParBag {
     /// [`ParBagComponent::append_key_suffix`] and has already proved its score
     /// and protobuf lengths.  Revalidating it here would decode the just-built
     /// recursive body and restore the construction cost this path removes.
+    #[cfg(test)]
     pub(crate) fn insert_planned_key(
         &mut self,
         tag: ParComponentTag,
