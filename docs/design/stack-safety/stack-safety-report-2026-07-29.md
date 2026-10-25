@@ -10153,6 +10153,62 @@ is the only population used for this verdict. This evidence advances the resourc
 does not satisfy the separate full-release-workspace gate, which still fails at four Casper
 genesis-contract timeouts. No Casper source was edited.
 
+#### 5.30.7 Integrated-candidate AMD remeasurement — 2026-10-08
+
+After the ground-`Send` candidate-query repair, the same preregistered 15-family experiment ran
+again on the current integrated matcher source. This was a headless, zero-swap run on the AMD Ryzen
+Threadripper PRO 5975WX with performance governor, CPU affinity 8–9, a 4/6-GiB cgroup memory
+high/max, a two-CPU quota, and a 30-minute outer timeout. The independent process cells, three
+warm-ups, 31 measured matches, depth ladder, seeded bootstrap, and exponent cap of 1.20 were
+unchanged from §5.30.6. The runner recorded per-file SHA-256 hashes for 14 matcher, generated-schema
+input, test, and measurement-harness sources before building and checked them again after the study;
+it also recorded the debug and release binary hashes. The whole-worktree diff hash is context only
+because independent campaign leaves were edited concurrently. The historical experiment 366 corpus
+was not overwritten.
+
+All **4,650 raw samples** were retained and all **30 fitted outcomes passed**. The largest one-sided
+95th-percentile wall exponent was **0.999030** (release `Connective::And`), the largest allocator-call
+exponent was **0.922218** (release `Connective::Or`), and the largest allocated-byte exponent was
+**1.029736** (`Connective::Not` in both profiles). The maximum whole-process peak RSS was
+**26,532 KiB** (debug `EMethod`). As in §5.30.6, RSS includes the fixture and test runner, and the
+bootstrap interval is conditional on each cell's single process and host conditions. These data
+qualify the measured matcher source snapshot; they do not by themselves bind that snapshot to a
+stable integrated commit or establish a full-workspace pass.
+
+The [raw sample table](measurements/recursive-matcher-family-resources-2026-10-08-samples.tsv),
+[30 fitted outcomes](measurements/recursive-matcher-family-resources-2026-10-08-fits.tsv), and
+[source and host manifest](measurements/recursive-matcher-family-resources-2026-10-08-manifest.json)
+have SHA-256 digests `981aefecbcf8094db2508a8cedb42b1a9e5a3d4b18c0b113346be32601cb3ff6`,
+`78691115dba44258c1d84814e853d9188ccaa5b9b0e6f08c9ffd79263e28c7c5`, and
+`34b15b19b3b889afe6f3de34675ac3af207abfa8ae178344b508c71500ffebbf`, respectively.
+The 150 per-cell logs and capped driver log remain under
+`target/verification/matcher-recursive-family-current-2026-10-08/` and
+`target/verification/spatial-matcher/resource-current-driver.log`. The same integrated candidate
+passed the release matcher equivalence suite **59/59**, recursive-family suite **6/6 active**, and
+conditional-family suite **8/8**; their log digests are recorded in pgmcp progress 20625. Pgmcp
+criteria 5135–5137 remain unaccepted pending stable source binding and the capped release workspace.
+
+#### 5.30.8 Post-study source-drift audit — 2026-10-11
+
+The §5.30.7 manifest identifies the source that produced its 4,650 samples. At the later
+`5108d8543` worktree checkpoint, 12 of its 14 recorded source hashes still match. The two
+differences have different effects on the measurement:
+
+| Changed input | Source-level consequence | Treatment decision |
+| --- | --- | --- |
+| `models/src/rust/rholang/mod.rs` | Its only added lines include `page_arena_isolated_probe.rs` under `#[cfg(test)]`. The resource driver builds `matcher_recursive_family_cursor` as a `rholang` integration-test executable; its `models` dependency is not compiled as a `models` unit-test crate. | This difference alone does not change the measured matcher or its fixture. |
+| `models/src/rust/par_bag.rs` | The current file adds a tenth `CostTokenStack` family and changes `ParFamilyMetrics` from per-family `Option<u128>` length entries to scalar lengths plus an overflow bitmask. The timed `SpatialMatcherContext::spatial_match` reads `ParBag` family metrics and visits encoded singleton endpoints; the probe also records whole-process RSS including the prebuilt fixture. The new family is absent from the 15 fixtures, and the new stable-segment hooks are not called by their recursive `ParConstruction::component` path, but the metrics and auxiliary allocation layout have changed. | The byte-cursor mechanism remains present, but the old wall-time, allocation-byte, and RSS samples are not exact-source measurements for this worktree. |
+
+The second difference is sufficient to require another run of the **same preregistered**
+15-family debug/release protocol after the shared source is frozen and linked to a stable
+integrated commit. Retain the §5.30.7 samples and manifest as historical evidence; write the
+new samples, fits, manifest, and capped driver receipt under a new date or revision, and compare
+the 30 one-sided wall-exponent bounds with the already locked 1.20 threshold. A source-level
+complexity argument does not substitute for that numerical gate. This audit ran no Cargo build,
+matcher test, or profiler. Pgmcp resource criterion 5136 and full-workspace criterion 5137 remain
+open; the prior non-Casper release pass does not erase the four Casper genesis-contract timeouts
+in the separate read-only Casper run.
+
 ### 5.31 Drive-local `FreeMap` undo journal and exact FreeVar capture compression [SS-A16]
 
 #### 5.31.1 Defect and hypothesis

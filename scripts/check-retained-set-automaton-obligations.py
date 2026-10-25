@@ -25,7 +25,7 @@ SECTIONS = {
                 "retained_candidate_has_no_false_negative",
                 "executable_refinement",
             ),
-            ("Theorem", "retained_filter_preserves_first_spatial_match", "proof_only"),
+            ("Theorem", "retained_filter_preserves_first_spatial_match", "executable_refinement"),
         ),
     },
     "RetainedBagProduct": {
@@ -34,11 +34,11 @@ SECTIONS = {
             "successful_fresh_match_passes_residual",
         ),
         "obligations": (
-            ("Theorem", "retained_bag_product_has_no_false_negative", "proof_only"),
+            ("Theorem", "retained_bag_product_has_no_false_negative", "executable_refinement"),
             (
                 "Corollary",
                 "retained_bag_product_rejection_proves_no_pool_match",
-                "proof_only",
+                "executable_refinement",
             ),
         ),
     },
@@ -52,6 +52,7 @@ EXPECTED_TESTS = {
         "structural_queries_use_exact_trie_prefixes_and_filter_after_wildcards",
         "retained_segments_product_walk_the_authoritative_resting_bag",
         "compressed_product_runs_visit_prefix_terminals_and_bag_branches",
+        "generated_resting_bag_product_preserves_direct_matches_and_first_order",
         "singleton_bag_path_selects_a_terminal_below_diverse_and_shared_branches",
         "singleton_bag_with_multiple_terminal_depths_uses_the_linear_product",
         "representation_stats_expose_eligibility_and_terminal_sharing",
@@ -65,14 +66,18 @@ WITNESSES = {
     "retained_candidate_has_no_false_negative": (
         "automaton_selection_is_a_superset_of_direct_matches",
     ),
-    "retained_filter_preserves_first_spatial_match": (),
+    "retained_filter_preserves_first_spatial_match": (
+        "generated_resting_bag_product_preserves_direct_matches_and_first_order",
+    ),
     "retained_bag_product_has_no_false_negative": (
         "retained_segments_product_walk_the_authoritative_resting_bag",
         "compressed_product_runs_visit_prefix_terminals_and_bag_branches",
+        "generated_resting_bag_product_preserves_direct_matches_and_first_order",
     ),
     "retained_bag_product_rejection_proves_no_pool_match": (
         "retained_segments_product_walk_the_authoritative_resting_bag",
         "compressed_product_runs_visit_prefix_terminals_and_bag_branches",
+        "generated_resting_bag_product_preserves_direct_matches_and_first_order",
     ),
 }
 
@@ -93,6 +98,16 @@ WITNESS_ASSERTIONS = {
     ),
     "singleton_bag_with_multiple_terminal_depths_uses_the_linear_product": (
         "assert_eq!(selected, vec![true, true, true, false])",
+    ),
+    "generated_resting_bag_product_preserves_direct_matches_and_first_order": (
+        "resting_only.push(0xff)",
+        "Pattern::Exact(fresh.clone())",
+        "Pattern::Exact(vec![0xa5; longest_datum + 1])",
+        "direct.iter().filter(|accepted| **accepted).count() >= 2",
+        "!selected[negative_index]",
+        "!*accepted || selected[index]",
+        "first_selected_direct, first_direct",
+        "selected.iter().any(|retained| *retained) || first_direct.is_none()",
     ),
 }
 
@@ -264,9 +279,11 @@ def extract(sources):
         "causal_formal_mutants": [],
         "proof_boundary": (
             "Rocq theorems are conditional on prefix and residual-query soundness. "
-            "The fresh-datum superset test compares against Match; resting-Bag "
-            "tests are finite positive/negative controls, not a universal "
-            "prefix-terminal refinement or first-admissible-order proof."
+            "The generated fresh/resting-Bag property extracts no-false-negative, "
+            "rejection, and first-order invariants for exact and fallback patterns. "
+            "Fixed product controls exercise compressed and singleton trie paths; "
+            "neither establishes universal prefix-terminal refinement for every "
+            "generated RhoPathQuery arm."
         ),
     }
 

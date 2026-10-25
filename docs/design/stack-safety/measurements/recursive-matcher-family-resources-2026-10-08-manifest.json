@@ -1,0 +1,76 @@
+{
+  "revision": "97c684d061d524d1e682c4012e20a840f05826a0",
+  "tracked_source_diff_sha256": "bbe4e7064c19814c36fb495f01ce361056215ffa71f6d012245bfbd2a9a5bf37",
+  "tracked_source_dirty": true,
+  "matcher_source_sha256": {
+    "models/build.rs": "eb41e1a7bc154e303718a752dbc37deb4ab44da5920cfcd5aa645894e5915b96",
+    "models/src/main/protobuf/RhoTypes.proto": "57c0a7c7d0a06636750d0ca44a5a98b1f11eff0c6a0f0b04eb6bc5e7ca42b7d1",
+    "models/src/rust/par_bag.rs": "8bc399b7c96a19772128980783488464f9dc88d39fc4378bef77a7d920d279fe",
+    "models/src/rust/rholang/match_path.rs": "fd7cc9c66f39ae4c4c35d8757e46ad09e23e8ab14696989048f80ee529322501",
+    "models/src/rust/rholang/match_path_cursor.rs": "8c3cf07491472cc78d43944e15412906b2f55a39ba7aaa229f39f75fd1874471",
+    "models/src/rust/rholang/match_region_path.rs": "bbc22f02f218fdd8d3035a3c9543b97508ba62765abc154514bfc047400ae7cc",
+    "models/src/rust/rholang/match_schema.rs": "700b4770f0bcc186e2b0d75b830a70aa29dc0982dc4ba7bb1815490eb28f304a",
+    "models/src/rust/rholang/mod.rs": "15fa03e99f2438e2fc4a991811d6f8019f04096f7dc697a2f49dbc05d3b9aee9",
+    "rholang/src/rust/interpreter/matcher/match.rs": "8e471090745705d486c81e9eca939eae558947da74e9922a30c8a0822fdc533c",
+    "rholang/src/rust/interpreter/matcher/spatial_matcher.rs": "e5eb8a1faec7976b23a05db2eac4598651205694330ace857cf019cb629c9e38",
+    "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "2c9f5689e16268b67131ec3866ad8d2b0a01e77f8b1c0c0eec448fb8edfc3fe2",
+    "rholang/tests/matcher_recursive_family_cursor.rs": "3cd83703eeaabbc30b3ec0e22ddb6ecce2e11dcf89150fc51726b977f1a03fc8",
+    "rholang/tests/support/counting_alloc.rs": "99acac2ee3c50a31e7f199f9b2dd444707ecb00187d44dfaec10e2dbd0b04989",
+    "scripts/bench/measure-matcher-recursive-family.py": "b9b5ad0c7767c40c408709c066286568e31859e17d8a608685be9dcbef3ffb51"
+  },
+  "experiment_id": 366,
+  "host": {
+    "uname": {
+      "system": "Linux",
+      "node": "arch-workstation",
+      "release": "7.2.8-arch1-2",
+      "version": "#1 SMP PREEMPT_DYNAMIC Thu, 01 Oct 2026 17:24:20 +0000",
+      "machine": "x86_64",
+      "processor": ""
+    },
+    "cpu_model": "AMD Ryzen Threadripper PRO 5975WX 32-Cores",
+    "affinity": [
+      8,
+      9
+    ],
+    "governor": "performance",
+    "scaling_driver": "amd-pstate-epp"
+  },
+  "seed": 5866,
+  "families": [
+    "New",
+    "Send",
+    "Receive",
+    "Match",
+    "ENot",
+    "EPlus",
+    "EList",
+    "ETuple",
+    "EMethod",
+    "EMatches",
+    "ESet",
+    "EMap",
+    "Connective::Not",
+    "Connective::And",
+    "Connective::Or"
+  ],
+  "depths": [
+    0,
+    128,
+    512,
+    2048,
+    4096
+  ],
+  "samples": 31,
+  "warmups": 3,
+  "bootstraps": 10000,
+  "threshold": 1.2,
+  "binaries": {
+    "release": "/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/target/release/deps/matcher_recursive_family_cursor-a79b9e814302f832",
+    "debug": "/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/target/debug/deps/matcher_recursive_family_cursor-25bc4ffb6967fdd1"
+  },
+  "binary_sha256": {
+    "release": "22e6574d3e53acc06e5e3d3087f29dabb26de05a92552d6987587afcff1011dd",
+    "debug": "db4dba871739f46f296acf73ec7f3658062acaf7a45967f142efc460a056921f"
+  }
+}

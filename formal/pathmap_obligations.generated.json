@@ -2,8 +2,8 @@
   "classified_obligations": {
     "concrete_witness": 41,
     "executable_only": 9,
-    "executable_refinement": 135,
-    "proof_only": 521
+    "executable_refinement": 138,
+    "proof_only": 518
   },
   "families": [
     {
@@ -5171,7 +5171,7 @@
       "checker": "scripts/check-retained-set-automaton-obligations.py",
       "family": "retained_set_automaton",
       "manifest": "formal/retained_set_automaton_obligations.generated.json",
-      "manifest_sha256": "4c5ca434e300c3b755534f7ece69e75f2dc879df5c54cb726cec45241dcf77ad",
+      "manifest_sha256": "3fd378c051f1b64423c5cc24c652d9089a22d1c25fc037b00fc6dd331ffdc8a6",
       "obligations": {
         "causal_formal_mutants": [],
         "dedicated_tla_configurations": [],
@@ -5208,7 +5208,7 @@
             ]
           },
           "rspace++/tests/retained_set_automaton_spec.rs": {
-            "sha256": "c29ca8ac4f9c5eeb80e913c234e6eeffbe2a65a576539cfcc2989063cd2ee167",
+            "sha256": "6467daa534d0c47a208b3e8ea16b68e4b1045d3e88c7f1bf98e33adc451c007a",
             "tests": [
               "exact_terminals_and_root_fallbacks_are_selected_by_bind_position",
               "automaton_selection_is_a_superset_of_direct_matches",
@@ -5216,6 +5216,7 @@
               "structural_queries_use_exact_trie_prefixes_and_filter_after_wildcards",
               "retained_segments_product_walk_the_authoritative_resting_bag",
               "compressed_product_runs_visit_prefix_terminals_and_bag_branches",
+              "generated_resting_bag_product_preserves_direct_matches_and_first_order",
               "singleton_bag_path_selects_a_terminal_below_diverse_and_shared_branches",
               "singleton_bag_with_multiple_terminal_depths_uses_the_linear_product",
               "representation_stats_expose_eligibility_and_terminal_sharing",
@@ -5247,8 +5248,10 @@
             ],
             "id": "RSA-ROCQ-02",
             "kind": "theorem",
-            "mode": "proof_only",
-            "normal_suite_witnesses": [],
+            "mode": "executable_refinement",
+            "normal_suite_witnesses": [
+              "generated_resting_bag_product_preserves_direct_matches_and_first_order"
+            ],
             "section": "RetainedPathQuery",
             "symbol": "retained_filter_preserves_first_spatial_match"
           },
@@ -5259,10 +5262,11 @@
             ],
             "id": "RSA-ROCQ-03",
             "kind": "theorem",
-            "mode": "proof_only",
+            "mode": "executable_refinement",
             "normal_suite_witnesses": [
               "retained_segments_product_walk_the_authoritative_resting_bag",
-              "compressed_product_runs_visit_prefix_terminals_and_bag_branches"
+              "compressed_product_runs_visit_prefix_terminals_and_bag_branches",
+              "generated_resting_bag_product_preserves_direct_matches_and_first_order"
             ],
             "section": "RetainedBagProduct",
             "symbol": "retained_bag_product_has_no_false_negative"
@@ -5274,16 +5278,17 @@
             ],
             "id": "RSA-ROCQ-04",
             "kind": "corollary",
-            "mode": "proof_only",
+            "mode": "executable_refinement",
             "normal_suite_witnesses": [
               "retained_segments_product_walk_the_authoritative_resting_bag",
-              "compressed_product_runs_visit_prefix_terminals_and_bag_branches"
+              "compressed_product_runs_visit_prefix_terminals_and_bag_branches",
+              "generated_resting_bag_product_preserves_direct_matches_and_first_order"
             ],
             "section": "RetainedBagProduct",
             "symbol": "retained_bag_product_rejection_proves_no_pool_match"
           }
         ],
-        "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness. The fresh-datum superset test compares against Match; resting-Bag tests are finite positive/negative controls, not a universal prefix-terminal refinement or first-admissible-order proof.",
+        "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness. The generated fresh/resting-Bag property extracts no-false-negative, rejection, and first-order invariants for exact and fallback patterns. Fixed product controls exercise compressed and singleton trie paths; neither establishes universal prefix-terminal refinement for every generated RhoPathQuery arm.",
         "rocq_sha256": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
         "rocq_source": "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
         "runtime_sha256": "58729b8da4f3416f0c5628e2748ef7c32e7483b8924a4b4a839b8fd47b810cc0",

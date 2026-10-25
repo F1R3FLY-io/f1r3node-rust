@@ -213,6 +213,95 @@ fn compressed_product_runs_visit_prefix_terminals_and_bag_branches() {
 }
 
 #[test]
+fn generated_resting_bag_product_preserves_direct_matches_and_first_order() {
+    let strategy = (
+        proptest::collection::vec(
+            proptest::collection::vec(proptest::prelude::any::<u8>(), 0..24),
+            0..16,
+        ),
+        proptest::collection::vec(
+            proptest::collection::vec(proptest::prelude::any::<u8>(), 0..24),
+            0..12,
+        ),
+        proptest::collection::vec(proptest::prelude::any::<u8>(), 0..24),
+        proptest::prelude::any::<bool>(),
+        0usize..32,
+    );
+    let config = proptest::test_runner::Config {
+        cases: 96,
+        failure_persistence: None,
+        ..proptest::test_runner::Config::default()
+    };
+    let mut runner = proptest::test_runner::TestRunner::new(config);
+    runner
+        .run(
+            &strategy,
+            |(patterns, mut resting_values, fresh, include_fallback, insertion_seed)| {
+                let mut candidates = patterns
+                    .iter()
+                    .cloned()
+                    .map(|pattern| waiting(vec![Pattern::Exact(pattern)]))
+                    .collect::<Vec<_>>();
+                let mut resting_only = fresh.clone();
+                resting_only.push(0xff);
+                resting_values.push(resting_only.clone());
+                let fresh_position = insertion_seed % (candidates.len() + 1);
+                candidates.insert(fresh_position, waiting(vec![Pattern::Exact(fresh.clone())]));
+                let resting_position = (insertion_seed / 2) % (candidates.len() + 1);
+                candidates.insert(resting_position, waiting(vec![Pattern::Exact(resting_only)]));
+                if include_fallback {
+                    candidates.push(waiting(vec![Pattern::Any]));
+                }
+                let longest_datum = resting_values
+                    .iter()
+                    .map(Vec::len)
+                    .chain(std::iter::once(fresh.len()))
+                    .max()
+                    .expect("the generated corpus has a fresh datum");
+                let negative_index = candidates.len();
+                candidates.push(waiting(vec![Pattern::Exact(vec![0xa5; longest_datum + 1])]));
+                let automaton = RetainedSetAutomaton::compile(&Matcher, &candidates);
+                let mut resting = Bag::new();
+                for (index, datum) in resting_values.iter().enumerate() {
+                    resting
+                        .insert(&RhoPathV1::relative_datum_key(datum, &index.to_be_bytes()))
+                        .expect("generated resting occurrence");
+                }
+                let selected =
+                    automaton.matching_candidates_with_resting(&fresh, &[0], Some(&resting));
+                let direct = candidates
+                    .iter()
+                    .map(|candidate| {
+                        let pattern = &candidate.patterns[0];
+                        Matcher.get(pattern, &fresh).is_some() ||
+                            resting_values
+                                .iter()
+                                .any(|datum| Matcher.get(pattern, datum).is_some())
+                    })
+                    .collect::<Vec<_>>();
+
+                proptest::prop_assert_eq!(selected.len(), direct.len());
+                proptest::prop_assert!(direct.iter().filter(|accepted| **accepted).count() >= 2);
+                proptest::prop_assert!(!selected[negative_index]);
+                for (index, accepted) in direct.iter().enumerate() {
+                    proptest::prop_assert!(!*accepted || selected[index]);
+                }
+                let first_direct = direct.iter().position(|accepted| *accepted);
+                let first_selected_direct = direct
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, accepted)| (selected[index] && *accepted).then_some(index));
+                proptest::prop_assert_eq!(first_selected_direct, first_direct);
+                proptest::prop_assert!(
+                    selected.iter().any(|retained| *retained) || first_direct.is_none()
+                );
+                Ok(())
+            },
+        )
+        .expect("generated fresh/resting Bag selection preserves spatial matches");
+}
+
+#[test]
 fn singleton_bag_path_selects_a_terminal_below_diverse_and_shared_branches() {
     for shared_prefix in [false, true] {
         for cardinality in [16usize, 256, 4_096] {

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import argparse
+import hashlib
 import json
 import math
 import os
@@ -37,6 +39,34 @@ OUTPUT = ROOT / "target/verification/matcher-recursive-family-5866"
 ROW = re.compile(
     r"CURSOR_RESOURCE\t([^\t\n]+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)"
 )
+MATCHER_SOURCES = (
+    "models/build.rs",
+    "models/src/main/protobuf/RhoTypes.proto",
+    "models/src/rust/par_bag.rs",
+    "models/src/rust/rholang/match_path.rs",
+    "models/src/rust/rholang/match_path_cursor.rs",
+    "models/src/rust/rholang/match_region_path.rs",
+    "models/src/rust/rholang/match_schema.rs",
+    "models/src/rust/rholang/mod.rs",
+    "rholang/src/rust/interpreter/matcher/match.rs",
+    "rholang/src/rust/interpreter/matcher/spatial_matcher.rs",
+    "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+    "rholang/tests/matcher_recursive_family_cursor.rs",
+    "rholang/tests/support/counting_alloc.rs",
+    "scripts/bench/measure-matcher-recursive-family.py",
+)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def matcher_source_hashes():
+    return {name: sha256_file(ROOT / name) for name in MATCHER_SOURCES}
 
 
 def run(command, log, env=None):
@@ -57,6 +87,7 @@ def build(profile):
     command = [
         "cargo",
         "test",
+        "--locked",
         "-p",
         "rholang",
         "--test",
@@ -124,19 +155,36 @@ def host_metadata():
 
 
 def main():
+    global OUTPUT
+    parser = argparse.ArgumentParser(description="Measure recursive matcher resources")
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="record a tracked-source diff digest for an integrated candidate",
+    )
+    args = parser.parse_args()
+    OUTPUT = args.output.resolve()
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    binaries = {profile: build(profile) for profile in ("release", "debug")}
     revision = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
-    if subprocess.run(
-        ["git", "diff", "--quiet", "HEAD"], cwd=ROOT, check=False
-    ).returncode:
+    source_diff = subprocess.check_output(
+        ["git", "diff", "HEAD", "--binary"], cwd=ROOT
+    )
+    if source_diff and not args.allow_dirty:
         raise RuntimeError("commit the measurement probe before running the study")
+    source_hashes = matcher_source_hashes()
+    binaries = {profile: build(profile) for profile in ("release", "debug")}
+    if matcher_source_hashes() != source_hashes:
+        raise RuntimeError("matcher source changed while the resource binaries were built")
     (OUTPUT / "manifest.json").write_text(
         json.dumps(
             {
                 "revision": revision,
+                "tracked_source_diff_sha256": hashlib.sha256(source_diff).hexdigest(),
+                "tracked_source_dirty": bool(source_diff),
+                "matcher_source_sha256": source_hashes,
                 "experiment_id": 366,
                 "host": host_metadata(),
                 "seed": SEED,
@@ -147,6 +195,10 @@ def main():
                 "bootstraps": BOOTSTRAPS,
                 "threshold": THRESHOLD,
                 "binaries": binaries,
+                "binary_sha256": {
+                    profile: sha256_file(Path(binary))
+                    for profile, binary in binaries.items()
+                },
             },
             indent=2,
         )
@@ -272,6 +324,8 @@ def main():
         raise RuntimeError(
             f"resource exponent threshold failed for {failures}; see {OUTPUT / 'fits.tsv'}"
         )
+    if matcher_source_hashes() != source_hashes:
+        raise RuntimeError("matcher source changed during the resource study")
 
 
 if __name__ == "__main__":
