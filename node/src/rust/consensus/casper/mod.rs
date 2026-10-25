@@ -170,6 +170,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                     native_tasks.clone(),
                     workers.clone(),
                 ],
+                Some(engine.clone()),
                 observer,
                 store_manager,
             )))

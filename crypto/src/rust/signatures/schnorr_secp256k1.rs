@@ -198,10 +198,9 @@ mod tests {
             "E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0",
         );
         let msg = [0u8; 32];
-        let aux = [0u8; 32];
 
         let sk = SigningKey::from_slice(&sk_bytes).expect("valid sk");
-        let sig = sk.sign_raw(&msg, &aux).expect("vector must sign");
+        let sig = sk.sign_prehash(&msg).expect("vector must sign");
         let pk = sk.verifying_key().to_bytes().to_vec();
 
         assert_eq!(pk, expected_pk);

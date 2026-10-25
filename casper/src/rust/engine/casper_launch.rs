@@ -661,6 +661,20 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            // Threaded from `CasperLaunchImpl::fs_bundle` (populated
+            // by `node::rust::runtime::setup::setup_node_program`
+            // via `provisioning_merge::project_bundle(&merged)`),
+            // so the validator reconstructs the ceremony master's
+            // deploy list byte-for-byte.  See
+            // `BlockApproverProtocol::validate_candidate` for the
+            // shape invariant.
+            self.fs_bundle.clone(),
+            // Hardcoded `None` matches the ceremony-master's
+            // `approve_block_protocol.rs:206`.  When either side
+            // lifts cadence from None, update both call sites in
+            // lockstep — a divergence trips the deploy-list length
+            // check at validate_candidate.
+            None,
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;

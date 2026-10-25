@@ -170,7 +170,7 @@ impl CertificateHelper {
         Ok((secret_key, public_key))
     }
 
-    /// Generate a new secp256r1 key pair using the OS CSPRNG (`OsRng`).
+    /// Generate a new secp256r1 key pair using the OS CSPRNG.
     pub fn generate_key_pair() -> (P256SecretKey, P256PublicKey) {
         let secret_key = P256SecretKey::generate();
 

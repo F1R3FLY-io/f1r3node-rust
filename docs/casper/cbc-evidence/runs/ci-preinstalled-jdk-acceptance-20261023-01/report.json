@@ -1,0 +1,115 @@
+{
+  "approval": {
+    "accepted_by": "jltatbeach",
+    "posted_at": "2026-10-23T12:21:29Z",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/829#pullrequestreview-5628129141",
+    "review_body_sha256": "79c5f6933e5a98dbec8f3c51f7bfbcef06efa0c7fe063626800a775376530b62",
+    "review_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the approving review",
+    "revision": "f2f3645ddedae8d612e55141cfbd15e9c4ef884b",
+    "tested_commit": "f2f3645ddedae8d612e55141cfbd15e9c4ef884b"
+  },
+  "review": {
+    "ref": "docs/casper/cbc-evidence/runs/ci-preinstalled-jdk-20261023-01/report.json",
+    "sha256": "65fcbb8a56173e43874b4b98bba13ecd327ccca44b1f8ce60ad553658342deaa"
+  },
+  "hosted_evidence": {
+    "profile_runs": [
+      "39949883600",
+      "39949883664",
+      "39949883257",
+      "39949883342",
+      "39949883388",
+      "39949883287",
+      "39949883286",
+      "39949883358"
+    ],
+    "slashing_tests_run": "39949883473",
+    "install_step_seconds": "0 to 3",
+    "jdk": "Temurin-21.0.12.1+1",
+    "expected_failure": "pending_claims_are_visible_and_strict_discharge_refuses failed with checker exit 2 before the ledgers were rebound."
+  },
+  "code_review": "A code review of PR #829 found no defect. The evidence hashes and the lockfile checksum match their sources.",
+  "previous_acceptance": {
+    ".github/workflows/casper-carrier-index.yml": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json",
+      "sha256": "06e5c0d15a9eef13c09f5e28c5b553a082685be7dc44f305fed5380e0c7860e7"
+    },
+    ".github/workflows/casper-merge-accounting.yml": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json",
+      "sha256": "ba73b6ff31e85ee528490be184a8b95441977bcaba7ceac6eb905fdb1e0a576b"
+    },
+    ".github/workflows/casper-publication.yml": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json",
+      "sha256": "614d13c3e52ed11afb84a9a0b5f6345db42bc3a684518f9ce7060b15fc08c4da"
+    },
+    ".github/workflows/casper-recovery.yml": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json",
+      "sha256": "614d13c3e52ed11afb84a9a0b5f6345db42bc3a684518f9ce7060b15fc08c4da"
+    },
+    ".github/workflows/casper-slashing.yml": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json",
+      "sha256": "b47dc09e4d3f901503b88ae0ce346c94aecc4a0fc60d3b76079c8b19f54070ca"
+    },
+    ".github/workflows/casper-version-phlo.yml": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/report.json",
+      "sha256": "114a1372249ed2488da96f3dc4346a41ea4cc2eddc8702ca3444e4008e52edc3"
+    },
+    ".github/workflows/slashing-tests.yml": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+      "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    }
+  },
+  "accepted_scope": {
+    "change": "Nine workflow install steps use JDK 21 from the runner image instead of apt-get install default-jre, and each install step has timeout-minutes: 5.",
+    "unchanged": "The TLA+ tools version, its sha256 check, the models, the fixtures, and the verification commands.",
+    "pending_ledgers": [
+      ".github/workflows/casper-authority-finality.yml",
+      ".github/workflows/casper-campaign-control.yml"
+    ],
+    "pending_ledgers_note": "These two ledgers stay pending. The acceptance updates their source digests and does not discharge their claims.",
+    "excluded": "Node correctness, a live soak result, and any change to a claim specification."
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-carrier-index.md": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+    "docs/claims/casper-soak-merge-accounting.md": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3",
+    "docs/claims/casper-soak-publication.md": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+    "docs/claims/casper-soak-recovery.md": "057e4cfe06c19ac3ae7d61a15568fe6c72a8e0083f4737215fdf749cde4c5afe",
+    "docs/claims/casper-soak-slashing.md": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b",
+    "docs/claims/casper-soak-version-phlo.md": "05e750fc023dd55ed869c1175b0e6639ecfd7e2be22ded37f32175003aa6757a"
+  },
+  "claim_discharge": "discharged",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001",
+    "CLAIM-CASPER-SOAK-003",
+    "CLAIM-CASPER-SOAK-004",
+    "CLAIM-CASPER-SOAK-005",
+    "CLAIM-CASPER-SOAK-006",
+    "CLAIM-CASPER-SOAK-007",
+    "CLAIM-CASPER-SOAK-008"
+  ],
+  "node_execution": false,
+  "phase": "pre_pr216_merge",
+  "schema_version": 1,
+  "scope": "ci-install-step-only",
+  "soak": "pending",
+  "source_digests": {
+    ".github/workflows/casper-authority-finality.yml": "e4ae8673e683c21628bbb9d4b159cdd6dd41e2e6e1774793e5ef2d01f521c9c1",
+    ".github/workflows/casper-campaign-control.yml": "1229b3a91d4ff91f55da363913196af72d2fdc1583876b99c340cd6e5fb756c2",
+    ".github/workflows/casper-carrier-index.yml": "91215fdd0f86d321d10ee7f496c5d361af13e7e2ffe449cb6b821c146b833883",
+    ".github/workflows/casper-merge-accounting.yml": "36d4b339cee219f8fb798ccdd9bb82bac7cac2706467bfc60d9599f056e44402",
+    ".github/workflows/casper-publication.yml": "e8789552da5e982e6d01df684f23aba23f5cb2dd341f31e3cb7cbd2e68b07ab9",
+    ".github/workflows/casper-recovery.yml": "b1f16d34161db3d198df771927baad6f367f626aff1bbc12ec351b7734a2fce1",
+    ".github/workflows/casper-slashing.yml": "99d58b578284114f6e88c6ea9cc3b188d273438df66445dfb44162ca195520fc",
+    ".github/workflows/casper-version-phlo.yml": "7e40e4f0ed4983ad3553d8125095d980511a12b74b83f9c97f0a1312f000156d",
+    ".github/workflows/slashing-tests.yml": "b9164f7d5aa8de7655fb9627b91701fe82787c2af1ba3203d7dfcffe5560ac6b"
+  },
+  "status": "accepted-change",
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verified_at": "2026-10-23",
+  "waiver": null
+}

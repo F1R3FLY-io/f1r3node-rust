@@ -38,17 +38,17 @@ for metric in \
     runtime_scheduler_delay_time \
     compute_parents_post_state_floor_distance \
     deploy_store_read_all_decoded \
+    deploy_lifecycle_release_failures \
+    deploy_lifecycle_settle_row_failures \
     proposer_create_time \
     proposer_effect_time \
-    deploy_lifecycle_observe_time \
+    deploy_lifecycle_settle_time \
     deploy_lifecycle_carrier_prune_time \
     block_creator_deploy_admission_cap_source_soft_stalled \
     block_creator_deploy_admission_cap_source_hard \
     finalizer_run_time \
-    finalizer_api_lfb_time \
     deploy_selection_age_time \
     finalizer_run_timeouts \
-    finalizer_api_lfb_overlaps \
     block_creator_ordinary_deploys_deferred \
     block_creator_empty_block_skipped \
     block_creator_empty_block_built \

@@ -114,15 +114,6 @@ pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
 pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<CasperSnapshot, CasperError> {
-    if this
-        .finalization_in_progress
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        tracing::debug!(
-            "Finalization in progress while creating snapshot; using best-effort snapshot"
-        );
-    }
-
     let mut dag = this.block_dag_storage.get_representation()?;
 
     // Parent selection: Use latest block from EACH bonded validator.

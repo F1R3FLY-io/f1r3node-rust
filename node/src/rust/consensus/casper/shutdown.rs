@@ -15,6 +15,7 @@ pub(super) async fn drain_requests(requests: &TaskScope) -> Result<(), Consensus
 
 pub(super) async fn cleanup(
     tasks: [Arc<TaskScope>; 5],
+    engine: Option<casper::rust::engine::engine_cell::EngineCell>,
     observer: Option<RunningObserver>,
     mut store_manager: Box<dyn KeyValueStoreManager>,
 ) -> Result<(), ConsensusError> {
@@ -24,10 +25,20 @@ pub(super) async fn cleanup(
     for scope in &tasks {
         scope.shutdown().await;
     }
+    let mut background_result = Ok(());
+    if let Some(engine) = engine {
+        if let Some(casper) = engine.get().await.with_casper() {
+            background_result = casper
+                .shutdown_background_tasks()
+                .await
+                .map_err(super::native_error);
+        }
+    }
     if let Some(observer) = observer {
         observer.stop().await;
     }
-    store_manager.shutdown().await.map_err(super::native_error)
+    let storage_result = store_manager.shutdown().await.map_err(super::native_error);
+    background_result.and(storage_result)
 }
 
 #[cfg(test)]
@@ -88,7 +99,7 @@ mod tests {
             let Self { exit, tasks, store } = *self;
             context
                 .cleanup
-                .send(Box::pin(cleanup(tasks, None, Box::new(store))))
+                .send(Box::pin(cleanup(tasks, None, None, Box::new(store))))
                 .map_err(|_| ConsensusError::Stopped)?;
             context.control.ready();
             context.control.cancelled().await;
@@ -161,6 +172,7 @@ mod tests {
         let result = cleanup(
             std::array::from_fn(|_| Arc::new(TaskScope::default())),
             None,
+            None,
             Box::new(Store {
                 events: events.clone(),
                 fail: true,
@@ -186,7 +198,7 @@ mod tests {
             scopes[1] = requests.clone();
             context
                 .cleanup
-                .send(Box::pin(cleanup(scopes, None, Box::new(self.store))))
+                .send(Box::pin(cleanup(scopes, None, None, Box::new(self.store))))
                 .map_err(|_| ConsensusError::Stopped)?;
             context.control.ready();
             context.control.cancelled().await;

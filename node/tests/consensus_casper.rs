@@ -327,9 +327,20 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
             assert!(response.contains("created and added"), "{response}");
             block_hashes.push(prost::bytes::Bytes::from(hex::decode(response.split_whitespace().nth(2).unwrap()).unwrap()));
         }
-        let finalized = handle.finalized().await.unwrap();
+        let expected_finalized = consensus_api::ObjectId(block_hashes.last().unwrap().to_vec());
+        let (finalized, status_before) = tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                let finalized = handle.finalized().await.unwrap();
+                let status = deploy_status(&prepared.application, first_deploy_signature.clone()).await;
+                if finalized == expected_finalized
+                    && status.state == models::casper::DeployFinalizationStateProto::DeployStateFinalized as i32
+                {
+                    break (finalized, status);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await.expect("Finalizer must settle the proposed chain before recovery");
         assert_ne!(finalized, genesis, "finality must advance beyond genesis");
-        let status_before = deploy_status(&prepared.application, first_deploy_signature.clone()).await;
         assert_eq!(status_before.state, models::casper::DeployFinalizationStateProto::DeployStateFinalized as i32);
         assert!(matches!(handle.submit(deploy_payload).await, Err(ConsensusError::Rejected { code, .. }) if code == "casper.duplicate-deploy"));
         let manifest = std::fs::read(directory.path().join("consensus-manifest.json")).unwrap();

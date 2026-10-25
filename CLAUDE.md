@@ -89,6 +89,7 @@ just clean-standalone                # Reset node data
 
 # Docker
 docker build -f node/Dockerfile -t f1r3fly-rust:local .
+cp -n docker/.env.example docker/.env  # docker/.env is not tracked
 docker compose -f docker/standalone.yml up
 docker compose -f docker/shard.yml up
 ```
@@ -211,12 +212,12 @@ Both settings take effect at the next session start.
   - a pull request with the `ci-heavy` label
   - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI tests when the merged head or its merge group passed them on the same tree. It still builds and publishes the images.
   - every merge group, until the GitHub merge queue leaves `dev`
-- Mergify adds `ci-heavy` to an approved pull request and merges it only after both Integration gates succeed. Do not wait for the label to see an integration result early. Add the label yourself for these changes:
-  - Rust code in a workspace crate
-  - `Cargo.toml` or `Cargo.lock`
-  - `node/src/main/resources/defaults.conf`
-  - `node/Dockerfile` or the files in `docker/`
-- Add the label once, after the last planned push. A push, a label change, or a `gh pr edit` cancels a running heavy run.
+- Mergify adds `ci-heavy` to every open, non-draft pull request into `dev`, `master`, `ca-canary` (`ca/` heads), and `ca-release`. It adds the label again when someone removes it. Open a new pull request with `--label ci-heavy`.
+- Each push to a pull request runs the heavy pipeline again on OCI. Push in batches, because each heavy run uses the shared daily OCI instance quota. A push or a `gh pr edit` cancels a running heavy run.
+- A queue merges only after both Integration gates succeed, except with a waiver:
+  - Only a member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run, only on that member's own pull request, and only into `dev` or `ca-canary`.
+  - To waive, add the `ci-heavy-waived` label and remove `ci-heavy`. CI then reruns with the current labels and skips the heavy pipeline. To avoid any heavy run, open the pull request with `--label ci-heavy-waived` instead of `--label ci-heavy`.
+  - Promotions into `master` and `ca-release` and every hotfix always need `ci-heavy`.
 - A pull request from a fork gets no heavy run. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with the body line `Imports fork pull request #<N>.`
 - `docs/ci.md` describes the jobs, the required checks, the Mergify queues, and the merge rulesets.
 

@@ -1651,7 +1651,7 @@ impl DebruijnInterpreter {
                     .map(|arg| self.eval_expr(arg, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                let result_par = match self.method_table().get(&emethod.method_name) {
+                let result_par = match self.method(&emethod.method_name) {
                     Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
                     None => {
                         return Err(InterpreterError::ReduceError(format!(
@@ -3000,7 +3000,7 @@ impl DebruijnInterpreter {
                         .map(|arg| self.eval_expr(arg, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    let result_par = match self.method_table().get(method_name) {
+                    let result_par = match self.method(method_name) {
                         Some(method_function) => {
                             method_function.apply(evaled_target, evaled_args, env)?
                         }
@@ -7396,72 +7396,66 @@ impl DebruijnInterpreter {
         Box::new(ToStringMethod { outer: self })
     }
 
-    fn method_table<'a>(&'a self) -> HashMap<String, Box<dyn Method + 'a>> {
-        let mut table = HashMap::new();
-        table.insert("nth".to_string(), self.nth_method());
-        table.insert("toByteArray".to_string(), self.to_byte_array_method());
-        table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
-        table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
-        table.insert("concatBytes".to_string(), self.concat_bytes_method());
-        table.insert(
-            "validUtf8PrefixLen".to_string(),
-            self.valid_utf8_prefix_len_method(),
-        );
-        table.insert("decodeUtf8".to_string(), self.decode_utf8_method());
-        table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
-        table.insert("union".to_string(), self.union_method());
-        table.insert("diff".to_string(), self.diff_method());
-        table.insert("intersection".to_string(), self.intersection_method());
-        table.insert("restriction".to_string(), self.restriction_method());
-        table.insert("dropHead".to_string(), self.drop_head_method());
-        table.insert("run".to_string(), self.run_method());
-        // Zipper methods
-        table.insert("readZipper".to_string(), self.read_zipper_method());
-        table.insert("readZipperAt".to_string(), self.read_zipper_at_method());
-        table.insert("writeZipper".to_string(), self.write_zipper_method());
-        table.insert("writeZipperAt".to_string(), self.write_zipper_at_method());
-        table.insert("descendTo".to_string(), self.descend_to_method());
-        table.insert("getLeaf".to_string(), self.get_leaf_method());
-        table.insert("getSubtrie".to_string(), self.get_subtrie_method());
-        table.insert("setLeaf".to_string(), self.set_leaf_method());
-        table.insert("setSubtrie".to_string(), self.set_subtrie_method());
-        table.insert("removeLeaf".to_string(), self.remove_leaf_method());
-        table.insert("removeBranches".to_string(), self.remove_branches_method());
-        table.insert("graft".to_string(), self.graft_method());
-        table.insert("joinInto".to_string(), self.join_into_method());
-        table.insert("atPath".to_string(), self.at_path_method());
-        table.insert("pathExists".to_string(), self.path_exists_method());
-        table.insert("createPath".to_string(), self.create_path_method());
-        table.insert("prunePath".to_string(), self.prune_path_method());
-        table.insert("reset".to_string(), self.reset_method());
-        // Advanced navigation methods
-        table.insert("ascendOne".to_string(), self.ascend_one_method());
-        table.insert("ascend".to_string(), self.ascend_method());
-        table.insert("toNextSibling".to_string(), self.to_next_sibling_method());
-        table.insert("toPrevSibling".to_string(), self.to_prev_sibling_method());
-        table.insert("descendFirst".to_string(), self.descend_first_method());
-        table.insert(
-            "descendIndexedBranch".to_string(),
-            self.descend_indexed_branch_method(),
-        );
-        table.insert("childCount".to_string(), self.child_count_method());
-        table.insert("add".to_string(), self.add_method());
-        table.insert("delete".to_string(), self.delete_method());
-        table.insert("contains".to_string(), self.contains_method());
-        table.insert("get".to_string(), self.get_method());
-        table.insert("getOrElse".to_string(), self.get_or_else_method());
-        table.insert("set".to_string(), self.set_method());
-        table.insert("keys".to_string(), self.keys_method());
-        table.insert("size".to_string(), self.size_method());
-        table.insert("length".to_string(), self.length_method());
-        table.insert("slice".to_string(), self.slice_method());
-        table.insert("take".to_string(), self.take_method());
-        table.insert("toList".to_string(), self.to_list_method());
-        table.insert("toSet".to_string(), self.to_set_method());
-        table.insert("toMap".to_string(), self.to_map_method());
-        table.insert("toString".to_string(), self.to_string_method());
-        table.insert("toBigInt".to_string(), self.to_bigint_method());
-        table
+    fn method<'a>(&'a self, name: &str) -> Option<Box<dyn Method + 'a>> {
+        let method = match name {
+            "nth" => self.nth_method(),
+            "toByteArray" => self.to_byte_array_method(),
+            "hexToBytes" => self.hex_to_bytes_method(),
+            "bytesToHex" => self.bytes_to_hex_method(),
+            "concatBytes" => self.concat_bytes_method(),
+            "validUtf8PrefixLen" => self.valid_utf8_prefix_len_method(),
+            "decodeUtf8" => self.decode_utf8_method(),
+            "toUtf8Bytes" => self.to_utf8_bytes_method(),
+            "union" => self.union_method(),
+            "diff" => self.diff_method(),
+            "intersection" => self.intersection_method(),
+            "restriction" => self.restriction_method(),
+            "dropHead" => self.drop_head_method(),
+            "run" => self.run_method(),
+            "readZipper" => self.read_zipper_method(),
+            "readZipperAt" => self.read_zipper_at_method(),
+            "writeZipper" => self.write_zipper_method(),
+            "writeZipperAt" => self.write_zipper_at_method(),
+            "descendTo" => self.descend_to_method(),
+            "getLeaf" => self.get_leaf_method(),
+            "getSubtrie" => self.get_subtrie_method(),
+            "setLeaf" => self.set_leaf_method(),
+            "setSubtrie" => self.set_subtrie_method(),
+            "removeLeaf" => self.remove_leaf_method(),
+            "removeBranches" => self.remove_branches_method(),
+            "graft" => self.graft_method(),
+            "joinInto" => self.join_into_method(),
+            "atPath" => self.at_path_method(),
+            "pathExists" => self.path_exists_method(),
+            "createPath" => self.create_path_method(),
+            "prunePath" => self.prune_path_method(),
+            "reset" => self.reset_method(),
+            "ascendOne" => self.ascend_one_method(),
+            "ascend" => self.ascend_method(),
+            "toNextSibling" => self.to_next_sibling_method(),
+            "toPrevSibling" => self.to_prev_sibling_method(),
+            "descendFirst" => self.descend_first_method(),
+            "descendIndexedBranch" => self.descend_indexed_branch_method(),
+            "childCount" => self.child_count_method(),
+            "add" => self.add_method(),
+            "delete" => self.delete_method(),
+            "contains" => self.contains_method(),
+            "get" => self.get_method(),
+            "getOrElse" => self.get_or_else_method(),
+            "set" => self.set_method(),
+            "keys" => self.keys_method(),
+            "size" => self.size_method(),
+            "length" => self.length_method(),
+            "slice" => self.slice_method(),
+            "take" => self.take_method(),
+            "toList" => self.to_list_method(),
+            "toSet" => self.to_set_method(),
+            "toMap" => self.to_map_method(),
+            "toString" => self.to_string_method(),
+            "toBigInt" => self.to_bigint_method(),
+            _ => return None,
+        };
+        Some(method)
     }
 
     fn eval_single_expr(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {

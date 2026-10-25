@@ -547,6 +547,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-dockerfile-workspace.sh
 
+      - name: Verify no tracked validator keys
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/check-tracked-key-material.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
@@ -678,6 +682,10 @@ jobs:
       - name: Verify Dockerfile workspace check
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-check-dockerfile-workspace.sh
+
+      - name: Verify tracked validator key check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-check-tracked-key-material.sh
 
       - name: Verify Mergify queues
         shell: bash -euo pipefail {0}
@@ -971,8 +979,8 @@ jobs:
   # completed test passing. It runs here as two nextest count-partition
   # shards so each leg carries roughly half the test wall-clock. Larger
   # GitHub-hosted runners are not an option: the org's plan does not support
-  # them, and OCI ephemeral runners are reserved for the approval-gated
-  # heavy pipeline (shared daily instance quota).
+  # them, and OCI ephemeral runners are reserved for the ci-heavy
+  # pipeline (shared daily instance quota).
   test_casper:
     name: Test (casper ${{ matrix.partition }}/2)
     needs: [build_base, static_checks]
