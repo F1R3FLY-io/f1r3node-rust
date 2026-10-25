@@ -1125,6 +1125,8 @@ tasks:
       - "Each fix behavior has a test that fails before its change and passes after it."
       - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in every phase."
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
+    notes:
+      - "2026-10-25: the empty-heartbeat candidate is PR #768 (F1, F2, and H1, TASK-021-28). H1 removed the failing high phases but failed its finalization p95 threshold (design section 5.2), so it needs a revision. Issue #24 measures this task's gate on dev first (issue #764)."
     candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
   - id: TASK-021-14
@@ -1317,6 +1319,8 @@ tasks:
     verification_record: docs/casper/validation/heartbeat-h1-verification-2026-10-19.md
     notes:
       - "Renumbered from TASK-021-26 on 2026-10-25. The ID collided with the soak disk task that dev merged first. The claim spec and the validation records of 2026-10-19 keep TASK-021-26, because evidence ledgers pin them."
+      - "2026-10-21 comparison (issue #24 comment 6319658249, design section 5.2): H1 failed the finalization p95 threshold of design section 5.1. H1 had 26.8 s, and F1/F2 had 24.7 s. The slow share and the block rate passed."
+      - "2026-10-23 standup plan (issue #764, design section 7): H1 goes into dev and, through ca-sync, into the release train. It merges only after it meets all three thresholds. The revision continues on this branch, or on a new fix/ branch that is promoted to master for a weekend soak."
     acceptance:
       - "The revised claim is pending before H1 code begins, and the prior evidence remains unchanged in history."
       - "The implementation satisfies the routine-block bound, the request-credit bound, and the nonempty exemption under the configured cooldown."

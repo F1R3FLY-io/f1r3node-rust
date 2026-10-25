@@ -1,6 +1,6 @@
 # Deploy Heartbeat Wake Design
 
-- **Status:** implemented. F1 and F2 are at `ed9b3c996`, and H1 is at `ab84edf83`, with the review fix `e7638bbd5`. The maintainer accepted the CbC claim on 2026-10-19 ([PR #768 comment 6265326408](https://github.com/F1R3FLY-io/f1r3node-rust/pull/768#issuecomment-6265326408)). H1 waits for the comparison run of section 5.1. Created on 2026-10-18.
+- **Status:** implemented. F1 and F2 are at `ed9b3c996`, and H1 is at `ab84edf83`, with the review fix `e7638bbd5`. The maintainer accepted the CbC claim on 2026-10-19 ([PR #768 comment 6265326408](https://github.com/F1R3FLY-io/f1r3node-rust/pull/768#issuecomment-6265326408)). The comparison run of section 5.1 failed one threshold (section 5.2). Section 7 gives the plan of 2026-10-23. Created on 2026-10-18.
 - **Branch:** `fix/issue-24-deploy-heartbeat-wake`
 - **Issue:** issue #24, high-phase and sustained-phase `test_load` failures after PR #695
 - **Tasks:** TASK-021-13 (the wait after inclusion), TASK-021-17 (metrics for each phase), TASK-021-28 (H1 implementation and verification)
@@ -165,6 +165,18 @@ Cloud dispatch and soak qualification require separate authorization.
 
 Both runs use the same profile, provider, and number of `high` phases. A run needs at least 20 `high` phases for each build.
 
+### 5.2 Result of the comparison (2026-10-21)
+
+The comparison used the first 96 `high` phases of soak [39194089405](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/39194089405) (F1/F2, `ed9b3c996`) and soak [39369559337](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/39369559337) (H1, `da1c12ed1`). Both runs used the weekend-60h profile, and the host disk floor stopped both runs early. [Issue #24 comment 6319658249](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6319658249) gives the full result.
+
+| Metric | F1/F2 | H1 | Condition | Result |
+|---|---|---|---|---|
+| Slow share | 2 of 96, both failing | 0 of 96 | H1 lower | Pass |
+| Finalization p95, mean of the high phases | 24.7 s | 26.8 s | H1 not higher | **Fail** |
+| Blocks created, mean for each validator and phase | 8.95 | 7.74 (0.87 times) | At most 1.3 times | Pass |
+
+H1 is therefore not accepted. H1 removes the failing high phases, and it does not increase the block rate. The higher finalization p95 is present from the start of each run. In sessions 1 to 45, it is 24.6 s for F1/F2 and 27.3 s for H1.
+
 ---
 
 ## 6. Open questions
@@ -174,3 +186,16 @@ Both runs use the same profile, provider, and number of `high` phases. A run nee
 | Q1 | Does a soak shard with `autopropose` show the same slow pattern? If not, F1 alone can be enough. |
 | Q2 | Must the exit window and the exemption bound be configuration keys now, or constants until EPIC-027 owns them? **Decision of 2026-10-18 (maintainer): constants.** Both derive from the configured `check-interval` and `self-propose-cooldown`. |
 | Q3 | Does H1 need a CbC claim? **Decision of 2026-10-18 (maintainer): yes.** H1 conflicts with the gate rule of `docs/claims/heartbeat-proposal-amplification-bound.md` ("A routine-lane cooldown bypass refutes this claim"). The claim revision is registered as pending before the H1 code. F1 and F2 land first, because they do not bypass the cooldown. |
+
+---
+
+## 7. Plan (2026-10-23)
+
+The standup meeting on 2026-10-23 resolved the plan of [issue #764](https://github.com/F1R3FLY-io/f1r3node-rust/issues/764). For this design, it decided these items:
+
+- H1 goes into `dev` and into the release train. After the merge into `dev`, the next `ca-sync` brings H1 into `ca-canary`, and a promotion moves it to `ca-release`.
+- H1 merges only after it meets all three thresholds of section 5.1. The thresholds stay as the maintainer set them on 2026-10-19.
+- The revision of H1 continues on this branch, or on a new `fix/` branch. A new branch is promoted to `master` for a weekend soak, because a scheduled soak runs the driver of `master`.
+- Issue #24 measures its gate on `dev` first.
+
+The revision must remove the finalization p95 difference of section 5.2. It must keep the result for the slow share and the block rate. A new comparison soak against the F1/F2 baseline measures the revision. That soak needs the soak disk fixes (PR #811 and PR #827), so that it reaches at least 20 `high` phases for each build.
