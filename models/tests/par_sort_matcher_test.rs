@@ -1450,3 +1450,54 @@ fn par_should_sort_deeply_nested_maps_and_sets_in_bounded_time() {
         "sorting a sorted nested set must not change it"
     );
 }
+
+#[test]
+fn par_should_sort_entries_equal_only_after_sorting_like_their_deduplicated_form() {
+    // `1 | 2` and `2 | 1` differ as written and are equal once sorted.
+    let one_two = || Par::default().with_exprs(vec![new_gint_expr(1), new_gint_expr(2)]);
+    let two_one = || Par::default().with_exprs(vec![new_gint_expr(2), new_gint_expr(1)]);
+    let value = |n| new_gint_par(n, Vec::new(), false);
+    let map = |kvs: Vec<KeyValuePair>| {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    };
+    let set = |ps: Vec<Par>| {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    };
+
+    let colliding_map = map(vec![
+        new_key_value_pair(one_two(), value(10)),
+        new_key_value_pair(two_one(), value(10)),
+    ]);
+    let single_map = map(vec![new_key_value_pair(one_two(), value(10))]);
+    let colliding_set = set(vec![one_two(), two_one()]);
+    let single_set = set(vec![one_two()]);
+
+    for (colliding, single) in [(&colliding_map, &single_map), (&colliding_set, &single_set)] {
+        let colliding = ParSortMatcher::sort_match(colliding);
+        let single = ParSortMatcher::sort_match(single);
+        assert_eq!(colliding.term, single.term);
+        assert_eq!(colliding.score, single.score);
+    }
+
+    // The score orders a map among its siblings, so a stale score would place
+    // the colliding map differently from its deduplicated form.
+    let other_map = map(vec![new_key_value_pair(one_two(), value(11))]);
+    assert_eq!(
+        ParSortMatcher::sort_match(&set(vec![colliding_map, other_map.clone()])).term,
+        ParSortMatcher::sort_match(&set(vec![single_map, other_map])).term,
+    );
+}
