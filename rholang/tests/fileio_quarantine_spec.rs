@@ -342,4 +342,237 @@ mod tests {
              descend gate was bypassed on the Consensus code path."
         );
     }
+
+    // ---------- M-04 upfront-refusal pins for the gated handlers ----------
+    //
+    // Each test below exercises a single handler's Consensus-mode
+    // call on an UNREGISTERED tempdir root.  Expected outcome:
+    // `FSERR_UNSUPPORTED` from the gated resolver's upfront refusal,
+    // produced BEFORE any safe_descend walk.  Together they pin that
+    // the Shape-A gating is wired through every path-taking handler
+    // the operator can reach from Rholang — not just the four
+    // mutation handlers covered by the earlier harness.
+    //
+    // A regression that reverted a handler to the ungated
+    // `resolve_or_identity` would surface here as either a success
+    // reply (bypass) or a different FSERR code (e.g.,
+    // FSERR_QUARANTINE from safe_descend running on identity-None),
+    // not FSERR_UNSUPPORTED.
+    //
+    // Note: `create_runtime` in this file does NOT flip
+    // `set_test_permissive(true)` (unlike fs_wal_spec.rs's harness),
+    // so the gated refusal is live for these tests.
+
+    /// M-04 pin for fs_open (via `open_impl_via_table`).  Also
+    /// covers the entire open surface — every `.../open` call site
+    /// goes through this primitive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_open_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/open`), ret in {{
+              op!("{root}", "f.bin", "r", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_open on Consensus+unregistered must refuse upfront with \
+             FSERR_UNSUPPORTED from the gated resolver, not fall through \
+             to safe_descend; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_stat.  Observation handler — Par-carried error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_stat_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/stat`), ret in {{
+              op!("{root}", "f.bin", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_stat on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_exists_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/exists`), ret in {{
+              op!("{root}", "nope.bin", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_exists on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_entries (one-shot listing).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_entries_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/entries`), ret in {{
+              op!("{root}", "", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_entries on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_chmod (mutation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_chmod_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/chmod`), ret in {{
+              op!("{root}", "f.bin", 420, "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_chmod on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_rename — must refuse on EITHER endpoint
+    /// being unregistered.  Both endpoints share the same root
+    /// here, so a single refusal fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_rename_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/rename`), ret in {{
+              op!("{root}", "a.bin", "{root}", "b.bin", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_rename on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_remove_file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_file_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/removeFile`), ret in {{
+              op!("{root}", "f.bin", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_remove_file on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_copy_file (two endpoints, same cmode).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_copy_file_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("src.bin"), b"payload").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/copyFile`), ret in {{
+              op!("{root}", "src.bin", "{root}", "dst.bin", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_copy_file on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
+
+    /// M-04 pin for fs_remove_dir.  Already-gated handler from an
+    /// earlier wave; included here for completeness so the suite
+    /// documents the full gated surface.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_dir_on_unregistered_root_returns_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/removeDir`), ret in {{
+              op!("{root}", "sub", false, "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_UNSUPPORTED",
+            "fs_remove_dir on Consensus+unregistered must refuse upfront; got {code}"
+        );
+    }
 }

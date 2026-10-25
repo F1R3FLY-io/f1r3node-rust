@@ -1815,12 +1815,13 @@ fn matching_negation_should_work() {
 
     assert!(assert_spatial_match(target.clone(), pattern.clone(), Some(BTreeMap::new())).is_ok());
 
-    let double_pattern: Par =
-        pattern.with_connectives(vec![pattern_connective.clone(), pattern_connective.clone()]);
+    let double_pattern: Par = pattern
+        .clone()
+        .with_connectives(vec![pattern_connective.clone(), pattern_connective.clone()]);
 
     assert!(assert_spatial_match(target.clone(), double_pattern, Some(BTreeMap::new())).is_ok());
 
-    let triple_pattern = pattern.with_connectives(vec![
+    let triple_pattern = pattern.clone().with_connectives(vec![
         pattern_connective.clone(),
         pattern_connective.clone(),
         pattern_connective.clone(),
@@ -1828,7 +1829,7 @@ fn matching_negation_should_work() {
 
     assert!(assert_spatial_match(target.clone(), triple_pattern, Some(BTreeMap::new())).is_ok());
 
-    let quadruple_pattern = pattern.with_connectives(vec![
+    let quadruple_pattern = pattern.clone().with_connectives(vec![
         pattern_connective.clone(),
         pattern_connective.clone(),
         pattern_connective.clone(),

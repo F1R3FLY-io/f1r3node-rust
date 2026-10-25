@@ -109,9 +109,9 @@ where
 pub struct ReportingRspace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
 {
     replay_rspace: ReplayRSpace<C, P, A, K>,
     // Global lock order (hold this order in every path, and never acquire
@@ -149,9 +149,25 @@ where
         + Eq
         + for<'a> Deserialize<'a>
         + 'static,
-    P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    P: Clone
+        + Debug
+        + Default
+        + PartialEq
+        + Send
+        + Sync
+        + Serialize
+        + for<'a> Deserialize<'a>
+        + 'static,
     A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    K: Clone
+        + Debug
+        + Default
+        + PartialEq
+        + Send
+        + Sync
+        + Serialize
+        + for<'a> Deserialize<'a>
+        + 'static,
 {
     /// Creates [[ReportingRspace]] from [[HistoryRepository]] and [[HotStore]].
     pub fn apply(
@@ -312,9 +328,25 @@ where
         + Eq
         + for<'a> Deserialize<'a>
         + 'static,
-    P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    P: Clone
+        + Debug
+        + Default
+        + PartialEq
+        + Send
+        + Sync
+        + Serialize
+        + for<'a> Deserialize<'a>
+        + 'static,
     A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    K: Clone
+        + Debug
+        + Default
+        + PartialEq
+        + Send
+        + Sync
+        + Serialize
+        + for<'a> Deserialize<'a>
+        + 'static,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         ReportingRspace::create_checkpoint(self).await
@@ -322,6 +354,14 @@ where
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
         self.replay_rspace.get_data(channel).await
+    }
+
+    async fn get_data_at(
+        &self,
+        checkpoint: &SoftCheckpoint<C, P, A, K>,
+        channel: &C,
+    ) -> Vec<Datum<A>> {
+        self.replay_rspace.get_data_at(checkpoint, channel).await
     }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
@@ -451,17 +491,17 @@ where
 {
     fn log_comm(
         &self,
-        data_candidates: &Vec<ConsumeCandidate<C, A>>,
-        channels: &Vec<C>,
-        wk: WaitingContinuation<P, K>,
-        comm: COMM,
+        data_candidates: &[ConsumeCandidate<C, A>],
+        channels: &[C],
+        wk: &WaitingContinuation<P, K>,
+        _comm: &COMM,
         _label: &str,
-    ) -> COMM {
+    ) {
         let reporting_consume = ReportingConsume {
-            channels: channels.clone(),
-            patterns: wk.patterns,
-            continuation: wk.continuation,
-            peeks: wk.peeks.into_iter().collect(),
+            channels: channels.to_vec(),
+            patterns: wk.patterns.clone(),
+            continuation: wk.continuation.clone(),
+            peeks: wk.peeks.iter().copied().collect(),
         };
 
         let reporting_produces = data_candidates
@@ -480,8 +520,6 @@ where
         if let Ok(mut soft_report_guard) = self.soft_report.lock() {
             soft_report_guard.push(reporting_comm);
         }
-
-        comm
     }
 
     fn log_consume(

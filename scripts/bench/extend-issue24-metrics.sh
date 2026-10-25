@@ -17,8 +17,7 @@ counters+='|finalizer_run_failures|finalizer_run_timeouts|finalizer_run_reruns|f
 counters+='|heartbeat_responsive_mode_entered|heartbeat_responsive_mode_exited|heartbeat_responsive_mode_cooldown_exempt'
 histograms+='|proposer_constraints_time|proposer_create_time|proposer_validate_time|proposer_effect_time|deploy_lifecycle_observe_time|deploy_lifecycle_carrier_prune_time'
 counters+='|block_creator_deploy_admission_cap_source_normal|block_creator_deploy_admission_cap_source_base|block_creator_deploy_admission_cap_source_backlog|block_creator_deploy_admission_cap_source_soft_backlog|block_creator_deploy_admission_cap_source_soft_stalled|block_creator_deploy_admission_cap_source_stale|block_creator_deploy_admission_cap_source_hard'
-# Stall-loop Track A (TASK-021-17): pool lock, signature checks of pool reads, proposer queue, runtime delay, floor distance.
-histograms+='|deploy_pool_lock_wait_time|deploy_pool_lock_hold_time|proposer_queue_depth|runtime_scheduler_delay_time|compute_parents_post_state_floor_distance'
+histograms+='|proposer_queue_depth|runtime_scheduler_delay_time|compute_parents_post_state_floor_distance'
 counters+='|deploy_store_read_all_decoded'
 tmp="$(mktemp "${metrics_file}.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT

@@ -90,7 +90,7 @@ impl ReplayRuntimeOps {
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
-    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>, Vec<[u8; 32]>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
             let entries: Vec<String> = invalid_blocks
@@ -146,7 +146,7 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         with_cost_accounting: bool,
         block_data: &BlockData,
-    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+    ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>, Vec<[u8; 32]>), CasperError> {
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", start_hash = %hex::encode(&start_hash[..8.min(start_hash.len())]), n_user = terms.len(), n_system = system_deploys.len(), "replay.replay_deploys ENTER (reset to pre-state, then replay deploys vs recorded COMMs)");
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(terms.len() as f64);
@@ -163,12 +163,26 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(reset_start.elapsed().as_secs_f64());
 
+        // Per-deploy Merkle leaves accumulated as each deploy finishes.
+        // Order: all user-deploy leaves first (in commit order), then
+        // all system-deploy leaves.  See `proto_util::hash_block` and
+        // the plan at `/Users/stay/.claude/plans/https-github-com-f1r3fly-io-publications-tidy-honey.md`
+        // for the recipe.
+        let mut block_hash_leaves: Vec<[u8; 32]> =
+            Vec::with_capacity(terms.len() + system_deploys.len());
+
         // Time user deploys phase
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_user = terms.len(), "replay.replay_deploys: USER-deploy phase");
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
         for term in terms {
             let result = self.replay_deploy_e(with_cost_accounting, &term).await?;
+            // Hash the leaf while `term` is still hot and we have proved
+            // replay succeeded for it.  A bad deploy would have errored
+            // out above and the loop would have aborted — fail-fast.
+            block_hash_leaves.push(crate::rust::util::proto_util::hash_processed_deploy_leaf(
+                &term,
+            ));
             deploy_results.push(result);
         }
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -182,6 +196,9 @@ impl ReplayRuntimeOps {
             let result = self
                 .replay_block_system_deploy(block_data, &system_deploy)
                 .await?;
+            block_hash_leaves.push(
+                crate::rust::util::proto_util::hash_processed_system_deploy_leaf(&system_deploy),
+            );
             system_deploy_results.push(result);
         }
         metrics::histogram!(BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -202,7 +219,7 @@ impl ReplayRuntimeOps {
             .record(checkpoint_start.elapsed().as_secs_f64());
 
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", computed_root = %hex::encode(&checkpoint.root.bytes()[..8.min(checkpoint.root.bytes().len())]), "replay.replay_deploys DONE (computed final replay root)");
-        Ok((checkpoint.root, all_mergeable))
+        Ok((checkpoint.root, all_mergeable, block_hash_leaves))
     }
 
     /**
@@ -428,6 +445,9 @@ impl ReplayRuntimeOps {
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
         let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
+        self.runtime_ops
+            .reject_bitmask_clears(&fallback, &mut user_eval_result)
+            .await;
         let discard_start = Instant::now();
         self.discard_event_log("user-deploy", false).await;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "user-deploy")

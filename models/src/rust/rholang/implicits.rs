@@ -162,7 +162,7 @@ mod tests {
         let par = gint(1);
         assert_eq!(single_expr(&par), Some(par.exprs[0].clone()));
 
-        let two_exprs = par.with_exprs(vec![par.exprs[0].clone(), par.exprs[0].clone()]);
+        let two_exprs = par.clone_with_exprs(vec![par.exprs[0].clone(), par.exprs[0].clone()]);
         assert_eq!(single_expr(&two_exprs), None);
 
         let with_send = par.with_sends(vec![Send::default()]);

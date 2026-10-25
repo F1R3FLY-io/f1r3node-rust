@@ -39,6 +39,7 @@
 //     — WAL read entry with divergence discriminator (fs_read).
 
 pub mod ack_hash;
+pub mod fcntl_lock;
 pub mod journal;
 pub mod lock_helpers;
 pub mod open_impl;

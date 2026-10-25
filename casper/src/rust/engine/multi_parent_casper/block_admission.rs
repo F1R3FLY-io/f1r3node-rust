@@ -121,7 +121,7 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy_id: &DeployId,
 ) -> Result<bool, CasperError> {
-    if this.deploy_storage.lock().contains_sig(deploy_id)? {
+    if this.deploy_storage.contains_sig(deploy_id)? {
         return Ok(true);
     }
     if this
@@ -150,12 +150,13 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         return Ok(false);
     }
 
-    let mut deploy_storage = this.deploy_storage.lock();
     let rejected_deploys = this.rejected_deploy_buffer.lock()?;
     if rejected_deploys.contains_sig(&deploy_id)? {
         return Ok(false);
     }
-    deploy_storage.add_if_absent(deploy).map_err(Into::into)
+    this.deploy_storage
+        .add_if_absent(deploy)
+        .map_err(Into::into)
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
@@ -221,9 +222,8 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // into a live branch. Non-owners simply do not hold the sig (deploys
     // never gossip) and the removal is a no-op.
     if !terminalized.is_empty() {
-        let mut storage = this.deploy_storage.lock();
         for sig in &terminalized {
-            storage.remove_by_sig(sig)?;
+            this.deploy_storage.remove_by_sig(sig)?;
         }
     }
 
@@ -369,8 +369,7 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
             ))
         })?;
 
-    // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex`.
-    let storage = this.deploy_storage.lock();
+    let storage = &this.deploy_storage;
     if !storage.non_empty().map_err(|e| {
         CasperError::RuntimeError(format!("Failed to query deploy storage: {:?}", e))
     })? {
@@ -436,7 +435,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
 
     let mut out: Vec<(Signed<DeployData>, bool)> = Vec::with_capacity(rejected.len());
 
-    let fresh = this.deploy_storage.lock().read_all().map_err(|e| {
+    let fresh = this.deploy_storage.read_all().map_err(|e| {
         CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
     })?;
     for deploy in fresh {
