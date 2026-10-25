@@ -1,13 +1,17 @@
 name: CI Heavy Label
 
-# Reruns CI when the ci-heavy label is added to a pull request.
+# Reruns CI when the ci-heavy label is added to a pull request, and when a
+# ci-maintainers waiver takes effect: the pull request then has
+# ci-heavy-waived and no ci-heavy. The rerun cancels the running CI run and
+# its OCI jobs first. build_base reads the current labels, so a waived rerun
+# skips the heavy pipeline, and both Integration Gate checks report skipped.
 #
 # ci.yml does not run on labeled events. A labeled run replaces the checks of
 # the pull request head with pending checks. The merge queue adds the queued
 # label when it queues a pull request, so the required checks became pending,
 # the merge failed, and the dequeued label started another run (pull request
-# #826, 2026-10-23). Only the ci-heavy label changes what CI does, so only that
-# label reruns CI here. The rerun keeps the pull_request event of the run, and
+# #826, 2026-10-23). Only ci-heavy and ci-heavy-waived change what CI does, so
+# only those labels rerun CI here. The rerun keeps the pull_request event of the run, and
 # build_base reads the current labels to start the heavy pipeline.
 #
 # pull_request_target runs this file and the checked-out script from the base
@@ -15,7 +19,7 @@ name: CI Heavy Label
 # that the pull request changed. A pull request from a fork gets no heavy run.
 on:
   pull_request_target:
-    types: [labeled]
+    types: [labeled, unlabeled]
 
 permissions: {}
 
@@ -27,8 +31,12 @@ jobs:
   rerun:
     name: Rerun CI for ci-heavy
     if: >-
-      github.event.label.name == 'ci-heavy' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository && (
+        (github.event.action == 'labeled' && github.event.label.name == 'ci-heavy') ||
+        (contains(github.event.pull_request.labels.*.name, 'ci-heavy-waived') &&
+          !contains(github.event.pull_request.labels.*.name, 'ci-heavy') &&
+          ((github.event.action == 'labeled' && github.event.label.name == 'ci-heavy-waived') ||
+            (github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy'))))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -48,4 +56,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WANT_HEAVY: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
         run: bash .github/scripts/rerun-ci-for-heavy-label.sh
