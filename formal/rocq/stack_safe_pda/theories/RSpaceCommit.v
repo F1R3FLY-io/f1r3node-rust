@@ -1,6 +1,7 @@
-From Stdlib Require Import Bool.
+From Stdlib Require Import Bool List.
 From StackSafePDA Require Import Bag.
 
+Import ListNotations.
 Set Implicit Arguments.
 
 (** Refinement model for the store-wide accepted-match transaction introduced
@@ -224,6 +225,44 @@ Proof.
 Qed.
 
 End RSpaceCommit.
+
+Section MatchingLifecycle.
+
+Context {Datum Binding : Type}.
+
+Definition matched_candidate := (Datum * Binding)%type.
+
+Variable admissible : matched_candidate -> bool.
+
+Fixpoint first_admissible (candidates : list matched_candidate)
+    : option matched_candidate :=
+  match candidates with
+  | [] => None
+  | candidate :: remaining =>
+      if admissible candidate
+      then Some candidate
+      else first_admissible remaining
+  end.
+
+Lemma replay_subsequence_preserves_first_admissible_bindings :
+  forall (keep : matched_candidate -> bool) candidates selected,
+    first_admissible candidates = Some selected ->
+    keep selected = true ->
+    first_admissible (filter keep candidates) = Some selected.
+Proof.
+  intros keep candidates.
+  induction candidates as [|candidate remaining induction_hypothesis];
+    intros selected first kept; simpl in *.
+  - discriminate.
+  - destruct (admissible candidate) eqn:eligible.
+    + inversion first; subst selected.
+      rewrite kept. simpl. rewrite eligible. reflexivity.
+    + destruct (keep candidate) eqn:retained; simpl.
+      * rewrite eligible. apply induction_hypothesis; assumption.
+      * apply induction_hypothesis; assumption.
+Qed.
+
+End MatchingLifecycle.
 
 Print Assumptions refusal_is_observably_nonmutating.
 Print Assumptions stale_epoch_cannot_commit.

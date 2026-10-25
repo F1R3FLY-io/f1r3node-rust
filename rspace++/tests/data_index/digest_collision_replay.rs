@@ -149,6 +149,8 @@ async fn forced_identity_digest_collision_preserves_comm_removal_reinsertion_and
         0,
         "an unmatched produce must not open or hash the resting datum catalog"
     );
+    assert_eq!(play.get_store().data_count_at_path(&first_path).unwrap(), 2);
+    assert_eq!(play.get_store().data_count_at_path(&second_path).unwrap(), 1);
     let play_repeated = play
         .consume(
             vec![channel.clone(), channel.clone()],
@@ -179,6 +181,8 @@ async fn forced_identity_digest_collision_preserves_comm_removal_reinsertion_and
         vec![rmp_first.clone()],
         "the multiplicity-two removal must consume both selected copies atomically"
     );
+    assert_eq!(play.get_store().data_count_at_path(&first_path).unwrap(), 0);
+    assert_eq!(play.get_store().data_count_at_path(&second_path).unwrap(), 1);
 
     for _ in 0..2 {
         let _ = play
@@ -186,6 +190,8 @@ async fn forced_identity_digest_collision_preserves_comm_removal_reinsertion_and
             .await
             .expect("reinsert identity-first datum");
     }
+    assert_eq!(play.get_store().data_count_at_path(&first_path).unwrap(), 2);
+    assert_eq!(play.get_store().data_count_at_path(&second_path).unwrap(), 1);
     let play_single = play
         .consume(
             vec![channel.clone()],
@@ -203,9 +209,12 @@ async fn forced_identity_digest_collision_preserves_comm_removal_reinsertion_and
         vec![identity_first.clone(), rmp_first.clone()],
         "one copy of each identity must remain after reinsertion and removal"
     );
+    assert_eq!(play.get_store().data_count_at_path(&first_path).unwrap(), 1);
+    assert_eq!(play.get_store().data_count_at_path(&second_path).unwrap(), 1);
 
     let play_state = play.to_map().await;
     let play_point = play.create_checkpoint().await.expect("play checkpoint");
+    assert_ne!(play_point.root, empty.root, "surviving datums require a non-empty root");
     let produce_events = play_point
         .log
         .iter()
@@ -230,6 +239,15 @@ async fn forced_identity_digest_collision_preserves_comm_removal_reinsertion_and
         .iter()
         .find(|comm| comm.produces.len() == 2)
         .expect("multiplicity-two COMM");
+    assert_eq!(
+        repeated_comm.consume,
+        Consume::create(
+            &vec![channel.clone(), channel.clone()],
+            &vec![pattern.clone(), pattern.clone()],
+            &"remove-two".to_string(),
+            false
+        ),
+    );
     assert!(
         repeated_comm
             .produces
@@ -241,6 +259,15 @@ async fn forced_identity_digest_collision_preserves_comm_removal_reinsertion_and
         .iter()
         .find(|comm| comm.produces.len() == 1)
         .expect("post-reinsertion COMM");
+    assert_eq!(
+        reinserted_comm.consume,
+        Consume::create(
+            &vec![channel.clone()],
+            &vec![pattern.clone()],
+            &"remove-one".to_string(),
+            false
+        ),
+    );
     assert_eq!(reinserted_comm.produces, vec![identity_source.clone()]);
     assert_eq!(reinserted_comm.times_repeated.get(&identity_source), Some(&4));
 

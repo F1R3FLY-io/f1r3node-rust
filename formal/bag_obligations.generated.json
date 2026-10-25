@@ -389,7 +389,7 @@
   "rocq_source": "formal/rocq/stack_safe_pda/theories/Bag.v",
   "scope": "Bag multiplicity algebra and checked scalar delta",
   "sources_sha256": {
-    "formal/accepted_match_obligations.generated.json": "ff73adbf198b0ae1339197096097f8ccf3d75ec885e08d6f3dd9a7158dfa27d6",
+    "formal/accepted_match_obligations.generated.json": "0527988ebed3cef81836be44cafa809de81b03268725ca5f6c8e2da43bec0dd5",
     "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
     "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
     "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",

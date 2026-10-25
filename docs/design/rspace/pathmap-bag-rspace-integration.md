@@ -970,6 +970,53 @@ and entry count.
 
 Production matching is directional: receive patterns match produced data. Symmetric Martelli-Montanari unification is an experiment for contexts that genuinely require variables on both sides; it is not silently substituted for receive semantics. Ordered children use linear PDA traversal. Associative-commutative collections use multiplicity-aware residual Bags rather than expanded vectors.
 
+### Matching lifecycle correspondence across arrival directions
+
+The same rendezvous can be reached when a receive arrives after its data or when its final datum
+arrives after the receive. A *candidate* pairs a datum with the exact ordered binding result
+returned by the Rholang matcher; this binding result is the observable projection of its `FreeMap`
+(the map from free-variable levels to matched terms). The canonical candidate sequence is ordered
+by datum identity, and the commit guard chooses the first admissible complete selection. Replay
+restricts that sequence to the data named by the recorded `COMM` (the communication event); it
+does not reorder the survivors. The lemma
+`replay_subsequence_preserves_first_admissible_bindings` in
+[`RSpaceCommit.v`](../../../formal/rocq/stack_safe_pda/theories/RSpaceCommit.v) proves that this
+restriction preserves the complete first accepted candidate, including its binding map, whenever
+the recorded candidate survives. The accepted-match transition theorems then give one atomic
+datum/continuation/join post-state and an event only after that commit.
+
+The executable correspondence checks the two directions against a full-scan matcher oracle as
+well as against each other. The operations that establish the background are identical; only the
+last `produce` and `consume` are exchanged. Each direction has its own replay from the same empty
+root. The `COMM` sequence and multiset of input/output events must agree; the chronology of the
+last two input/output events differs by construction. The selected datum, bound terms in bind
+order, complete hot-store state, content-derived checkpoint root, and replay result must agree
+exactly.
+
+| Case | Distinguishing obligation |
+| --- | --- |
+| Ordered list | Nested free-variable capture retains its exact term. |
+| Associative-commutative set | A set capture agrees with the full-scan spatial oracle. |
+| Remainder | The unconsumed ordered suffix becomes exactly one remainder binding. |
+| Guard | An inadmissible resting datum survives while an admissible datum fires. |
+| Peek | The `COMM` records the peek index; a selected nonpersistent datum is still removed, matching the existing storage contract. |
+| Persistent datum | A selected persistent witness remains after the `COMM`. |
+| Repeated channel | Two binds reserve distinct occurrences and preserve bind order. |
+
+The [lifecycle acceptance test](../../../rholang/tests/matching_lifecycle_acceptance.rs)
+executes those seven cells and a bounded property corpus that varies both guarded values and the
+random-state bytes participating in candidate identity. Its replay checks exercise the formal
+subsequence invariant against the actual RSpace selector and commit path.
+
+```pseudocode
+for each case and arrival direction:
+    prepare the same background and one final rendezvous
+    select with the indexed matcher and with the full-scan oracle
+    compare the complete selected bindings and surviving data
+    checkpoint, replay the recorded events, and compare the post-state root
+compare directions after normalizing only the order of the final independent IO events
+```
+
 The current checkpoint implements the multiplicity-aware reservation and exact-path commit portions
 of steps 4 and 6 over the existing spatial matcher, plus conservative slices of steps 1–3. The
 fresh-datum query traverses a retained PathMap segment iteratively and preserves every non-indexable

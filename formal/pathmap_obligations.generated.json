@@ -10,7 +10,7 @@
       "checker": "scripts/check-accepted-match-obligations.py",
       "family": "accepted_match",
       "manifest": "formal/accepted_match_obligations.generated.json",
-      "manifest_sha256": "ff73adbf198b0ae1339197096097f8ccf3d75ec885e08d6f3dd9a7158dfa27d6",
+      "manifest_sha256": "0527988ebed3cef81836be44cafa809de81b03268725ca5f6c8e2da43bec0dd5",
       "obligations": {
         "causal_mutants": [
           {
@@ -54,7 +54,7 @@
           "comm_publication_follows_a_complete_commit",
           "play_replay_same_ticket_same_result"
         ],
-        "rocq_sha256": "f0157c777846b8629d7fb1a3f803efcc2450e859c44cafa027fe509e8fb9de65",
+        "rocq_sha256": "6a2ef1d6af6aba6ca2a6b593e669b14c14eb1c04998dfb9d477a278e79d937b1",
         "rocq_theorems": [
           {
             "id": "ACM-RC-01",
@@ -415,7 +415,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "92f9072bcf32e94f3c58b284024b42b39f1c2c3b00c1535a6c18b207e711ce2f",
+      "manifest_sha256": "ddd221c8b2e7da83a0ee91e40dccbe4d3b6c42f78ef35e1489f0174ffc7da378",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -807,7 +807,7 @@
         "rocq_source": "formal/rocq/stack_safe_pda/theories/Bag.v",
         "scope": "Bag multiplicity algebra and checked scalar delta",
         "sources_sha256": {
-          "formal/accepted_match_obligations.generated.json": "ff73adbf198b0ae1339197096097f8ccf3d75ec885e08d6f3dd9a7158dfa27d6",
+          "formal/accepted_match_obligations.generated.json": "0527988ebed3cef81836be44cafa809de81b03268725ca5f6c8e2da43bec0dd5",
           "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",

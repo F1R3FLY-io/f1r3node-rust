@@ -41,7 +41,7 @@
     "comm_publication_follows_a_complete_commit",
     "play_replay_same_ticket_same_result"
   ],
-  "rocq_sha256": "f0157c777846b8629d7fb1a3f803efcc2450e859c44cafa027fe509e8fb9de65",
+  "rocq_sha256": "6a2ef1d6af6aba6ca2a6b593e669b14c14eb1c04998dfb9d477a278e79d937b1",
   "rocq_theorems": [
     {
       "id": "ACM-RC-01",
