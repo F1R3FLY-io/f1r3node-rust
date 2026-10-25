@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedSystemDeploy};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Event, ProcessedSystemDeploy};
 use prost::bytes::Bytes;
 
 use super::backend::{block_data, close_block};
@@ -51,6 +51,7 @@ pub struct ExecutedEnvelope {
     pub phlo_used: u64,
     pub budget_recording: Bytes,
     pub operation_journal: Bytes,
+    pub user_log: Vec<Event>,
 }
 
 impl ExecutedEnvelope {
@@ -60,6 +61,7 @@ impl ExecutedEnvelope {
                 if self.phlo_used != 0
                     || !self.budget_recording.is_empty()
                     || !self.operation_journal.is_empty()
+                    || !self.user_log.is_empty()
                 {
                     return Err("an envelope that did not run has no usage and no evidence".into());
                 }
@@ -303,6 +305,7 @@ mod tests {
             phlo_used: 5,
             budget_recording: Bytes::from_static(b"recording"),
             operation_journal: Bytes::from_static(b"journal"),
+            user_log: Vec::new(),
         }
     }
 
@@ -316,6 +319,7 @@ mod tests {
             phlo_used: 0,
             budget_recording: Bytes::new(),
             operation_journal: Bytes::new(),
+            user_log: Vec::new(),
         }
     }
 

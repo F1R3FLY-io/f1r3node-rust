@@ -1,6 +1,6 @@
-use models::casper::ProcessedSystemDeployProto;
+use models::casper::{EventProto, ProcessedSystemDeployProto};
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::ProcessedSystemDeploy;
+use models::rust::casper::protocol::casper_message::{Event, ProcessedSystemDeploy};
 use prost::bytes::Bytes;
 use prost::Message;
 
@@ -53,6 +53,8 @@ pub struct RecordEntryProto {
     pub debits: Vec<PurseDebitProto>,
     #[prost(bytes = "bytes", tag = "12")]
     pub cost_evidence: Bytes,
+    #[prost(message, repeated, tag = "13")]
+    pub user_log: Vec<EventProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -235,6 +237,12 @@ fn entry_to_proto(entry: &RecordEntry) -> RecordEntryProto {
             })
             .collect(),
         cost_evidence: entry.settled.cost_evidence.clone(),
+        user_log: entry
+            .executed
+            .user_log
+            .iter()
+            .map(Event::to_proto)
+            .collect(),
     }
 }
 
@@ -276,6 +284,11 @@ fn entry_from_proto(proto: RecordEntryProto) -> Result<RecordEntry, String> {
             phlo_used: proto.phlo_used,
             budget_recording: proto.budget_recording,
             operation_journal: proto.operation_journal,
+            user_log: proto
+                .user_log
+                .into_iter()
+                .map(Event::from_proto)
+                .collect::<Result<Vec<_>, _>>()?,
         },
         settled: SettledEnvelope {
             envelope_id: proto.envelope_id,
@@ -315,6 +328,16 @@ mod tests {
 
     fn b(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
+    fn log_event() -> Event {
+        Event::Consume(
+            models::rust::casper::protocol::casper_message::ConsumeEvent {
+                channels_hashes: vec![b("channel")],
+                hash: b("consume"),
+                persistent: false,
+            },
+        )
+    }
+
     fn entry(id: &str, admitted: bool) -> RecordEntry {
         let executed = if admitted {
             ExecutedEnvelope {
@@ -326,6 +349,7 @@ mod tests {
                 phlo_used: 12,
                 budget_recording: b("recording"),
                 operation_journal: b("journal"),
+                user_log: vec![log_event()],
             }
         } else {
             ExecutedEnvelope {
@@ -337,6 +361,7 @@ mod tests {
                 phlo_used: 0,
                 budget_recording: Bytes::new(),
                 operation_journal: Bytes::new(),
+                user_log: Vec::new(),
             }
         };
         let settled = if admitted {
@@ -391,6 +416,9 @@ mod tests {
         let mut outcome = base.entries.clone();
         outcome[0].executed.outcome = EnvelopeOutcome::UserFailure;
         variants.push(outcome);
+        let mut log = base.entries.clone();
+        log[0].executed.user_log.clear();
+        variants.push(log);
         let mut evidence = base.entries.clone();
         evidence[0].settled.cost_evidence = b("other");
         variants.push(evidence);

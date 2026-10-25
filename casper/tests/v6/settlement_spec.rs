@@ -92,6 +92,7 @@ async fn close_only_settlement_matches_the_tranche_1_close_path_and_replays() {
         phlo_used: 1,
         budget_recording: Bytes::new(),
         operation_journal: Bytes::new(),
+        user_log: Vec::new(),
     };
     assert!(settlement
         .settle(&block, &mid_root, &mid_root, &[EnvelopeRun::recorded(

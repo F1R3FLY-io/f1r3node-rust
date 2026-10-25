@@ -364,3 +364,136 @@ async fn settlement_refuses_inputs_that_differ_from_the_gate_or_lack_a_run() {
         .await
         .contains("phlo usage"));
 }
+
+fn recorded(runs: &[EnvelopeRun]) -> Vec<EnvelopeRun> {
+    runs.iter()
+        .map(|run| EnvelopeRun::recorded(run.executed.clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_cited_record_replays_without_local_runs() {
+    let shard = launch().await;
+    let pre_root = shard.genesis.body.state.post_state_hash.clone();
+    let unfunded = Secp256k1.new_key_pair().0;
+    let block = block(&shard, vec![
+        offer(&unfunded, "@\"g\"!(7)", 7),
+        offer(
+            &shard.first,
+            "new out in { out!(8) | for (@x <- out) { @\"h\"!(x) } }",
+            8,
+        ),
+    ]);
+    let (runs, mid_root) = shard
+        .settlement
+        .run_sequentially(&block, &pre_root)
+        .await
+        .expect("the offers run");
+    assert!(!runs[1].executed.user_log.is_empty());
+    let outcome = shard
+        .settlement
+        .settle(&block, &pre_root, &mid_root, &runs)
+        .await
+        .expect("the offers settle");
+
+    let cited = recorded(&runs);
+    let rebuilt = shard
+        .settlement
+        .replay_runs(&block, &pre_root, &cited)
+        .await
+        .expect("the runs replay");
+    assert!(rebuilt[0].run.is_none());
+    let original = runs[1].run.as_ref().expect("a local run");
+    let replayed = rebuilt[1].run.as_ref().expect("a replayed run");
+    assert_eq!(replayed.post_root(), original.post_root());
+    assert_eq!(replayed.phlo_used(), original.phlo_used());
+    assert_eq!(replayed.user_log(), original.user_log());
+    assert_eq!(
+        shard
+            .settlement
+            .replay(&block, &pre_root, &mid_root, &cited, &outcome)
+            .await
+            .expect("the cited record replays"),
+        outcome.post_root
+    );
+}
+
+#[tokio::test]
+async fn a_user_failure_replays_and_is_charged() {
+    let shard = launch().await;
+    let pre_root = shard.genesis.body.state.post_state_hash.clone();
+    let block = block(&shard, vec![offer(&shard.first, "@\"i\"!(1 / 0)", 9)]);
+    let (runs, mid_root) = shard
+        .settlement
+        .run_sequentially(&block, &pre_root)
+        .await
+        .expect("the offer runs");
+    assert_eq!(runs[0].executed.outcome, EnvelopeOutcome::UserFailure);
+    assert_eq!(mid_root, pre_root);
+    let outcome = shard
+        .settlement
+        .settle(&block, &pre_root, &mid_root, &runs)
+        .await
+        .expect("the failed offer settles");
+    assert!(outcome.settled[0].rev_spent > 0);
+    assert_eq!(
+        shard
+            .settlement
+            .replay(&block, &pre_root, &mid_root, &recorded(&runs), &outcome)
+            .await
+            .expect("the failed offer replays"),
+        outcome.post_root
+    );
+}
+
+#[tokio::test]
+async fn a_forged_record_is_refused_on_replay() {
+    let shard = launch().await;
+    let pre_root = shard.genesis.body.state.post_state_hash.clone();
+    let block = block(&shard, vec![offer(
+        &shard.first,
+        "new out in { out!(10) | for (@x <- out) { @\"j\"!(x) } }",
+        10,
+    )]);
+    let (runs, mid_root) = shard
+        .settlement
+        .run_sequentially(&block, &pre_root)
+        .await
+        .expect("the offer runs");
+    let outcome = shard
+        .settlement
+        .settle(&block, &pre_root, &mid_root, &runs)
+        .await
+        .expect("the offer settles");
+    let cited = recorded(&runs);
+
+    let mut short_log = cited.clone();
+    short_log[0].executed.user_log.pop();
+    let mut long_log = cited.clone();
+    let extra = long_log[0].executed.user_log[0].clone();
+    long_log[0].executed.user_log.push(extra);
+    let mut recording = cited.clone();
+    let mut bytes = recording[0].executed.budget_recording.to_vec();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    recording[0].executed.budget_recording = Bytes::from(bytes);
+    let mut usage = cited.clone();
+    usage[0].executed.phlo_used += 1;
+    let mut failure = cited.clone();
+    failure[0].executed.outcome = EnvelopeOutcome::UserFailure;
+    for (forged, cause) in [
+        (short_log, "omits native user events"),
+        (long_log, "grant log differs"),
+        (recording, "native recording wire"),
+        (usage, "recorded budget differs"),
+        (failure, "differs from the executed usage or failure"),
+    ] {
+        let error = shard
+            .settlement
+            .replay(&block, &pre_root, &mid_root, &forged, &outcome)
+            .await
+            .expect_err("a forged record is refused")
+            .to_string();
+        assert!(error.contains(cause), "{error}");
+    }
+}

@@ -2373,6 +2373,9 @@ impl RuntimeManager {
     }
 }
 
+mod block_replay;
+pub use block_replay::RecordedRun;
+
 #[cfg(test)]
 mod tests {
     use models::rust::casper::protocol::casper_message::ProduceEvent;

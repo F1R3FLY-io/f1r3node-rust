@@ -16,6 +16,7 @@ use super::settlement::{
     PurseDebit, SettledEnvelope, Settlement, SettlementOutcome,
 };
 use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::RecordedRun;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -91,6 +92,7 @@ impl RhoSettlement {
                     phlo_used: 0,
                     budget_recording: Bytes::new(),
                     operation_journal: Bytes::new(),
+                    user_log: Vec::new(),
                 }));
                 continue;
             };
@@ -124,11 +126,75 @@ impl RhoSettlement {
                         .ok_or_else(|| invalid("an offered run has no phlo usage"))?,
                     budget_recording: Bytes::from(budget),
                     operation_journal: Bytes::from(journal),
+                    user_log: run.user_log(),
                 },
                 run: Some(Arc::new(run)),
             });
         }
         Ok((runs, Bytes::copy_from_slice(&root)))
+    }
+
+    pub async fn replay_runs(
+        &self,
+        block: &BlockMessage,
+        pre_root: &StateHash,
+        runs: &[EnvelopeRun],
+    ) -> Result<Vec<EnvelopeRun>, CasperError> {
+        let executed = executed_of(runs);
+        check_executed(block, &executed).map_err(|error| invalid(&error))?;
+        let funding_root = root_of(pre_root)?;
+        let data = block_data(block);
+        let offered = offers(block);
+        let plan = self
+            .runtime_manager
+            .plan_offered_block(funding_root, data.time_stamp, &self.policy, &offered)
+            .await?;
+        let invalid_blocks = HashMap::new();
+        let mut rebuilt = Vec::with_capacity(runs.len());
+        for (position, run) in runs.iter().enumerate() {
+            let entry = &run.executed;
+            if entry.verdict != verdict_of(&plan.admissions()[position]) {
+                return Err(invalid(
+                    "an executed verdict differs from the gate at the pre-state",
+                ));
+            }
+            let (Some(member), Some(envelope), None) =
+                (plan.position_of(position), offered[position], &run.run)
+            else {
+                rebuilt.push(run.clone());
+                continue;
+            };
+            let replayed = self
+                .runtime_manager
+                .replay_offered_run(
+                    envelope,
+                    funding_root,
+                    funding_root,
+                    plan.gate(member)?,
+                    RecordedRun {
+                        phlo_used: entry.phlo_used,
+                        failed: matches!(
+                            entry.outcome,
+                            EnvelopeOutcome::UserFailure | EnvelopeOutcome::Exhausted
+                        ),
+                        budget_recording: &entry.budget_recording,
+                        operation_journal: &entry.operation_journal,
+                        user_log: &entry.user_log,
+                    },
+                    &data,
+                    &invalid_blocks,
+                    &self.policy,
+                )
+                .await?;
+            if replayed.user_log() != entry.user_log {
+                return Err(invalid("the replayed user log differs from the record"));
+            }
+            rebuilt.push(EnvelopeRun {
+                executed: entry.clone(),
+                run: Some(Arc::new(replayed)),
+            });
+        }
+        Ok(rebuilt)
     }
 }
 
@@ -256,7 +322,8 @@ impl Settlement for RhoSettlement {
         runs: &[EnvelopeRun],
         outcome: &SettlementOutcome,
     ) -> Result<StateHash, CasperError> {
-        let recomputed = self.settle(block, pre_root, mid_root, runs).await?;
+        let runs = self.replay_runs(block, pre_root, runs).await?;
+        let recomputed = self.settle(block, pre_root, mid_root, &runs).await?;
         if recomputed != *outcome {
             return Err(invalid("settlement replay reached another outcome"));
         }

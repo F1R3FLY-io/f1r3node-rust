@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::Event as CasperEvent;
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
@@ -25,6 +26,7 @@ use super::{
 };
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::util::event_converter;
 use crate::rust::util::rholang::acceptance::prepare_offered_candidate;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::costacc::offered_evidence::encode_measured_runtime_recording;
@@ -49,6 +51,36 @@ pub struct OfferedRun {
 }
 
 impl OfferedRun {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_parts(
+        evaluation: EvaluateResult,
+        replay_log: Arc<[Event]>,
+        grant_issuances: Vec<VerifiedGrantCreationV1>,
+        grant_issue_log: Arc<[Event]>,
+        gate: OfferedGate,
+        owner: Option<Arc<OwnerFundingBinding>>,
+        post_root: [u8; 32],
+    ) -> Self {
+        OfferedRun {
+            evaluation,
+            replay_log,
+            grant_issuances,
+            grant_issue_log,
+            gate,
+            owner,
+            post_root,
+        }
+    }
+
+    pub fn user_log(&self) -> Vec<CasperEvent> {
+        self.replay_log
+            .iter()
+            .chain(self.grant_issue_log.iter())
+            .cloned()
+            .map(event_converter::to_casper_event)
+            .collect()
+    }
+
     pub fn post_root(&self) -> [u8; 32] { self.post_root }
 
     pub fn phlo_used(&self) -> Option<u64> { self.evaluation.native_phlo_usage }

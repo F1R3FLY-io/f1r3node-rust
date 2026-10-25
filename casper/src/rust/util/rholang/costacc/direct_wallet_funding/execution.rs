@@ -986,7 +986,7 @@ pub use settlement::{
 mod replay;
 pub use replay::{
     NativeFundedReplayInput, NativeFundedReplayLimits, PendingReplayedNativeSettlement,
-    ReplayedNativeFundedUser,
+    RecordedRun, ReplayedNativeFundedUser,
 };
 
 // Added by DR-134 (DR-65, gap G2): several offered deploys in one block.
