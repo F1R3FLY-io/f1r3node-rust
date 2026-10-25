@@ -577,8 +577,8 @@ where
             joins.set_channel(channel, values);
         }
         for (channel, values) in snapshot.installed_joins {
-            for value in values {
-                joins.install(&channel, &value);
+            if !values.is_empty() {
+                joins.set_installed_channel(channel, values);
             }
         }
         Ok(Self {

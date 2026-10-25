@@ -1483,6 +1483,18 @@ where C: Clone + RhoPathEncode + Send + Sync
     }
 
     pub(crate) fn set_channel(&mut self, channel: C, joins: Vec<Vec<C>>) {
+        Self::replace_channel_joins(&mut self.resting, channel, joins);
+    }
+
+    pub(crate) fn set_installed_channel(&mut self, channel: C, joins: Vec<Vec<C>>) {
+        Self::replace_channel_joins(&mut self.installed, channel, joins);
+    }
+
+    fn replace_channel_joins(
+        store: &mut OrderedGroupStore<C, Vec<C>, false>,
+        channel: C,
+        joins: Vec<Vec<C>>,
+    ) {
         let prefix = RhoPathV1::join_prefix(&channel);
         let records = joins
             .into_iter()
@@ -1491,7 +1503,7 @@ where C: Clone + RhoPathEncode + Send + Sync
                 (identity.clone(), identity, join)
             })
             .collect();
-        self.resting
+        store
             .set_group(&prefix, Arc::from([channel]), records, true)
             .expect("typed join records must have an injective frozen encoding");
     }

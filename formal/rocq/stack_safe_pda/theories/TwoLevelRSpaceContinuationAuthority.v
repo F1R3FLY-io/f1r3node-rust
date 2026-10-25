@@ -1823,6 +1823,208 @@ Print Assumptions escaped_channel_occurrences_are_exact.
 
 End OrderedReceivePositions.
 
+(** Installed-join restoration.
+
+    The installed joins of a channel live in an ordered group store: each
+    stored join carries an order number, and a read lists the joins by
+    descending order, newest first.  Installation gives an absent join the
+    order after the newest one, so it is read first.  Replacing a whole group
+    of [n] joins gives the join at input index [i] the order [n - i], so a
+    read returns the input sequence.
+
+    A store is represented by its read sequence of occurrences.  Both
+    constructions keep the orders strictly descending, so the production
+    read's descending sort is the identity on this representation and its
+    tie-break never applies.
+
+    Restoring a snapshot must therefore replace the group: replaying the
+    snapshot through installation returns distinct joins reversed. *)
+Module InstalledJoinRestoration.
+Open Scope nat_scope.
+
+Definition JoinOccurrence : Type := (nat * GroupKey)%type.
+
+Definition read_store (store : list JoinOccurrence) : list GroupKey :=
+  map snd store.
+
+Definition orders_descending (store : list JoinOccurrence) : Prop :=
+  StronglySorted
+    (fun newer older : JoinOccurrence => fst older < fst newer) store.
+
+Definition next_order (store : list JoinOccurrence) : nat :=
+  match store with
+  | [] => 1
+  | (order, _) :: _ => S order
+  end.
+
+Definition insert_join (store : list JoinOccurrence) (join : GroupKey)
+    : list JoinOccurrence :=
+  if in_dec group_eq_dec join (read_store store)
+  then store
+  else (next_order store, join) :: store.
+
+Fixpoint replace_group (joins : list GroupKey) : list JoinOccurrence :=
+  match joins with
+  | [] => []
+  | join :: tail => (length joins, join) :: replace_group tail
+  end.
+
+Definition restore_by_install (joins : list GroupKey) : list JoinOccurrence :=
+  fold_left insert_join joins [].
+
+Lemma replace_group_orders_bounded : forall joins occurrence,
+  In occurrence (replace_group joins) -> fst occurrence <= length joins.
+Proof.
+  induction joins as [|join tail IH]; simpl; intros occurrence Hin.
+  - contradiction.
+  - destruct Hin as [Heq|Hin].
+    + subst occurrence. simpl. lia.
+    + specialize (IH occurrence Hin). lia.
+Qed.
+
+Theorem replace_group_orders_descending : forall joins,
+  orders_descending (replace_group joins).
+Proof.
+  unfold orders_descending.
+  induction joins as [|join tail IH]; simpl.
+  - constructor.
+  - constructor; [exact IH|].
+    apply Forall_forall. intros occurrence Hin.
+    apply replace_group_orders_bounded in Hin. simpl. lia.
+Qed.
+
+Lemma next_order_exceeds_every_order : forall store,
+  orders_descending store ->
+  Forall (fun occurrence : JoinOccurrence => fst occurrence < next_order store)
+    store.
+Proof.
+  intros store Hsorted. destruct store as [|[order join] tail].
+  - constructor.
+  - inversion Hsorted as [|head rest Htail Hhead]; subst.
+    constructor.
+    + simpl. lia.
+    + apply Forall_forall. intros occurrence Hin.
+      rewrite Forall_forall in Hhead. specialize (Hhead occurrence Hin).
+      simpl in *. lia.
+Qed.
+
+Theorem insert_join_orders_descending : forall store join,
+  orders_descending store -> orders_descending (insert_join store join).
+Proof.
+  intros store join Hsorted. unfold insert_join.
+  destruct (in_dec group_eq_dec join (read_store store)) as [_|_].
+  - exact Hsorted.
+  - pose proof (@next_order_exceeds_every_order store Hsorted) as Hexceeds.
+    unfold orders_descending in *. constructor; [exact Hsorted|].
+    apply Forall_forall. intros occurrence Hin.
+    rewrite Forall_forall in Hexceeds. exact (Hexceeds occurrence Hin).
+Qed.
+
+Lemma read_insert_absent : forall store join,
+  ~ In join (read_store store) ->
+  read_store (insert_join store join) = join :: read_store store.
+Proof.
+  intros store join Habsent. unfold insert_join.
+  destruct (in_dec group_eq_dec join (read_store store)) as [Hpresent|_].
+  - contradiction.
+  - reflexivity.
+Qed.
+
+Lemma restore_by_install_from : forall joins store,
+  NoDup joins ->
+  (forall join, In join joins -> ~ In join (read_store store)) ->
+  read_store (fold_left insert_join joins store) =
+    rev joins ++ read_store store.
+Proof.
+  induction joins as [|join tail IH]; intros store Hnodup Hfresh.
+  - reflexivity.
+  - cbn [fold_left rev].
+    inversion Hnodup as [|head rest Hnotin Hnodup_tail]; subst.
+    assert (Habsent : ~ In join (read_store store))
+      by (apply Hfresh; left; reflexivity).
+    rewrite IH.
+    + rewrite (@read_insert_absent store join Habsent), <- app_assoc.
+      reflexivity.
+    + exact Hnodup_tail.
+    + intros other Hother.
+      rewrite (@read_insert_absent store join Habsent).
+      intros [Hsame|Hin].
+      * subst other. contradiction.
+      * exact (Hfresh other (or_intror Hother) Hin).
+Qed.
+
+Theorem restore_by_install_reverses : forall joins,
+  NoDup joins -> read_store (restore_by_install joins) = rev joins.
+Proof.
+  intros joins Hnodup. unfold restore_by_install.
+  rewrite restore_by_install_from.
+  - exact (app_nil_r (rev joins)).
+  - exact Hnodup.
+  - intros join _ Hin. exact Hin.
+Qed.
+
+Theorem replace_group_round_trip : forall joins,
+  read_store (replace_group joins) = joins.
+Proof.
+  induction joins as [|join tail IH].
+  - reflexivity.
+  - change (join :: read_store (replace_group tail) = join :: tail).
+    rewrite IH. reflexivity.
+Qed.
+
+Definition restore_installed_channel
+    (state : ContinuationAuthority) (channel : Path) (joins : list GroupKey)
+    : ContinuationAuthority :=
+  ContinuationAuthorityState
+    (installed_continuations state)
+    (ordinary_continuations state)
+    (continuation_epochs state)
+    (resting_joins state)
+    (set_channel (installed_joins state) channel
+      (read_store (replace_group joins))).
+
+Theorem restore_installed_channel_exact : forall state channel joins,
+  installed_joins (restore_installed_channel state channel joins) channel =
+    joins.
+Proof.
+  intros state channel joins.
+  change (set_channel (installed_joins state) channel
+    (read_store (replace_group joins)) channel = joins).
+  rewrite set_channel_exact. apply replace_group_round_trip.
+Qed.
+
+Theorem restore_installed_channel_preserves_validity :
+  forall state channel joins,
+    continuation_authority_valid state ->
+    NoDup joins ->
+    continuation_authority_valid (restore_installed_channel state channel joins).
+Proof.
+  intros state channel joins
+    [Hordinary_unique [Hordinary [Hinstalled [Hresting Hinstalled_joins]]]]
+    Hunique.
+  unfold continuation_authority_valid.
+  split; [exact Hordinary_unique|].
+  split; [exact Hordinary|].
+  split; [exact Hinstalled|].
+  split; [exact Hresting|].
+  intros other.
+  change (NoDup (set_channel (installed_joins state) channel
+    (read_store (replace_group joins)) other)).
+  destruct (path_eq_dec other channel) as [Hsame|Hdifferent].
+  - subst other. rewrite set_channel_exact, replace_group_round_trip.
+    exact Hunique.
+  - rewrite set_channel_other by exact Hdifferent. apply Hinstalled_joins.
+Qed.
+
+Print Assumptions replace_group_orders_descending.
+Print Assumptions insert_join_orders_descending.
+Print Assumptions replace_group_round_trip.
+Print Assumptions restore_by_install_reverses.
+Print Assumptions restore_installed_channel_exact.
+Print Assumptions restore_installed_channel_preserves_validity.
+
+End InstalledJoinRestoration.
+
 Print Assumptions EqualityEpoch.fresh_from_rejects_every_prior.
 Print Assumptions issued_ordinary_capability_resolves.
 Print Assumptions stale_epoch_cannot_resolve.

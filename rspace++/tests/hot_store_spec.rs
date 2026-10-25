@@ -70,6 +70,22 @@ fn byte_equal_installed_and_resting_continuations_remain_distinct() {
     );
 }
 
+#[test]
+fn set_state_preserves_installed_join_order_through_snapshot() {
+    let (_, hot_store) = fixture();
+    let channel = "channel".to_string();
+    let installed_joins: Joins =
+        vec![vec!["a".to_string()], vec!["b".to_string()], vec!["c".to_string()]];
+    hot_store.set_state(HotStoreState {
+        continuations: HashMap::new(),
+        installed_continuations: HashMap::new(),
+        data: HashMap::new(),
+        joins: HashMap::new(),
+        installed_joins: HashMap::from_iter(vec![(channel.clone(), installed_joins.clone())]),
+    });
+    assert_eq!(hot_store.snapshot().installed_joins.get(&channel), Some(&installed_joins));
+}
+
 proptest! {
   #![proptest_config(ProptestConfig {
     cases: 20, // 20
@@ -453,6 +469,18 @@ proptest! {
         assert_eq!(to_remove_count_in_cache, to_remove_count_in_cached_joins - 1);
         assert_eq!(cache.installed_joins.get(&channel).unwrap().clone(), installed_joins);
       }
+  }
+
+  #[test]
+  fn set_state_snapshot_round_trips_join_order(channel in any::<Channel>(), joins in any::<Joins>(), installed_joins in any::<Joins>()) {
+      let (_, hot_store) = fixture();
+
+      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), joins.clone())]),
+        installed_joins: HashMap::from_iter(vec![(channel.clone(), installed_joins.clone())]) });
+
+      let cache = hot_store.snapshot();
+      prop_assert_eq!(cache.joins.get(&channel).cloned().unwrap_or_default(), joins);
+      prop_assert_eq!(cache.installed_joins.get(&channel).cloned().unwrap_or_default(), installed_joins);
   }
 
   #[test]

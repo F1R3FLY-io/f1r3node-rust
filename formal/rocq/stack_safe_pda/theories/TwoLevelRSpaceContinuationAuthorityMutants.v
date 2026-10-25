@@ -575,4 +575,21 @@ Print Assumptions fixed_width_position_does_not_reuse_signed_peek_range.
 
 End OrderedReceivePositionMutants.
 
+Module InstalledJoinRestorationMutants.
+Import InstalledJoinRestoration.
+
+(** Restoring a snapshot by replaying installation returns two distinct
+    installed joins reversed, so the restored store reads them in the
+    opposite order from the snapshot. *)
+Example install_replay_reverses_restored_installed_joins :
+  read_store (restore_by_install [fixture_prefix_group; fixture_other_group]) =
+    [fixture_other_group; fixture_prefix_group] /\
+  read_store (restore_by_install [fixture_prefix_group; fixture_other_group]) <>
+    read_store (replace_group [fixture_prefix_group; fixture_other_group]).
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+Print Assumptions install_replay_reverses_restored_installed_joins.
+
+End InstalledJoinRestorationMutants.
+
 End TwoLevelRSpaceContinuationAuthorityMutants.

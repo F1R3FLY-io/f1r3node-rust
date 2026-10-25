@@ -984,10 +984,10 @@ rocq_compile_with_closed_count \
   "the RhoPath V2 outer-grammar capstones"
 epathmap_score_proofs
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceContinuationAuthority.v 33 \
+  theories/TwoLevelRSpaceContinuationAuthority.v 39 \
   "the exact two-level RSpace continuation and join authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 33 \
+  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 34 \
   "the continuation and join authority causal controls"
 match_preparation_proof_clients
 rocq_compile_with_closed_count \
