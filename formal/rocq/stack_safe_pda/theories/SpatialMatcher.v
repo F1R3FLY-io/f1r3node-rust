@@ -468,6 +468,619 @@ Proof. intros query compiled. inversion compiled. Qed.
 
 End GeneratedRhoPathQueryCompiler.
 
+(** [record_linear_capture] in the Rholang query compiler inserts the
+    big-endian key for a FreeVar level into one PathMap<()> shared by every
+    atom of a BindPattern. PathMap::insert returns the old entry, so a second
+    occurrence refuses the entire derived query. This model uses natural
+    levels as keys: the concrete u32 big-endian encoding is injective. A
+    capture site records where the generated ParCursor or admitted-region
+    cursor found the hole; the same scan handles every site and atom. The
+    source-to-observation correspondence remains a separate executable audit. *)
+Section NonlinearRhoPathCaptureFallback.
+
+Inductive capture_site : Type :=
+| WholeAtomSite : nat -> capture_site
+| MethodTargetSite : nat -> capture_site
+| MethodArgumentSite : nat -> nat -> capture_site
+| OrderedChildSite : nat -> nat -> capture_site
+| GeneratedCursorSite : nat -> list nat -> capture_site
+| AdmittedRegionSite : nat -> list nat -> capture_site.
+
+Record capture_observation : Type := CaptureObservation {
+  observed_site : capture_site;
+  observed_level : option nat
+}.
+
+Definition observed_capture_ids (events : list capture_observation) : list nat :=
+  flat_map (fun event =>
+    match observed_level event with
+    | Some level => [level]
+    | None => []
+    end) events.
+
+Definition record_linear_capture (seen : list nat) (level : nat)
+    : option (list nat) :=
+  if in_dec Nat.eq_dec level seen then None else Some (level :: seen).
+
+Lemma record_linear_capture_rejects_seen :
+  forall seen level,
+    In level seen -> record_linear_capture seen level = None.
+Proof.
+  intros seen level present.
+  unfold record_linear_capture.
+  destruct (in_dec Nat.eq_dec level seen); [reflexivity | contradiction].
+Qed.
+
+End NonlinearRhoPathCaptureFallback.
+
+(** The generated and admitted cursors decide which syntactic FreeVar nodes
+    reach [record_linear_capture]. "Emitted" here means passed to that recorder;
+    an admitted dynamic scan may record a level before replacing its enclosing
+    Par with a wildcard. The trace constructors below are the cursors'
+    classified EnterNode, LeaveNode and conservative-fallback branches, not
+    caller-supplied capture observations. An active capture records its exact
+    site and level and suppresses that node's interior. A metadata-bearing
+    wildcard suppresses its interior without recording any capture. Under
+    suppression, even unsupported descendants are invisible to the query.
+    An unsupported active node or unfinished suppression declines the query.
+    The Rust-to-classified-event relation is the explicit source audit seam. *)
+Section ClassifiedRhoPathCursorCapture.
+
+Inductive classified_cursor_event : Type :=
+| CursorEnterPlain : capture_site -> classified_cursor_event
+| CursorEnterCapture : capture_site -> nat -> classified_cursor_event
+| CursorEnterWildcard : capture_site -> classified_cursor_event
+| CursorLeave : classified_cursor_event
+| CursorUnsupported : capture_site -> classified_cursor_event.
+
+Record cursor_scan_state : Type := CursorScanState {
+  suppression_depth : nat;
+  captured_levels : list nat;
+  emitted_reverse : list capture_observation
+}.
+
+Definition cursor_scan_step
+    (state : cursor_scan_state) (event : classified_cursor_event)
+    : option cursor_scan_state :=
+  match state with
+  | CursorScanState (S hidden) seen emitted =>
+      match event with
+      | CursorEnterPlain _ | CursorEnterCapture _ _
+      | CursorEnterWildcard _ | CursorUnsupported _ =>
+          Some (CursorScanState (S (S hidden)) seen emitted)
+      | CursorLeave => Some (CursorScanState hidden seen emitted)
+      end
+  | CursorScanState 0 seen emitted =>
+      match event with
+      | CursorEnterPlain _ => Some state
+      | CursorEnterCapture site level =>
+          match record_linear_capture seen level with
+          | Some next =>
+              Some (CursorScanState 1 next
+                (CaptureObservation site (Some level) :: emitted))
+          | None => None
+          end
+      | CursorEnterWildcard _ => Some (CursorScanState 1 seen emitted)
+      | CursorLeave => Some state
+      | CursorUnsupported _ => None
+      end
+  end.
+
+Fixpoint scan_classified_cursor
+    (state : cursor_scan_state) (events : list classified_cursor_event)
+    : option cursor_scan_state :=
+  match events with
+  | [] => Some state
+  | event :: rest =>
+      match cursor_scan_step state event with
+      | Some next => scan_classified_cursor next rest
+      | None => None
+      end
+  end.
+
+Definition initial_cursor_scan : cursor_scan_state := CursorScanState 0 [] [].
+
+Definition complete_classified_cursor
+    (events : list classified_cursor_event) : option cursor_scan_state :=
+  match scan_classified_cursor initial_cursor_scan events with
+  | Some state =>
+      match suppression_depth state with
+      | 0 => Some state
+      | S _ => None
+      end
+  | None => None
+  end.
+
+Definition classified_cursor_prefilter_keeps
+    (query_accepts : list capture_observation -> bool)
+    (events : list classified_cursor_event) : bool :=
+  match complete_classified_cursor events with
+  | Some state => query_accepts (rev (emitted_reverse state))
+  | None => true
+  end.
+
+Definition cursor_capture_invariant (state : cursor_scan_state) : Prop :=
+  NoDup (captured_levels state) /\
+  observed_capture_ids (emitted_reverse state) = captured_levels state.
+
+Lemma record_linear_capture_fresh_result :
+  forall seen level next,
+    record_linear_capture seen level = Some next ->
+    next = level :: seen /\ ~ In level seen.
+Proof.
+  intros seen level next recorded.
+  unfold record_linear_capture in recorded.
+  destruct (in_dec Nat.eq_dec level seen) as [present | fresh].
+  - discriminate.
+  - inversion recorded; subst. split; [reflexivity | exact fresh].
+Qed.
+
+Lemma active_capture_emits_its_exact_site :
+  forall seen emitted site level next,
+    cursor_scan_step (CursorScanState 0 seen emitted)
+      (CursorEnterCapture site level) = Some next ->
+    exists new_seen,
+      next = CursorScanState 1 new_seen
+        (CaptureObservation site (Some level) :: emitted) /\
+      record_linear_capture seen level = Some new_seen.
+Proof.
+  intros seen emitted site level next stepped.
+  cbn [cursor_scan_step] in stepped.
+  destruct (record_linear_capture seen level) as [new_seen |];
+    [| discriminate].
+  inversion stepped; subst.
+  exists new_seen. split; reflexivity.
+Qed.
+
+Lemma cursor_scan_step_preserves_capture_invariant :
+  forall state event next,
+    cursor_capture_invariant state ->
+    cursor_scan_step state event = Some next ->
+    cursor_capture_invariant next.
+Proof.
+  intros [depth seen emitted] event next [unique projected] stepped.
+  destruct depth as [| hidden].
+  - destruct event as [site | site level | site | | site];
+      cbn [cursor_scan_step] in stepped.
+    + inversion stepped; subst. split; assumption.
+    + destruct (record_linear_capture seen level)
+        as [new_seen |] eqn:recorded; [| discriminate].
+      apply record_linear_capture_fresh_result in recorded
+        as [same fresh]. subst new_seen.
+      inversion stepped; subst. split.
+      * constructor; assumption.
+      * simpl. simpl in projected. rewrite projected. reflexivity.
+    + inversion stepped; subst. split; assumption.
+    + inversion stepped; subst. split; assumption.
+    + discriminate.
+  - destruct event as [site | site level | site | | site];
+      cbn [cursor_scan_step] in stepped;
+      inversion stepped; subst; split; assumption.
+Qed.
+
+Lemma scan_classified_cursor_preserves_capture_invariant :
+  forall events state result,
+    cursor_capture_invariant state ->
+    scan_classified_cursor state events = Some result ->
+    cursor_capture_invariant result.
+Proof.
+  induction events as [| event rest IH]; intros state result invariant scanned.
+  - simpl in scanned. inversion scanned; subst. exact invariant.
+  - cbn [scan_classified_cursor] in scanned.
+    destruct (cursor_scan_step state event) as [next |] eqn:stepped;
+      [| discriminate].
+    eapply IH; [eapply cursor_scan_step_preserves_capture_invariant;
+      eauto | exact scanned].
+Qed.
+
+Theorem successful_classified_cursor_has_unique_emitted_captures :
+  forall events result,
+    complete_classified_cursor events = Some result ->
+    NoDup (captured_levels result) /\
+    observed_capture_ids (emitted_reverse result) = captured_levels result.
+Proof.
+  intros events result completed.
+  unfold complete_classified_cursor in completed.
+  destruct (scan_classified_cursor initial_cursor_scan events)
+    as [scanned_state |] eqn:scanned; [| discriminate].
+  destruct (suppression_depth scanned_state); inversion completed; subst.
+  eapply scan_classified_cursor_preserves_capture_invariant
+    with (state := initial_cursor_scan);
+    [unfold cursor_capture_invariant, initial_cursor_scan;
+      simpl; split; [constructor | reflexivity] | exact scanned].
+Qed.
+
+Lemma duplicate_at_an_active_emitted_site_declines_query :
+  forall state site level rest,
+    suppression_depth state = 0 ->
+    In level (captured_levels state) ->
+    scan_classified_cursor state
+      (CursorEnterCapture site level :: rest) = None.
+Proof.
+  intros [depth seen emitted] site level rest active repeated.
+  simpl in active, repeated. subst depth.
+  cbn [scan_classified_cursor cursor_scan_step].
+  rewrite record_linear_capture_rejects_seen by exact repeated.
+  reflexivity.
+Qed.
+
+Theorem two_visible_cursor_capture_sites_decline_query :
+  forall first second level,
+    complete_classified_cursor
+      [CursorEnterCapture first level; CursorLeave;
+       CursorEnterCapture second level; CursorLeave] = None.
+Proof.
+  intros first second level.
+  unfold complete_classified_cursor, initial_cursor_scan,
+    record_linear_capture.
+  simpl.
+  rewrite record_linear_capture_rejects_seen by (simpl; auto).
+  reflexivity.
+Qed.
+
+Theorem visible_whole_method_ordered_and_cross_atom_sites_decline_query :
+  forall level,
+    complete_classified_cursor
+      [CursorEnterCapture (WholeAtomSite 0) level; CursorLeave;
+       CursorEnterCapture (WholeAtomSite 1) level; CursorLeave] = None /\
+    complete_classified_cursor
+      [CursorEnterCapture (MethodTargetSite 0) level; CursorLeave;
+       CursorEnterCapture (MethodArgumentSite 0 0) level; CursorLeave] = None /\
+    complete_classified_cursor
+      [CursorEnterCapture (OrderedChildSite 0 0) level; CursorLeave;
+       CursorEnterCapture (OrderedChildSite 0 1) level; CursorLeave] = None /\
+    complete_classified_cursor
+      [CursorEnterCapture (WholeAtomSite 0) level; CursorLeave;
+       CursorEnterCapture (MethodTargetSite 1) level; CursorLeave] = None.
+Proof.
+  intro level. repeat split;
+    apply two_visible_cursor_capture_sites_decline_query.
+Qed.
+
+Theorem wildcard_suppression_emits_no_hidden_capture :
+  forall outer hidden_first hidden_second level,
+    complete_classified_cursor
+      [CursorEnterWildcard outer;
+       CursorEnterCapture hidden_first level; CursorLeave;
+       CursorEnterCapture hidden_second level; CursorLeave;
+       CursorLeave] = Some initial_cursor_scan.
+Proof. intros. reflexivity. Qed.
+
+Theorem unsupported_or_unfinished_cursor_falls_back :
+  forall site,
+    complete_classified_cursor [CursorUnsupported site] = None /\
+    complete_classified_cursor [CursorEnterWildcard site] = None.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem classified_cursor_fallback_never_prunes :
+  forall events query_accepts,
+    complete_classified_cursor events = None ->
+    classified_cursor_prefilter_keeps query_accepts events = true.
+Proof.
+  intros events query_accepts declined.
+  unfold classified_cursor_prefilter_keeps.
+  now rewrite declined.
+Qed.
+
+Theorem classified_cursor_prefilter_preserves_spatial_success :
+  forall events query_accepts spatial_accepts,
+    spatial_accepts = true ->
+    (forall result,
+      complete_classified_cursor events = Some result ->
+      query_accepts (rev (emitted_reverse result)) = true) ->
+    spatial_accepts = true /\
+    classified_cursor_prefilter_keeps query_accepts events = true.
+Proof.
+  intros events query_accepts spatial_accepts accepted successful_soundness.
+  split; [exact accepted |].
+  unfold classified_cursor_prefilter_keeps.
+  destruct (complete_classified_cursor events) as [result |] eqn:compiled;
+    [apply successful_soundness with (result := result); reflexivity |
+     reflexivity].
+Qed.
+
+End ClassifiedRhoPathCursorCapture.
+
+(** The six [record_linear_capture] call sites in
+    [rholang/src/rust/interpreter/matcher/match.rs] are: the admitted root
+    [ExactFreeVar], an admitted ordered region's [ParBag], the nested admitted
+    dynamic scan's [ParBag], the generated root hole, a generated cursor's
+    [EnterNode] hole, and the generated cursor's shallow admitted Expr hole.
+    Each site checks the recorder's Boolean result and propagates failure.
+    The following effects describe only the *committed query branch* after
+    those checks. A metadata-bearing whole-value wildcard is one
+    [SourceWildcardEffect] and has no child effects. A nested dynamic scan may
+    record captures before its enclosing Par becomes a wildcard; its recorder
+    calls appear before that wildcard effect. Unsupported branches have no
+    query. A failed speculative branch publishes no capture state, while an
+    exact fallback requires both the compiler's [!connective_used &&
+    locally_free empty] guard and a path projection that respects the
+    authoritative equality. For a [BindPattern] Par the first guard implies
+    the comparison lane in [SpatialMatcherContext::spatial_match_par_ref],
+    whose branch condition is [!pattern.connective_used()]. It does not imply
+    byte equality: [match_pars] ignores the outer Par [locally_free], so a
+    generated complete-schema path is ineligible. An admitted sole-Expr path
+    omits outer Par metadata but is eligible for exact fallback only when its
+    region contains no nested ParBag or PathMap; either opaque token may carry
+    a metadata-sensitive key. Ordered scans replace such nested Par-bearing
+    regions with wildcards while continuing to inspect their capture sites.
+    The retained exact prefix has the same eligibility restriction. A
+    speculative branch may
+    have recorded captures before failing, but it publishes none of them
+    when a sound exact lane is selected.
+
+    This is a source-indexed trace refinement, not a claim that Rocq parses
+    Rust. The source audit must establish the six-site exhaustiveness, the
+    shared BindPattern capture map, wildcard control-flow exclusion, and the
+    authoritative exact-lane guard at the reviewed revision. *)
+Section SourceIndexedRhoPathCaptureEffects.
+
+Inductive recorder_call_site : Type :=
+| AdmittedRootRecorder
+| AdmittedParBagRecorder
+| AdmittedDynamicScanRecorder
+| GeneratedRootRecorder
+| GeneratedEnterNodeRecorder
+| GeneratedShallowExprRecorder.
+
+Inductive source_query_effect : Type :=
+| SourceCheckedCapture : recorder_call_site -> capture_site -> nat ->
+    source_query_effect
+| SourceWildcardEffect : capture_site -> source_query_effect
+| SourceExactFallbackEffect : capture_site -> bool -> bool -> bool ->
+    source_query_effect
+| SourceUnsupportedEffect : capture_site -> source_query_effect.
+
+Definition authoritative_exact_fallback_guard
+    (connective_used has_locally_free projection_sound : bool) : bool :=
+  negb connective_used && negb has_locally_free && projection_sound.
+
+Lemma exact_fallback_guard_enters_comparison_lane :
+  forall connective_used has_locally_free projection_sound,
+    authoritative_exact_fallback_guard
+      connective_used has_locally_free projection_sound = true ->
+    connective_used = false.
+Proof.
+  intros connective_used has_locally_free projection_sound guarded.
+  destruct connective_used, has_locally_free, projection_sound;
+    simpl in guarded; try discriminate; reflexivity.
+Qed.
+
+Lemma exact_fallback_guard_requires_sound_projection :
+  forall connective_used has_locally_free projection_sound,
+    authoritative_exact_fallback_guard
+      connective_used has_locally_free projection_sound = true ->
+    projection_sound = true.
+Proof.
+  intros connective_used has_locally_free projection_sound guarded.
+  destruct connective_used, has_locally_free, projection_sound;
+    simpl in guarded; try discriminate; reflexivity.
+Qed.
+
+Definition source_query_step
+    (state : cursor_scan_state) (effect : source_query_effect)
+    : option cursor_scan_state :=
+  match effect with
+  | SourceCheckedCapture _ site level =>
+      match record_linear_capture (captured_levels state) level with
+      | Some seen =>
+          Some (CursorScanState 0 seen
+            (CaptureObservation site (Some level) :: emitted_reverse state))
+      | None => None
+      end
+  | SourceWildcardEffect _ => Some state
+  | SourceExactFallbackEffect _ connective_used has_locally_free projection_sound =>
+      if authoritative_exact_fallback_guard
+        connective_used has_locally_free projection_sound
+      then Some state else None
+  | SourceUnsupportedEffect _ => None
+  end.
+
+Definition source_effect_cursor_events
+    (effect : source_query_effect) : list classified_cursor_event :=
+  match effect with
+  | SourceCheckedCapture _ site level =>
+      [CursorEnterCapture site level; CursorLeave]
+  | SourceWildcardEffect site => [CursorEnterWildcard site; CursorLeave]
+  | SourceExactFallbackEffect site connective_used has_locally_free projection_sound =>
+      if authoritative_exact_fallback_guard
+        connective_used has_locally_free projection_sound
+      then [] else [CursorUnsupported site]
+  | SourceUnsupportedEffect site => [CursorUnsupported site]
+  end.
+
+Fixpoint scan_source_query_effects
+    (state : cursor_scan_state) (effects : list source_query_effect)
+    : option cursor_scan_state :=
+  match effects with
+  | [] => Some state
+  | effect :: rest =>
+      match source_query_step state effect with
+      | Some next => scan_source_query_effects next rest
+      | None => None
+      end
+  end.
+
+Fixpoint scan_projected_source_effects
+    (state : cursor_scan_state) (effects : list source_query_effect)
+    : option cursor_scan_state :=
+  match effects with
+  | [] => Some state
+  | effect :: rest =>
+      match scan_classified_cursor state (source_effect_cursor_events effect) with
+      | Some next => scan_projected_source_effects next rest
+      | None => None
+      end
+  end.
+
+Lemma source_checked_capture_refines_cursor_step :
+  forall state effect,
+    suppression_depth state = 0 ->
+    source_query_step state effect =
+      scan_classified_cursor state (source_effect_cursor_events effect).
+Proof.
+  intros [depth seen emitted] effect active.
+  simpl in active. subst depth.
+  destruct effect as [call site level | site |
+    site connective_used has_locally_free projection_sound | site].
+  - cbn [source_query_step source_effect_cursor_events
+      scan_classified_cursor cursor_scan_step captured_levels emitted_reverse].
+    destruct (record_linear_capture seen level);
+      cbn [scan_classified_cursor cursor_scan_step]; reflexivity.
+  - reflexivity.
+  - destruct connective_used, has_locally_free, projection_sound; reflexivity.
+  - reflexivity.
+Qed.
+
+Lemma source_query_step_keeps_cursor_active :
+  forall state effect next,
+    suppression_depth state = 0 ->
+    source_query_step state effect = Some next ->
+    suppression_depth next = 0.
+Proof.
+  intros [depth seen emitted] effect next active stepped.
+  simpl in active. subst depth.
+  destruct effect as [call site level | site |
+    site connective_used has_locally_free projection_sound | site];
+    cbn [source_query_step captured_levels emitted_reverse] in stepped.
+  - destruct (record_linear_capture seen level);
+      inversion stepped; reflexivity.
+  - inversion stepped; reflexivity.
+  - destruct connective_used, has_locally_free, projection_sound;
+      simpl in stepped; inversion stepped; reflexivity.
+  - discriminate.
+Qed.
+
+Theorem source_effect_model_refines_classified_cursor :
+  forall effects state,
+    suppression_depth state = 0 ->
+    scan_source_query_effects state effects =
+      scan_projected_source_effects state effects.
+Proof.
+  induction effects as [| effect rest IH]; intros state active;
+    cbn [scan_source_query_effects scan_projected_source_effects];
+    [reflexivity |].
+  rewrite <- source_checked_capture_refines_cursor_step by exact active.
+  destruct (source_query_step state effect) as [next |] eqn:stepped;
+    [apply IH; eapply source_query_step_keeps_cursor_active; eauto |
+     reflexivity].
+Qed.
+
+Lemma checked_source_capture_rejects_duplicate :
+  forall state call site level,
+    In level (captured_levels state) ->
+    source_query_step state (SourceCheckedCapture call site level) = None.
+Proof.
+  intros state call site level repeated.
+  cbn [source_query_step].
+  rewrite record_linear_capture_rejects_seen by exact repeated.
+  reflexivity.
+Qed.
+
+Theorem any_two_checked_source_calls_decline_query :
+  forall first_call second_call first_site second_site level,
+    scan_source_query_effects initial_cursor_scan
+      [SourceCheckedCapture first_call first_site level;
+       SourceCheckedCapture second_call second_site level] = None.
+Proof.
+  intros first_call second_call first_site second_site level.
+  unfold initial_cursor_scan.
+  simpl.
+  rewrite record_linear_capture_rejects_seen by (simpl; auto).
+  reflexivity.
+Qed.
+
+Lemma scan_source_query_effects_preserves_capture_invariant :
+  forall effects state result,
+    suppression_depth state = 0 ->
+    cursor_capture_invariant state ->
+    scan_source_query_effects state effects = Some result ->
+    cursor_capture_invariant result.
+Proof.
+  induction effects as [| effect rest IH];
+    intros state result active invariant scanned.
+  - simpl in scanned. inversion scanned; subst. exact invariant.
+  - cbn [scan_source_query_effects] in scanned.
+    destruct (source_query_step state effect)
+      as [next |] eqn:stepped; [| discriminate].
+    eapply IH.
+    + eapply source_query_step_keeps_cursor_active; eauto.
+    + eapply scan_classified_cursor_preserves_capture_invariant;
+        [exact invariant |].
+      rewrite <- source_checked_capture_refines_cursor_step by exact active.
+      exact stepped.
+    + exact scanned.
+Qed.
+
+Theorem source_query_success_has_unique_emitted_captures :
+  forall effects result,
+    scan_source_query_effects initial_cursor_scan effects = Some result ->
+    NoDup (captured_levels result) /\
+    observed_capture_ids (emitted_reverse result) = captured_levels result.
+Proof.
+  intros effects result scanned.
+  eapply scan_source_query_effects_preserves_capture_invariant
+    with (state := initial_cursor_scan);
+    [reflexivity | unfold cursor_capture_invariant, initial_cursor_scan;
+       simpl; split; [constructor | reflexivity] | exact scanned].
+Qed.
+
+Theorem source_wildcard_effect_preserves_capture_state :
+  forall state site,
+    source_query_step state (SourceWildcardEffect site) = Some state.
+Proof. reflexivity. Qed.
+
+Theorem metadata_sensitive_complete_par_exact_path_declines :
+  forall site,
+    scan_source_query_effects initial_cursor_scan
+      [SourceExactFallbackEffect site false false false] = None.
+Proof. reflexivity. Qed.
+
+Theorem metadata_sensitive_exact_projection_always_declines :
+  forall state site connective_used has_locally_free,
+    source_query_step state
+      (SourceExactFallbackEffect site connective_used has_locally_free false)
+      = None.
+Proof.
+  intros state site connective_used has_locally_free.
+  destruct connective_used, has_locally_free; reflexivity.
+Qed.
+
+Definition source_query_prefilter_keeps
+    (query_accepts : list capture_observation -> bool)
+    (effects : list source_query_effect) : bool :=
+  match scan_source_query_effects initial_cursor_scan effects with
+  | Some state => query_accepts (rev (emitted_reverse state))
+  | None => true
+  end.
+
+Theorem source_duplicate_or_unsupported_fallback_never_prunes :
+  forall effects query_accepts,
+    scan_source_query_effects initial_cursor_scan effects = None ->
+    source_query_prefilter_keeps query_accepts effects = true.
+Proof.
+  intros effects query_accepts declined.
+  unfold source_query_prefilter_keeps.
+  now rewrite declined.
+Qed.
+
+Theorem source_effect_prefilter_preserves_spatial_success :
+  forall effects query_accepts spatial_accepts,
+    spatial_accepts = true ->
+    (forall result,
+      scan_source_query_effects initial_cursor_scan effects = Some result ->
+      query_accepts (rev (emitted_reverse result)) = true) ->
+    source_query_prefilter_keeps query_accepts effects = true.
+Proof.
+  intros effects query_accepts spatial_accepts accepted successful_soundness.
+  unfold source_query_prefilter_keeps.
+  destruct (scan_source_query_effects initial_cursor_scan effects)
+    as [result |] eqn:compiled;
+    [eapply successful_soundness; reflexivity | reflexivity].
+Qed.
+
+End SourceIndexedRhoPathCaptureEffects.
+
 (** The encoded Expr cursor performs one shallow outer-variant refinement
     before entering the existing matcher.  [Unproved] is deliberately evidence
     about the cursor, not a semantic result.  Therefore only two independently

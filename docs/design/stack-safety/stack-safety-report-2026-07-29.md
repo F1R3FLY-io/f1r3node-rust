@@ -12817,6 +12817,13 @@ layout gate, and the current-source census pass. The exact workspace command clo
 0 failed, and 53 skipped in 139.111 seconds under a 24 GiB no-swap cap; the captured log SHA-256 is
 `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
 
+The later [canonical Connective owner refinement](canonical-connective-owner-refinement-2026-10-08.md)
+states and checks the source-bound cursor contract behind that layout repair:
+exact body binding, stable owned views, ordered child ranges, and terminal
+exhaustion. Its focused formal and property results remain separate from this
+historical workspace-gate result until the current source receives a
+commit-bound complete gate.
+
 ---
 
 ### 5.37 Immutable candidate authority and multiplicity-aware reservation demand [SS-Y17]

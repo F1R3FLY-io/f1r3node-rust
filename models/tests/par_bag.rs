@@ -70,71 +70,48 @@ fn canonical_par_corpus() -> Par {
     par
 }
 
+fn connective_bytes(values: &[i64]) -> Vec<u8> {
+    models::rust::rholang::protobuf_encoder::encode_to_vec(&Connective {
+        connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+            ps: values
+                .iter()
+                .map(|value| {
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::GInt(*value)),
+                    }])
+                })
+                .collect(),
+        })),
+    })
+}
+
+fn connective_children(bytes: &[u8]) -> models::rust::par_bag::CanonicalConnectiveChildren<'_> {
+    match canonical_connective_parts(bytes).expect("canonical connective") {
+        CanonicalConnectiveParts::And(children) => children,
+        other => panic!("expected AND children, got {other:?}"),
+    }
+}
+
 #[test]
-fn detached_connective_cursor_refuses_a_different_or_truncated_body() {
-    fn connective_bytes(values: &[i64]) -> Vec<u8> {
-        models::rust::rholang::protobuf_encoder::encode_to_vec(&Connective {
-            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
-                ps: values
-                    .iter()
-                    .map(|value| {
-                        Par::default().with_exprs(vec![Expr {
-                            expr_instance: Some(ExprInstance::GInt(*value)),
-                        }])
-                    })
-                    .collect(),
-            })),
-        })
-    }
-
-    fn children(bytes: &[u8]) -> models::rust::par_bag::CanonicalConnectiveChildren<'_> {
-        match canonical_connective_parts(bytes).expect("canonical connective") {
-            CanonicalConnectiveParts::And(children) => children,
-            other => panic!("expected AND children, got {other:?}"),
-        }
-    }
-
+fn canonical_connective_cursor_refuses_a_different_or_truncated_body() {
     let first = connective_bytes(&[1, 2]);
     let second = connective_bytes(&[3, 4]);
-    let first_children = children(&first);
-    let second_children = children(&second);
+    let first_children = connective_children(&first);
+    let second_children = connective_children(&second);
     assert_eq!(
         first_children.message().len(),
         second_children.message().len()
     );
 
-    let mut cursor = first_children.cursor();
-    assert_eq!(
-        cursor.next_in(second_children.message()),
-        Err(CanonicalConnectiveCursorError::BodyMismatch),
-        "equal-length bytes from another body must not acquire validation provenance"
-    );
-    assert_eq!(cursor.len(), first_children.len());
-
-    let mut cursor = first_children.cursor();
     let truncated = &first_children.message()[..first_children.message().len() - 1];
-    assert_eq!(
-        cursor.next_in(truncated),
-        Err(CanonicalConnectiveCursorError::BodyMismatch),
-        "a same-address prefix must fail before parsing"
-    );
-    assert_eq!(cursor.len(), first_children.len());
-
     let expected = first_children.clone().collect::<Vec<_>>();
-    let mut cursor = first_children.cursor();
-    let mut actual = Vec::new();
-    while let Some(child) = cursor
-        .next_in(first_children.message())
-        .expect("the original validated body remains paired")
-    {
-        actual.push(child);
+    let mut borrowed = first_children;
+    assert_eq!(borrowed.len(), expected.len());
+    for expected_child in &expected {
+        assert_eq!(borrowed.next(), Some(*expected_child));
     }
-    assert_eq!(actual, expected);
-    assert_eq!(
-        cursor.next_in(first_children.message()),
-        Ok(None),
-        "exhaustion is distinct from a body mismatch"
-    );
+    assert!(borrowed.is_empty());
+    assert_eq!(borrowed.next(), None);
 
     assert!(matches!(
         first_children.bind_owned(second_children.message()),
@@ -174,6 +151,244 @@ fn detached_connective_cursor_refuses_a_different_or_truncated_body() {
     let range = owned.next().expect("the remaining child survives transfer");
     assert_eq!(&owned.body()[range], expected[1]);
     assert!(owned.is_empty());
+
+    let mut reused = first.clone();
+    {
+        let old_children = connective_children(&reused);
+        assert_eq!(old_children.clone().collect::<Vec<_>>(), expected);
+    }
+    reused.copy_from_slice(&second);
+    let replacement_children = connective_children(&reused);
+    assert_eq!(
+        replacement_children.clone().collect::<Vec<_>>(),
+        second_children.collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn canonical_connective_cursor_switching_as_ref_counterexample() {
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    struct SwitchingOwner {
+        first: Arc<Vec<u8>>,
+        second: Arc<Vec<u8>>,
+        body_start: usize,
+        switched: Cell<bool>,
+    }
+
+    impl AsRef<[u8]> for SwitchingOwner {
+        fn as_ref(&self) -> &[u8] {
+            if self.switched.replace(true) {
+                &self.second[self.body_start..]
+            } else {
+                &self.first[self.body_start..]
+            }
+        }
+    }
+
+    let first = Arc::new(connective_bytes(&[1]));
+    let second = Arc::new(connective_bytes(&[2]));
+    let children = connective_children(first.as_slice());
+    let owner = SwitchingOwner {
+        first: Arc::clone(&first),
+        second,
+        body_start: first.len() - children.message().len(),
+        switched: Cell::new(false),
+    };
+    let initial = owner.as_ref();
+    assert_eq!(initial.as_ptr(), children.message().as_ptr());
+    assert_eq!(initial, children.message());
+    let resumed = owner.as_ref();
+    assert_eq!(resumed.len(), initial.len());
+    assert_ne!(resumed.as_ptr(), initial.as_ptr());
+    assert_ne!(resumed, initial);
+    assert_eq!(
+        resumed,
+        connective_children(owner.second.as_slice()).message()
+    );
+}
+
+#[test]
+fn canonical_connective_cursor_protobuf_region_owner_stability() {
+    use models::rust::rholang::protobuf_cursor::{CanonicalByteRange, ProtobufRegion};
+
+    let region = ProtobufRegion::from(connective_bytes(&[1, 2]));
+    let children = connective_children(region.as_bytes());
+    let expected = children.clone().collect::<Vec<_>>();
+    let body = region
+        .subregion(CanonicalByteRange {
+            start: region.len() - children.message().len(),
+            end: region.len(),
+        })
+        .expect("validated body is a subregion");
+    let mut owned = children.bind_owned(body).expect("owner preserves the body");
+    for expected_child in expected {
+        let range = owned.next().expect("validated child remains present");
+        assert_eq!(&owned.body().as_bytes()[range], expected_child);
+    }
+    assert!(owned.is_empty());
+    assert_eq!(owned.next(), None);
+}
+
+#[test]
+fn canonical_connective_cursor_child_length_varint_boundaries() {
+    fn framed_width(mut len: usize) -> usize {
+        let mut width = 1;
+        while len >= 128 {
+            len >>= 7;
+            width += 1;
+        }
+        width
+    }
+
+    for boundary in [128usize, 16_384] {
+        let mut below = None;
+        let mut above = None;
+        for payload_len in boundary.saturating_sub(32)..=boundary {
+            let child = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString("x".repeat(payload_len))),
+            }]);
+            let encoded_len = models::rust::rholang::protobuf_encoder::encode_to_vec(&child).len();
+            if encoded_len < boundary {
+                below = Some((child, encoded_len));
+            } else {
+                above = Some((child, encoded_len));
+                break;
+            }
+        }
+        let (below, below_len) = below.expect("child below varint boundary");
+        let (above, above_len) = above.expect("child above varint boundary");
+        assert_eq!(framed_width(below_len) + 1, framed_width(above_len));
+
+        let expected = [
+            models::rust::rholang::protobuf_encoder::encode_to_vec(&below),
+            models::rust::rholang::protobuf_encoder::encode_to_vec(&above),
+        ];
+        let bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: vec![below, above],
+            })),
+        });
+        let children = connective_children(&bytes);
+        assert_eq!(children.len(), 2);
+        let mut owned = children
+            .bind_owned(children.message())
+            .expect("exact large body binds");
+        let first = owned.next().expect("first framed child");
+        assert_eq!(first.start, 1 + framed_width(below_len));
+        assert_eq!(&owned.body()[first.clone()], expected[0].as_slice());
+        let second = owned.next().expect("second framed child");
+        assert_eq!(second.start, first.end + 1 + framed_width(above_len));
+        assert_eq!(&owned.body()[second], expected[1].as_slice());
+        assert!(owned.is_empty());
+        assert_eq!(owned.next(), None);
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn generated_connective_cursor_owner_pairing_and_exhaustion(
+        values in proptest::collection::vec(0u8..64u8, 0..33),
+        split in proptest::prelude::any::<usize>(),
+    ) {
+        let first_values = values.iter().map(|value| i64::from(*value)).collect::<Vec<_>>();
+        let second_values = values
+            .iter()
+            .map(|value| i64::from((*value + 1) % 64))
+            .collect::<Vec<_>>();
+        let first = connective_bytes(&first_values);
+        let second = connective_bytes(&second_values);
+        let first_children = connective_children(&first);
+        let second_children = connective_children(&second);
+        proptest::prop_assert_eq!(first_children.message().len(), second_children.message().len());
+        proptest::prop_assert_eq!(first_children.len(), values.len());
+        proptest::prop_assert!(matches!(
+            first_children.bind_owned(second_children.message()),
+            Err(CanonicalConnectiveCursorError::BodyMismatch)
+        ));
+        proptest::prop_assert!(matches!(
+            first_children.bind_owned(first_children.message().to_vec()),
+            Err(CanonicalConnectiveCursorError::BodyMismatch)
+        ));
+        if !first_children.message().is_empty() {
+            let truncated = &first_children.message()[..first_children.message().len() - 1];
+            proptest::prop_assert!(matches!(
+                first_children.bind_owned(truncated),
+                Err(CanonicalConnectiveCursorError::BodyMismatch)
+            ));
+        }
+
+        let expected = first_children.clone().collect::<Vec<_>>();
+        let mut next_header = 0usize;
+        let expected_ranges = expected
+            .iter()
+            .map(|child| {
+                let mut length = child.len();
+                let mut width = 1usize;
+                while length >= 128 {
+                    length >>= 7;
+                    width += 1;
+                }
+                let start = next_header + 1 + width;
+                let end = start + child.len();
+                next_header = end;
+                start..end
+            })
+            .collect::<Vec<_>>();
+        proptest::prop_assert_eq!(next_header, first_children.message().len());
+        let mut owned = first_children
+            .bind_owned(first_children.message())
+            .expect("original body binds");
+        for (expected_child, expected_range) in expected.iter().zip(&expected_ranges) {
+            let range = owned.next().expect("validated child remains present");
+            proptest::prop_assert_eq!(&range, expected_range);
+            proptest::prop_assert_eq!(&owned.body()[range], *expected_child);
+        }
+        proptest::prop_assert!(owned.is_empty());
+        proptest::prop_assert_eq!(owned.next(), None);
+
+        let consumed = split % (expected.len() + 1);
+        let mut partial = first_children;
+        for expected_child in expected.iter().take(consumed) {
+            proptest::prop_assert_eq!(partial.next(), Some(*expected_child));
+        }
+        proptest::prop_assert_eq!(partial.len(), expected.len() - consumed);
+        let mut retained = partial
+            .bind_owned(first_children.message())
+            .expect("advanced cursor binds its original body");
+        proptest::prop_assert_eq!(retained.len(), expected.len() - consumed);
+        for (expected_child, expected_range) in
+            expected.iter().zip(&expected_ranges).skip(consumed)
+        {
+            let range = retained.next().expect("remaining validated child remains present");
+            proptest::prop_assert_eq!(&range, expected_range);
+            proptest::prop_assert_eq!(&retained.body()[range], *expected_child);
+        }
+        proptest::prop_assert!(retained.is_empty());
+        proptest::prop_assert_eq!(retained.next(), None);
+
+        let mut exhausted = first_children;
+        while exhausted.next().is_some() {}
+        proptest::prop_assert!(exhausted.is_empty());
+        proptest::prop_assert!(matches!(
+            exhausted.bind_owned(second_children.message()),
+            Err(CanonicalConnectiveCursorError::BodyMismatch)
+        ));
+
+        let mut reused = first.clone();
+        {
+            let old_children = connective_children(&reused);
+            proptest::prop_assert_eq!(old_children.len(), values.len());
+        }
+        reused.copy_from_slice(&second);
+        let replacement_children = connective_children(&reused);
+        proptest::prop_assert_eq!(
+            replacement_children.collect::<Vec<_>>(),
+            second_children.collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]

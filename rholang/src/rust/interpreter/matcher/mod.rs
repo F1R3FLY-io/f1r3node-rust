@@ -26,3 +26,7 @@ mod recursive_oracle;
 #[cfg(test)]
 #[path = "../../../../tests/support/spatial_matcher_pda_equivalence.rs"]
 mod spatial_matcher_pda_equivalence;
+
+#[cfg(test)]
+#[path = "../../../../tests/support/ground_new_query_correspondence.rs"]
+mod ground_new_query_correspondence;

@@ -34,7 +34,7 @@ use models::rust::par_bag::{
     canonical_single_new_from_par, canonical_single_receive_from_par,
     canonical_single_send_from_par, CanonicalConnectiveChildren, CanonicalConnectiveParts,
     CanonicalEPathMapRootRouteHint, CanonicalExprParts, CanonicalOwnedConnectiveChildren,
-    OwnedCanonicalParComponent, ParBagComponent,
+    OwnedCanonicalParComponent, ParBagComponent, StableConnectiveBodyOwner,
 };
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -959,6 +959,9 @@ impl EncodedRegion {
 impl AsRef<[u8]> for EncodedRegion {
     fn as_ref(&self) -> &[u8] { self.as_slice() }
 }
+
+// SAFETY: its private Arc<Vec<u8>> and range are never mutated after publication.
+unsafe impl StableConnectiveBodyOwner for EncodedRegion {}
 
 fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
     drive_job(context, match_job(root))

@@ -110,7 +110,7 @@
     }
   ],
   "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness. The fresh-datum superset test compares against Match; resting-Bag tests are finite positive/negative controls, not a universal prefix-terminal refinement or first-admissible-order proof.",
-  "rocq_sha256": "240b3921aead9cb9d3bc6473a773d0625f8703bf6f83c378fccab3dea0d29e8c",
+  "rocq_sha256": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
   "rocq_source": "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
   "runtime_sha256": "58729b8da4f3416f0c5628e2748ef7c32e7483b8924a4b4a839b8fd47b810cc0",
   "runtime_source": "rspace++/src/rspace/retained_set_automaton.rs",

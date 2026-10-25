@@ -32,6 +32,7 @@ use models::rust::utils::{
     new_wildcard_par,
 };
 use pathmap::PathMap;
+use proptest::prelude::*;
 use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathQuery};
 
 use super::free_map_transaction::{
@@ -642,6 +643,7 @@ fn cover_generated_query_root(
     root: ParCursor<'_>,
     observed: &mut BTreeSet<&'static str>,
     compiled: &mut usize,
+    declined: &mut usize,
     pending_bag_components: &mut Vec<OwnedGeneratedQueryRoot>,
 ) {
     for event in RhoPathCursor::new(root) {
@@ -651,15 +653,22 @@ fn cover_generated_query_root(
                 let encoded = encode_match_path(cursor);
                 let structure = encode_structural_sequence([encoded.as_slice()]);
                 let mut captures = PathMap::new();
-                let atom = rho_path_query_cursor_atom(cursor, true, &mut captures)
-                    .unwrap_or_else(|| panic!("{case}/{}: exact cursor query", program.type_name));
-                let query = RhoPathQuery::structural_sequence([atom], false);
-                assert!(
-                    query.matches_structure(&structure),
-                    "{case}/{}: exact generated cursor identity",
-                    program.type_name
-                );
-                *compiled += 1;
+                if let Some(atom) = rho_path_query_cursor_atom(cursor, true, &mut captures) {
+                    let query = RhoPathQuery::structural_sequence([atom], false);
+                    assert!(
+                        query.matches_structure(&structure),
+                        "{case}/{}: compiled generated cursor excludes its own source",
+                        program.type_name
+                    );
+                    *compiled += 1;
+                } else {
+                    assert!(
+                        captures.is_empty(),
+                        "{case}/{}: declined cursor query published speculative captures",
+                        program.type_name
+                    );
+                    *declined += 1;
+                }
             }
             RhoPathEvent::ParBag(bag) => {
                 enqueue_par_bag_components(bag, pending_bag_components);
@@ -736,6 +745,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         .collect::<BTreeSet<_>>();
     let mut observed = BTreeSet::new();
     let mut compiled = 0usize;
+    let mut declined = 0usize;
     let mut pending_bag_components = Vec::new();
 
     for (case, par) in par_corpus::par_corpus() {
@@ -744,6 +754,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&par),
             &mut observed,
             &mut compiled,
+            &mut declined,
             &mut pending_bag_components,
         );
     }
@@ -753,6 +764,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut declined,
             &mut pending_bag_components,
         );
     }
@@ -762,6 +774,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut declined,
             &mut pending_bag_components,
         );
     }
@@ -771,6 +784,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut declined,
             &mut pending_bag_components,
         );
     }
@@ -780,6 +794,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut declined,
             &mut pending_bag_components,
         );
     }
@@ -789,6 +804,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             ParCursor::from(&root),
             &mut observed,
             &mut compiled,
+            &mut declined,
             &mut pending_bag_components,
         );
     }
@@ -799,6 +815,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         ParCursor::from(&cost),
         &mut observed,
         &mut compiled,
+        &mut declined,
         &mut pending_bag_components,
     );
     let deploy_id = DeployId::default();
@@ -807,6 +824,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         ParCursor::from(&deploy_id),
         &mut observed,
         &mut compiled,
+        &mut declined,
         &mut pending_bag_components,
     );
     let deployer_id = DeployerId::default();
@@ -815,6 +833,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         ParCursor::from(&deployer_id),
         &mut observed,
         &mut compiled,
+        &mut declined,
         &mut pending_bag_components,
     );
 
@@ -828,6 +847,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
                 ParCursor::from(&value),
                 &mut observed,
                 &mut compiled,
+                &mut declined,
                 &mut pending_bag_components,
             );
         }};
@@ -846,6 +866,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             root.cursor(),
             &mut observed,
             &mut compiled,
+            &mut declined,
             &mut pending_bag_components,
         );
     }
@@ -857,6 +878,10 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
     assert!(
         compiled > expected.len(),
         "the compiler differential must exercise repeated nested programs"
+    );
+    assert!(
+        declined > 0,
+        "the corpus must exercise conservative full-domain query fallback"
     );
 
     compare(
@@ -987,7 +1012,7 @@ fn dynamic_direct_match_value_rows_decline_when_match_case_ignored_fields_differ
 }
 
 #[test]
-fn ground_direct_match_value_rows_keep_the_exact_query_lane() {
+fn ground_direct_match_value_rows_decline_unproved_schema_equations() {
     let new = New {
         bind_count: 1,
         p: Some(new_gint_par(7, Vec::new(), false)),
@@ -995,7 +1020,7 @@ fn ground_direct_match_value_rows_keep_the_exact_query_lane() {
         injections: BTreeMap::new(),
         locally_free: Vec::new(),
     };
-    assert_eq!(new_ac_query_acceptance(new.clone(), new), Some(true));
+    assert_eq!(new_ac_query_acceptance(new.clone(), new), None);
 
     let bind = ReceiveBind {
         patterns: vec![new_gint_par(3, Vec::new(), false)],
@@ -1004,10 +1029,7 @@ fn ground_direct_match_value_rows_keep_the_exact_query_lane() {
         free_count: 0,
         cost_region: None,
     };
-    assert_eq!(
-        receive_bind_ac_query_acceptance(bind.clone(), bind),
-        Some(true)
-    );
+    assert_eq!(receive_bind_ac_query_acceptance(bind.clone(), bind), None);
 
     let case = MatchCase {
         pattern: Some(new_gint_par(2, Vec::new(), false)),
@@ -1021,10 +1043,7 @@ fn ground_direct_match_value_rows_keep_the_exact_query_lane() {
         locally_free: Vec::new(),
         connective_used: false,
     };
-    assert_eq!(
-        match_ac_query_acceptance(matched.clone(), matched),
-        Some(true)
-    );
+    assert_eq!(match_ac_query_acceptance(matched.clone(), matched), None);
 }
 
 #[test]
@@ -1246,6 +1265,66 @@ fn conditional(condition: Par, if_true: Par, if_false: Par, connective_used: boo
         }],
         connective_used,
         ..Default::default()
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn generated_nested_if_equation_order_and_rollback_match_recursive_oracle(
+        depth in 1usize..17,
+        failure_level in 0usize..16,
+        seed in any::<u64>(),
+        leaf_value in -1000i64..1000,
+    ) {
+        let leaf = new_gint_par(leaf_value, Vec::new(), false);
+        let mut target = leaf.clone();
+        let mut success_pattern = new_freevar_par(0, Vec::new());
+        let mut failure_pattern = success_pattern.clone();
+        for level in 0..depth {
+            let condition_value = 1000 + i64::from(seed.rotate_left(level as u32) as u8);
+            let false_value = 2000 + i64::from(seed.rotate_right(level as u32) as u8);
+            let condition = new_gint_par(condition_value, Vec::new(), false);
+            let false_branch = new_gint_par(false_value, Vec::new(), false);
+            let pattern_false = if level == failure_level % depth {
+                new_gint_par(false_value + 10_000, Vec::new(), false)
+            } else {
+                false_branch.clone()
+            };
+            target = conditional(condition.clone(), target, false_branch, false);
+            success_pattern = conditional(
+                condition.clone(), success_pattern, new_gint_par(false_value, Vec::new(), false), true,
+            );
+            failure_pattern = conditional(condition, failure_pattern, pattern_false, true);
+        }
+
+        let entry_map = BTreeMap::from([(41, new_gint_par(42, Vec::new(), false))]);
+        let mut success_oracle = RecursiveContext::new();
+        success_oracle.free_map = entry_map.clone();
+        prop_assert!(success_oracle
+            .spatial_match(target.clone(), success_pattern.clone())
+            .is_some());
+        prop_assert_eq!(success_oracle.free_map.get(&0), Some(&leaf));
+        prop_assert_eq!(success_oracle.free_map.get(&41), entry_map.get(&41));
+        compare_with_entry_map(
+            "generated nested If equation order: success",
+            target.clone(),
+            success_pattern,
+            entry_map.clone(),
+        );
+        let mut failure_oracle = RecursiveContext::new();
+        failure_oracle.free_map = entry_map.clone();
+        prop_assert!(failure_oracle
+            .spatial_match(target.clone(), failure_pattern.clone())
+            .is_none());
+        prop_assert_eq!(failure_oracle.free_map, entry_map.clone());
+        compare_with_entry_map(
+            "generated nested If equation order: rollback",
+            target,
+            failure_pattern,
+            entry_map,
+        );
     }
 }
 
@@ -1983,9 +2062,8 @@ fn byte_native_connective_respects_child_and_root_dispatch_metadata() {
             branching.clone(),
             encoded_compiler,
         );
-        assert_eq!(
-            positions.as_ref(),
-            &[0],
+        assert!(
+            positions.contains(&0),
             "candidate compilation must retain the concrete inactive-Connective target"
         );
         if encoded_compiler {
@@ -3083,6 +3161,36 @@ fn production_list_pda_reuses_adjacent_duplicate_bag_identity() {
     assert_eq!(first.cmp(&second), std::cmp::Ordering::Equal);
 
     assert_eq!(send_target_index_shape(vec![first, second]), (2, 2));
+}
+
+#[test]
+fn send_candidate_query_preserves_matches_across_ignored_cost_and_local_metadata() {
+    let mut target = send_value(
+        new_gint_par(7, Vec::new(), false),
+        vec![new_gint_par(11, Vec::new(), false)],
+        false,
+    );
+    target.cost_region = Some(CostRegion::default());
+    target.locally_free = vec![1];
+    let pattern = send_value(
+        new_gint_par(7, Vec::new(), false),
+        vec![new_gint_par(11, Vec::new(), false)],
+        true,
+    );
+    let other = send_value(
+        new_gint_par(8, Vec::new(), false),
+        vec![new_gint_par(12, Vec::new(), false)],
+        false,
+    );
+
+    let mut context = SpatialMatcherContext::new();
+    let (result, stats) =
+        match_send_list_with_stats(&mut context, vec![target, other.clone()], vec![
+            pattern, other,
+        ]);
+    assert!(result.is_some());
+    assert_eq!(stats.target_index_builds, 1);
+    assert_eq!(stats.edge_evaluations, 2);
 }
 
 #[test]

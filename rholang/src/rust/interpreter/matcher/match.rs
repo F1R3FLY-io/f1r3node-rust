@@ -4,8 +4,8 @@ use models::rhoapi::{Expr, If};
 use models::rust::par_bag::EncodedParComponent;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::rholang::match_path::{
-    append_match_path_event, encode_match_path, encode_par_match_atom,
-    is_single_expr_match_carrier, RHO_MATCH_PATH_VERSION,
+    append_match_path_event, encode_par_match_atom, is_single_expr_match_carrier,
+    RHO_MATCH_PATH_VERSION,
 };
 use models::rust::rholang::match_region_path::{
     append_region_event, classify_admitted_expr, encode_admitted_expr_match_path,
@@ -85,10 +85,11 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     fn retained_pattern_path(&self, pattern: &BindPattern) -> Option<Vec<u8>> {
         if pattern.remainder.is_some()
             || pattern.free_count != 0
-            || pattern
-                .patterns
-                .iter()
-                .any(|par| par.connective_used() || !par.locally_free().is_empty())
+            || pattern.patterns.iter().any(|par| {
+                par.connective_used()
+                    || !par.locally_free().is_empty()
+                    || !par_has_safe_exact_expr_path(par)
+            })
         {
             return None;
         }
@@ -174,6 +175,41 @@ pub(super) fn rho_path_query_atom(
     answer.flatten()
 }
 
+/// The authoritative Par equality ignores locally_free on every nested Par.
+/// An Expr-only exact path is therefore safe only when its cursor contains no
+/// opaque ParBag or PathMap token that can carry a metadata-sensitive key.
+fn admitted_expr_has_safe_exact_path(region: AdmittedExprRegion<'_>) -> bool {
+    CanonicalRhoPathRegionCursor::admitted_nested_expr(region).all(|event| {
+        matches!(
+            event,
+            Ok(event)
+                if !matches!(
+                    event,
+                    CanonicalRhoPathRegionEvent::ParBag(_)
+                        | CanonicalRhoPathRegionEvent::PathMap(_)
+                )
+        )
+    })
+}
+
+fn par_has_safe_exact_expr_path(pattern: &Par) -> bool {
+    if !is_single_expr_match_carrier(pattern) {
+        return false;
+    }
+    let mut safe = false;
+    pattern.visit_encoded::<Expr>(|component| {
+        safe = match classify_admitted_expr(&component) {
+            AdmittedExprRegionClass::Structural(region) => {
+                admitted_expr_has_safe_exact_path(region)
+            }
+            AdmittedExprRegionClass::ExactFreeVar(_) | AdmittedExprRegionClass::ExactWildcard => {
+                false
+            }
+        };
+    });
+    safe
+}
+
 fn rho_path_query_region_atom(
     component: EncodedParComponent<'_, Expr>,
     region: AdmittedExprRegion<'_>,
@@ -185,7 +221,7 @@ fn rho_path_query_region_atom(
         *captures = derived_captures;
         return Some(RhoPathQueryAtom::Match(query));
     }
-    exact.then(|| {
+    (exact && admitted_expr_has_safe_exact_path(region)).then(|| {
         RhoPathQueryAtom::Exact(
             encode_admitted_expr_match_path(component)
                 .expect("an admitted Expr has canonical protobuf regions"),
@@ -339,22 +375,29 @@ fn admitted_expr_is_dynamic(
             CanonicalRhoPathRegionEvent::EnterField(field) if field.name == "remainder" => {
                 scan.expect_absent_remainder = true;
             }
-            CanonicalRhoPathRegionEvent::ParBag(region) => match region.classify() {
-                AdmittedParRegionClass::ExactFreeVar(level) => {
-                    let id = RhoPathCaptureId::new(u32::try_from(level).ok()?);
-                    if !record_linear_capture(captures, &RhoMatchQueryPart::Capture(id)) {
-                        return None;
+            CanonicalRhoPathRegionEvent::ParBag(region) => {
+                // A nested Par may differ only in locally_free metadata while
+                // remaining equal to the authoritative matcher. Mark its
+                // enclosing opaque ParBag dynamic, but keep scanning for every
+                // emitted capture before choosing a whole-value wildcard.
+                dynamic = true;
+                match region.classify() {
+                    AdmittedParRegionClass::ExactFreeVar(level) => {
+                        let id = RhoPathCaptureId::new(u32::try_from(level).ok()?);
+                        if !record_linear_capture(captures, &RhoMatchQueryPart::Capture(id)) {
+                            return None;
+                        }
+                        dynamic = true;
                     }
-                    dynamic = true;
+                    AdmittedParRegionClass::ExactWildcard
+                    | AdmittedParRegionClass::MetadataBearingWholeValue => dynamic = true,
+                    AdmittedParRegionClass::SoleExpr(child) => scans.push(Scan {
+                        cursor: CanonicalRhoPathRegionCursor::admitted_nested_expr(child),
+                        expect_absent_remainder: false,
+                    }),
+                    AdmittedParRegionClass::Opaque => return None,
                 }
-                AdmittedParRegionClass::ExactWildcard
-                | AdmittedParRegionClass::MetadataBearingWholeValue => dynamic = true,
-                AdmittedParRegionClass::SoleExpr(child) => scans.push(Scan {
-                    cursor: CanonicalRhoPathRegionCursor::admitted_nested_expr(child),
-                    expect_absent_remainder: false,
-                }),
-                AdmittedParRegionClass::Opaque => return None,
-            },
+            }
             _ => {}
         }
     }
@@ -362,9 +405,10 @@ fn admitted_expr_is_dynamic(
 }
 
 /// Compile one generated rhoapi cursor into a conservative RMP2 candidate
-/// query. `exact` is true only when the caller's authoritative matcher would
-/// compare this whole value by equality; otherwise this routine must find and
-/// encode every dynamic `Par` hole or decline indexing.
+/// query. The caller's exact-comparison hint is insufficient for a complete
+/// schema path: `Par::eq` ignores nested locally_free metadata. This routine
+/// therefore indexes only successfully compiled ordered queries and declines
+/// every failed scan.
 ///
 /// The generated cursor lets the AC target Bag use one stack-safe query
 /// compiler for `Par`, `Send`, `New`, `Expr`, `Match`, `ReceiveBind`, and the
@@ -373,9 +417,12 @@ fn admitted_expr_is_dynamic(
 /// that the PDA could match.
 pub(super) fn rho_path_query_cursor_atom(
     root: ParCursor<'_>,
-    exact: bool,
+    _exact: bool,
     captures: &mut PathMap<()>,
 ) -> Option<RhoPathQueryAtom> {
+    // Generated complete-schema paths can contain Par or Send metadata that
+    // the authoritative matcher ignores. Only a successful conservative
+    // ordered query may prune; an unsupported scan leaves the full domain.
     if let ParCursor::Par(pattern) = root {
         if let Some(hole) = rho_match_hole(pattern) {
             if !record_linear_capture(captures, &hole) {
@@ -396,7 +443,7 @@ pub(super) fn rho_path_query_cursor_atom(
         *captures = derived_captures;
         return Some(RhoPathQueryAtom::Match(query));
     }
-    exact.then(|| RhoPathQueryAtom::Exact(encode_match_path(root)))
+    None
 }
 
 fn compile_ordered_nested_query(
@@ -416,9 +463,8 @@ fn compile_ordered_nested_query(
     //
     // RMP2 currently has no schema-semantic projection for those equations.
     // Encoding the ignored fields as exact query bytes would reject values
-    // which the authoritative PDA accepts. Decline the dynamic query instead;
-    // `rho_path_query_cursor_atom` still sends every ground root through the
-    // unchanged exact-equality lane.
+    // which the authoritative PDA accepts. Decline this query; the caller
+    // falls back to spatial matching when compilation cannot prove safety.
     if matches!(
         root,
         ParCursor::Receive(_) | ParCursor::New(_) | ParCursor::Match(_) | ParCursor::ReceiveBind(_)
@@ -434,10 +480,23 @@ fn compile_ordered_nested_query(
     let mut exact = Vec::with_capacity(256);
     exact.extend_from_slice(&RHO_MATCH_PATH_VERSION);
     let mut suppressed_nodes = 0usize;
-    let mut skip_metadata_scalar = false;
+    let mut ignored_field_depth = 0usize;
     let mut saw_hole = false;
 
     for event in RhoPathCursor::new(root) {
+        if ignored_field_depth != 0 {
+            match event {
+                RhoPathEvent::EnterField(_) => ignored_field_depth += 1,
+                RhoPathEvent::LeaveField => {
+                    ignored_field_depth -= 1;
+                    if ignored_field_depth == 0 {
+                        append_match_path_event(&mut exact, event);
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
         if suppressed_nodes != 0 {
             match event {
                 RhoPathEvent::EnterNode { .. } => suppressed_nodes += 1,
@@ -503,8 +562,8 @@ fn compile_ordered_nested_query(
                     ParCursor::EList(list) if list.remainder.is_some() => return None,
                     // These carriers have associative-commutative matching
                     // semantics. Their dynamic children belong to the AC
-                    // query machine, not this ordered cursor program. Ground
-                    // instances still take the exact structural-path lane.
+                    // query machine, not this ordered cursor program. Decline
+                    // the ordered query even for ground instances.
                     ParCursor::ESet(_)
                     | ParCursor::EMap(_)
                     | ParCursor::EPathMap(_)
@@ -515,20 +574,29 @@ fn compile_ordered_nested_query(
                 append_match_path_event(&mut exact, event);
             }
             RhoPathEvent::EnterField(field)
-                if matches!(field.name, "locally_free" | "connective_used") =>
+                if matches!(
+                    field.name,
+                    "locally_free" | "connective_used" | "cost_region"
+                ) =>
             {
                 append_match_path_event(&mut exact, event);
                 flush_exact_query_part(&mut parts, &mut exact);
                 parts.push(RhoMatchQueryPart::Wildcard);
-                skip_metadata_scalar = true;
-            }
-            RhoPathEvent::Scalar(_) if skip_metadata_scalar => {
-                skip_metadata_scalar = false;
+                // The matcher ignores Send's cost region. Skip its complete
+                // optional-message value, whether absent or deeply nested;
+                // scalar metadata uses this same field-boundary rule.
+                ignored_field_depth = 1;
             }
             _ => append_match_path_event(&mut exact, event),
         }
     }
-    if suppressed_nodes != 0 || skip_metadata_scalar || !saw_hole {
+    // Send's persistent/channel/data equation is represented by this ordered
+    // cursor even when every child is ground. Other ground root types still
+    // require their own semantic projection before they may prune AC rows.
+    if suppressed_nodes != 0
+        || ignored_field_depth != 0
+        || (!saw_hole && !matches!(root, ParCursor::Send(_)))
+    {
         return None;
     }
     flush_exact_query_part(&mut parts, &mut exact);

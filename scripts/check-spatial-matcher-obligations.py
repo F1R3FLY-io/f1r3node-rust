@@ -13,6 +13,64 @@ RUNNER = "scripts/check-stack-safe-pda-proofs.sh"
 MODULE = "rholang/src/rust/interpreter/matcher/mod.rs"
 PDA = "rholang/tests/support/spatial_matcher_pda_equivalence.rs"
 ISOLATION = "rholang/tests/matcher_connective_isolation.rs"
+OWNER_MODEL = "formal/verus/canonical_connective_owner_cursor.rs"
+OWNER_MUTANTS = "scripts/generate-canonical-connective-owner-mutant.py"
+CONNECTIVE_SOURCE = "models/src/rust/par_bag.rs"
+CONNECTIVE_PROPERTY = "models/tests/par_bag.rs"
+MATCHER_SOURCE = "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs"
+OWNER_INVARIANTS = [
+    (
+        "mismatched_owner_refused_before_position_transfer",
+        [
+            "first_children.bind_owned(second_children.message())",
+            "first_children.bind_owned(first_children.message().to_vec())",
+            "first_children.bind_owned(truncated)",
+            "exhausted.bind_owned(second_children.message())",
+        ],
+    ),
+    (
+        "exact_owner_preserves_validated_position",
+        [
+            "let consumed = split % (expected.len() + 1);",
+            "proptest::prop_assert_eq!(partial.len(), expected.len() - consumed);",
+            "proptest::prop_assert_eq!(retained.len(), expected.len() - consumed);",
+        ],
+    ),
+    (
+        "next_returns_exact_validated_region",
+        [
+            "proptest::prop_assert_eq!(next_header, first_children.message().len());",
+            "proptest::prop_assert_eq!(&range, expected_range);",
+            "prop_assert_eq!(&owned.body()[range], *expected_child);",
+            "prop_assert_eq!(&retained.body()[range], *expected_child);",
+        ],
+    ),
+    (
+        "exhaustion_iff_all_validated_children_consumed",
+        [
+            "prop_assert_eq!(owned.next(), None);",
+            "prop_assert_eq!(retained.next(), None);",
+            "prop_assert!(exhausted.is_empty());",
+        ],
+    ),
+]
+OWNER_MUTATION_NAMES = (
+    "length_only",
+    "pointer_only",
+    "skip_child",
+    "wrong_range",
+    "early_exhaustion",
+)
+NESTED_IF_PROPERTY = "generated_nested_if_equation_order_and_rollback_match_recursive_oracle"
+NESTED_IF_ASSERTIONS = (
+    "depth in 1usize..17,",
+    "failure_level in 0usize..16,",
+    "prop_assert_eq!(success_oracle.free_map.get(&0), Some(&leaf));",
+    "prop_assert_eq!(success_oracle.free_map.get(&41), entry_map.get(&41));",
+    '"generated nested If equation order: success",',
+    "prop_assert_eq!(failure_oracle.free_map, entry_map.clone());",
+    '"generated nested If equation order: rollback",',
+)
 TLA_INVARIANTS = [
     "TypeInvariant",
     "NoInstructionUnderflow",
@@ -182,6 +240,47 @@ def test_body(source, name):
     return source[start : following if following >= 0 else len(source)]
 
 
+def generated_property_body(source, name):
+    marker = f"    fn {name}("
+    require(source.count(marker) == 1, f"missing or duplicate generated property: {name}")
+    start = source.index(marker)
+    before = source[:start]
+    require(
+        "proptest::proptest! {" in before
+        and "proptest::collection::vec" in source[start:],
+        f"generated property lacks proptest corpus: {name}",
+    )
+    end = source.find("\n    }\n}", start)
+    require(end >= 0, f"generated property boundary missing: {name}")
+    return source[start:end]
+
+
+def nested_if_property_body(source):
+    marker = f"    fn {NESTED_IF_PROPERTY}("
+    require(source.count(marker) == 1, "missing or duplicate nested-If property")
+    start = source.index(marker)
+    macro = source.rfind("proptest! {", 0, start)
+    require(macro >= 0, "nested-If property is outside proptest")
+    end = source.find("\n    }\n}", start)
+    require(end >= 0, "nested-If property boundary missing")
+    declaration = source[macro:start]
+    require(
+        "#[test]" in declaration and "#[ignore" not in declaration,
+        "nested-If property is not an active normal-suite test",
+    )
+    body = source[start:end]
+    for assertion in NESTED_IF_ASSERTIONS:
+        require(assertion in body, f"stale nested-If oracle property: {assertion}")
+    require(
+        ".spatial_match(target.clone(), success_pattern.clone())\n            .is_some()"
+        in body
+        and ".spatial_match(target.clone(), failure_pattern.clone())\n            .is_none()"
+        in body,
+        "nested-If property lacks anti-vacuous success and failure oracles",
+    )
+    return body
+
+
 def extract(sources):
     config = sources[CONFIG]
     model = sources[MODEL]
@@ -225,7 +324,7 @@ def extract(sources):
         "PDA normal-suite module unregistered",
     )
     require(
-        "rholang_run_tests 57 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::"
+        "rholang_run_tests 59 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::"
         in runner,
         "PDA normal-suite lane absent",
     )
@@ -234,7 +333,7 @@ def extract(sources):
         "connective-isolation normal-suite lane absent",
     )
     require(
-        len(re.findall(r"(?m)^#\[test\]$", sources[PDA])) == 57,
+        len(re.findall(r"(?m)^[ \t]*#\[test\]$", sources[PDA])) == 59,
         "PDA normal-suite census changed",
     )
     require(
@@ -258,6 +357,69 @@ def extract(sources):
         'assert_eq!(pda.free_map, recursive_map, "{label}: FreeMap");',
     ):
         require(fragment in comparison, f"stale PDA differential assertion: {fragment}")
+    nested_if_property_body(sources[PDA])
+    owner_model = sources[OWNER_MODEL]
+    owner_mutants = sources[OWNER_MUTANTS]
+    owner_source = sources[CONNECTIVE_SOURCE]
+    property_body = generated_property_body(
+        sources[CONNECTIVE_PROPERTY],
+        "generated_connective_cursor_owner_pairing_and_exhaustion",
+    )
+    require(
+        'canonical_connective_owner_verus\n' in runner,
+        "canonical Connective owner proof absent from normal runner",
+    )
+    require(
+        "verification results:: 10 verified, 0 errors" in runner,
+        "canonical Connective owner proof count absent",
+    )
+    require(
+        "rpb3_run_tests 1 --test par_bag generated_connective_cursor_owner_pairing_and_exhaustion"
+        in runner
+        and "rpb3_run_tests 1 --release --test par_bag generated_connective_cursor_owner_pairing_and_exhaustion"
+        in runner,
+        "generated connective owner property absent from debug/release normal runner",
+    )
+    require(
+        "rpb3_run_tests 4 --test par_bag canonical_connective_cursor_" in runner
+        and "rpb3_run_tests 4 --release --test par_bag canonical_connective_cursor_"
+        in runner,
+        "concrete connective owner tests absent from debug/release normal runner",
+    )
+    for symbol, fragments in OWNER_INVARIANTS:
+        require(
+            len(re.findall(rf"(?m)^pub proof fn {re.escape(symbol)}\(", owner_model)) == 1,
+            f"missing or duplicate canonical Connective owner theorem: {symbol}",
+        )
+        for fragment in fragments:
+            require(fragment in property_body, f"stale owner property extraction: {symbol}")
+    require(
+        property_body.count("proptest::prop_assert_eq!(&range, expected_range);") == 2,
+        "owned and resumed Connective ranges must both match independent positions",
+    )
+    require(
+        "pub unsafe trait StableConnectiveBodyOwner: AsRef<[u8]> {}" in owner_source,
+        "stable Connective owner contract absent",
+    )
+    for implementation in (
+        "unsafe impl StableConnectiveBodyOwner for &[u8] {}",
+        "unsafe impl StableConnectiveBodyOwner for Vec<u8> {}",
+        "unsafe impl StableConnectiveBodyOwner for crate::rust::rholang::protobuf_cursor::ProtobufRegion {}",
+    ):
+        require(implementation in owner_source, f"stable owner implementation absent: {implementation}")
+    require(
+        "unsafe impl StableConnectiveBodyOwner for EncodedRegion {}" in sources[MATCHER_SOURCE],
+        "encoded region owner implementation absent",
+    )
+    for mutant in OWNER_MUTATION_NAMES:
+        require(
+            f'"{mutant}": (' in owner_mutants,
+            f"canonical Connective owner mutant generator absent: {mutant}",
+        )
+        require(
+            mutant in runner,
+            f"canonical Connective owner mutant gate absent: {mutant}",
+        )
     return {
         "tla_invariants": [
             {
@@ -280,9 +442,32 @@ def extract(sources):
             }
             for index, symbol in enumerate(prints, 1)
         ],
-        "verus_obligations": [],
+        "verus_obligations": [
+            {
+                "id": f"SM-VERUS-{index:02d}",
+                "symbol": symbol,
+                "classification": "executable_refinement",
+                "method": "source_model_with_generated_property",
+                "source_model": OWNER_MODEL,
+                "source_contract": CONNECTIVE_SOURCE,
+                "target_source": CONNECTIVE_PROPERTY,
+                "target": "generated_connective_cursor_owner_pairing_and_exhaustion",
+                "assertions": fragments,
+            }
+            for index, (symbol, fragments) in enumerate(OWNER_INVARIANTS, 1)
+        ],
+        "generated_properties": [
+            {
+                "id": "SM-RUST-01",
+                "classification": "executable_refinement",
+                "method": "bounded_recursive_oracle_differential",
+                "target_source": PDA,
+                "target": NESTED_IF_PROPERTY,
+                "assertions": list(NESTED_IF_ASSERTIONS),
+            }
+        ],
         "mcrl2_obligations": [],
-        "scope_limit": "This SpatialMatcher source family has no dedicated Verus or mCRL2 source. Direct executable rows check concrete normal-suite assertions; finite TLC invariants and abstract Rocq theorems require their proof engines. Mutation-detection and parser/model-only predicates have no claimed executable refinement target. The registry checks source and runner wiring, not proof execution.",
+        "scope_limit": "The canonical Connective owner Verus model constrains validated field-1 ranges by complete canonical source bytes, then proves binding, exact next range, and exhaustion under the audited StableConnectiveBodyOwner premise. The model does not verify the production Rust parser, pointer provenance, or unsafe-trait implementations; the generated debug/release property and concrete source audit bridge those premises. Its five Verus mutants test the proof gate. Finite TLC invariants and abstract Rocq theorems still require their proof engines. The registry checks source and runner wiring, not proof execution.",
         "source_sha256": {
             path: hashlib.sha256(source.encode()).hexdigest()
             for path, source in sorted(sources.items())
@@ -362,10 +547,38 @@ def self_test(sources):
     )
     reject(
         sources,
+        PDA,
+        "prop_assert_eq!(failure_oracle.free_map, entry_map.clone());",
+        "prop_assert_eq!(failure_oracle.free_map, wrong_map);",
+        "stale nested-If oracle property",
+    )
+    reject(
+        sources,
         RUNNER,
         'tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla',
         'tlc_run "$tla_metadir" Other.cfg Other.tla',
         "TLC baseline absent",
+    )
+    reject(
+        sources,
+        OWNER_MODEL,
+        "pub proof fn exact_owner_preserves_validated_position(",
+        "pub proof fn removed_owner_position_theorem(",
+        "missing or duplicate canonical Connective owner theorem",
+    )
+    reject(
+        sources,
+        CONNECTIVE_PROPERTY,
+        "prop_assert_eq!(&owned.body()[range], *expected_child);",
+        "prop_assert_eq!(&owned.body()[range], wrong_child);",
+        "stale owner property extraction",
+    )
+    reject(
+        sources,
+        OWNER_MUTANTS,
+        '"length_only": (',
+        '"unregistered_length_only": (',
+        "canonical Connective owner mutant generator absent",
     )
 
 
@@ -376,7 +589,11 @@ def main():
     group.add_argument("--write", action="store_true")
     group.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
-    paths = {CONFIG, MODEL, ROCQ, RUNNER, MODULE, PDA, ISOLATION}
+    paths = {
+        CONFIG, MODEL, ROCQ, RUNNER, MODULE, PDA, ISOLATION,
+        OWNER_MODEL, OWNER_MUTANTS, CONNECTIVE_SOURCE, CONNECTIVE_PROPERTY,
+        MATCHER_SOURCE,
+    }
     sources = {
         path: (ROOT / path).read_text(encoding="utf-8") for path in sorted(paths)
     }

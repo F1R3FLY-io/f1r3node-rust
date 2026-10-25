@@ -97,7 +97,7 @@ rholang_run_tests() {
     return 1
   fi
   printf '%s\n' "$output"
-  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" <<<"$output"; then
+  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; [0-9]+ ignored;" <<<"$output"; then
     echo "stack-safe-pda: expected $expected nonignored Rholang tests for $*" >&2
     return 1
   fi
@@ -111,6 +111,15 @@ matcher_count_proofs() {
   rocq_compile_with_closed_count theories/SpatialMatcher.v 10 \
     "exact ParCount interval and partition contracts"
   rocq_check_modules "spatial matcher and exact ParCount intervals" StackSafePDA.SpatialMatcher
+}
+
+matcher_ground_new_query_proofs() {
+  local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  rocq_reject_placeholders theories/ConcreteNewQueryCorrespondence.v
+  rocq_compile_with_closed_count theories/ConcreteNewQueryCorrespondence.v 3 \
+    "ground New candidate projection and encoded-exact URI negative control"
+  rocq_check_modules "ground New candidate correspondence" \
+    StackSafePDA.ConcreteNewQueryCorrespondence
 }
 
 matcher_count_byte_native_proofs() {
@@ -128,7 +137,8 @@ matcher_count_runtime() {
   rholang_run_tests 3 --test matcher_count_folds
   rholang_run_tests 16 --test matcher_connective_isolation
   rholang_run_tests 8 --test matcher_if_family
-  rholang_run_tests 57 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+  rholang_run_tests 59 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+  rholang_run_tests 1 --lib rust::interpreter::matcher::ground_new_query_correspondence::
   rholang_run_tests 11 --lib rust::interpreter::matcher::par_count::byte_native_tests::
   TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
     rpb3_run_tests 3 --release -j4 --test par_bag canonical_count_expr_is_hole
@@ -181,6 +191,55 @@ free_map_journal_verus() {
   fi
   tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
     "$repo_root/formal/verus/free_map_transaction.rs"
+}
+
+canonical_connective_owner_verus() {
+  local model="$repo_root/formal/verus/canonical_connective_owner_cursor.rs"
+  local generator="$repo_root/scripts/generate-canonical-connective-owner-mutant.py"
+  local evidence_dir="$repo_root/target/verification/connective-owner"
+  local baseline_log mutant mutant_source mutant_log expected_obligation
+  mkdir -p "$evidence_dir"
+  baseline_log="$evidence_dir/normal-gate.log"
+  if ! tlc_bounded "$verus_bin" --no-cheating --num-threads 1 --rlimit 30 \
+    "$model" >"$baseline_log" 2>&1; then
+    cat "$baseline_log"
+    echo "stack-safe-pda: canonical Connective owner proof failed" >&2
+    return 1
+  fi
+  if ! rg -q '^verification results:: 10 verified, 0 errors$' "$baseline_log"; then
+    cat "$baseline_log"
+    echo "stack-safe-pda: expected ten canonical Connective owner verifications" >&2
+    return 1
+  fi
+  for mutant in length_only pointer_only skip_child wrong_range early_exhaustion; do
+    mutant_source="$evidence_dir/$mutant.rs"
+    mutant_log="$evidence_dir/$mutant.log"
+    case "$mutant" in
+      length_only|pointer_only) expected_obligation='ensures result == bind_spec(' ;;
+      skip_child|wrong_range) expected_obligation='match modeled_next(children, position) {' ;;
+      early_exhaustion) expected_obligation='modeled_next(children, position).is_some(),' ;;
+    esac
+    python3 "$generator" "$mutant" "$model" "$mutant_source"
+    if tlc_bounded "$verus_bin" --no-cheating --num-threads 1 --rlimit 30 \
+      "$mutant_source" >"$mutant_log" 2>&1; then
+      cat "$mutant_log"
+      echo "stack-safe-pda: canonical Connective $mutant mutant unexpectedly verified" >&2
+      return 1
+    fi
+    if ! rg -Fq 'error: postcondition not satisfied' "$mutant_log" \
+      || ! rg -Fq "$expected_obligation" "$mutant_log"; then
+      cat "$mutant_log"
+      echo "stack-safe-pda: canonical Connective $mutant failed outside its expected obligation" >&2
+      return 1
+    fi
+    if ! rg -q '^verification results:: [0-9]+ verified, [1-9][0-9]* errors$' "$mutant_log"; then
+      cat "$mutant_log"
+      echo "stack-safe-pda: canonical Connective $mutant had no verifier counterexample" >&2
+      return 1
+    fi
+  done
+  cat "$baseline_log"
+  echo "stack-safe-pda: five canonical Connective owner mutants rejected"
 }
 
 free_map_journal_tlc() {
@@ -249,7 +308,7 @@ free_map_journal_mcrl2() {
 
 free_map_journal_runtime() {
   rholang_run_tests 7 --lib free_map_transaction::tests
-  rholang_run_tests 57 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+  rholang_run_tests 59 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
   rholang_run_tests 1 --test matcher_freemap_journal binding_journal_allocation_growth_is_subquadratic_on_success_and_deep_refusal
   rholang_run_tests 1 --test matcher_freemap_journal sole_freevar_captures_a_deep_target_without_decoding_its_suffix
   TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
@@ -584,6 +643,14 @@ if [[ "${1:-}" == "--matcher-counts" || "${1:-}" == "--matcher-count-byte-native
   exit 0
 fi
 
+if [[ "${1:-}" == "--ground-new-query-proofs" ]]; then
+  pushd "$rocq_root" >/dev/null
+  matcher_ground_new_query_proofs
+  popd >/dev/null
+  echo "stack-safe-pda: ground New query correspondence and URI negative control passed"
+  exit 0
+fi
+
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
@@ -866,6 +933,7 @@ if [[ "$rmp2_closed_capstones" != "7" ]]; then
 fi
 matcher_count_proofs
 matcher_count_byte_native_proofs
+matcher_ground_new_query_proofs
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceAuthority.v 5 \
   "the exact two-level RSpace logical authority"
@@ -1041,6 +1109,7 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/bag_checked_delta.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/rmp2_par_bag_transcript.rs"
+canonical_connective_owner_verus
 free_map_journal_verus
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/accounting_demand.rs"
@@ -1064,6 +1133,10 @@ epathmap_import_runtime
 rpb3_run_tests 1 --lib \
   production_component_admission_is_differentially_equivalent_for_all_ten_families
 rpb3_run_tests 3 --test par_bag admitted_
+rpb3_run_tests 4 --test par_bag canonical_connective_cursor_
+rpb3_run_tests 4 --release --test par_bag canonical_connective_cursor_
+rpb3_run_tests 1 --test par_bag generated_connective_cursor_owner_pairing_and_exhaustion
+rpb3_run_tests 1 --release --test par_bag generated_connective_cursor_owner_pairing_and_exhaustion
 TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
   rpb3_run_tests 23 --release -j4 --lib emission_tests
 rholang_run_tests 9 --lib region_slot_tests

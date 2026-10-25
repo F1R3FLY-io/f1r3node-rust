@@ -1437,46 +1437,60 @@ pub fn canonical_single_connective_from_par(message: &[u8]) -> Option<&[u8]> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CanonicalConnectiveChildren<'a> {
     message: &'a [u8],
-    cursor: CanonicalConnectiveChildCursor,
-}
-
-/// Slice-independent continuation for a validated canonical
-/// [`ConnectiveBody`] child sequence.
-///
-/// The byte slice remains with the caller (or with an owned encoded region in
-/// a PDA frame), while this small value records only the next byte offset and
-/// remaining arity. That separation lets borrowed compilation and owned
-/// authoritative matching share one framing implementation without a
-/// self-referential object or a projected `Vec<Par>`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CanonicalConnectiveChildCursor {
-    message_addr: usize,
-    message_len: usize,
     at: usize,
     remaining: usize,
 }
 
 /// Validated canonical connective children paired with their immutable owner.
-///
-/// A detached [`CanonicalConnectiveChildCursor`] carries pointer and length so
-/// every call can reject a different body. A PDA that already owns the body
-/// can establish that identity once and keep the relationship in the type
-/// instead. The resulting continuation stores only the body and relative
-/// parser state: no duplicate address/length, self-reference, allocation, or
-/// narrower platform-dependent offset is required.
-pub struct CanonicalOwnedConnectiveChildren<B> {
+pub struct CanonicalOwnedConnectiveChildren<B: StableConnectiveBodyOwner> {
     body: B,
     at: usize,
     remaining: usize,
 }
 
-/// Pairing error for a detached canonical [`ConnectiveBody`] child cursor.
+/// An owner whose shared byte view remains the same while a connective cursor holds it.
 ///
-/// The cursor carries only the ephemeral address and length of the validated
-/// body. It does not hash, copy, own, serialize, or otherwise create a second
-/// byte authority. Moving an owning region preserves its allocation, so the
-/// explicit matcher PDA may still store the cursor separately from that
-/// region while a caller cannot accidentally drive it with another body.
+/// # Safety
+/// Every `as_ref()` call must return the same pointer, length, and byte values
+/// from binding until the owned cursor is dropped. Moving the owner must not
+/// change that view. Implement this only for storage that cannot be mutated or
+/// switched through another safe handle during that interval.
+///
+/// A safe `AsRef<[u8]>` implementation alone does not establish this contract:
+///
+/// ```compile_fail
+/// use std::cell::Cell;
+/// use std::sync::Arc;
+/// use models::rust::par_bag::{canonical_connective_parts, CanonicalConnectiveParts};
+///
+/// struct SwitchingOwner {
+///     first: Arc<Vec<u8>>, second: Arc<Vec<u8>>, start: usize, switch: Cell<bool>,
+/// }
+/// impl AsRef<[u8]> for SwitchingOwner {
+///     fn as_ref(&self) -> &[u8] {
+///         if self.switch.replace(true) { &self.second[self.start..] }
+///         else { &self.first[self.start..] }
+///     }
+/// }
+/// let source = Arc::new(vec![10, 2, 10, 0]);
+/// let children = match canonical_connective_parts(source.as_slice()).unwrap() {
+///     CanonicalConnectiveParts::And(children) => children,
+///     _ => unreachable!(),
+/// };
+/// let owner = SwitchingOwner {
+///     first: Arc::clone(&source), second: Arc::new(vec![10, 2, 10, 0]),
+///     start: source.len() - children.message().len(), switch: Cell::new(false),
+/// };
+/// let _ = children.bind_owned(owner);
+/// ```
+pub unsafe trait StableConnectiveBodyOwner: AsRef<[u8]> {}
+
+unsafe impl StableConnectiveBodyOwner for &[u8] {}
+unsafe impl StableConnectiveBodyOwner for Vec<u8> {}
+// SAFETY: Bytes and ProtobufRegion's range are immutable after construction.
+unsafe impl StableConnectiveBodyOwner for crate::rust::rholang::protobuf_cursor::ProtobufRegion {}
+
+/// Pairing error for a canonical [`ConnectiveBody`] child cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CanonicalConnectiveCursorError {
     BodyMismatch,
@@ -1496,51 +1510,37 @@ impl<'a> CanonicalConnectiveChildren<'a> {
         }
         Some(Self {
             message,
-            cursor: CanonicalConnectiveChildCursor {
-                message_addr: message.as_ptr() as usize,
-                message_len: message.len(),
-                at: 0,
-                remaining,
-            },
+            at: 0,
+            remaining,
         })
     }
 
-    pub const fn len(&self) -> usize { self.cursor.len() }
+    pub const fn len(&self) -> usize { self.remaining }
 
-    pub const fn is_empty(&self) -> bool { self.cursor.is_empty() }
+    pub const fn is_empty(&self) -> bool { self.remaining == 0 }
 
     /// Complete validated `ConnectiveBody` bytes driven by this cursor.
     pub const fn message(&self) -> &'a [u8] { self.message }
 
-    /// Export the slice-independent continuation for an owned PDA frame.
-    pub const fn cursor(&self) -> CanonicalConnectiveChildCursor { self.cursor }
-
     /// Pair the current cursor position with an immutable owner of the exact
     /// validated body.
-    ///
-    /// Pointer and length are checked before the redundant identity fields are
-    /// removed. After this transition, [`CanonicalOwnedConnectiveChildren`]
-    /// never accepts a second body, so a mismatched resumption is
-    /// unrepresentable through its API.
-    pub fn bind_owned<B: AsRef<[u8]>>(
+    pub fn bind_owned<B: StableConnectiveBodyOwner>(
         self,
         body: B,
     ) -> Result<CanonicalOwnedConnectiveChildren<B>, CanonicalConnectiveCursorError> {
         let owned = body.as_ref();
-        if owned.as_ptr() as usize != self.cursor.message_addr
-            || owned.len() != self.cursor.message_len
-        {
+        if owned.as_ptr() != self.message.as_ptr() || owned.len() != self.message.len() {
             return Err(CanonicalConnectiveCursorError::BodyMismatch);
         }
         Ok(CanonicalOwnedConnectiveChildren {
             body,
-            at: self.cursor.at,
-            remaining: self.cursor.remaining,
+            at: self.at,
+            remaining: self.remaining,
         })
     }
 }
 
-impl<B: AsRef<[u8]>> CanonicalOwnedConnectiveChildren<B> {
+impl<B: StableConnectiveBodyOwner> CanonicalOwnedConnectiveChildren<B> {
     pub const fn len(&self) -> usize { self.remaining }
 
     pub const fn is_empty(&self) -> bool { self.remaining == 0 }
@@ -1585,36 +1585,26 @@ impl<B: AsRef<[u8]>> CanonicalOwnedConnectiveChildren<B> {
     }
 }
 
-impl CanonicalConnectiveChildCursor {
-    pub const fn len(&self) -> usize { self.remaining }
+impl<'a> Iterator for CanonicalConnectiveChildren<'a> {
+    type Item = &'a [u8];
 
-    pub const fn is_empty(&self) -> bool { self.remaining == 0 }
-
-    /// Lend the next child from the same body that was fully validated when
-    /// this cursor was created.
-    pub fn next_in<'a>(
-        &mut self,
-        message: &'a [u8],
-    ) -> Result<Option<&'a [u8]>, CanonicalConnectiveCursorError> {
+    fn next(&mut self) -> Option<Self::Item> {
         const CHILD_KEY: u64 = (1 << 3) | 2;
 
-        if message.as_ptr() as usize != self.message_addr || message.len() != self.message_len {
-            return Err(CanonicalConnectiveCursorError::BodyMismatch);
-        }
         if self.remaining == 0 {
-            return Ok(None);
+            return None;
         }
         // This read is part of the cursor transition, not a diagnostic. Keep
         // it outside `debug_assert!`: assertions are erased in release builds
         // and must never own parser state changes.
-        let key = read_canonical_varint(message, &mut self.at)
+        let key = read_canonical_varint(self.message, &mut self.at)
             .expect("validated ConnectiveBody child key remains present");
         assert_eq!(
             key, CHILD_KEY,
             "validated ConnectiveBody cursor remains aligned to a child key"
         );
         let len = usize::try_from(
-            read_canonical_varint(message, &mut self.at)
+            read_canonical_varint(self.message, &mut self.at)
                 .expect("validated ConnectiveBody child length remains present"),
         )
         .expect("validated ConnectiveBody child length fits usize");
@@ -1622,27 +1612,16 @@ impl CanonicalConnectiveChildCursor {
             .at
             .checked_add(len)
             .expect("validated ConnectiveBody child end fits usize");
-        let child = message
+        let child = self
+            .message
             .get(self.at..end)
             .expect("validated ConnectiveBody child range remains in bounds");
         self.at = end;
         self.remaining -= 1;
-        Ok(Some(child))
-    }
-}
-
-impl<'a> Iterator for CanonicalConnectiveChildren<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.cursor
-            .next_in(self.message)
-            .expect("validated ConnectiveBody iterator retains its original body")
+        Some(child)
     }
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.cursor.remaining, Some(self.cursor.remaining))
-    }
+    fn size_hint(&self) -> (usize, Option<usize>) { (self.remaining, Some(self.remaining)) }
 }
 
 impl ExactSizeIterator for CanonicalConnectiveChildren<'_> {}
