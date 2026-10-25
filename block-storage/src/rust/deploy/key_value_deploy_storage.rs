@@ -110,6 +110,17 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .unwrap_or(false))
     }
 
+    /// The signature of every stored deploy, read from the keys without
+    /// decoding a deploy.
+    pub fn sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
+        let mut sigs = Vec::new();
+        self.store.raw_store().iterate_while(&mut |key, _| {
+            sigs.push(self.store.decode_key(&key)?);
+            Ok(true)
+        })?;
+        Ok(sigs)
+    }
+
     pub fn remove(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
         self.store
             .delete(deploys.into_iter().map(|d| d.sig.clone().into()).collect())

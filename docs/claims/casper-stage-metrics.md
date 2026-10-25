@@ -4,10 +4,10 @@
 claim_id: CLAIM-CASPER-STAGE-METRICS-001
 artifacts:
   - casper/src/rust/engine/multi_parent_casper/finalization_runner.rs   # finalizer run, rerun, and timeout metrics
-  - casper/src/rust/engine/multi_parent_casper/dispatch.rs              # API-triggered LFB computation metrics
+  - casper/src/rust/engine/multi_parent_casper/dispatch.rs              # API-triggered LFB computation metrics (removed: the API reads the persisted LFB)
   - casper/src/rust/blocks/proposer/block_creator.rs                    # admission deferral, empty-block skip, deploy age metrics
   - casper/src/rust/blocks/proposer/proposer.rs                         # propose step histograms
-  - casper/src/rust/finality/deploy_lifecycle.rs                        # observe and carrier-prune histograms
+  - casper/src/rust/finality/deploy_lifecycle.rs                        # settle and carrier-prune histograms
   - node/src/rust/instances/heartbeat_proposer.rs                       # heartbeat wake and proposal metrics
   - casper/src/rust/metrics_constants.rs                                # metric names
   - block-storage/src/rust/deploy/key_value_deploy_storage.rs           # decoded-deploy counter of read_all (TASK-021-17)
@@ -27,7 +27,7 @@ references:
 
 Soak 37640235959 failed `test_load` in two phases. In the high phase, deploys waited too long for inclusion. In the sustained phase, included deploys waited too long for finalization. The soak metrics cover block replay, repeat-deploy validation, and merge selection only, so they cannot name the stage that holds a deploy.
 
-TASK-021-13 adds counters and histograms for both phases. They cover the deploy age at inclusion, the admission deferral, the empty-block skip, and the heartbeat. They also cover the finalizer runs and the LFB computation of the API. The soak harness reads counters and histograms only. This claim states that the new metrics observe the node and do not change it. The claim is pending, and no code change for these metrics starts before this file exists (EPIC-021 `cbc_policy`).
+TASK-021-13 adds counters and histograms for both phases. They cover the deploy age at inclusion, the admission deferral, the empty-block skip, and the heartbeat. They also cover the finalizer runs. The soak harness reads counters and histograms only. This claim states that the new metrics observe the node and do not change it. The claim is pending, and no code change for these metrics starts before this file exists (EPIC-021 `cbc_policy`).
 
 TASK-021-17 (2026-10-16) extends the claim for the Track A items of the stall-loop design. Those items need four more measurements:
 
@@ -51,7 +51,7 @@ The floor distance histogram already exists, and TASK-021-17 adds it to `ISSUE24
 
 **S1. Non-interference.** Each observable result is the same with a metrics recorder installed and without one. No branch, loop bound, lock, or `await` point depends on a metric call or on a value that only a metric call reads.
 
-**S2. No new shared state.** The metrics add no lock, no shared map, and no field to a consensus type. The deploy age uses the timestamp that the deploy already carries. The overlap count reads the existing `finalizer_task_in_progress` flag without a write.
+**S2. No new shared state.** The metrics add no lock, no shared map, and no field to a consensus type. The deploy age uses the timestamp that the deploy already carries.
 
 Issue #712 removes the pool mutex and its timer.
 The scheduler delay probe is one task that sleeps and reads the clock. It reads no consensus state, takes no lock, and sends no message.
@@ -59,10 +59,9 @@ The scheduler delay probe is one task that sleeps and reads the clock. It reads 
 **S3. Counting accuracy.** Each counter increments once for each event that its name states, and each histogram records one value for each measured interval:
 - `block-creator.ordinary-deploys.deferred` adds the number of ordinary candidates that the selection leaves out.
 - `finalizer.run.timeouts` adds one for each run that the 15 s backstop abandons.
-- `finalizer.api-lfb.overlaps` adds one for each API computation that starts while a background run is in progress.
 - `block-creator.deploy-admission.cap-source.<source>` adds one for each admission decision, under the source of its ordinary cap. The sources are normal, base, backlog, soft-backlog, soft-stalled, stale, and hard.
 - `proposer.constraints.time`, `proposer.create.time`, `proposer.validate.time`, and `proposer.effect.time` each record one value in seconds for each proposal.
-- `deploy-lifecycle.observe.time` records one value in seconds for each observed block. `deploy-lifecycle.carrier-prune.time` records one value only when the adopted floor advanced, because only then does the observe call the carrier prune.
+- `deploy-lifecycle.settle.time` records one value in seconds for each finalizer cycle, the settle of the deploy verdicts. `deploy-lifecycle.carrier-prune.time` records one value only for a cycle that advanced the LFB, because only then does the cycle run the carrier prune.
 - Issue #712 retires `deploy-pool.lock-wait.time` and `deploy-pool.lock-hold.time` because the pool has no outer mutex.
 - `deploy-store.read-all.decoded` adds, for each `read_all` call, the number of deploys that the call decodes. The label `store` names the store. A decode in the current format verifies one signature (`deploy_codec::decode`, `DeployData::from_proto`). A legacy-format decode does not, and its existing counter counts it. The difference is the number of signature checks of the pool reads.
 - `proposer.queue.depth` records one value for each propose request that the proposer takes from its queue: the number of pending requests before the take.
