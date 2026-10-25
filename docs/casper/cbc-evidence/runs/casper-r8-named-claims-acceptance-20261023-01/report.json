@@ -1,0 +1,68 @@
+{
+  "approval": {
+    "accepted_by": "jltatbeach",
+    "posted_at": "2026-10-23T10:50:00Z",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/700#issuecomment-6363192996",
+    "comment_body_sha256": "4996b5ba5ed95a4ede55084f5f799baae0483a4df0a24caee83a2e8f48879f81",
+    "comment_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the comment",
+    "comment_note": "The comment ends with a Mergify queue command after the acceptance text.",
+    "revision": "c49e736c2b75ecf7aa4a9977c631233ce1de551e",
+    "tested_commit": "c49e736c2b75ecf7aa4a9977c631233ce1de551e"
+  },
+  "review": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-r8-named-claims-20261022-01/report.json",
+    "sha256": "35073b50b330ff2baecced63f7d388bc6ee340427ff5549d5fa0a0f7a645c48e"
+  },
+  "hosted_evidence": {
+    "ci_run": "39940746978",
+    "slashing_tests_run": "39940746980",
+    "conclusion": "success",
+    "note": "The Slashing test suite run is the first full run of check-casper-soak-bindings.sh with the claims suite pinned to 4 tests."
+  },
+  "previous_acceptance": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-claims-ledger-slug-acceptance-20261022-01/report.json",
+      "sha256": "8d453852851444b41f9182566d173413d08a908e8e10437d09c6f9acc99bb834"
+    },
+    "scripts/casper-soak/tests/claims.rs": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+      "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    },
+    "scripts/ci/check-casper-soak-bindings.sh": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+      "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    }
+  },
+  "accepted_scope": {
+    "auditor": "check-casper-claims.rs reads a ledger with several records as a named collection, selects the record of the audited claim, and fails closed on any other layout.",
+    "test": "named_claim_ledgers_select_only_the_audited_claim covers the selection and the failure cases.",
+    "binding_pin": "check-casper-soak-bindings.sh pins the claims suite to 4 tests, and a mismatch names the suite and both result lines.",
+    "inventories": "The four artifacts with two independent claims use R8 named claims in their routed Casper ledgers. Each record keeps its status, claim, evidence, and waiver.",
+    "excluded": "Node correctness, the profile claims, the claims that list these artifacts without a record, and a live soak result."
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+  },
+  "claim_discharge": "discharged",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "node_execution": false,
+  "phase": "pre_pr216_merge",
+  "schema_version": 1,
+  "scope": "bounded-claim-auditor-r8",
+  "soak": "pending",
+  "source_digests": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "ba7301dd0bdd1e8b2e93c04e12dbd44665196d0a5c680b731c9ae951ba83be24",
+    "scripts/casper-soak/tests/claims.rs": "fc5de1960d83db4c8ed1959442fdcd6b9601ce0d3a7d44fbcab466025d39189e",
+    "scripts/ci/check-casper-soak-bindings.sh": "5e5f5c90edd18e6ec380d513b970ab8cac4a82bb7b84ec9d7f0ad4c2f897493a"
+  },
+  "status": "accepted-change",
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verified_at": "2026-10-23",
+  "waiver": null
+}

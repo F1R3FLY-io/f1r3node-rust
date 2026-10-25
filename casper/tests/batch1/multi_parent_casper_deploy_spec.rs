@@ -115,11 +115,7 @@ async fn block_api_rejects_deploy_from_unbonded_validator() {
         .unwrap_err()
         .to_string()
         .contains("validator is not bonded"));
-    assert!(!node
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(!node.deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test]
@@ -150,11 +146,7 @@ async fn block_api_rejects_deploy_from_keyless_read_only_node() {
         .unwrap_err()
         .to_string()
         .contains("node is running in read-only mode"));
-    assert!(!observer
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(!observer.deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test]
@@ -178,11 +170,7 @@ async fn block_api_accepts_deploy_from_bonded_validator_without_autopropose() {
     .await;
 
     assert!(result.is_ok(), "{result:?}");
-    assert!(node
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(node.deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test]
@@ -256,11 +244,7 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
 
     assert_eq!(accepted, 1);
     assert_eq!(duplicates, 31);
-    assert!(node
-        .deploy_storage
-        .lock()
-        .contains_sig(&expected_id)
-        .unwrap());
+    assert!(node.deploy_storage.contains_sig(&expected_id).unwrap());
 }
 
 #[tokio::test]
@@ -319,10 +303,7 @@ async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
     node.add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .unwrap();
-    node.deploy_storage
-        .lock()
-        .remove(vec![deploy.clone()])
-        .unwrap();
+    node.deploy_storage.remove(vec![deploy.clone()]).unwrap();
 
     assert!(node
         .block_dag_storage
