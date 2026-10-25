@@ -149,10 +149,15 @@ fi
 # own deadline, undoing the early exit and burning the runner time it was meant
 # to save. The rollup below still runs, so the final segment produces a summary
 # to publish.
+# The summary of such a segment keeps the reason of the earlier stop.
+PRIOR_EARLY_EXIT_REASON=""
 if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
 	printf 'soak already ended (%s); this segment does no work\n' \
 		"$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null || echo 'reason unrecorded')"
 	DEADLINE=0
+	PRIOR_EARLY_EXIT_REASON="$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null)" || PRIOR_EARLY_EXIT_REASON=""
+	PRIOR_EARLY_EXIT_REASON="${PRIOR_EARLY_EXIT_REASON%%:*}"
+	[[ "$PRIOR_EARLY_EXIT_REASON" =~ ^[a-z_]+$ ]] || PRIOR_EARLY_EXIT_REASON=earlier_segment
 fi
 
 if [ "$CASPER_RUNTIME" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
@@ -2249,12 +2254,25 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 					tee -a "$OUTPUT_DIR/emergency-skipped.txt" >&2
 				continue
 			fi
+			# A subprocess node of an earlier, deadline-stopped session keeps
+			# writing its logs in its own session directory, and soak
+			# 39711861154 copied 1.6 to 5.7 GB of them into each failed
+			# iteration. Under .subprocess-data, copy only the session
+			# directories that this iteration created.
+			stale_sessions=false
+			[ "$evidence_name" != .subprocess-data ] || stale_sessions=true
 			session_bounded "$copy_budget" bash -c '
 				cd "$1" &&
-					find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
-						-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0 |
+					if [ "$4" = true ]; then
+						find . -path "./*" ! -path "./*/*" -type d ! -newer "$3" -prune -o \
+							-type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+							-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0
+					else
+						find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+							-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0
+					fi |
 					tar --null -T - -cf - |
-					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" ||
+					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" "$stale_sessions" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
 		done
@@ -2338,6 +2356,59 @@ if [ -z "$EARLY_EXIT_REASON" ] && [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	FAILURES="$((FAILURES + 1))"
 fi
 
+# Each segment has its own owner marker, so a later segment cannot stop a
+# writer that this segment leaves running. A deadline stop ends pytest without
+# its teardown, and the detached subprocess nodes of that session keep writing
+# (most likely the disk growth of runs 39194089405 and 39369559337). Kill every
+# owned writer while this segment still owns it. Kill keeps the containers, so
+# their logs remain for the evidence that a deadline stop does not copy. A
+# failed stop makes the soak fail, but it does not raise an existing count:
+# every later segment of the soak repeats the same unconfirmed stop.
+if [ "$CASPER_RUNTIME" -eq 0 ] && ! stop_node_writers -q kill >/dev/null 2>&1; then
+	printf 'Writer termination is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+	if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
+		EARLY_EXIT_REASON="writer_stop_failed"
+		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
+	fi
+	if [ "$FAILURES" -eq 0 ]; then
+		FAILURES=1
+	fi
+fi
+
+# The owner stop above reported success in soak 39711861154, but the nodes of
+# the two deadline-stopped subprocess sessions kept running and filled the disk.
+# A subprocess node names its session directory in its arguments, so stop every
+# process of this user whose arguments or working directory are under
+# .subprocess-data, whatever its owner marker. residual-writers.txt records each
+# one with its environment and owner state, which shows why the owner stop
+# missed it. A writer that remains fails the soak like a failed owner stop.
+SUBPROCESS_DATA_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
+# After a host protection breach the soak already fails and must publish that
+# failure promptly, so the stop kills and records within the disk stop budget
+# and skips the 2 s write check.
+if [ "$CASPER_RUNTIME" -eq 0 ] && [ -d "$SUBPROCESS_DATA_DIR" ]; then
+	residual_status=0
+	residual_quiet_ms=2000
+	residual_budget=30
+	if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
+		residual_quiet_ms=0
+		residual_budget="$DISK_STOP_SECONDS"
+	fi
+	residual_lines="$(timeout --signal=KILL "$residual_budget" "$SOAK_HARNESS_BIN" host-control stop-under \
+		--owner "$SOAK_WRITER_OWNER" --quiet-ms "$residual_quiet_ms" "$SUBPROCESS_DATA_DIR" 2>/dev/null)" || residual_status=$?
+	[ -z "$residual_lines" ] || printf '%s\n' "$residual_lines" | sed "s/^/segment=$SEGMENT /" >>"$OUTPUT_DIR/residual-writers.txt"
+	if [ "$residual_status" -ne 0 ]; then
+		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+		if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
+			EARLY_EXIT_REASON="writer_stop_failed"
+			publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
+		fi
+		if [ "$FAILURES" -eq 0 ]; then
+			FAILURES=1
+		fi
+	fi
+fi
+
 if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
 	emergency_start
 fi
@@ -2359,7 +2430,7 @@ emit_soak_summary() {
 	printf 'failures=%s\n' "$FAILURES"
 	printf 'bench_segments=%s\n' "$BENCH_SEGMENTS"
 	printf 'bench_failures=%s\n' "$BENCH_FAILURES"
-	printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-none}"
+	printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-${PRIOR_EARLY_EXIT_REASON:-none}}"
 }
 publish_record -t "$OUTPUT_DIR/summary.txt" emit_soak_summary
 

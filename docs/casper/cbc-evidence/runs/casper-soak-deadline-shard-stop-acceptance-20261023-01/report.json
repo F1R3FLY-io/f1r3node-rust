@@ -1,0 +1,70 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-23T10:45:54Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/827#pullrequestreview-5627170022",
+  "review_body_sha256": "c028235929a8745bc9e4bd92a5dd077c0422525ee53ffda369188446bbd06032",
+  "review_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the approving review",
+  "revision": "c1cf31d7ed9224ccb83ebdd8de9d9ea8cd9b9c88",
+  "tested_commit": "f7a2696bd91224ac237f52664b9df406d8420c98"
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-20261022-01/report.json",
+  "sha256": "b6a4325ba32de66d8e545c84768635c4d41a0d16bc162aea8abb8bf3be44baf3"
+ },
+ "previous_acceptance": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json",
+   "sha256": "982fc077d124845f51132e013284af25a846e84fca7f3ff0a783a99699434756"
+  },
+  "scripts/casper-soak/src/host_control.rs": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json",
+   "sha256": "982fc077d124845f51132e013284af25a846e84fca7f3ff0a783a99699434756"
+  },
+  "scripts/bench/test-run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-02/report.json",
+   "sha256": "7d7a5e5f87cbf56716e732c8b6a1ffbd6dc9ce46e47d6ff0a5c3e33da9489522"
+  }
+ },
+ "accepted_scope": {
+  "commits": [
+   "793ca6c13",
+   "621507755",
+   "b6fd569bd",
+   "f7a2696bd"
+  ],
+  "guarantee": "After the owner stop at the end of each segment, host-control stop-under stops every same-user process whose arguments or working directory are under .subprocess-data, records each one in residual-writers.txt, and fails the segment with writer_stop_failed when a writer survives or the tree keeps changing during the quiet window.",
+  "limitations": [
+   "A same-user process that names a path under .subprocess-data in its arguments is stopped, also when it is not a soak writer.",
+   "An uninspected writer that writes less often than once in 2 s can pass the write check.",
+   "After a host protection breach, the residual stop skips the write check."
+  ],
+  "excluded": "Node correctness, the profile claims, the cause of the missed owner match, and a live soak result."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "670e2867bf40fb941a7e762b8624550c0feb8cdc45fe7efcfc7b69f3cc0cabc8"
+ },
+ "claim_digests_note": "The claim document adds the acceptance sentence of 2026-10-23 to the section that the review package records.",
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-residual-writer-stop",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "d70933e3d37af22aa0a0cd819d909ee86cdc700a43e820ff95153d1babb23a60",
+  "scripts/casper-soak/src/host_control.rs": "31c99688f2475b8d9756cd6fdd2f49af54981e50a07160c8a3f479ad8e80cfed",
+  "scripts/run-merge-recovery-soak.sh": "431094a0d64c5d2923474948e22112ef27292889b4c91d08bb7343d2be9fd12e"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-23",
+ "waiver": null
+}
