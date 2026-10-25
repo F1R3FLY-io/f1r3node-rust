@@ -2,6 +2,8 @@
 
 AI assistant guidance for F1R3node Rust — Pure Rust Blockchain Node. This file follows the Agentic AI Foundation (Linux Foundation) standard for AI coding assistants.
 
+This file and `CLAUDE.md` give the same rules in the same section order. `CLAUDE.md` names Claude Code features. This file names the generic action, and each harness uses its own equivalent. When you change a rule in one file, change it in the other file too.
+
 ## Project Context
 - Pure Rust implementation of the F1R3FLY.io blockchain platform
 - Extracted from the `rust/dev` branch of [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) as a standalone Rust workspace
@@ -9,23 +11,449 @@ AI assistant guidance for F1R3node Rust — Pure Rust Blockchain Node. This file
 - Implements concurrent smart contract execution with Byzantine Fault Tolerant consensus
 - If the user does not provide enough information with their prompts, ask the user to clarify before executing the task
 
+**Glossary:** Project terminology lives in [docs/Glossary.md](docs/Glossary.md).
+This glossary is load-bearing: documentation, ADRs, and code reviews cite
+its anchors. See `**Preferred usage.**` subsections for canonical vs. avoided
+phrasings. Mathematical notation and theorem naming remain in
+`docs/casper/theory/slashing/design/02-glossary-and-notation.md` pending unification
+(BACKLOG-DOC-001).
+
+## Architecture Overview
+
+The workspace separates consensus, execution, storage, networking, and node services into focused Rust crates.
+
+## Platform Requirements
+- **Rust nightly** — pinned in `rust-toolchain.toml` (currently nightly-2026-02-09)
+- **protoc** — Protocol Buffers compiler (required by build.rs in node, models, comm)
+- **OpenSSL** — headers and libraries (required by crypto crate)
+- **pkg-config** — helps cargo find native libraries
+- **just** — command runner for local development (optional but recommended)
+- **Docker** — for running node networks (optional)
+
+### macOS Quick Setup
+```bash
+brew install protobuf openssl pkg-config just
+```
+
+### Workspace Crates (10 crates)
+| Crate | Purpose |
+|-------|---------|
+| `node` | Main binary: CLI, gRPC server, HTTP API, REPL, metrics |
+| `casper` | CBC Casper consensus, block validation, finalization |
+| `rholang` | Rholang smart contract language interpreter |
+| `rspace++` (`rspace_plus_plus`) | High-performance tuple space storage (LMDB/heed backend) |
+| `models` | Protobuf data models, gRPC service definitions |
+| `crypto` | Ed25519, Secp256k1, Blake2b, TLS certificate generation |
+| `comm` | P2P networking, Kademlia discovery, custom TLS validation |
+| `block-storage` | Block persistence and retrieval |
+| `shared` | Common utilities, middleware, metrics helpers |
+| `graphz` | DAG traversal and graph algorithms |
+
+### Multi-Consensus Design
+The platform is designed to be neutral about consensus and state-machine
+replication. One consensus mechanism is implemented today:
+1. **Casper CBC** — BFT with mathematical safety proofs (implemented:
+   Rust consensus in the `casper` crate, with a Rholang economic layer
+   in `casper/src/main/resources/PoS.rhox` — bonds, rewards, slashing
+   effect, epochs). Documentation: `docs/casper/`.
+
+Three further mechanisms are design intentions with no implementation
+artifacts in this repository yet:
+2. **Cordial Miners** — Cooperative, energy-efficient
+3. **RGB PSSM** — Client-side validation with Bitcoin anchoring
+4. **Casanova** — Adaptive consensus for high-performance scenarios
+
+### External Dependency: rholang-parser
+The Rholang parser is an external crate:
+```toml
+rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "d25f953a" }
+```
+Used by `rholang` and `rspace++` crates.
+
+## Development Commands
+
+```bash
+# Build
+cargo build                          # Debug build
+cargo build --release                # Release build
+cargo build -p node                  # Just the node binary
+just build                           # Release build via Justfile
+
+# Test
+cargo test                           # All tests
+cargo test -p casper                 # Specific crate
+cargo test --release                 # Release mode (faster rholang tests)
+./scripts/run_rust_tests.sh          # Full test suite script
+
+# Run
+export STANDALONE_PRIVATE_KEY=<validator key>   # required by both run recipes
+just run-standalone                  # Build + run standalone node
+just run-standalone-debug            # Debug mode
+just clean-standalone                # Reset node data
+
+# Docker
+docker build -f node/Dockerfile -t f1r3fly-rust:local .
+docker compose -f docker/standalone.yml up
+docker compose -f docker/shard.yml up
+```
+
 ## Code Style and Standards
 
+### Rust Guidelines
 - **No comments** unless explicitly requested by user
+- **Rust and bash only for new work.** Do not add Python, Ruby, or other languages.
+  - Legacy Python remains in the z3 witnesses under `formal/` and in a few inline `python3` calls in older scripts. It leaves when that code is next touched.
+  - One scoped exception stays: `scripts/bench/extend-issue24-metrics.py` and its test.
+  - They edit and verify the external system-integration harness's own Python module, and they run only where that harness runs.
 - Zero-cost abstractions, proper ownership
 - Async/await with Tokio runtime
 - Error handling: `eyre` for application errors, `thiserror` for library errors
 - Logging: `tracing` crate throughout
 - Serialization: `prost` for protobuf, `serde` for JSON/bincode
 
+### Build Scripts
 Three crates have `build.rs` for protobuf code generation:
 - `node/build.rs` — `repl.proto`, `lsp.proto`
 - `models/build.rs` — `RhoTypes.proto`, `CasperMessage.proto`, `DeployServiceV1.proto`, etc.
 - `comm/build.rs` — `kademlia.proto`
 
+### Important Configuration
 - `.cargo/config.toml` — stack size (8MB for rholang recursion), native CPU features
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
+
+### Recommended harness settings
+Apply these settings in your harness's personal configuration. Do not commit them.
+
+- Turn off any checkpoint feature that runs `git stash` or `git reset --hard` around tool events.
+  These commands can lock `.git/index.lock` and conflict with concurrent Git commands, for example with "Unable to create index.lock".
+  `CLAUDE.md` gives the Claude Code setting.
+- Set the shell command timeout to at least 20 minutes, with a maximum of 30 minutes.
+  The pre-push hook runs the full release test suite for all 11 crates. The test suite usually takes approximately 9 minutes.
+  A cold cache can increase this time beyond a 10-minute limit, and the harness can then stop `git push` during the gate.
+
+## Network Ports
+| Port | Service |
+|------|---------|
+| 40400 | Protocol Server |
+| 40401 | gRPC External API |
+| 40402 | gRPC Internal API |
+| 40403 | HTTP REST API |
+| 40404 | Peer Discovery |
+
+## Security
+- Never log or expose private keys
+- Validate all user inputs and state transitions
+- TLS 1.3 for P2P communications
+- Capability-based security in Rholang contracts
+
+## Git and Version Control
+
+### Git Interaction Policy (agents)
+- Use the harness commit command for git add and commit operations, for example `/quick-commit` in Claude Code, `/skill:git-commit` in Pi, or `$git-commit` in Codex.
+- Use the harness push command for git push operations, for example `/recursive-push` in Claude Code.
+- Do not run `git add`, `git commit`, or `git push` directly unless explicitly requested
+- **Commit consent applies to one commit.** Create a commit only when the user invokes the commit command or gives clear consent for that commit.
+- This rule includes merge commits and plumbing equivalents such as `git commit-tree` and `git update-ref`.
+- Consent from a plan, an earlier commit, or a previous merge does not apply.
+- **Merge conflict requests authorize only conflict resolution.** Resolve the files, verify the build, report the result, and stop before the merge commit.
+- A user-run `git merge` command is not a request for the agent to act.
+- `git mv` is permitted but requires user confirmation
+- `git stash`:
+  - `git stash list`, `git stash show` are permitted (read-only)
+  - `git stash`, `git stash push|save|apply` require user confirmation
+  - Do not use `git stash pop|drop|clear|branch`. These commands can silently lose uncommitted work.
+- Never create a worktree with `git worktree add` unless the user explicitly requests it.
+- Do all work in this checkout. Create new branches here instead of in sibling directories.
+- Worktrees fragment local state. They can hide branches from the push command and can cause an accidental push to a protected branch.
+- You can use `git worktree list` for read-only inspection.
+- Get user confirmation before you use `git worktree remove` or `git worktree prune`.
+- **Exception:** In agentic mode, all restrictions are lifted.
+- The instruction to "commit frequently" applies to humans and fully autonomous modes. Interactive consent rules override this instruction.
+
+**Full Documentation**: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md) (canonical; also available at `../../SA/top-level-gitlab-profile/docs/common/git-interaction-policy.md` in a multi-repo workspace checkout).
+
+### Commit Messages
+- Use `[agent]` prefix in agentic mode
+- Do NOT include an assistant attribution footer or emoji
+- Do NOT include Co-Authored-By lines
+- Keep commit messages clean and professional
+- Every commit author and `Co-authored-by` trailer must be ratified. GitHub lists each co-author email that maps to an account in the contributors graph.
+- An email is ratified when it authored a commit in the base branch history. Only accepted pull requests reach that history. A `Co-authored-by` trailer never ratifies an email.
+- The CI `Commit Policy` job checks every commit author and co-author. A pull request cannot ratify its own identities.
+- The `.githooks/commit-msg` hook checks co-authors only, so a first-time contributor can commit locally. Both reject `Claude-Session` trailers.
+- An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance. Only a human account gets this exemption. A bot or app account does not.
+- A maintainer import of a fork pull request keeps that exemption. Commit Policy exempts each commit that the fork pull request lists and attributes to its author. `.github/scripts/commit-policy-exemptions.sh` holds the rule.
+- `.github/denied-identities.txt` lists identities that are always rejected, even when the history ratifies them. It blocks `@anthropic.com`. CI reads it from the base branch.
+- Turn off the co-author attribution setting of your harness.
+
+### Branch Strategy
+- `master` is the default branch and release line. Maintainers promote `dev` to `master` with `just promote`.
+- `just promote` opens the promotion from a temporary `promote/*` branch. Do not open a promotion with head `dev`. GitHub deletes the head branch of a merged pull request and retargets every pull request based on it to `master`. The `Promotion Source` check rejects a pull request from `dev` to `master`.
+- `dev` is the integration branch. Feature and fix pull requests target this branch.
+- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
+- `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
+- `just backmerge` opens the back-merge from a temporary `backmerge/*` branch. Do not open a pull request with head `master` or `dev`. Its **Update branch** button merges the base into the protected head through the admin bypass. The `Promotion Source` check rejects such a pull request, and the `Protected Head Guard` workflow closes it.
+- There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
+
+### Continuous Integration and Deployment
+- Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Do not merge a pull request by hand. The `mergify-only` ruleset blocks a manual merge, also for organization admins.
+- A push to a pull request runs only the GitHub-hosted checks: static checks, script tests, and unit tests.
+- The heavy Integration Pipeline runs on OCI runners for these events:
+  - a pull request with the `ci-heavy` label
+  - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI tests when the merged head or its merge group passed them on the same tree. It still builds and publishes the images.
+  - every merge group, until the GitHub merge queue leaves `dev`
+- Mergify adds `ci-heavy` to every open, non-draft pull request into `dev`, `master`, `ca-canary` (`ca/` heads), and `ca-release`. It adds the label again when someone removes it. Open a new pull request with `--label ci-heavy`.
+- Each push to a pull request runs the heavy pipeline again on OCI. Push in batches, because each heavy run uses the shared daily OCI instance quota. A push or a `gh pr edit` cancels a running heavy run.
+- A queue merges only after both Integration gates succeed, except with a waiver:
+  - Only a member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run, only on that member's own pull request, and only into `dev` or `ca-canary`.
+  - To waive, add the `ci-heavy-waived` label and remove `ci-heavy`. CI then reruns with the current labels and skips the heavy pipeline. To avoid any heavy run, open the pull request with `--label ci-heavy-waived` instead of `--label ci-heavy`.
+  - Promotions into `master` and `ca-release` and every hotfix always need `ci-heavy`.
+- A pull request from a fork gets no heavy run. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with the body line `Imports fork pull request #<N>.`
+- `docs/ci.md` describes the jobs, the required checks, the Mergify queues, and the merge rulesets.
+
+## Relationship to f1r3node
+This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
+- **Removed**: Nix flake, SBT build, Scala source, `.envrc`, JVM tooling
+- **Kept**: All 10 Rust crates, Cargo workspace, protobuf definitions, Docker configs, docs
+- **Added**: Native dependency install instructions (Homebrew, apt)
+
+## Subagent Usage
+
+- Only use a subagent if the user has explicitly told you to do so
+- Do not delegate work to subagents on your own initiative. Perform tasks directly by default
+
+## Project Workflow
+
+This section gives the coordination and tasking rules of this repository. The Stigmergic Collaboration section below gives the workspace standard.
+
+### Key Principles
+
+1. **Stigmergic Collaboration**: Coordinate with other agents through shared `.md` files
+2. **Document-First**: Create design docs and specifications BEFORE implementation
+3. **Signal vs. Slop**: Maximize code that solves problems. Avoid over-engineering.
+4. **Acceptance Criteria**: Define measurable success criteria in task definitions
+
+### Standard Document Structure
+
+| Document | Purpose | Location |
+|----------|---------|----------|
+| User Stories | Business needs and acceptance criteria | `docs/UserStories.md` |
+| Tasks/Epics | Implementation tracking | `docs/ToDos.md` |
+| Completed Work | Historical reference | `docs/CompletedTasks.md` |
+| Backlog | Deferred items | `docs/Backlog.md` |
+| Work Logs | Session progress | `docs/work-logs/*.md` |
+| Discoveries | Shared findings | `docs/discoveries/*.md` |
+
+### Before Starting Work
+
+1. **Read `docs/ToDos.md`** to check task status and claims
+2. **Check `docs/work-logs/`** for existing progress on related tasks
+3. **Review `docs/discoveries/`** for relevant context from other agents
+
+### When Claiming a Task
+
+Update the task in `docs/ToDos.md`:
+
+```yaml
+---
+id: TASK-001
+status: in_progress          # Changed from 'pending'
+claimed_by: claude-session-a1b2c3  # See Implementer Identification format
+claimed_at: 2025-01-15T10:00:00Z
+# Other valid claimed_by formats:
+#   human-jeff@example.com        # Human (git config --get user.email)
+#   design-sprint/researcher      # Agent team member ({team}/{name})
+#   pi-session-a1b2c3             # Another harness ({tool}-session[-{id}])
+---
+```
+
+### During Work
+
+1. **Create work log** at `docs/work-logs/task-{id}-{timestamp}.md`
+2. **Document discoveries** in `docs/discoveries/` for other agents
+3. **Update blockers** if you encounter dependencies
+
+### Before Pausing/Completing
+
+Update your work log with handoff notes:
+
+```yaml
+---
+handoff_status: ready | paused | blocked
+next_steps:
+  - What remains to be done
+---
+```
+
+### Tasking Conventions
+
+Three workspace standards define the task files. This repository adds the conventions below to them.
+
+- The Epic Task Structure Reference defines the epic and task YAML.
+- The User Stories Standard defines the story format and its acceptance criteria.
+- The ToDos MR/PR Tracking Standard defines the `docs/ToDos.md` frontmatter.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/epic-task-structure.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/epic-task-structure.md
+```
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/user-stories-standard.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md
+```
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/todos-mr_pr-tracking-standard.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/todos-mr_pr-tracking-standard.md
+```
+
+**Epics.** Write each epic as a fenced YAML block with `epic_id: EPIC-NNN`, `title`, `status`, `priority`, `user_story`, and `tasks`. Set `user_story` to the identifier of the story that the epic implements.
+
+**Tasks.** Use the identifier form `TASK-NNN-N`, where `NNN` is the epic number. This repository does not use the `TODO-NNN-NNN` form of the standard.
+
+**Acceptance criteria.** Give each task an `acceptance` list of measurable conditions.
+
+- The user story keeps the business-level criteria.
+- The task criteria state the technical evidence that closes the task, for example a test name, a metric, or a soak result.
+
+**Optional task fields.** Use these fields when they apply:
+
+| Field | Content |
+|---|---|
+| `notes` | Context that another agent needs |
+| `branch`, `pr_base_branch`, `pull_request` | The branch, its target, and the pull request number |
+| `blocked_by` | Task identifiers, pull requests, or external entries that block the task |
+| `finding` | The observed defect or evidence that started the task |
+| `decision` | A maintainer decision, with its date |
+
+**Value streams.** Record the value stream on the user story, in a `**Value Stream:**` line after `**Implemented in:**`. An epic gets its value stream through its `user_story` field. The workspace glossary defines a value stream as the end-to-end sequence that delivers a discrete unit of value.
+
+### Configuration File Conventions
+
+When creating or modifying configuration files, follow these conventions to respect existing project preferences:
+
+**JSON Format Preference Order:**
+
+1. **Check for existing files first**: Before creating any `.json` file, check if `.jsonc` or `.json5` variants exist
+2. **Prefer existing format**: If `config.jsonc` or `config.json5` exists, use that format instead of creating `config.json`
+3. **Default to JSONC**: When creating new config files, prefer `.jsonc` (JSON with Comments) for better maintainability
+
+**Why This Matters:**
+- Projects may have established preferences for comment-supporting JSON formats
+- Creating duplicate configs (e.g., both `biome.json` and `biome.jsonc`) causes confusion
+- JSONC allows inline documentation which improves maintainability
+
+**Examples:**
+
+| If this exists... | Do not create this... | Use this action... |
+|--------------|-----------------|------------|
+| `biome.jsonc` | `biome.json` | Edit the existing `biome.jsonc` |
+| `tsconfig.json5` | `tsconfig.json` | Edit the existing `tsconfig.json5` |
+| `eslint.config.jsonc` | `eslint.config.json` | Edit the existing file |
+| Nothing | - | Create new file as `.jsonc` when comments are useful |
+
+**File Discovery Pattern:**
+
+Before creating any config file, check for variants:
+```bash
+# Check for config variants (example for biome)
+ls biome.json biome.jsonc biome.json5 2>/dev/null
+```
+
+This applies to all commands and scripts that create configuration files.
+
+### Command Quick Reference
+
+These names are the Claude Code commands. Other harnesses use their equivalent skills, for example `/skill:git-commit` in Pi.
+
+#### Git Operations
+- `/quick-commit` - Stage and commit changes (required in safe mode)
+- `/recursive-push` - Push across repositories
+
+#### Task Management
+- `/nextTask` - Find and select next task to work on
+- `/implement` - Begin implementation of a task
+- `/epic-review` - Preview and summarize epics
+- `/epic-hygiene` - Archive completed epics
+
+#### Workspace Sync
+- `/harmonize` - Sync workspace policies into this repo
+- `/multi-repo-sync` - Workspace-wide sync orchestration
+
+## PII Guidelines for Contributors
+
+**CRITICAL - Before submitting any contribution:**
+
+Contributors MUST ensure their code, commits, and documentation do NOT contain PII:
+
+**Check before committing:**
+- [ ] No absolute file paths with usernames in code or documentation
+- [ ] No personal email addresses in code (use generic examples like `user@example.com`)
+- [ ] No real user data in tests or examples (use synthetic/fake data only)
+- [ ] No PII in log statements (sanitize or use user IDs instead)
+- [ ] No PII in error messages or stack traces
+- [ ] No PII in code comments or documentation
+- [ ] No credentials, tokens, or secrets in code (use environment variables)
+- [ ] No IP addresses, MAC addresses, or device identifiers in examples
+
+**If you accidentally committed PII:**
+1. **DO NOT** push to remote repository
+2. Use `git reset` to remove the commit
+3. If already pushed, contact maintainers immediately
+4. Repository history may need to be rewritten to remove PII
+
+**Use these instead:**
+- File paths: Use relative paths or generic placeholders (`[WORKSPACE_ROOT]/project/`)
+- Email addresses: Use `user@example.com`, `admin@example.com`
+- Names: Use `John Doe`, `Jane Smith`, `User123`
+- Phone numbers: Use `+1-555-0100` (officially reserved for examples)
+- IP addresses: Use reserved ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`)
+- Dates: Use recent but generic dates, not specific personal dates
+
+**For test data:**
+- Use test data generators that create realistic but fake data
+- Use well-known test fixtures (e.g., `test@example.com`)
+- Never use production or real user data in development/testing
+
+## AI Artifact Generation Guidelines
+
+**Core strategy:** Default to **Markdown + Mermaid** as the source of truth for all generated artifacts. Use **HTML** only when high engagement or advanced interactivity is required.
+
+**Preferred formats:**
+
+| Format | Use for | Notes |
+|--------|---------|-------|
+| **Markdown + Mermaid** | Primary. Diagrams (flowcharts, sequences, architecture, timelines, Gantt, ERDs), structured documents, plans, specs | Relative links (`./images/`, `./docs/`) and GitHub/GitLab raw URLs for local/cloud asset referencing |
+| **HTML (CSS/JS + embedded Mermaid)** | Secondary. Interactive dashboards, prototypes, dynamic reviews, stakeholder deliverables | When visual polish and engagement are critical (tabs, sliders, clickable elements) |
+
+**Hybrid rule:** Always produce Markdown as the canonical, Git-friendly version first. Generate a self-contained HTML export on request.
+
+**Key principles:**
+
+- Prioritize human readability, editability, and Git compatibility (clean diffs, relative paths, native rendering on GitHub/GitLab).
+- Maximize information density while avoiding text walls — convert complex information into Mermaid diagrams.
+- Support seamless referencing of local files and cloud artifacts (images, other docs, raw Git content).
+- Favor Markdown for internal/agent use and long-term storage (token efficiency).
+- Use HTML when delivering to stakeholders or for living documents (engagement).
+
+**Output guidance:** When creating artifacts, ask whether HTML interactivity is needed. Default to clean Markdown with embedded Mermaid unless specified.
 
 <!-- ste-policy: required -->
 
@@ -129,49 +557,195 @@ For committed prompt and policy files, run the repository STE Check. Review all 
 
 A checker cannot establish full ASD-STE100 conformance. Do not claim that text is ASD-STE100 compliant only because an automated check passes.
 
-## Git Interaction
+## UI Test Assertions
 
-- Do not run `git add`, `git commit`, or `git push` unless explicitly requested
-- Commit consent applies to one commit. Do not create a commit without a clear request for that commit.
-- This rule includes merge commits and plumbing equivalents such as `commit-tree` and `update-ref`.
-- Consent from a plan, an earlier commit, or a prior merge does not apply.
-- A request to resolve merge conflicts authorizes conflict resolution only.
-- Resolve the files, verify the build, report the result, and stop before the merge commit.
-- Do not use `git stash pop|drop|clear|branch`. These commands can lose changes.
-- Other stash writes require user confirmation. You can use `stash list` and `stash show`.
-- See `CLAUDE.md` § "Git Interaction Policy" for the full rules
+React UI tests must prove user-observable DOM structure and state. Do not test incidental copy or formatted sample values.
+Use exact text or value assertions only when the test covers copy, formatting, or content transformation.
 
-## Subagent Usage
+- **Preferred:** Use accessibility-first queries for DOM elements and states. Examples include roles, labels, focus state, and ARIA relationships.
+- **Preferred:** Assert semantic regions/components are present and wired correctly (tabs, tabpanels, dialogs, forms, buttons, lists), then assert behavior through state changes or callback/data-source calls.
+- **Acceptable:** Use `data-testid` when no accessible handle exists. You can also use it for presentational elements or stable component boundaries.
+- **Acceptable:** HTML `id` attributes for form elements and ARIA relationships.
+- **Avoid:** `getByText`/`queryByText` for literal strings that are merely display copy, repeated metrics, formatted numbers, or mock-data values.
+- **Avoid:** Do not use `getAllByText(...).length` as a substitute for a meaningful DOM assertion. It couples tests to duplicated visual text instead of behavior.
+- **Avoid:** CSS class selectors that may change with styling updates.
 
-- Only use a subagent if the user has explicitly told you to do so
-- Do not delegate work to subagents on your own initiative. Perform tasks directly by default
+Examples:
 
-## Project Workflow
+```tsx
+// GOOD: accessibility-first DOM element + state
+expect(screen.getByRole("button", { name: "Refresh agents" })).toBeEnabled();
 
-- Coordinate with other agents through shared Markdown files. Read `docs/ToDos.md` before you start, and claim a task there before you work on it.
-- For a significant feature, write the user story, the design, and the specification before the code. Then add the epic and its tasks to `docs/ToDos.md`.
-- Task identifiers use the form `TASK-NNN-N`, where `NNN` is the epic number. Give each task an `acceptance` list of measurable conditions.
-- Record the value stream on the user story. An epic gets its value stream through its `user_story` field.
-- See `CLAUDE.md` § "Project Workflow" for the claim format, the optional task fields, and the workspace standards.
+// ACCEPTABLE: fallback when no accessible role/name fits
+expect(screen.getByTestId("cost-optimization-panel")).toBeInTheDocument();
+
+// GOOD for data-flow behavior: verify source + rendered component boundary,
+// not a duplicated metric string like "7.5%".
+expect(fetchQualityPipeline).toHaveBeenCalledTimes(1);
+expect(screen.getByRole("tablist", { name: "Quality Pipeline tabs" })).toBeInTheDocument();
+expect(screen.getByRole("tab", { name: /overview/i })).toHaveAttribute("aria-selected", "true");
+
+// BAD: brittle copy assertion
+expect(screen.getByText("Priority set by BountyForge routing")).toBeInTheDocument();
+
+// BAD: brittle mock-value / duplicated visual text assertion
+expect(screen.getByText("7.5%")).toBeInTheDocument();
+expect(screen.getAllByText("7.5%").length).toBeGreaterThan(0);
+```
+
+**When exact text is appropriate:** Use exact text assertions only when the acceptance criteria is about user-facing copy, accessibility name computation, validation messages, formatting rules, or transformed content. Prefer scoping with `within(...)` to a semantic container so the assertion remains tied to the behavior under test.
+
+## Worktree Policy
+
+Git worktrees are an **agentic-mode-only** tool in this workspace. In safe /
+interactive mode:
+
+- **NEVER create a git worktree** unless the user explicitly asks for one in
+  their own words. This covers every creation path equally: `git worktree add`,
+  harness-native tools (e.g. an `EnterWorktree` tool, subagent
+  `isolation: "worktree"`, workflow worktree isolation), and any script that
+  wraps them.
+- All work happens in the single main checkout on the current branch.
+- `git worktree list` is read-only and permitted.
+- `git worktree remove` and `git worktree prune` require explicit user
+  confirmation.
+
+**Why:** worktrees fragment local state, and the push command does not find
+them. Worktrees were the root cause of an accidental push to a
+protected branch. A worktree created silently by an assistant is a worktree
+nobody pushes, cleans up, or audits.
+
+**Exception:** In agentic mode, all restrictions are lifted.
+YOLO mode runs *inside* a worktree that the human created. Running in a worktree
+never authorizes the creation of more worktrees.
+
+Canonical policy: Git Interaction Policy, Worktrees section.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/git-interaction-policy.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md
+```
+
+## grepai - Semantic Code Search
+
+`grepai` is an optional, MIT-licensed semantic-search tool. If it is installed
+and indexed locally for this repo, prefer it for intent-based code exploration.
+If it is unavailable, use your harness's native search and file-reading tools.
+The tool is recommended but never required. Nothing here is harness-specific -
+substitute your tool's equivalents for the generic actions described below.
+Setup (with the privacy-first local Ollama embedder as default) lives in the
+CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
+
+## Stigmergic Collaboration
+
+This project uses **stigmergic collaboration** - agents coordinate through shared `.md` files rather than direct messaging. When agents work as an agent team with real-time messaging, that messaging replaces file-based coordination. The stigmergic files remain for cross-session continuity, audit trails, and cross-tool interoperability.
+
+Several harnesses can work in the same checkout at the same time. Keep each change on its own branch, and do not commit or move files that another agent changed.
+
+Full guide: Stigmergic Collaboration Guide.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/stigmergic-collaboration.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/stigmergic-collaboration.md
+```
+
+### Document-First Workflow
+
+For significant features:
+
+1. **User Story**: Capture the business need in `docs/UserStories.md`
+   - Define persona, capability, and benefit
+   - List acceptance criteria
+
+2. **Design Document**: Describe problem and solution
+   ```bash
+   cp ../../SA/top-level-gitlab-profile/docs/templates/design-doc.md.template docs/designs/[feature-name].md
+   ```
+
+3. **Specification**: Define interfaces and behavior
+   ```bash
+   cp ../../SA/top-level-gitlab-profile/docs/templates/specification.md.template docs/specs/[component-name].md
+   ```
+
+4. **Task Definition**: Add epic to `docs/ToDos.md` with tasks
+
+5. **Implement**: Only after documentation is reviewed
+
+6. **Complete**: Update user story status when epic completes
 
 ## Cross-Repository References
 
-- Use a document-relative Markdown link for a file in this repository.
-- Use a `yaml cross-reference` record for current guidance in another repository. Do not write a Markdown link to a file in another repository.
-- See `CLAUDE.md` § "Cross-Repository References" for the record fields and the check command.
+Use the reference form that matches the location of the target. The Cross-Reference Standards document contains the full rules.
+
+| Target | Required form |
+| --- | --- |
+| File in the same repository | Document-relative Markdown link |
+| Current guidance in another repository | `yaml cross-reference` block or `cross_references` frontmatter with `purpose: current` |
+| Evidence or an approved decision | Record with `purpose: evidence` and a full commit ID |
+
+Obey these rules when you write a record:
+
+- Set `checkout` relative to the directory of the source document.
+- Set `path` relative to the root of the target repository.
+- Take the hosted project path from the configured remote or from `repo-mapping.yaml`. Local directory names and hosted project names can be different.
+- Set `revision` to the branch that holds the current content. Do not assume `master` or `main`.
+- Do not write a Markdown link to a file in another repository. A single-repository clone cannot resolve that link, and the CI link check fails.
+- Before you commit, run `scripts/check-broken-links.py --references-only` from the top-level profile on each changed Markdown file.
+
+Do not copy the link form of older text. Older text can contain the two-label form that version 2 of the standard replaced.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/cross-reference-standards.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/cross-reference-standards.md
+```
 
 ## Development Modes
+<!-- SYNC:standard -->
 
-| Mode | Command | Git access |
+This project supports three operational modes for AI-assisted development. The commands are the Claude Code names. Other harnesses use their equivalent launch modes.
+
+| Mode | Command | Git Access |
 |------|---------|------------|
-| Safe | `claude` / `claude-safe` | Through `/quick-commit` and `/recursive-push` only |
-| Agentic | `claude-agentic` | Direct git access |
-| YOLO | `claude-agentic` in a worktree that the human created | Full autonomy in isolation |
+| **Safe** | `claude` / `claude-safe` | Through the commit and push commands only |
+| **Agentic** | `claude-agentic` | Direct git permitted |
+| **YOLO** | `claude-agentic` (in user-created worktree) | Full autonomy, isolated |
 
-Safe mode is the default. Agents never create worktrees outside agentic mode.
+**Safe mode** is the default. Use the harness commands for all git operations.
+**Agentic mode** requires branch consistency (`check-repo-consistency.sh --strict`).
+**YOLO mode** requires a git worktree for isolation. The human creates the worktree. Agents never create worktrees outside agentic mode (see Worktree Policy).
 
-## Security
-- Never log or expose private keys
-- Validate all user inputs and state transitions
-- TLS 1.3 for P2P communications
-- Capability-based security in Rholang contracts
+Reference: Development Modes.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/development-modes.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/development-modes.md
+```
+
+# important-instruction-reminders
+- Do only the requested work.
+- Do not create a file unless it is necessary to complete the request.
+- Prefer an edit to an existing file instead of a new file.
+- Create a documentation file only when the user explicitly requests it.
+- Before code changes, state the files, the method, and the assumptions.
+- Wait for user confirmation before you make a code change.
+- For a simple single-file edit, a one-line summary is sufficient.
