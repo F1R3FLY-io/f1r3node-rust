@@ -633,6 +633,7 @@ pub enum ParConstructionError {
     Publication(UniqueBagError),
     FamilyMetrics(ParBagCodecError),
     InvalidCanonicalEzipperRegion,
+    MissingStableCanonicalSegment,
 }
 
 impl fmt::Display for ParConstructionError {
@@ -664,6 +665,9 @@ impl fmt::Display for ParConstructionError {
             Self::InvalidCanonicalEzipperRegion => {
                 formatter.write_str("invalid canonical EZipper protobuf region")
             }
+            Self::MissingStableCanonicalSegment => {
+                formatter.write_str("stable component has no canonical trie segment")
+            }
         }
     }
 }
@@ -678,7 +682,8 @@ impl std::error::Error for ParConstructionError {
             | Self::MissingParSlot { .. }
             | Self::ExtraParSlots { .. }
             | Self::ChildArity { .. }
-            | Self::InvalidCanonicalEzipperRegion => None,
+            | Self::InvalidCanonicalEzipperRegion
+            | Self::MissingStableCanonicalSegment => None,
         }
     }
 }
@@ -1484,10 +1489,18 @@ pub enum PlannedConnective<'a> {
 
 enum CanonicalSegment {
     Bytes(Box<[u8]>),
+    ImportedBytes(Box<ImportedCanonicalSegment>),
     PooledBytes(ByteSpan),
     List(Box<[PlannedPar]>),
     Tuple(Box<[PlannedPar]>),
     EPathMap(PlannedEPathMap),
+}
+
+/// Boxed so the rare imported segment keeps every `CanonicalSegment` payload at
+/// two words, which holds `ComponentNode` within its pooled-storage budget.
+struct ImportedCanonicalSegment {
+    segment: Box<[u8]>,
+    split_path: Option<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2264,6 +2277,9 @@ impl ParConstruction {
                         .expect("a newly planned stable component has a segment program")
                     {
                         CanonicalSegment::Bytes(bytes) => out.extend_from_slice(bytes),
+                        CanonicalSegment::ImportedBytes(imported) => {
+                            out.extend_from_slice(&imported.segment)
+                        }
                         CanonicalSegment::PooledBytes(span) => {
                             out.extend_from_slice(span.view(&self.byte_pool))
                         }
@@ -2726,6 +2742,19 @@ impl ParConstruction {
         value: &T,
     ) -> Result<PlannedComponent, ParConstructionError> {
         let key = CanonicalParBagKey::compile(value);
+        let stable = key.canonical_path_stable();
+        let segment = if stable {
+            Some(CanonicalSegment::ImportedBytes(Box::new(
+                ImportedCanonicalSegment {
+                    segment: T::stable_canonical_segment(value)
+                        .ok_or(ParConstructionError::MissingStableCanonicalSegment)?
+                        .into_boxed_slice(),
+                    split_path: T::stable_canonical_split_path(value).map(Vec::into_boxed_slice),
+                },
+            )))
+        } else {
+            None
+        };
         let (encoded_score, encoded_protobuf) = key.parts();
         let score = self.score_from_encoded(encoded_score)?;
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
@@ -2733,7 +2762,7 @@ impl ParConstruction {
         } else {
             ProtoProgram::One(ProtoPiece::Bytes(encoded_protobuf.into()))
         })?;
-        Ok(self.component_from_proto(T::TAG, score, protobuf, key.canonical_path_stable(), None))
+        Ok(self.component_from_proto(T::TAG, score, protobuf, stable, segment))
     }
 
     /// Import an authoritative resident runtime zipper without decoding its
@@ -4291,6 +4320,14 @@ impl ParConstruction {
         } else {
             None
         };
+        let canonical_path_override = if canonical_path_stable {
+            singleton.and_then(|component| match &component.canonical_segment {
+                Some(CanonicalSegment::ImportedBytes(imported)) => imported.split_path.clone(),
+                _ => None,
+            })
+        } else {
+            None
+        };
 
         let id = PlannedPar(self.pars.len());
         self.pars.push(ParNode {
@@ -4302,7 +4339,7 @@ impl ParConstruction {
             protobuf_zero_count,
             canonical_path_stable,
             split_children,
-            canonical_path_override: None,
+            canonical_path_override,
             canonical_segment_override: None,
         });
         Ok(id)
@@ -6324,6 +6361,163 @@ mod tests {
     }
 
     #[test]
+    fn opaque_stable_component_import_matches_authoritative_trie_keys() {
+        let cases = [
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(i64::MIN)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GString("a\0b".to_owned())),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GByteArray(vec![0, 255, 1])),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![resident_gint(1), resident_gint(-2)],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder: None,
+                })),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![resident_gint(3), resident_gint(4)],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::default())),
+            },
+        ];
+
+        for expr in cases {
+            assert!(<Expr as ParBagComponent>::canonical_path_stable(&expr));
+            let source = Par::default().with_exprs(vec![expr.clone()]);
+            let mut arena = ParConstruction::new();
+            let component = arena.import_component(&expr).unwrap();
+            let planned = arena
+                .singleton_component(component, Vec::new(), false)
+                .unwrap();
+            assert_eq!(
+                arena.canonical_path_bytes(planned).unwrap(),
+                super::super::canonical_path::encode_trie_path(&source)
+            );
+            assert_eq!(
+                arena.canonical_segment_bytes(planned).unwrap(),
+                super::super::canonical_path::encode_trie_segment(&source)
+            );
+            assert_eq!(
+                arena.protobuf_bytes(planned),
+                source.protobuf_bytes().unwrap()
+            );
+            let recomposed = arena.with_metadata(planned, Vec::new(), false).unwrap();
+            assert_eq!(
+                arena.canonical_path_bytes(recomposed).unwrap(),
+                super::super::canonical_path::encode_trie_path(&source)
+            );
+        }
+
+        let private = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: vec![0, 1, 255],
+            })),
+        };
+        assert!(<GUnforgeable as ParBagComponent>::canonical_path_stable(
+            &private
+        ));
+        let source = Par::default().with_unforgeables(vec![private.clone()]);
+        let mut arena = ParConstruction::new();
+        let component = arena.import_component(&private).unwrap();
+        let planned = arena
+            .singleton_component(component, Vec::new(), false)
+            .unwrap();
+        assert_eq!(
+            arena.canonical_path_bytes(planned).unwrap(),
+            super::super::canonical_path::encode_trie_path(&source)
+        );
+        assert_eq!(
+            arena.canonical_segment_bytes(planned).unwrap(),
+            super::super::canonical_path::encode_trie_segment(&source)
+        );
+
+        let unstable = Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(resident_gint(1)),
+            })),
+        };
+        assert!(!<Expr as ParBagComponent>::canonical_path_stable(&unstable));
+        let source = Par::default().with_exprs(vec![unstable.clone()]);
+        let mut arena = ParConstruction::new();
+        let component = arena.import_component(&unstable).unwrap();
+        let planned = arena
+            .singleton_component(component, Vec::new(), false)
+            .unwrap();
+        assert_eq!(
+            arena.canonical_path_bytes(planned).unwrap(),
+            super::super::canonical_path::encode_trie_path(&source)
+        );
+    }
+
+    #[test]
+    fn opaque_nested_epathmap_import_preserves_clone_on_write_keys_on_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let inner = Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::from_set_iter(
+                        [resident_gint(7)],
+                        Vec::new(),
+                        false,
+                        None,
+                    ))),
+                }]);
+                let original =
+                    EPathMap::from_set_iter([inner, resident_gint(9)], Vec::new(), false, None);
+                let original_snapshot = original.trie_snapshot().to_vec();
+                let mut changed = original.clone();
+                changed.insert_entry(resident_gint(11));
+                assert_eq!(original.trie_snapshot(), original_snapshot);
+                assert_ne!(changed.trie_snapshot(), original.trie_snapshot());
+
+                let mapped = EPathMap::new_map(
+                    [(resident_gint(1), resident_gint(2))],
+                    Vec::new(),
+                    false,
+                    None,
+                );
+                for map in [original, changed, mapped] {
+                    let expr = Expr {
+                        expr_instance: Some(ExprInstance::EPathmapBody(map)),
+                    };
+                    assert!(<Expr as ParBagComponent>::canonical_path_stable(&expr));
+                    let source = Par::default().with_exprs(vec![expr.clone()]);
+                    let mut arena = ParConstruction::new();
+                    let component = arena.import_component(&expr).unwrap();
+                    let planned = arena
+                        .singleton_component(component, Vec::new(), false)
+                        .unwrap();
+                    assert_eq!(
+                        arena.canonical_path_bytes(planned).unwrap(),
+                        super::super::canonical_path::encode_trie_path(&source)
+                    );
+                    assert_eq!(
+                        arena.canonical_segment_bytes(planned).unwrap(),
+                        super::super::canonical_path::encode_trie_segment(&source)
+                    );
+                    assert_eq!(
+                        arena.protobuf_bytes(planned),
+                        source.protobuf_bytes().unwrap()
+                    );
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn stable_resident_import_remains_navigable_after_parallel_identity() {
         let source = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EListBody(EList {
@@ -6526,5 +6720,14 @@ mod tests {
             .expect("spawn fixed-stack construction gate")
             .join()
             .expect("fixed-stack construction gate");
+    }
+
+    mod opaque_canonical_segment_import_properties {
+        use super::*;
+
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/opaque_canonical_segment_import_properties.rs"
+        ));
     }
 }

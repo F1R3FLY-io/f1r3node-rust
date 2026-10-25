@@ -1,5 +1,6 @@
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Expr, Par, Send};
+use models::rhoapi::var::VarInstance;
+use models::rhoapi::{EList, EPathMap, EVar, Expr, Par, Send, Var};
 use models::rust::pathmap_crate_type_mapper::substitution_identity;
 use models::rust::utils::{new_boundvar_par, new_gint_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -99,4 +100,45 @@ fn the_broader_reducer_identity_domain_is_rejected_for_substitution() {
         .expect("one Send")
         .0;
     assert_eq!(send.chan, Some(gint(5)));
+}
+
+#[test]
+fn an_open_sibling_drives_opaque_pathmap_import_through_substitution() {
+    let map = EPathMap::from_set_iter([gint(7), gint(9)], Vec::new(), false, None);
+    let map_expr = Expr {
+        expr_instance: Some(ExprInstance::EPathmapBody(map.clone())),
+    };
+    let open = Par::default()
+        .with_exprs(vec![map_expr.clone(), Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(0)),
+                }),
+            })),
+        }])
+        .with_locally_free(vec![1]);
+    assert!(!substitution_identity(&open));
+
+    let result = subject()
+        .substitute_no_sort(open, 0, &Env::new().put(gint(11)))
+        .expect("open sibling substitution and opaque PathMap import succeed");
+    let exprs = result.decode_occurrences::<Expr>();
+    assert!(exprs.contains(&map_expr));
+    assert!(exprs
+        .iter()
+        .any(|expr| { matches!(expr.expr_instance, Some(ExprInstance::GInt(11))) }));
+    let imported_map = exprs
+        .into_iter()
+        .find(|expr| matches!(expr.expr_instance, Some(ExprInstance::EPathmapBody(_))))
+        .expect("the opaque PathMap survives substitution");
+    let expected = Par::default().with_exprs(vec![map_expr]);
+    let actual = Par::default().with_exprs(vec![imported_map]);
+    assert_eq!(
+        models::rust::canonical_path::encode_trie_path(&actual),
+        models::rust::canonical_path::encode_trie_path(&expected)
+    );
+    assert_eq!(
+        models::rust::canonical_path::encode_trie_segment(&actual),
+        models::rust::canonical_path::encode_trie_segment(&expected)
+    );
 }

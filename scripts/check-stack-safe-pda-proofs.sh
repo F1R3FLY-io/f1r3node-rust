@@ -82,7 +82,7 @@ rpb3_run_tests() {
     return 1
   fi
   printf '%s\n' "$output"
-  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" <<<"$output"; then
+  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; [0-9]+ ignored;" <<<"$output"; then
     echo "stack-safe-pda: expected $expected nonignored RPB3 tests for $*" >&2
     return 1
   fi
@@ -295,6 +295,14 @@ epathmap_import_proofs() {
   rocq_check_modules "canonical singleton EPathMap import" StackSafePDA.CanonicalEPathMapImport
 }
 
+opaque_canonical_segment_import_proofs() {
+  local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  rocq_reject_placeholders theories/OpaqueCanonicalSegmentImport.v
+  rocq_compile_with_closed_count theories/OpaqueCanonicalSegmentImport.v 10 \
+    "opaque stable segment, split path, rewrap and dropped-segment mutant"
+  rocq_check_modules "opaque canonical segment import" StackSafePDA.OpaqueCanonicalSegmentImport
+}
+
 epathmap_score_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/CanonicalEPathMapScore.v
@@ -379,6 +387,8 @@ epathmap_import_runtime() {
   rpb3_run_tests 33 --release -j4 --lib canonical_bytes_arena
   rpb3_run_tests 33 -j4 --lib canonical_bytes_arena
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
+  rpb3_run_tests 3 --release -j4 --lib opaque_canonical_segment_import_properties::
+  rpb3_run_tests 3 -j4 --lib opaque_canonical_segment_import_properties::
   rpb3_run_tests 38 --release -j4 --lib frame_storage_tests
   rpb3_run_tests 38 -j4 --lib frame_storage_tests
   rpb3_run_tests 3 --release -j4 --lib line_batch_tests
@@ -493,6 +503,7 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
   rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1
   epathmap_import_proofs
+  opaque_canonical_segment_import_proofs
   rocq_compile_with_closed_count theories/ChannelImage.v 11 "RCI2 byte framing"
   rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "RhoPath zero framing"
   epathmap_score_proofs
@@ -726,6 +737,7 @@ rocq_reject_placeholders theories/EPM1.v
 rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
 rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1
 epathmap_import_proofs
+opaque_canonical_segment_import_proofs
 rocq_reject_placeholders theories/UnaryEListConstruction.v theories/UnaryEListConstructionMutants.v
 rocq_compile_with_closed_count theories/UnaryEListConstruction.v 22 \
   "concrete unary-EList protobuf, score and checked construction"

@@ -503,6 +503,7 @@ impl EncPar<'_> {
 }
 
 enum EncOp<'p> {
+    BorrowedStableExpr(&'p Expr),
     /// Emit one segment for `par`. `known_stable` short-circuits the domain
     /// walk inside proven-stable subtrees; `top_level` marks a top-level
     /// segment position (the only place the trie escape may appear).
@@ -645,6 +646,7 @@ impl<'p> EncMachine<'p> {
     fn run(&mut self) -> Result<(), CodecError> {
         while let Some(op) = self.ops.pop() {
             match op {
+                EncOp::BorrowedStableExpr(expr) => self.encode_borrowed_stable_expr(expr)?,
                 EncOp::Segment {
                     par,
                     known_stable,
@@ -895,6 +897,103 @@ impl<'p> EncMachine<'p> {
         }
     }
 
+    fn encode_borrowed_stable_expr(&mut self, expr: &'p Expr) -> Result<(), CodecError> {
+        let Some(instance) = expr.expr_instance.as_ref() else {
+            unreachable!("stable Expr has a constructor")
+        };
+        match instance {
+            ExprInstance::GBool(false) => self.emit_byte(tag::GBOOL_FALSE),
+            ExprInstance::GBool(true) => self.emit_byte(tag::GBOOL_TRUE),
+            ExprInstance::GInt(value) => {
+                self.emit_byte(tag::GINT)?;
+                self.emit_uv(zigzag64(*value))
+            }
+            ExprInstance::GString(text) => {
+                self.emit_byte(tag::GSTRING)?;
+                self.emit_uv(text.len() as u64)?;
+                self.emit(text.as_bytes())
+            }
+            ExprInstance::GUri(uri) => {
+                self.emit_byte(tag::GURI)?;
+                self.emit_uv(uri.len() as u64)?;
+                self.emit(uri.as_bytes())
+            }
+            ExprInstance::GByteArray(bytes) => {
+                self.emit_byte(tag::GBYTE_ARRAY)?;
+                self.emit_uv(bytes.len() as u64)?;
+                self.emit(bytes)
+            }
+            ExprInstance::GDouble(bits) => {
+                self.emit_byte(tag::GDOUBLE)?;
+                self.emit(&bits.to_be_bytes())
+            }
+            ExprInstance::GBigInt(bytes) => {
+                self.emit_byte(tag::GBIG_INT)?;
+                self.emit_uv(bytes.len() as u64)?;
+                self.emit(bytes)
+            }
+            ExprInstance::GBigRat(rational) => {
+                self.emit_byte(tag::GBIG_RAT)?;
+                self.emit_uv(rational.numerator.len() as u64)?;
+                self.emit(&rational.numerator)?;
+                self.emit_uv(rational.denominator.len() as u64)?;
+                self.emit(&rational.denominator)
+            }
+            ExprInstance::GFixedPoint(fixed) => {
+                self.emit_byte(tag::GFIXED_POINT)?;
+                self.emit_uv(fixed.unscaled.len() as u64)?;
+                self.emit(&fixed.unscaled)?;
+                self.emit_uv(u64::from(fixed.scale))
+            }
+            ExprInstance::EListBody(list) => {
+                self.emit_byte(tag::ELIST)?;
+                self.emit_uv(list.ps.len() as u64)?;
+                for child in list.ps.iter().rev() {
+                    self.ops.push(EncOp::Segment {
+                        par: EncPar::Borrowed(child),
+                        known_stable: Some(true),
+                        top_level: false,
+                    });
+                }
+                Ok(())
+            }
+            ExprInstance::ETupleBody(tuple) => {
+                self.emit_byte(tag::ETUPLE)?;
+                self.emit_uv(tuple.ps.len() as u64)?;
+                for child in tuple.ps.iter().rev() {
+                    self.ops.push(EncOp::Segment {
+                        par: EncPar::Borrowed(child),
+                        known_stable: Some(true),
+                        top_level: false,
+                    });
+                }
+                Ok(())
+            }
+            ExprInstance::EPathmapBody(map) => {
+                if map.mode() == EPathMapMode::Map {
+                    self.emit_byte(tag::EPATHMAP_MAP)?;
+                    let snapshot = map.trie_snapshot();
+                    self.emit_uv(snapshot.len() as u64)?;
+                    return self.emit(snapshot);
+                }
+                self.emit_byte(tag::EPATHMAP)?;
+                let mut region = Vec::new();
+                {
+                    use pathmap::zipper::{ZipperIteration, ZipperMoving};
+                    let mut rz = map.entry_trie().set_trie().read_zipper();
+                    while rz.to_next_val() {
+                        let path = rz.path();
+                        write_uv(&mut region, path.len() as u64);
+                        region.extend_from_slice(path);
+                    }
+                }
+                self.emit_uv(region.len() as u64)?;
+                self.emit(&region)
+            }
+            _ => unreachable!("stable Expr has a ground constructor"),
+        }
+    }
+
     fn into_buffer(self) -> Vec<u8> {
         debug_assert!(
             self.detours.is_empty(),
@@ -953,6 +1052,39 @@ pub fn encode_trie_segment(par: &Par) -> Vec<u8> {
     });
     machine.run().expect("trie segment encoding is total");
     machine.into_buffer()
+}
+
+pub(crate) fn encode_stable_expr_segment(expr: &Expr) -> Vec<u8> {
+    let mut machine = EncMachine::new();
+    machine.ops.push(EncOp::BorrowedStableExpr(expr));
+    machine
+        .run()
+        .expect("stable Expr segment encoding is total");
+    machine.into_buffer()
+}
+
+pub(crate) fn encode_stable_expr_split_path(expr: &Expr) -> Option<Vec<u8>> {
+    let Some(ExprInstance::EListBody(list)) = expr.expr_instance.as_ref() else {
+        return None;
+    };
+    let mut machine = EncMachine::new();
+    machine.ops.push(EncOp::EmitTerminator);
+    for child in list.ps.iter().rev() {
+        machine.ops.push(EncOp::Segment {
+            par: EncPar::Borrowed(child),
+            known_stable: Some(true),
+            top_level: true,
+        });
+    }
+    machine.run().expect("stable list path encoding is total");
+    Some(machine.into_buffer())
+}
+
+pub(crate) fn encode_stable_private_segment(id: &[u8]) -> Vec<u8> {
+    let mut output = vec![tag::GPRIVATE];
+    write_uv(&mut output, id.len() as u64);
+    output.extend_from_slice(id);
+    output
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

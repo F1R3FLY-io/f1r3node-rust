@@ -138,6 +138,10 @@ pub trait ParBagComponent: sealed::Sealed + ProtobufNode + Sized + 'static {
     /// families that can never be stable use the conservative default.
     fn canonical_path_stable(_value: &Self) -> bool { false }
 
+    fn stable_canonical_segment(_value: &Self) -> Option<Vec<u8>> { None }
+
+    fn stable_canonical_split_path(_value: &Self) -> Option<Vec<u8>> { None }
+
     /// Append the score-order key and canonical protobuf body for one value.
     ///
     /// The default is the complete stack-safe canonical sorter. Components
@@ -692,6 +696,14 @@ impl ParBagComponent for Expr {
         }
     }
 
+    fn stable_canonical_segment(value: &Self) -> Option<Vec<u8>> {
+        Some(super::canonical_path::encode_stable_expr_segment(value))
+    }
+
+    fn stable_canonical_split_path(value: &Self) -> Option<Vec<u8>> {
+        super::canonical_path::encode_stable_expr_split_path(value)
+    }
+
     fn append_key_suffix(value: &Self, out: &mut Vec<u8>) -> usize {
         let score_start = out.len();
         if !Self::semantic_shape_is_complete(value) {
@@ -746,6 +758,15 @@ impl ParBagComponent for GUnforgeable {
 
     fn canonical_path_stable(value: &Self) -> bool {
         matches!(value.unf_instance, Some(UnfInstance::GPrivateBody(_)))
+    }
+
+    fn stable_canonical_segment(value: &Self) -> Option<Vec<u8>> {
+        let Some(UnfInstance::GPrivateBody(private)) = value.unf_instance.as_ref() else {
+            return None;
+        };
+        Some(super::canonical_path::encode_stable_private_segment(
+            &private.id,
+        ))
     }
 
     fn append_key_suffix(value: &Self, out: &mut Vec<u8>) -> usize {

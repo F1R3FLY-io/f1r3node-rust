@@ -13,6 +13,7 @@ theories/RSpaceConsensusIdentityMutants.v
 theories/GenerationCheckpointPublication.v
 theories/EPM1.v
 theories/CanonicalEPathMapImport.v
+theories/OpaqueCanonicalSegmentImport.v
 theories/IncrementalPrepareStreaming.v
 theories/StreamingCodecPDA.v
 theories/RMP2.v

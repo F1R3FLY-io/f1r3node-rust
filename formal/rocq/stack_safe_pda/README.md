@@ -242,6 +242,59 @@ admission optimization, not a new generated schema traversal/manifest entry.
 The [journal](../../../docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-084--2026-09-08-reject-ineligible-singleton-imports-before-expanded-key-inspection)
 retains causal evidence and the distinction between formal premises and runtime tests.
 
+### Opaque canonical-segment import
+
+`ParConstruction::import_component` keeps an imported component's canonical
+score and protobuf body opaque. A stable imported component nevertheless needs
+its borrowed trie **segment** before `emit_canonical_key_into` can publish a
+key. The previous state permitted `canonical_path_stable = true` with no
+segment, which made key emission panic. The fixed import records the stable
+segment from the authoritative resident codec. A stable list also records its
+different top-level **path**: ordered child segments followed by the terminator,
+while its single segment starts with the list tag and child count. Map-mode
+EPathMap uses its stored trie snapshot; set-mode EPathMap uses its trie keys in
+ascending byte order, without a second resident decode.
+
+[`OpaqueCanonicalSegmentImport.v`](theories/OpaqueCanonicalSegmentImport.v)
+models these two key forms, retained opaque score/body bytes, stable and
+nonstable metadata rewrap, and a causal mutant that drops a stable segment.
+Its ten `Print Assumptions` reports are closed, and `coqchk` validates the
+module (source SHA-256
+`874ddffddfa0910a142659d4e4745a66f6efda90e98768ca77b1d1cd3484b0ea`;
+current maintained-gate receipt
+`target/verification/parbag-opaque-8518/current-epathmap-import-gate-r4.log`,
+SHA-256 `a9540ec3e012c6e3c1a63eb9d11ac1dec7a742f71b32f33d22f9069556510a3c`).
+The model takes the ordered distinct set keys and encoded scalar payloads from
+the established trie/codec contracts; it does not re-prove those contracts.
+The source-level correspondence is exercised by four fixed regressions and the
+three generated properties in
+[`opaque_canonical_segment_import_properties.rs`](../../../models/tests/support/opaque_canonical_segment_import_properties.rs):
+scalar/private score and wire preservation, list/tuple split-path preservation,
+and EPathMap set/map key preservation after copy-on-write. All three generated
+properties passed in both debug and release under the current maintained gate,
+including the nine stable scalar variants (property source SHA-256
+`cf8550421b9c238b581245be9d05bd36fa325fbc8b8603951f419f02acf409ba`;
+3/3 in each profile in the `r4` gate receipt above).
+The four current-source fixed regressions also passed 1/1 each in serial debug
+runs: stable component import (`current-fixed-stable-r2.log`, SHA-256
+`40b4b2a696ba19d7249057a9f8c9faf8a97f315c6350d26c826d437249b4c879`),
+nested EPathMap copy-on-write on a 512 KiB stack
+(`current-fixed-nested-small-stack-r2.log`, SHA-256
+`2c1c2a0ebde4565a674edb18a8608d3af936d362e204ec1ed9369575dc1cfad9`),
+list segment versus split path (`current-fixed-list-split-r2.log`, SHA-256
+`e52c9a99594aa82c85a480eee8d299477974d679ff0560ccc49ce469c388bfcc`),
+and resident identity rewrap (`current-fixed-resident-r2.log`, SHA-256
+`68286961dd0b3aa3091fe2a220ed6fd32d2cbae5061ed1467a9a8a18d1bd870e`).
+All four logs are under `target/verification/parbag-opaque-8518/`.
+The production `substitute_drive::plan_expr` NoDescent EPathMap import path is
+also exercised by an open-sibling substitution, so the identity fast path
+cannot bypass the import; that current-source release test passed 1/1
+(`target/verification/parbag-opaque-8518/current-real-caller-release-r2.log`,
+log SHA-256 `1ca2b6bb044a8b4da405c9e727eea217937c171520dbc6b2e349c55f2cf87c6a`,
+caller source SHA-256 `2c9a08b567601c166355fa8af0f2725dfffccd1c6f98a0572cb331e710950ea8`).
+The maintained `--epathmap-import` gate passed with the formal and generated
+property checks above; other campaign acceptance remains separate.
+
 ### Exact canonical Var grammar (CEI-01)
 
 `BinaryVar` models the concrete `RhoTypes.proto` oneof: empty bytes mean no selected
