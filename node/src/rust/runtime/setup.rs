@@ -33,6 +33,7 @@ use tracing::{debug, info, trace, warn};
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::web_api::WebApi;
 use crate::rust::configuration::NodeConf;
+use crate::rust::instances::block_processor_instance::resolve_pipeline_width;
 use crate::rust::runtime::api_servers::APIServers;
 use crate::rust::runtime::node_runtime::{CasperLoop, EngineInit};
 use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
@@ -328,6 +329,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         usize,
         Option<Arc<RwLock<ProposerState>>>,
         BlockProcessor<T>,
+        usize,
         Arc<InFlightBlocks>,
         mpsc::Sender<BlockQueueItem>,
         mpsc::Receiver<BlockQueueItem>,
@@ -490,10 +492,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     };
 
     // Runtime manager (play and replay runtimes)
+    let pipeline_width = resolve_pipeline_width();
     let (runtime_manager, history_repo) = {
         use casper::rust::genesis::genesis::Genesis;
         use casper::rust::util::rholang::runtime_manager::{
-            ExploratoryDeployConfig, RuntimeManager,
+            ExploratoryDeployConfig, ReplayLock, RuntimeManager,
         };
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -522,6 +525,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 );
                 exploratory
             },
+            Arc::new(ReplayLock::with_permits(pipeline_width + 2)),
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
@@ -1331,6 +1335,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         proposer_queue_max_pending,
         proposer_state_ref_opt_for_return,
         block_processor,
+        pipeline_width,
         block_processor_state_ref,
         block_processor_queue_tx,
         block_processor_queue_rx,
