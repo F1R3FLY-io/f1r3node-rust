@@ -508,6 +508,7 @@ dependencies = [
  "parking_lot",
  "prost",
  "rand 0.9.5",
+ "rayon",
  "regex",
  "rholang",
  "rspace_plus_plus",
