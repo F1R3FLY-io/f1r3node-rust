@@ -19,14 +19,6 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
-// Phase 9 (A-3): the deploy-storage handle migrates to
-// `parking_lot::Mutex` (no poison propagation, faster acquire).
-// C16 (this commit) followed through on the same migration for
-// `deploys_in_scope_cache`, which was previously the lone
-// `std::sync::Mutex` holdout. The two `parking_lot::Mutex`s are
-// reachable via the `PlMutex` alias used in the field
-// declarations below.
-//
 // Merge of dev (EPOCH-004) into feature/slashing: the rspace++
 // concurrency rewrite made `RuntimeManager` interior-mutable (every
 // method on `&self`), so the historical justification for wrapping
@@ -77,7 +69,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub estimator: Estimator,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<KeyValueDeployStorage>,
     /// Persistence buffer for in-scope-but-rejected deploys, surfaced from
     /// dev (EPOCH-004). Held under `std::sync::Mutex` because all accesses
     /// happen synchronously inside the proposer (block_creator) and
@@ -110,14 +102,6 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.
     /// Including LFB and parents in the key avoids stale scope reuse across finalization and parent selection changes.
-    /// C16: migrated from `Arc<std::sync::Mutex<...>>` to
-    /// `Arc<parking_lot::Mutex<...>>` so all three non-async mutex
-    /// types on this struct are uniform (`deploy_storage` already
-    /// uses parking_lot). Eliminates the poison-handling
-    /// `.map_err(|_| CasperError::RuntimeError(...))` boilerplate
-    /// at the call sites in `snapshot.rs`. The lock is held purely
-    /// synchronously across read-modify-write of the cache cell.
-    ///
     /// Merge of dev: tuple carries both scope sets — the trailing
     /// `Arc<DashSet<Bytes>>` is the `rejected_in_scope` companion set
     /// to `deploys_in_scope`, used by `validate.rs::repeat_deploy` and

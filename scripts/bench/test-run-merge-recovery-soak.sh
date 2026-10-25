@@ -9,7 +9,7 @@ DRIVER_PID=""
 cleanup() {
 	local pid_file
 	[ -z "$DRIVER_PID" ] || kill "$DRIVER_PID" 2>/dev/null || true
-	for pid_file in "$TMP"/fake-writer-*.pid "$TMP/unrelated.pid"; do
+	for pid_file in "$TMP"/fake-writer-*.pid "$TMP"/fake-unmarked-*.pid "$TMP"/stale-writer-*.pid "$TMP/unrelated.pid"; do
 		[ ! -s "$pid_file" ] || kill -KILL "$(cat "$pid_file")" 2>/dev/null || true
 	done
 	rm -rf "$TMP"
@@ -44,6 +44,14 @@ printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
 if [ -n "${FAKE_WRITER_PID_FILE:-}" ]; then
 	setsid bash -c 'printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' fake-node "$FAKE_WRITER_PID_FILE" \
 		</dev/null >/dev/null 2>&1 &
+fi
+# A real subprocess node names its session directory in its arguments. In soak
+# 39711861154 the owner marker did not match such nodes after a deadline stop,
+# so this node has no marker and only its argument identifies it.
+if [ -n "${FAKE_UNMARKED_PID_FILE:-}" ]; then
+	mkdir -p "$FAKE_ARCHIVE_DIR/session/validator2"
+	env -u SOAK_PROCESS_OWNER setsid bash -c 'printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' fake-node \
+		"$FAKE_UNMARKED_PID_FILE" "$FAKE_ARCHIVE_DIR/session/validator2" </dev/null >/dev/null 2>&1 &
 fi
 # Docker sessions write monitor artifacts under log-archive/. Subprocess
 # sessions write them under .subprocess-data/. The first scenario splits
@@ -257,6 +265,7 @@ mkdir -p "$TMP/si2"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-2.pid" \
 	FAKE_WRITER_PID_FILE="$TMP/fake-writer-2.pid" \
+	FAKE_UNMARKED_PID_FILE="$TMP/fake-unmarked-2.pid" \
 	FAKE_DOCKER_CALLS="$TMP/docker-calls-2.txt" \
 	FAKE_OWNED_CONTAINER=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
 	FAKE_DATA_DIR="$TMP/si2/integration-tests/data" \
@@ -359,6 +368,17 @@ if live_pid "$(cat "$TMP/fake-writer-2.pid")"; then
 fi
 live_pid "$(cat "$TMP/unrelated.pid")" || {
 	echo 'the segment stopped a process of another owner' >&2
+	exit 1
+}
+test -s "$TMP/fake-unmarked-2.pid"
+if live_pid "$(cat "$TMP/fake-unmarked-2.pid")"; then
+	echo 'a node without the owner marker survived the segment' >&2
+	exit 1
+fi
+grep -Eq "^segment=1 pid=$(cat "$TMP/fake-unmarked-2.pid") name=bash reason=arguments environment=readable owner=absent\$" \
+	"$TMP/output2/residual-writers.txt" || {
+	cat "$TMP/output2/residual-writers.txt" >&2 2>/dev/null || true
+	echo 'the residual record does not name the unmarked node' >&2
 	exit 1
 }
 
@@ -667,4 +687,56 @@ for state_case in valid executable duplicate unknown missing overflow; do
 	[ ! -e "$TMP/state-child.pid" ]
 done
 
-printf 'legacy soak driver tests passed (fail-closed + deadline + segment writer stop + disk-band + restart reason + writer stop failure + evidence scope + failed reset + restart state)\n'
+# Scenario 6: a stale subprocess session still writes. A deadline stop left its
+# node running in soak 39711861154, and each failure-evidence copy took 1.6 to
+# 5.7 GB of its logs. The copy must take only the sessions that the failed
+# iteration started, and the end of the segment must stop the stale writer.
+mkdir -p "$TMP/bin6" "$TMP/si6/integration-tests/.subprocess-data/stale"
+cat >"$TMP/bin6/poetry" <<'SH'
+#!/usr/bin/env bash
+mkdir -p "$FAKE_ARCHIVE_DIR/session-6"
+printf 'session 6 log\n' >"$FAKE_ARCHIVE_DIR/session-6/validator1.log"
+printf 'fake pytest session 6 failed\n'
+sleep 1
+exit 1
+SH
+chmod +x "$TMP/bin6/poetry"
+# shellcheck disable=SC2016 # The inner bash expands $$, $1, and $2.
+setsid bash -c 'printf "%s\n" "$$" >"$1"; while :; do printf x >>"$2/validator1.log"; sleep 0.2; done' stale-writer \
+	"$TMP/stale-writer-6.pid" "$TMP/si6/integration-tests/.subprocess-data/stale" </dev/null >/dev/null 2>&1 &
+disown
+for _ in $(seq 1 20); do
+	[ -s "$TMP/stale-writer-6.pid" ] && break
+	sleep 0.25
+done
+live_pid "$(cat "$TMP/stale-writer-6.pid")"
+sleep 1
+status=0
+timeout --signal=TERM --kill-after=5 120 env PATH="$TMP/bin6:$TMP/bin:$PATH" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-6.pid" \
+	FAKE_ARCHIVE_DIR="$TMP/si6/integration-tests/.subprocess-data" \
+	SOAK_DURATION_SECONDS=8 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si6" \
+	SOAK_OUTPUT_DIR="$TMP/output6" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_DISK_FREE_FLOOR_MB=0 \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver6.log" 2>&1 || status=$?
+[ "$status" -ne 124 ] || { cat "$TMP/driver6.log" >&2; echo 'soak driver did not finish the stale-session scenario' >&2; exit 1; }
+first="$(find "$TMP/output6" -maxdepth 1 -type d -name 'iteration-00001-*' | head -1)"
+[ -n "$first" ] || { cat "$TMP/driver6.log" >&2; echo 'the stale-session scenario ran no iteration' >&2; exit 1; }
+test -s "$first/.subprocess-data/session-6/validator1.log"
+if [ -e "$first/.subprocess-data/stale" ]; then
+	echo 'the failure-evidence copy took the files of a stale session' >&2
+	exit 1
+fi
+if live_pid "$(cat "$TMP/stale-writer-6.pid")"; then
+	echo 'the stale session writer survived the segment' >&2
+	exit 1
+fi
+grep -Eq "^segment=1 pid=$(cat "$TMP/stale-writer-6.pid") name=bash reason=arguments environment=readable owner=absent\$" \
+	"$TMP/output6/residual-writers.txt"
+
+printf 'legacy soak driver tests passed (fail-closed + deadline + segment writer stop + disk-band + restart reason + writer stop failure + evidence scope + failed reset + restart state + residual writer stop + stale session scope)\n'
