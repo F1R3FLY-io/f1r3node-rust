@@ -254,11 +254,7 @@ async fn failed_finalization_after_lfb_advance_rejects_an_unbonded_deploy() {
         .await
         .unwrap_err();
     assert!(rejected.to_string().contains("validator is not bonded"));
-    assert!(!node
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(!node.deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 // Bonding through consensus IS implemented in the Rust port: a bond deploy propagated
@@ -363,11 +359,7 @@ async fn bond_status_should_return_true_for_newly_bonded_validator() {
     .await
     .unwrap_err();
     assert!(rejected.to_string().contains("validator is not bonded"));
-    assert!(!nodes[3]
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(!nodes[3].deploy_storage.contains_sig(&deploy.sig).unwrap());
 
     for round in 0..8 {
         let filler =
@@ -411,9 +403,5 @@ async fn bond_status_should_return_true_for_newly_bonded_validator() {
     )
     .await;
     assert!(accepted.is_ok(), "{accepted:?}");
-    assert!(nodes[3]
-        .deploy_storage
-        .lock()
-        .contains_sig(&deploy.sig)
-        .unwrap());
+    assert!(nodes[3].deploy_storage.contains_sig(&deploy.sig).unwrap());
 }

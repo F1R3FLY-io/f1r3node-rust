@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-src-profiles-authority-finality-rs.md

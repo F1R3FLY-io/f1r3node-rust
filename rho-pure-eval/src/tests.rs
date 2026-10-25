@@ -58,8 +58,7 @@ fn ground_int_passes_through() {
 
 #[test]
 fn evar_resolves_from_env() {
-    let mut env = Env::<Par>::new();
-    let env = env.put(gint(7));
+    let env = Env::<Par>::new().put(gint(7));
     let result = eval(&evar(0), &env).unwrap();
     assert_int(&result, 7);
 }
@@ -282,8 +281,7 @@ fn nested_expressions_resolve() {
 #[test]
 fn evar_in_arithmetic() {
     // x + 1 where x = 41 → 42
-    let mut env = Env::<Par>::new();
-    let env = env.put(gint(41));
+    let env = Env::<Par>::new().put(gint(41));
     let expr = par_of(ExprInstance::EPlusBody(EPlus {
         p1: Some(evar(0)),
         p2: Some(gint(1)),
