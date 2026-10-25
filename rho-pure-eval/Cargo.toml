@@ -5,6 +5,7 @@ publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
 
 [dependencies]
+imbl = { workspace = true }
 models = { path = "../models" }
 shared = { path = "../shared" }
 num-bigint = { workspace = true }

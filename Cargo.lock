@@ -786,6 +786,7 @@ dependencies = [
 name = "casper"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-stream",
  "async-trait",
  "bincode",
@@ -5113,6 +5114,7 @@ dependencies = [
 name = "rho-pure-eval"
 version = "0.1.0"
 dependencies = [
+ "imbl",
  "models",
  "num-bigint",
  "num-rational",

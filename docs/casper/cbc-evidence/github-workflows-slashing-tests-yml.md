@@ -8,6 +8,8 @@ The maintainer accepted the PR #829 change of the Java install step of this file
 
 ```json
 {
+  "schema": "cbc-claim/v1",
+  "claim_id": "CLAIM-CASPER-SOAK-001",
   "artifact": {
     "path": ".github/workflows/slashing-tests.yml",
     "id": "github-workflows-slashing-tests-yml",
@@ -62,5 +64,48 @@ The maintainer accepted the PR #829 change of the Java install step of this file
     "revision": "f2f3645ddedae8d612e55141cfbd15e9c4ef884b",
     "reviewed_at": "2026-10-23T12:21:29Z"
   }
+}
+```
+
+## Claim CLAIM-SOAK-GATE-001
+
+This record moved from `docs/cbc-evidence/github-workflows-slashing-tests-yml.md` during the EPIC-026 R8 migration. The original bytes are Git blob `1dfe9b19964d142846ed487cc55f9d356ba82cbb` at `docs/cbc-evidence/github-workflows-slashing-tests-yml.md` in commit `a59d92667685e3d655f269afd6a010df2fb720a9`.
+
+```json
+{
+  "schema": "cbc-claim/v1",
+  "claim_id": "CLAIM-SOAK-GATE-001",
+  "artifact": {
+    "path": ".github/workflows/slashing-tests.yml",
+    "id": "github-workflows-slashing-tests-yml",
+    "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+    "commit_is_base": true,
+    "working_tree": false,
+    "sha256": "37956499d722765a831cc70633130d419380317d01dface8a366eb0fd3d71fdd"
+  },
+  "claim": "CLAIM-SOAK-GATE-001",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001"
+  ],
+  "status": "pending",
+  "scope": "agent-b-ci-correction-refresh-20260930-01",
+  "adapter": null,
+  "evidence": {
+    "kind": "source-bound-hosted-checks-and-elf-mutation-controls",
+    "ref": "docs/cbc-evidence/runs/node-observation-ci-refresh-20260930-01/report.json",
+    "sha256": "7e844fe3c4dfb287de00c093d355ceddf3cbb32209c699577b00eb3b5092bbb3"
+  },
+  "verification_status": "recorded",
+  "acceptance_status": "pending",
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": "2026-09-30T04:44:34.480367+00:00",
+  "limits": "The report states the verification limits. Earlier acceptance does not cover the corrected source.",
+  "previous_record": {
+    "path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+    "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+    "sha256": "3230815cb3fb435e32ea2ddfdfda619b60a83e52b0deb6bb11ddba3fbc6a6d07"
+  },
+  "previous_artifact_sha256": "991507a49e77745dd8a6a9ecfbd4be8d2cc9cb3645d9e1b1862b8430cd01267b"
 }
 ```
