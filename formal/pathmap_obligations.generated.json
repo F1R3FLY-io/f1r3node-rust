@@ -415,7 +415,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "62340344e2329d3427f988683ca1b35060c7ceb7d4a687a1ba8b258635d4bf5a",
+      "manifest_sha256": "2929bf12659b9b72811193e3cb597499cf24e0cec53241a3d8db4692f3f28c07",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -811,7 +811,7 @@
           "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
-          "rspace++/Cargo.toml": "500cabf522281a2166e15055254daef9630f2bd726ec2daca80b04a877208766",
+          "rspace++/Cargo.toml": "d9a89c282bc6be737745d2bc0debec6058b64a0f4038e7ad3e65375c31fc9c54",
           "rspace++/tests/bag_spec.rs": "64314c47797e9a9777af0888c52510ca1c17bc2286a0515f5824227af5a3728d"
         },
         "verus_obligations": [
@@ -847,7 +847,7 @@
       "checker": "scripts/check-epathmap-core-obligations.py",
       "family": "epathmap_core",
       "manifest": "formal/epathmap_core_obligations.generated.json",
-      "manifest_sha256": "7d72bdb9416db6ed16dd0a5d1b7d9f10bc916282558fc58dfe286f68449e014f",
+      "manifest_sha256": "ca35674e740322da6d1f4ab6c2a62474bc8343086f98f4ed9f0d71239bb8129d",
       "obligations": {
         "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
         "delegated_epm1_positional_tla": {
@@ -1731,7 +1731,7 @@
         ],
         "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
         "source_sha256": {
-          "formal/epm1_positional_obligations.generated.json": "d4998b1be29ead7925c3374bf4ee1b5235909e1a3ac65f948ca6241220a4da24",
+          "formal/epm1_positional_obligations.generated.json": "665c26a6e267852cae8b7b15f15c1aaa0054a496f77d0b65c2d7c1c1adaf39d0",
           "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
           "formal/rocq/stack_safe_pda/theories/EPathMap.v": "d9bdce288155a9b5c6d57fec35bd9145c6896c6812654d38a447d5f976cc3794",
           "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
@@ -1822,7 +1822,7 @@
       "checker": "scripts/check-epm1-positional-obligations.py",
       "family": "epm1_positional",
       "manifest": "formal/epm1_positional_obligations.generated.json",
-      "manifest_sha256": "d4998b1be29ead7925c3374bf4ee1b5235909e1a3ac65f948ca6241220a4da24",
+      "manifest_sha256": "665c26a6e267852cae8b7b15f15c1aaa0054a496f77d0b65c2d7c1c1adaf39d0",
       "obligations": {
         "causal_mutants": [
           {
@@ -1976,7 +1976,7 @@
           "formal/tlaplus/stack_safe_pda/Epm1PositionalSkipEndpointMutant.cfg": "0a8c7b89f239be5ee137f9cd6d259c880d60e9d3a99d770289853fc220af2f7a",
           "formal/tlaplus/stack_safe_pda/Epm1PositionalWrongEndpointMutant.cfg": "02b1ecc394cdf5504a4b039774590ec4b780bfae8dd12ef7f1b4c67378c4af33",
           "formal/verus/epm1_positional_association.rs": "72130ff0aae6160e68594fe804a15d219d4bf18b9aa7e38d6c24cadb7ecb374c",
-          "models/src/rust/epathmap_trie_codec.rs": "620ffa58b33e10fc0e70e8c2d34832b5fee69c7c484d924695b2b792de570f18",
+          "models/src/rust/epathmap_trie_codec.rs": "e263b201c4568727a2d7bcef9a6432d524e8a597dddcd96e01bee94d66479974",
           "models/src/rust/mod.rs": "9da24730ef273c25720e873e2b0287379d3d94c802aba26bf437cbecc1eb07d2",
           "models/tests/formal_equivalence_manifest.rs": "0e393d815af5164ceec1e8e9bf7d7bac208896ab4f4be6dde7c0938839c91205"
         },
@@ -5406,7 +5406,7 @@
       "checker": "scripts/check-rho-path-v2-obligations.py",
       "family": "rho_path_v2",
       "manifest": "formal/rho_path_v2_obligations.generated.json",
-      "manifest_sha256": "cf691d4f8a5a5b4bef54ea72b0bcc4ed74a0eb328e0e54719384e73696e9f010",
+      "manifest_sha256": "bfdf80c8f72d5b2a09c908d3ba3c2f99403b9847fa853129ad5944186aaf9616",
       "obligations": {
         "boundary": "Rust witnesses exercise selected outer codec behaviors, not the abstract lifecycle, RCI2/RMP2 payload validity, or a formal Rust refinement proof.",
         "excluded_families": [
@@ -5550,7 +5550,7 @@
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.tla": "b2efa3f2d3b184600399f369bbd3d2120e70d3198c69014a64cdbb56a8a74e31",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla": "678019bff3b23322cde42c7cde8482aaecb59188b1af8e338cafd1056455c12a",
-          "rspace++/Cargo.toml": "500cabf522281a2166e15055254daef9630f2bd726ec2daca80b04a877208766",
+          "rspace++/Cargo.toml": "d9a89c282bc6be737745d2bc0debec6058b64a0f4038e7ad3e65375c31fc9c54",
           "rspace++/tests/rho_path_spec.rs": "25d6ed6736474d4bbcd7e678038c459756e53f334f6fa9f53611eff25f2d7eae"
         },
         "tlc": {
@@ -6537,7 +6537,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "1331c7041ef22bd88b7900f8cc5ec505cd496daf4ff99841e175ca1fd81b1537",
+      "manifest_sha256": "01f2e1a6224e544a54e13f2d0354e750a9d3bbea57190e8e3abaf68923160509",
       "obligations": {
         "controls": [
           {
@@ -6879,7 +6879,7 @@
         },
         "source_sha256": {
           "Cargo.toml": "dc833f0779e36336ab02f388e6bc20202f6bc3384c0cf0b83ab4ff5797e5e6db",
-          "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "ef8f9e77899f132476e5b50fac1fb12f9f8ac3b3351e567c66856840f8c493e0",
+          "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "cc72fa6bf31244fcb6b61c011209bf063b12c37599b9c1a96e90caaad78298f6",
           "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg": "e0db6e472c7e81869d38db0489c18311306cc9c1b54f40ca4a2a2678714db0dc",
           "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla": "acec8e9788712614d5bec9b01d83598b65bfb10004ad2a6ac7fd59bd992146a9",
           "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg": "0b68e1905d2d3c8365c0c37938b96b69cefbae16067e44876e2efbd6d47ca5f0",

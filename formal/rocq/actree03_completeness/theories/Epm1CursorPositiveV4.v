@@ -6,11 +6,12 @@ Import PositiveV3.
 
 (** PositiveV4 closes the generic producer gap left deliberately open by V3.
     The mutually inductive [writer_tree]/[writer_forest] is the logical image
-    of PathMap 0.2.2's postorder Catamorphism callback.  Lines are compressed
-    path fragments, forests are strictly byte-labelled immediate children,
-    and physical identities are structural child ordinals rather than process
-    addresses.  The external source-binding gate freezes the exact Rust
-    producer and generated decoder bytes to which this model applies. *)
+    of PathMap 0.3.4's postorder Catamorphism callback (0.2.2's, plus a
+    borrowed zipper argument).  Lines are compressed path fragments, forests
+    are strictly byte-labelled immediate children, and physical identities
+    are structural child ordinals rather than process addresses.  The
+    external source-binding gate freezes the exact Rust producer and
+    generated decoder bytes to which this model applies. *)
 Module PositiveV4.
 
 Inductive writer_tree : Type :=

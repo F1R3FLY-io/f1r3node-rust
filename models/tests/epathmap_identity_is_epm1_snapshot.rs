@@ -42,9 +42,10 @@
 //! route to disagree with.
 //!
 //! ⚠ **The order comes from the zipper walk over keys, never from a hash.**
-//! `PathMap::hash` and `PathMap::merkleize` exist and look like they would serve;
+//! `PathMap::hash` (in 0.3.4 the `Catamorphism::hash` and `hash_with` trait
+//! methods) and `PathMap::merkleize` exist and look like they would serve;
 //! they must never be used for identity, `Ord`, or any hash preimage.
-//! `pathmap-0.2.2/src/lib.rs:15-21` selects `gxhash` (AES intrinsics) normally
+//! `pathmap-0.3.4/src/lib.rs:13-20` selects `gxhash` (AES intrinsics) normally
 //! and *"a simple XOR hasher"* on `riscv64`/miri, so both are
 //! **architecture-dependent** and would make consensus identity depend on the
 //! machine that computed it. Neither has a call site in this repository, and this

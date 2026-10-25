@@ -255,7 +255,8 @@ where V: Clone + Send + Sync + Unpin {
 /// a counted walk cannot terminate even by running off the end. Both are
 /// pinned in `models/tests/pathmap_native_query_walk.rs`.
 ///
-/// This is a `pathmap-0.2.2` behaviour, reported upstream separately. The
+/// This was a `pathmap-0.2.2` behaviour, reported upstream separately and
+/// fixed in `pathmap-0.3.4` (`src/dense_byte_node.rs:1036-1052`). The
 /// implementation below does not depend on it either way: it NEVER asks the
 /// crate to iterate from a dangling focus.
 ///

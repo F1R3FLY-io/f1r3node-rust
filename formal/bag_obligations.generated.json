@@ -393,7 +393,7 @@
     "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
     "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
     "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
-    "rspace++/Cargo.toml": "500cabf522281a2166e15055254daef9630f2bd726ec2daca80b04a877208766",
+    "rspace++/Cargo.toml": "d9a89c282bc6be737745d2bc0debec6058b64a0f4038e7ad3e65375c31fc9c54",
     "rspace++/tests/bag_spec.rs": "64314c47797e9a9777af0888c52510ca1c17bc2286a0515f5824227af5a3728d"
   },
   "verus_obligations": [

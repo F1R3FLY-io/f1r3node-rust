@@ -12230,7 +12230,7 @@ Value disposal and one-logical-edge barrier pruning are unchanged. This keeps
 PathMap's compressed navigation available without introducing recursive subtree
 destruction through an owned temporary.
 
-In PathMap 0.2.2 the rebased initial origin is at most 48 bytes, independently of
+In PathMap 0.2.2 and 0.3.4 the rebased initial origin is at most 48 bytes, independently of
 global focus depth. This is a released physical-node layout property, not a
 runtime depth cap. Tests require exact scalar-route and disposal-trace equality,
 borrowed value identity and shared-snapshot preservation, including an 8,192-byte

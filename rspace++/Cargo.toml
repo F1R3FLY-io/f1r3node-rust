@@ -78,7 +78,7 @@ pathmap = { version = "=0.3.4", features = ["arena_compact"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# Canonical ACTree03 validation must reproduce PathMap 0.2.2's deterministic
+# Canonical ACTree03 validation must reproduce PathMap 0.3.4's deterministic
 # line-reuse hash on every architecture where PathMap selects gxhash.
 [target.'cfg(not(any(miri,target_arch="riscv64")))'.dependencies]
 gxhash = "3.5"

@@ -3093,7 +3093,7 @@ mod tests {
         });
         assert!(
             !map.path_exists_at(b"topology-only"),
-            "PathMap 0.2.2 prunes value-free anamorphic leaves; EPM1 cannot use a bare Map skeleton"
+            "PathMap 0.3.4 prunes value-free anamorphic leaves; EPM1 cannot use a bare Map skeleton"
         );
         assert!(!map.contains(b"topology-only"));
     }

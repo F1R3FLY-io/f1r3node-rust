@@ -7,11 +7,11 @@ Import ListNotations.
   Positive-authority revision for Candidate C.
 
   Unlike the rejected V2 physical certificate, this module begins with the
-  executable ACTree03 byte grammar actually implemented by PathMap 0.2.2:
-  an eight-byte magic, an eight-byte little-endian root slot, branchless
-  varints with bias 247, relative backward offsets, branch/line headers, and
-  an eight-byte zero trailer.  It also models the generated decoder's actual
-  Epm -> Child Par -> Attach -> Epm control order.
+  executable ACTree03 byte grammar actually implemented by PathMap 0.3.4
+  (unchanged from 0.2.2): an eight-byte magic, an eight-byte little-endian
+  root slot, branchless varints with bias 247, relative backward offsets,
+  branch/line headers, and an eight-byte zero trailer.  It also models the
+  generated decoder's actual Epm -> Child Par -> Attach -> Epm control order.
 
   This module is not production authority until every capstone at its end is
   closed and FORMAL-AUTHORITY.md records an accepted independent audit.
@@ -395,7 +395,7 @@ Theorem backward_target_rejects_forward_reference :
   backward_target 16 17 = None.
 Proof. reflexivity. Qed.
 
-(** Whole-image witnesses use the exact bytes emitted by PathMap 0.2.2:
+(** Whole-image witnesses use the exact bytes emitted by PathMap 0.3.4:
     children are written before their parent, root is an absolute LE slot,
     every edge is a relative backward offset, and the arena ends in eight
     zero bytes.  These are executable parser/producer checks rather than a

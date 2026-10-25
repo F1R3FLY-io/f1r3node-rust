@@ -932,9 +932,10 @@ the neutral empty refuses to guess which of those worlds it is in.
   from the arena's structure sharing, and the escape-arm keys embed full prost bytes, so a
   keys-only image would not be smaller for exactly the maps where size matters.
 - **PathMap 0.2.2's `to_prev_sibling_byte` override defect** (§5.7) is worked around from public
-  primitives in this repository; the PathMap crate itself is unmodified by owner rule. If PathMap
-  repairs the override upstream, `to_prev_sibling_byte_composed` becomes removable; until then the
-  dense-zero-word regression pins the behaviour here.
+  primitives in this repository; the PathMap crate itself is unmodified by owner rule. PathMap
+  0.3.4 repairs the override upstream (`get_sibling_of_child` now uses `ByteMask::prev_bit`,
+  `src/dense_byte_node.rs:1265-1280`), so `to_prev_sibling_byte_composed` becomes removable; until
+  it is removed the dense-zero-word regression pins the behaviour here.
 
 ---
 

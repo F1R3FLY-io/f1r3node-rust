@@ -195,7 +195,7 @@ where
             .expect("a live PathMap anchor always contains its map")
     }
 
-    /// PathMap 0.2.2 may leave its private empty sentinel after pruning the
+    /// PathMap 0.3.4 may leave its private empty sentinel after pruning the
     /// final edge. That representation is safe to destroy but cannot be
     /// reopened for mutation. Cursor authority must already be closed before
     /// this normalization replaces it with the canonical fresh live root.
@@ -874,7 +874,7 @@ where
         #[cfg(test)]
         assert!(
             pathmap::zipper::ZipperAbsolutePath::origin_path(&read).len() <= 48,
-            "PathMap 0.2.2 borrowed navigation must not copy the global origin"
+            "PathMap 0.3.4 borrowed navigation must not copy the global origin"
         );
         if !read.descend_last_path() {
             return false;

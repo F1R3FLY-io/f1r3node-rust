@@ -305,8 +305,8 @@ impl<'a> CompactTrie<'a> {
         })
     }
 
-    /// Parse and prove that the bytes are exactly an image of PathMap 0.2.2's
-    /// deterministic compact writer.
+    /// Parse and prove that the bytes are exactly an image of PathMap 0.3.4's
+    /// deterministic compact writer (`ArenaCompactTree::from_zipper`).
     pub fn parse_canonical(bytes: &'a [u8]) -> Result<Self, CompactTrieError> {
         let parsed = parse_act_tree(bytes)?;
         validate_canonical_act(bytes, &parsed)?;

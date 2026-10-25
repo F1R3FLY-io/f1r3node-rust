@@ -197,7 +197,7 @@ pub struct EntryTrie {
     storage: Arc<EntryTrieStorage>,
     /// Number of DISTINCT entries. Maintained at insert/remove because
     /// `PathMap::val_count` is documented O(N) ("This is not a cheap method",
-    /// `pathmap-0.2.2/src/trie_map.rs:499`).
+    /// `pathmap-0.3.4/src/trie_map.rs:499`).
     len: usize,
     /// `ps.iter().all(eval_stable_par)` — the entry half of the GROUND predicate.
     ///
@@ -281,9 +281,10 @@ fn decode_set_entries(map: &RholangSetPathMap) -> Vec<Par> {
 ///
 /// This is the documented default semantics of
 /// `ZipperMoving::to_prev_sibling_byte`, spelled out here because PathMap
-/// 0.2.2's optimized `ReadZipperUntracked` override can underflow while
-/// searching the mask word before word zero. Keeping the composition here
-/// avoids a dependency fork while retaining an allocation-free zipper walk.
+/// 0.2.2's optimized `ReadZipperUntracked` override could underflow while
+/// searching the mask word before word zero; 0.3.4 repairs it with
+/// `ByteMask::prev_bit`. Keeping the composition here avoids depending on the
+/// override while retaining an allocation-free zipper walk.
 fn to_prev_sibling_byte_composed<Z>(zipper: &mut Z) -> bool
 where Z: pathmap::zipper::ZipperMoving {
     let current = match zipper.path().last() {

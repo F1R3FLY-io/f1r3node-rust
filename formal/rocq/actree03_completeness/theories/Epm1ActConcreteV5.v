@@ -1926,7 +1926,7 @@ Theorem concrete_writer_collision_mismatch_allocates_and_overwrites :
       [1;120;1;121;192;0;4;192;1;5;2;6;97;98] ++ ACT_TRAILER).
 Proof. vm_compute. reflexivity. Qed.
 
-(** PathMap 0.2.2 retains one cache entry per hash.  Under an A-B-A collision,
+(** PathMap 0.3.4 retains one cache entry per hash.  Under an A-B-A collision,
     B overwrites A, so the second A is emitted again rather than reusing its
     first line object.  This closed witness freezes the current upstream byte
     contract; it is not an endorsement of collision-dependent consensus bytes. *)
