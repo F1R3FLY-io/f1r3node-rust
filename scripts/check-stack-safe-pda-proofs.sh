@@ -653,7 +653,9 @@ fi
 
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
-tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
+rocq_reject_placeholders theories/EPathMap.v
+rocq_compile_with_closed_count theories/EPathMap.v 9 \
+  "set subtraction and restriction under prefix-overlapping keys"
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
 rocq_reject_placeholders theories/ScalarProjection.v
 rocq_compile_with_closed_count theories/ScalarProjection.v 10 \

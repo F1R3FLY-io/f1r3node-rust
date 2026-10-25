@@ -407,6 +407,110 @@ fn encoded_key_masks_specialize_subtraction_and_selection_without_mode_conversio
 }
 
 #[test]
+fn set_difference_keeps_members_under_longer_right_keys() {
+    let dense_members = vec![gint(1), gint(2), gint(3), list([1, 2])];
+    let dense_kept = vec![gint(1), gint(2), gint(3)];
+    let line_list_members = vec![gint(7), list([7]), list([7, 7])];
+    let line_list_kept = vec![gint(7), list([7])];
+    for (members, removed, expected) in [
+        (dense_members, list([1, 2]), dense_kept),
+        (line_list_members, list([7, 7]), line_list_kept),
+    ] {
+        let left = EPathMap::new(members, vec![], false, None);
+        let right = EPathMap::new(vec![removed.clone()], vec![], false, None);
+        let difference = left
+            .entry_trie()
+            .try_subtract(right.entry_trie())
+            .expect("set difference of two sets");
+        assert_eq!(difference.mode(), EPathMapMode::Set);
+        assert_eq!(difference.entries_owned(), expected);
+
+        let mut mask = PathMap::new();
+        mask.insert(encode_trie_path(&removed), ());
+        let masked = left.entry_trie().subtract_encoded_keys(&mask);
+        assert_eq!(masked.entries_owned(), expected);
+    }
+}
+
+#[test]
+fn restriction_keeps_members_whose_key_the_selector_holds() {
+    let base = EPathMap::new(vec![gint(1)], vec![], false, None);
+    let selector = EPathMap::new(
+        vec![gint(1), gint(2), gint(3), list([1, 2])],
+        vec![],
+        false,
+        None,
+    );
+    let restricted = base
+        .entry_trie()
+        .try_restrict(selector.entry_trie())
+        .expect("restriction of two sets");
+    assert_eq!(restricted.entries_owned(), vec![gint(1)]);
+    assert_eq!(
+        restricted.trie_snapshot(),
+        base.entry_trie().trie_snapshot()
+    );
+
+    let by_member_prefixes = base
+        .entry_trie()
+        .try_restrict_member_prefixes(selector.entry_trie())
+        .expect("member-prefix restriction of two sets");
+    assert_eq!(by_member_prefixes.entries_owned(), vec![gint(1)]);
+    assert_eq!(
+        by_member_prefixes.trie_snapshot(),
+        base.entry_trie().trie_snapshot()
+    );
+}
+
+#[test]
+fn set_difference_leaves_no_path_where_a_member_was_removed() {
+    let bare_and_list = EPathMap::new(
+        vec![gint(1), gint(2), gint(3), list([1, 2])],
+        vec![],
+        false,
+        None,
+    );
+    let reinserted = EPathMap::new(
+        bare_and_list.entry_trie().entries_owned(),
+        vec![],
+        false,
+        None,
+    );
+    let wide = EPathMap::new((0..12).map(gint).collect::<Vec<_>>(), vec![], false, None);
+    let evens = EPathMap::new(
+        (0..12).step_by(2).map(gint).collect::<Vec<_>>(),
+        vec![],
+        false,
+        None,
+    );
+    let odds = EPathMap::new(
+        (1..12).step_by(2).map(gint).collect::<Vec<_>>(),
+        vec![],
+        false,
+        None,
+    );
+    let empty = EntryTrie::default();
+    for (left, right, expected) in [
+        (&bare_and_list, &reinserted, &empty),
+        (&wide, &evens, odds.entry_trie()),
+        (&evens, &wide, &empty),
+    ] {
+        let difference = left
+            .entry_trie()
+            .try_subtract(right.entry_trie())
+            .expect("set difference of two sets");
+        assert_eq!(difference.trie_snapshot(), expected.trie_snapshot());
+
+        let mut mask = PathMap::new();
+        for member in right.entry_trie().entries_owned() {
+            mask.insert(encode_trie_path(&member), ());
+        }
+        let masked = left.entry_trie().subtract_encoded_keys(&mask);
+        assert_eq!(masked.trie_snapshot(), expected.trie_snapshot());
+    }
+}
+
+#[test]
 fn canonical_key_flags_are_read_without_decoding_a_par_projection() {
     let exact = encode_trie_path(&gint(7));
     let exact_metadata = EntryTrie::encoded_key_metadata(&exact).expect("exact canonical key");
@@ -497,4 +601,109 @@ fn map_algebra_is_stack_safe_for_deep_values_on_a_small_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+fn prefix_overlapping_member() -> impl Strategy<Value = Par> {
+    prop_oneof![
+        (0i64..4).prop_map(gint),
+        prop::collection::vec(0i64..4, 1..4).prop_map(list),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn native_set_difference_is_key_by_key_removal_under_prefix_overlap(
+        left_members in prop::collection::vec(prefix_overlapping_member(), 0..12),
+        right_members in prop::collection::vec(prefix_overlapping_member(), 0..12),
+    ) {
+        let removed: std::collections::BTreeSet<Vec<u8>> =
+            right_members.iter().map(encode_trie_path).collect();
+        let left = EPathMap::new(left_members, vec![], false, None);
+        let right = EPathMap::new(right_members, vec![], false, None);
+        let mut mask = PathMap::new();
+        for key in &removed {
+            mask.insert(key, ());
+        }
+        let expected: Vec<Par> = left
+            .entry_trie()
+            .entries_owned()
+            .into_iter()
+            .filter(|member| !removed.contains(&encode_trie_path(member)))
+            .collect();
+
+        let difference = left
+            .entry_trie()
+            .try_subtract(right.entry_trie())
+            .expect("set difference of two sets");
+        prop_assert_eq!(difference.entries_owned(), expected.clone());
+        let masked = left.entry_trie().subtract_encoded_keys(&mask);
+        prop_assert_eq!(masked.entries_owned(), expected);
+    }
+
+    #[test]
+    fn native_set_difference_is_the_rebuilt_set_of_its_surviving_members(
+        left_members in prop::collection::vec(prefix_overlapping_member(), 0..12),
+        right_members in prop::collection::vec(prefix_overlapping_member(), 0..12),
+    ) {
+        let removed: std::collections::BTreeSet<Vec<u8>> =
+            right_members.iter().map(encode_trie_path).collect();
+        let left = EPathMap::new(left_members, vec![], false, None);
+        let survivors: Vec<Par> = left
+            .entry_trie()
+            .entries_owned()
+            .into_iter()
+            .filter(|member| !removed.contains(&encode_trie_path(member)))
+            .collect();
+        let expected = EPathMap::new(survivors, vec![], false, None);
+        let reversed_members: Vec<Par> = right_members.iter().rev().cloned().collect();
+        for right_order in [right_members, reversed_members] {
+            let right = EPathMap::new(right_order, vec![], false, None);
+            let difference = left
+                .entry_trie()
+                .try_subtract(right.entry_trie())
+                .expect("set difference of two sets");
+            prop_assert_eq!(difference.trie_snapshot(), expected.entry_trie().trie_snapshot());
+        }
+        let mut ascending_mask = PathMap::new();
+        for key in &removed {
+            ascending_mask.insert(key, ());
+        }
+        let mut descending_mask = PathMap::new();
+        for key in removed.iter().rev() {
+            descending_mask.insert(key, ());
+        }
+        for mask in [&ascending_mask, &descending_mask] {
+            let masked = left.entry_trie().subtract_encoded_keys(mask);
+            prop_assert_eq!(masked.trie_snapshot(), expected.entry_trie().trie_snapshot());
+        }
+    }
+
+    #[test]
+    fn native_restriction_is_the_rebuilt_set_of_members_with_a_selected_prefix(
+        base_members in prop::collection::vec(prefix_overlapping_member(), 0..12),
+        selector_members in prop::collection::vec(prefix_overlapping_member(), 0..12),
+    ) {
+        let selected: std::collections::BTreeSet<Vec<u8>> =
+            selector_members.iter().map(encode_trie_path).collect();
+        let base = EPathMap::new(base_members, vec![], false, None);
+        let selector = EPathMap::new(selector_members, vec![], false, None);
+        let kept: Vec<Par> = base
+            .entry_trie()
+            .entries_owned()
+            .into_iter()
+            .filter(|member| {
+                let key = encode_trie_path(member);
+                (0..=key.len()).any(|length| selected.contains(&key[..length]))
+            })
+            .collect();
+        let expected = EPathMap::new(kept, vec![], false, None);
+        let restricted = base
+            .entry_trie()
+            .try_restrict(selector.entry_trie())
+            .expect("restriction of two sets");
+        prop_assert_eq!(restricted.entries_owned(), expected.entry_trie().entries_owned());
+        prop_assert_eq!(restricted.trie_snapshot(), expected.entry_trie().trie_snapshot());
+    }
 }

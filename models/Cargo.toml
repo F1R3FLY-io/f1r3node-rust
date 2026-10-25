@@ -48,7 +48,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 crypto = { path = "../crypto" }
 rspace_plus_plus = { path = "../rspace++" }
 shared = { path = "../shared" }
-pathmap = { version = "0.2.2", features = ["arena_compact"] }
+pathmap = { version = "=0.3.4", features = ["arena_compact"] }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -210,8 +210,9 @@ path = "tests/pathmap_integration_tests.rs"
 name = "pathmap_native_query_walk"
 path = "tests/pathmap_native_query_walk.rs"
 
-# The PathMap native-algebra corpus, blessed on PathMap 0.2.2 before the move to
-# 0.3.4, so a release's behavioural differences show up case by case.
+# The PathMap native-algebra corpus. Blessed on PathMap 0.2.2 and re-blessed on
+# 0.3.4, where each difference is a consensus-change register entry (CBR-077 to
+# CBR-079), so a release's behavioural differences show up case by case.
 [[test]]
 name = "pathmap_native_algebra_corpus"
 path = "tests/pathmap_native_algebra_corpus.rs"

@@ -102,10 +102,11 @@ their recursive counterparts definitely are not. Each qualifying change is class
 independent axes: computed value, verdict, serialized bytes (per lane), post-state hash, accepted
 programs, and metering under the token cost model.
 
-**Result: 24 entries** — 15 on the F1r3node node, 9 on MeTTaIL's Rholang; **23 landed, 1 in
+**Result: 27 entries** — 18 on the F1r3node node, 9 on MeTTaIL's Rholang; **26 landed, 1 in
 flight**. The core is the EPathMap data-model lineage (CBR-011/012/013 — the trie ruling's stages —
 and CBR-041/042/043 culminating in **CBR-044**, the EPM1 wire transition, on which six of the seven
-axes move), one wire-schema addition (CBR-014), four ruled semantic/acceptance changes (CBR-002,
+axes move), the three PathMap 0.3.4 corrections to set difference and restriction (CBR-077/078/079),
+one wire-schema addition (CBR-014), four ruled semantic/acceptance changes (CBR-002,
 CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface (CBR-024/025), and
 the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15), binder-shift fusion
 (L20), slotted/indexed matcher-network transition (L23), and certified persistent-root production
@@ -155,7 +156,7 @@ with typed reasons so the account stays checkable.
    the metering axis defined under the current token cost model.
 2. An explicit account of the **two wire formats** a `Par` crosses (§2.5), including the field-order
    asymmetry that produced a measured, round-trip-invisible defect class.
-3. A **derived** register (§3, §4): 24 entries, each with all six axes answered, a stated blast
+3. A **derived** register (§3, §4): 27 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
 4. The **negative results**: 70 retired entries with typed reasons (Appendix B.1) and 21 commit-level
@@ -552,7 +553,9 @@ A method that cannot state what it would miss is not a method. Five classes:
    version bump in `Cargo.toml`** could move bytes or verdicts and would not be enumerated. ⚠ This is
    not hypothetical: **CBR-L06** exists precisely because a derived `Debug` implementation reaches
    published bytes, so *a `prost` or `thiserror` version bump alone* is a consensus change under this
-   report's own definition — and no path in $`\mathcal{P}`$ would show it.
+   report's own definition — and no path in $`\mathcal{P}`$ would show it. The PathMap 0.2.2 → 0.3.4
+   bump is such a change: a differential corpus found it, not this sweep, and it is registered as
+   [CBR-077](#cbr-077) to [CBR-079](#cbr-079).
 2. **A change whose commit message asserts neutrality falsely.** Step 4 checks assertions against the
    diff's file list and the named tests, but it does not re-run the goldens. A commit that claims byte
    identity, names a test, and is wrong would pass this sweep. Mitigation: every such claim is tagged
@@ -606,6 +609,9 @@ is a *future* fork, not a present one).
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
 | [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`, `6ef40fc37`; this checkpoint; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp work items/experiments 224, 225, 226, 229, 233, 248, 5984, 5985, 5990 | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
+| [CBR-077](#cbr-077) | N | Set difference keeps a member when the right operand holds only a longer key through it — PathMap 0.3.4's `subtract` | this checkpoint (PathMap `=0.3.4`) | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
+| [CBR-078](#cbr-078) | N | Prefix restriction keeps a member whose exact key the selector holds beside a longer one — PathMap 0.3.4's `restrict` | this checkpoint (PathMap `=0.3.4`) | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
+| [CBR-079](#cbr-079) | N | A set difference no longer leaves a removed member's location as a value-free path — PathMap 0.3.4 prunes it | this checkpoint (PathMap `=0.3.4`) | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -616,13 +622,13 @@ is a *future* fork, not a present one).
 | [CBR-L23](#cbr-l23) | L | Alpha-equivalent matcher states share dense slot interfaces and positional channels use one exact indexed arena | `c63c6ca8` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-L24](#cbr-l24) | L | Generated identity-beta root spines select the certified finite-route persistent R3 driver; the general quiescence PDA remains the fallback | `57239207` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 
-**Totals — 24 entries**: **15 on Surface N, 9 on Surface L**; **23 landed, 1 in flight**
-(**CBR-L08**); no open verification hazards. By evidence grade: **21 WITNESSED**, 1
+**Totals — 27 entries**: **18 on Surface N, 9 on Surface L**; **26 landed, 1 in flight**
+(**CBR-L08**); no open verification hazards. By evidence grade: **24 WITNESSED**, 1
 MECHANISM-ONLY (**CBR-013**), 1 LATENT (**CBR-L14**), and 1 NEUTRALITY-MEASURED (**CBR-053**).
-By direction: **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 NEUTRAL**. Axis cells reading
+By direction: **18 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE, 1 NEUTRAL**. Axis cells reading
 `UNVERIFIED`: **0**. The register's historical CBR-L07 metering `?` remains resolved under the token
 model (§3.3). The 70 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 24 + 70 = 94 historical identifiers, none reused.
+[Appendix B.1](#b1-retired-register-entries); 27 + 70 = 97 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -3028,6 +3034,384 @@ consensus obligation in either direction.
 
 ---
 
+### CBR-077
+
+**Set difference keeps a member when the right operand holds only a longer key through it: moving
+PathMap from 0.2.2 to 0.3.4 corrects the native `subtract` that EPathMap sets use.**
+
+| | |
+|---|---|
+| Commit(s) | the commit that adds this entry: `pathmap` `0.2.2` → `=0.3.4` (crates.io checksum `2baf17b2…`), `pathmap-derive` `0.2.1` → `0.3.0`, new `span-timing` `0.1.1` |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `Cargo.lock`, `models/Cargo.toml`, `rholang/Cargo.toml`, `rspace++/Cargo.toml`; reached through `models/src/rust/rhoapi_ext.rs:1775` (`try_subtract`, set arm), `:1800` (`subtract_encoded_keys`, set arm), `rholang/src/rust/interpreter/reduce.rs:5821` (`diff`) and `rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs:6588` (set-pattern preparation) |
+
+#### (a) The issue
+
+An EPathMap set is a `PathMap<()>` keyed by canonical trie paths ([CBR-044](#cbr-044)), and set
+difference is PathMap's native `subtract`. `EntryTrie::try_subtract` and
+`EntryTrie::subtract_encoded_keys` call it in their set arms (`models/src/rust/rhoapi_ext.rs:1775`,
+`:1800`). The Rholang method `diff` reaches the first (`rholang/src/rust/interpreter/reduce.rs:5821`),
+and the spatial matcher reaches the second when it prepares a set pattern
+(`rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs:6588`). The canonical encoding makes
+keys overlap by prefix. A bare `1` is `03 02` and the list `[1, 2]` is `03 02 03 04 00`, so the
+scalar's key is a proper prefix of the list's key.
+
+PathMap 0.2.2 subtracts a dense node byte by byte. When the right node has any entry at a byte, it
+starts the result cell empty and copies the left value back only if the right node also holds a value
+at that byte (`pathmap-0.2.2/src/dense_byte_node.rs:340-358`). The presence test is only a child-mask
+bit (`node_contains_partial_key`, `:619-626`). A right key that merely **passes through** a left member
+therefore deletes that member. The line-list form of the same case unwraps the missing right value and
+panics (`pathmap-0.2.2/src/line_list_node.rs:1159`).
+
+Both contradict the model. `formal/rocq/stack_safe_pda/theories/EPathMap.v` defines set subtraction
+key by key, `set_subtract left right key = left key && negb (right key)`, so a left member survives
+whenever the right side lacks that exact key.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES** — `{|1, 2, 3, [1, 2]|}.diff({|[1, 2]|})` is `{|2, 3|}` on 0.2.2 and `{|1, 2, 3|}` on 0.3.4. |
+| 2 · verdict | **MOVES** — downstream of axis 1: a `match`, `==` or membership test on the difference takes the other branch, and so can a set pattern whose unmatched part the matcher computes with this subtraction. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — the difference is a different set, so its EPM1 snapshot differs. For the same trie the ACTree03 writer is byte-identical in both versions (`build_arena_tree`, 0.2.2 `arena_compact.rs:1031`, 0.3.4 `:1145`). |
+| 3 · bytes (Lane P, prost) | **MOVES** — the same EPM1 array at field 9. |
+| 4 · post-state hash | **MOVES** — whenever the difference reaches a channel or the store. |
+| 5 · accepted programs | **MOVES** — `{|7, [7], [7, 7]|}.diff({|[7, 7]|})` panics inside PathMap 0.2.2 (`line_list_node.rs:1159`); 0.3.4 returns `{|7, [7]|}`. A panic in a spawned reduction task becomes the deploy error `reduction task panicked` (`reduce.rs:396-430`); the root path (`inj`, `reduce.rs:1291-1294`) has no such catch, and how its callers handle a panic was not traced. |
+| 6 · metering | **NO** — `diff` reserves `diff_cost(other.len())` before it calls `try_subtract` (`reduce.rs:5815-5818`), from the right operand's length alone, so the D3 prefix-event count of an otherwise unchanged verdict trace does not move. The matcher's set-pattern preparation is unmetered work inside a COMM. |
+
+**The disagreement.** Take a deploy that computes a set difference whose right operand holds a key
+properly extending a left member that the right operand does not hold. In the dense-node form the old
+and new nodes compute different sets, which reaches the post-state hash: a **safety fork**. In the
+line-list form the old node panics while the new node continues. Where the reducer catches the panic, the
+deploy fails on the old node and succeeds on the new one: a **safety fork**. Where nothing catches it, the
+old node loses the evaluation: a **liveness split**. Which of the two applies on each path was not traced.
+
+**Blast radius.** Any deploy calling `diff` on two EPathMap sets where some right member's canonical key
+extends a left member's key. The plainest instance is a left scalar `x` against a right list that begins
+with `x`, when the right does not also hold `x`. `subtract_encoded_keys` reaches the same native call in
+set mode, and the spatial matcher calls it from `prepare_path_entries`: a set pattern's ground members
+form a mask, the matcher checks that the target holds every one of them
+(`spatial_matcher_pda.rs:6548`), then subtracts the mask from the target (`:6588`). A receive whose set
+pattern names a list but not a bare member that list passes through — `{|[7, 7] ...rest|}` against
+`{|7, [7], [7, 7]|}` — therefore reaches the measured corpus case
+`subtract_encoded_keys {7,[7],[7,7]} {[7,7]}`, which panics on 0.2.2. That receive was not run end to
+end: the chain is the call site plus the measured case. Map difference removes the right keys one at a
+time (`native_remove`, `models/src/rust/rhoapi_ext.rs:1778-1786`) and never calls native `subtract`.
+Reachable by an ordinary deploy: **yes**.
+
+**Could live chain state have been produced under the old behaviour?** Settled under the owner's
+2026-07-30 pre-production ruling, as [CBR-041](#cbr-041) settles its own. This branch's encoding is
+unreleased: [CBR-044](#cbr-044) already changes EPathMap's consensus bytes against `master`.
+`origin/master`, `dev` and `staging` lock pathmap 0.2.2, and master's set difference calls the same native
+`subtract` (`origin/master:rholang/src/rust/interpreter/reduce.rs:3729`). Whether master's own key
+encoding produces passed-through keys was not examined, because master is outside this campaign. If the
+ruling changes, the settling query is: replay master-line history under an instrumented build that, at
+every native set `subtract`, counts the left keys that are a proper prefix of some right key and absent
+from the right; any non-zero count is a historical result this entry would alter.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** Set difference silently drops members that the right operand
+never held, and the narrowest such shape panics during evaluation, including inside COMM matching. Both are
+reachable, and both contradict the key-by-key definition in `EPathMap.v`, so the model and the running
+code disagree on a deployable input.
+
+**Why this repair rather than the alternatives.**
+1. **Stay on 0.2.2.** Rejected: it keeps a wrong result and a reachable panic.
+2. **Patch around 0.2.2 locally** (a post-filter that restores dropped members, a fork, or a path
+   dependency). Rejected: the owner ruled for official crates.io PathMap only, and emulating 0.2.2's
+   result beside the corrected one would be a second execution path.
+3. **Move to 0.3.4** (chosen). Its dense subtract keeps the left value when the right node holds none at
+   that byte (`pathmap-0.3.4/src/dense_byte_node.rs:417-437`, the `None => new_cf.set_val(self_val.clone())`
+   arm at `:436`), and its line-list subtract returns the identity instead of unwrapping
+   (`line_list_node.rs:1185-1188`). Upstream's regression test is `map_subtract_keeps_value_under_other_path`
+   (`pathmap-0.3.4/src/trie_map.rs:871-897`).
+
+**Authority.** Owner ruling, **2026-10-16**: *"pathmap 0.3.4 has been published to crates.io, are these
+issues and others we've worked around resolved on there? we need to stick with official pathmap for this
+branch"*. Owner decision, **2026-10-17**, choosing the option the agent recommended for this change:
+*"Accept as a recorded fix (Recommended)"* — record the 0.3.4 result as a corrective entry that
+activates together with the branch, beside [CBR-044](#cbr-044).
+
+**★ Sibling enumeration, ON A NAMED AXIS.** **Count: 18 on the axis "native-algebra corpus cases whose
+result differs between 0.2.2 and 0.3.4"**, over the 721 cases of
+`models/tests/pathmap_native_algebra_corpus.rs`, which cover every `EntryTrie` operation that delegates to
+a native PathMap call. Six are this entry: three shapes (`{1,2,3,[1,2]} − {[1,2]}`,
+`{7,[7],[7,7]} − {[7,7]}`, and the first with a value-free path below `1`), each through `try_subtract`
+and `subtract_encoded_keys`. Two are restriction ([CBR-078](#cbr-078)). Ten keep the same members and
+differ only in value-free paths ([CBR-079](#cbr-079)). **Count: 0 on the axis "Bag corpus cases whose
+result differs"**, over the 182 cases of `rspace++/tests/bag_native_algebra_corpus.rs`.
+
+**★ If the entry claims something *needed no change*, name the GUARD.** The entry claims that one trie
+still serializes to the same bytes. The guards are the fixed goldens, which fail if the writer's output
+moves: `epathmap_canonical_fixtures` (13 tests, 16 fixtures), `serializer_byte_goldens`,
+`serializer_par_byte_goldens`, `sorter_canonical_golden`, the Casper genesis and state-root pins, and the
+`pathmap_codec` writer-image tests. All of them pass on 0.3.4. The release workspace suite ran 4,334
+tests; its only three failures were the corpus assertion, still blessed on 0.2.2, and the two tests that
+pinned 0.2.2 defects, which this commit rewrites as positive tests of the fixed behaviour. The Casper
+pins and the doc tests pass.
+
+#### Evidence
+
+- **The corpus.** `models/tests/pathmap_native_algebra_corpus.rs` replays 721 cases. Its golden was
+  blessed on 0.2.2 at commit `5959ceac3`, and this commit re-blesses it on 0.3.4
+  (`models/tests/fixtures/goldens/pathmap_native_algebra_corpus.txt`). Two 0.3.4 runs produce
+  byte-identical manifests. Eighteen cases differ from the 0.2.2 golden, classified above.
+  `rspace++/tests/bag_native_algebra_corpus.rs` (182 cases) reproduces its 0.2.2 fixture byte for byte.
+  **MEASURED**.
+- **The probe** (pgmcp experiment 425): raw PathMap reproducers run on both versions, each in its own
+  process. `subtract` on upstream's regression shape gives `[[0, 0, 0]]` on 0.2.2 and `[[0], [0, 0, 0]]`
+  on 0.3.4. The line-list shape panics at `line_list_node.rs:1159` on 0.2.2 and gives
+  `[[3, 14], [3, 14, 0]]` on 0.3.4. **MEASURED**.
+- **The model.** `EPathMap.v` adds three closed theorems, gated by
+  `rocq_compile_with_closed_count theories/EPathMap.v 9` together with those of
+  [CBR-078](#cbr-078) and [CBR-079](#cbr-079):
+  - `set_subtract_keeps_members_under_longer_right_keys`: for every key type, a left member that the
+    right side lacks survives subtraction even when the right side holds a longer key through it;
+  - `prefix_overlap_witness_keeps_the_bare_member`: the corpus witness `{1, 2, 3, [1, 2]} − {[1, 2]}`,
+    as canonical keys, keeps `03 02`;
+  - `passthrough_dropping_subtract_violates_member_survival`: the negative control. A subtraction that
+    also drops passed-through members fails the property on that witness.
+
+  `coqc` compiles `EPathMap.v` with nine closed-context reports and no axioms. **MEASURED**.
+- **The tests.** `models/tests/epathmap_algebra.rs`: `set_difference_keeps_members_under_longer_right_keys`
+  checks both forms through `try_subtract` and `subtract_encoded_keys`.
+  `native_set_difference_is_key_by_key_removal_under_prefix_overlap` checks 128 generated pairs of sets
+  of scalars and lists over a four-value alphabet, against key-by-key removal computed with a
+  `BTreeSet` of canonical keys. Both pass on 0.3.4, together with the other 16 tests of
+  `models/tests/epathmap_algebra.rs` and the three rewritten PathMap mutation tests (21 of 21).
+  **MEASURED**.
+
+---
+
+### CBR-078
+
+**Prefix restriction keeps a member whose exact key the selector holds, even when the selector also
+holds a longer key through it: moving PathMap from 0.2.2 to 0.3.4 corrects the native `restrict`
+lookup.**
+
+| | |
+|---|---|
+| Commit(s) | the commit that adds this entry, the PathMap move of [CBR-077](#cbr-077) |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `Cargo.lock`, `models/Cargo.toml`, `rholang/Cargo.toml`, `rspace++/Cargo.toml`; reached through `models/src/rust/rhoapi_ext.rs:1903` (native `restrict` in `try_restrict_member_prefixes`), `:1850` (`try_restrict`, which has no production caller) and `rholang/src/rust/interpreter/reduce.rs:5980` (`restriction`) |
+
+#### (a) The issue
+
+EPathMap restriction keeps the base members that have some prefix, the member's own key included,
+among the selector's keys. `try_restrict_member_prefixes` maps each selector member to its branch prefix
+and, when the selector holds more than one member, calls PathMap's native `restrict`
+(`models/src/rust/rhoapi_ext.rs:1881`, the call at `:1903`). The Rholang method `restriction` reaches it
+(`rholang/src/rust/interpreter/reduce.rs:5980`). A one-member selector takes `focused_subtrie_clone`
+instead (`:1885-1894`), which this entry does not change. Under the canonical encoding a selector can
+hold a key and also a longer key through it: `1` is `03 02` and `[1, 2]` is `03 02 03 04 00`.
+
+PathMap 0.2.2 looks the selector up with `follow_path_to_value`
+(`pathmap-0.2.2/src/line_list_node.rs:1635-1653`). It follows a child link first and checks for a value
+only when no child link continues, so a child link that consumes the rest of the key returns "no value".
+A selector value at the member's own key is therefore hidden whenever the selector's longer key
+continues through it, and `restrict_slot_contents` drops the member (`:1168-1194`). PathMap 0.3.4
+checks for a value along the key at every node before it follows a child link
+(`pathmap-0.3.4/src/line_list_node.rs:1677-1699`). Upstream's note on the fix names the same defect:
+checking *"only after the walk ran out of links ... made `restrict` silently drop the value on any path
+that branches"* (`:1672-1676`).
+
+0.2.2 contradicts the model. `EPathMap.v` defines `restrict_by_prefix base selectors path` as `base path`
+and some prefix of `path`, `path` itself included, in `selectors`.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES** — `{|1|}` restricted by `{|1, 2, 3, [1, 2]|}` is `{||}` on 0.2.2 and `{|1|}` on 0.3.4, through both `try_restrict_member_prefixes` and `try_restrict`. |
+| 2 · verdict | **MOVES** — downstream of axis 1. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — a different set has a different EPM1 snapshot. |
+| 3 · bytes (Lane P, prost) | **MOVES** — the same EPM1 array at field 9. |
+| 4 · post-state hash | **MOVES** — whenever the restriction reaches a channel or the store. |
+| 5 · accepted programs | **NO** — neither version aborts on these inputs (corpus). |
+| 6 · metering | **NO** — `restriction` reserves `union_cost(other.len())` before it calls `try_restrict_member_prefixes` (`reduce.rs:5974-5977`), from the selector's length alone. |
+
+**The disagreement.** A deploy restricts a set by a selector that holds a member's exact key together
+with a longer key through it. The old node computes a smaller set than the new node, and the difference
+reaches the post-state hash: a **safety fork**.
+
+**Blast radius.** Any deploy calling `restriction` with a selector of more than one member that holds
+both `x` and a list beginning with `x`, on a base that holds `x`. Reachable by an ordinary deploy:
+**yes**.
+
+**Could live chain state have been produced under the old behaviour?** Settled under the owner's
+2026-07-30 pre-production ruling, as for [CBR-077](#cbr-077). Master's `restriction` calls the same native
+`restrict` on master's own key encoding (`origin/master:rholang/src/rust/interpreter/reduce.rs:3878`);
+whether that encoding produces such selectors was not examined. If the ruling changes, the settling query
+is: replay master-line history under an instrumented build that, at every native set `restrict`, counts
+the base keys that are a selector value and also a proper prefix of another selector key; any non-zero
+count is a historical result this entry would alter.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** Restriction drops a member whose key the selector names,
+contradicting `restrict_by_prefix` on a deployable input.
+
+**Why this repair rather than the alternatives.** The same three options as [CBR-077](#cbr-077), for the
+same reasons. 0.2.2 keeps the wrong result. A local repair would be a second execution path beside
+official PathMap. 0.3.4 is chosen.
+
+**Authority.** Owner ruling, **2026-10-16** (official crates.io PathMap only; quoted in
+[CBR-077](#cbr-077)). Owner decision, **2026-10-25**, choosing the option the agent recommended for this
+entry and [CBR-079](#cbr-079): *"Accept both as fixes (Recommended)"* — record both as corrective entries
+that activate together with the branch, beside CBR-077.
+
+**★ Sibling enumeration, ON A NAMED AXIS.** **Count: 2 on the axis "native-algebra corpus cases whose
+restriction result differs between 0.2.2 and 0.3.4"**: `restrict` and `restrict_member_prefixes` of
+`{1}` by `{1,2,3,[1,2]}`. The other restriction cases of the corpus are unchanged.
+
+**★ If the entry claims something *needed no change*, name the GUARD.** The writer-identity claim and
+its guards are in [CBR-077](#cbr-077).
+
+#### Evidence
+
+- **The corpus.** The two cases above, in the re-blessed golden of [CBR-077](#cbr-077). **MEASURED**.
+- **The model.** `EPathMap.v` adds three closed theorems:
+  - `restrict_by_prefix_keeps_members_whose_key_the_selector_holds`: for every key type, a base member
+    whose exact key the selector holds survives restriction even when the selector also holds a longer
+    key through it;
+  - `restriction_witness_keeps_the_bare_member`: the corpus witness, `{1}` restricted by
+    `{1, 2, 3, [1, 2]}` as canonical keys, keeps `03 02`;
+  - `child_first_restriction_violates_member_survival`: the negative control. A restriction that drops
+    members the selector passes through, as 0.2.2's child-first lookup does, fails the property on that
+    witness.
+
+  **MEASURED** (`coqc`, nine closed-context reports for the file).
+- **The tests.** `models/tests/epathmap_algebra.rs`: `restriction_keeps_members_whose_key_the_selector_holds`
+  checks the witness through `try_restrict` and `try_restrict_member_prefixes`, members and EPM1
+  snapshot. `native_restriction_is_the_rebuilt_set_of_members_with_a_selected_prefix` checks 128
+  generated pairs over the four-value alphabet against the set rebuilt from the members that have a
+  selected prefix, members and EPM1 snapshot. Both pass on 0.3.4 in the same run. **MEASURED**.
+
+---
+
+### CBR-079
+
+**A set difference no longer leaves a removed member's location behind as a value-free path: moving
+PathMap from 0.2.2 to 0.3.4 prunes it, so a difference no longer depends on the order its operands
+were built in.**
+
+| | |
+|---|---|
+| Commit(s) | the commit that adds this entry, the PathMap move of [CBR-077](#cbr-077) |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `Cargo.lock`, `models/Cargo.toml`, `rholang/Cargo.toml`, `rspace++/Cargo.toml`; reached through the subtraction call sites of [CBR-077](#cbr-077) |
+
+#### (a) The issue
+
+An EPathMap's identity includes its value-free paths, the paths that end without a member. Equality,
+hashing and ordering read them (`models/tests/epathmap_identity_is_epm1_snapshot.rs:63-64`,
+`models/tests/epathmap_pathmap_native_zipper.rs:218`), and EPM1 serializes them
+([CBR-044](#cbr-044)).
+
+PathMap 0.2.2's `subtract` sometimes leaves the location of a removed member behind as a value-free
+path. Whether it does depends on the operands' in-memory node layout, which depends on the order their
+members were inserted. `{1,2,3,[1,2]} − {1,2,3,[1,2]}` is the neutral empty set, but the same left minus
+the same set rebuilt in trie order keeps the path `03 06`, the location of `3`. Equal operands thus give
+unequal differences.
+
+0.3.4 drops a location once it holds neither a value nor a non-empty child. Two code changes do this:
+- its dense subtract counts a dropped location as a change (`pathmap-0.3.4/src/dense_byte_node.rs:466-472`). 0.2.2 has no such arm (`:387-391`), so a node whose only change was a dropped location could be returned as unchanged;
+- its cell-level subtract ignores an empty child (`:1928-1929`; 0.2.2 `:1747`).
+
+Which of the two each corpus case exercises was not isolated.
+
+Until this entry the model had no notion of value-free paths. `EPathMap.v` now models a difference's
+value-free endpoints as the left operand's endpoints that the right operand does not reach.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES** — the members are the same, the values are not. `{|1, 2, 3, [1, 2]|}` minus its trie-order copy is a set with a value-free path at `03 06` on 0.2.2 and the neutral empty set on 0.3.4. The integers `0` to `11` minus the even ones keep a value-free path at `03 04` on 0.2.2. |
+| 2 · verdict | **MOVES** — `==`, hashing and ordering include value-free paths, and `diff` stores its result unchanged (`reduce.rs:5819-5831`, `rhoapi_ext.rs:2848-2860`). So on 0.2.2 a difference with no members can compare unequal to `{||}`, and on 0.3.4 it compares equal. This follows from that code and the measured corpus results; it was not run end to end. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — the EPM1 snapshots differ (corpus). |
+| 3 · bytes (Lane P, prost) | **MOVES** — the same EPM1 array at field 9. |
+| 4 · post-state hash | **MOVES** — whenever the difference reaches a channel or the store. |
+| 5 · accepted programs | **NO** — neither version aborts on these inputs (corpus). |
+| 6 · metering | **NO** — `diff` reserves from the right operand's length alone (`reduce.rs:5815-5818`). |
+
+**The disagreement.** A deploy takes a set difference that removes members, with operands whose node
+layout takes 0.2.2's path, and stores or compares the result. The old node's value carries a
+value-free path the new node's lacks: a **safety fork**.
+
+**Blast radius.** Every set difference that removes a member through `diff`, `subtract_encoded_keys`
+in set mode, or the matcher's set-pattern preparation ([CBR-077](#cbr-077)). Whether 0.2.2 leaves the
+location depends on node layout. The corpus measured three shapes: a dense node of twelve integers minus
+its even half, the even half minus the twelve, and a four-member set minus its trie-order copy. The
+matcher rebuilds a bound remainder with `select_encoded_keys` (`spatial_matcher_pda.rs:6508`); whether a
+value-free path from the prepared target reaches a bound remainder was not traced. Reachable by an
+ordinary deploy: **yes**.
+
+**Could live chain state have been produced under the old behaviour?** Settled under the owner's
+2026-07-30 pre-production ruling, as for [CBR-077](#cbr-077); master's set difference calls the same
+native `subtract` (`origin/master:rholang/src/rust/interpreter/reduce.rs:3729`). If the ruling changes, the
+settling query is: replay master-line history under an instrumented build that, at every native set
+`subtract`, compares the result's paths with those of the set rebuilt from its members; any difference is
+a historical result this entry would alter.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** A difference depends on how its operands were built, not only on
+what they are. Two operands that compare equal give results that compare unequal, which breaks the
+identity contract that EPM1 equality is equality.
+
+**Why this repair rather than the alternatives.** The same three options as [CBR-077](#cbr-077). A local
+repair here would be a post-pass that rebuilds or prunes every difference, which is a second execution
+path beside official PathMap. 0.3.4 is chosen.
+
+**Authority.** As for [CBR-078](#cbr-078): owner decision, **2026-10-25**, *"Accept both as fixes
+(Recommended)"*, the option the agent recommended.
+
+**★ Sibling enumeration, ON A NAMED AXIS.** **Count: 10 on the axis "native-algebra corpus cases whose
+difference has the same members but different value-free paths between 0.2.2 and 0.3.4"**:
+- `subtract` and `subtract_encoded_keys` of `{0..11} − {0,2..10}` (where `{0,2..10}` is the even integers from 0 to 10), and of `{0,2..10} − {0..11}`;
+- `subtract` and `subtract_encoded_keys` of `{1,2,3,[1,2]}` minus its trie-order copy;
+- `subtract_encoded_keys` of `{1,2,3,[1,2]}` minus `{1,2,3,[1,2]}`, minus the same set with a value-free path, and minus the keys of the map `{1:10,2:20,3:30,[1,2]:12}`;
+- `subtract_encoded_keys` of `{1,2,3,[1,2]}` with a value-free path below `1`, minus `{1,2,3,[1,2]}`.
+
+In seven of them the result moves from a set with no members to the neutral empty set. In the other
+three the members are unchanged and only the value-free paths differ: `{0..11} − {0,2..10}` keeps `03 04`,
+the location of `2`, on 0.2.2.
+
+**★ If the entry claims something *needed no change*, name the GUARD.** The writer-identity claim and
+its guards are in [CBR-077](#cbr-077).
+
+#### Evidence
+
+- **The corpus.** The ten cases above, in the re-blessed golden of [CBR-077](#cbr-077); the 0.2.2 golden
+  shows `{1,2,3,[1,2]}` minus itself as the neutral empty set and minus its trie-order copy as a set with
+  the path `03 06`. **MEASURED**.
+- **The model.** `EPathMap.v` adds three closed theorems:
+  - `set_subtract_leaves_no_path_where_a_member_was_removed`: for every key type, when a left member
+    lies at a key the right side holds, the difference has no value-free endpoint at that key;
+  - `removed_member_witness_leaves_no_path`: the corpus witness, `{1, 2, 3, [1, 2]}` minus itself at
+    `03 06`, has neither a member nor an endpoint there;
+  - `location_keeping_subtract_violates_path_removal`: the negative control. A subtraction that keeps a
+    removed member's location as an endpoint, as 0.2.2 does on some layouts, fails the property on that
+    witness.
+
+  **MEASURED** (`coqc`, nine closed-context reports for the file).
+- **The tests.** `models/tests/epathmap_algebra.rs`: `set_difference_leaves_no_path_where_a_member_was_removed`
+  checks the three measured shapes through `try_subtract` and `subtract_encoded_keys` against the EPM1
+  snapshot of the expected set. `native_set_difference_is_the_rebuilt_set_of_its_surviving_members` checks
+  128 generated pairs over the four-value alphabet, with the right operand built in both orders and masks
+  inserted in both orders, against the EPM1 snapshot of the set rebuilt from the surviving members.
+  Both pass on 0.3.4 in the same run. **MEASURED**.
+
+---
+
 ## 4.4 Surface L — MeTTaIL's Rholang
 
 ---
@@ -3900,17 +4284,17 @@ samples and corrected analysis live in
 
 ### 5.1 Aggregate axis exposure
 
-Projected from the 23 rows of §4.1 (each column counts `●` cells):
+Projected from the 27 rows of §4.1 (each column counts `●` cells):
 
-| Axis | entries that move it | share of the 23 |
+| Axis | entries that move it | share of the 27 |
 |---|---:|---:|
-| computed value (V) | **8** | 35 % |
-| verdict (T) | **13** | 57 % |
-| bytes, Lane B (B) | **14** | 61 % |
-| bytes, Lane P (P) | **12** | 52 % |
-| post-state hash (H) | **16** | 70 % |
-| accepted programs (A) | **10** | 43 % |
-| metering (M) | **3** | 13 % |
+| computed value (V) | **11** | 41 % |
+| verdict (T) | **16** | 59 % |
+| bytes, Lane B (B) | **17** | 63 % |
+| bytes, Lane P (P) | **15** | 56 % |
+| post-state hash (H) | **19** | 70 % |
+| accepted programs (A) | **11** | 41 % |
+| metering (M) | **3** | 11 % |
 
 The metering row is a **result of the 2026-08-03 re-derivation**, falsifiable per entry: each kept
 entry's M cell carries its one-line derivation against the token model (§2.2). CBR-L20 changes a
@@ -3942,13 +4326,13 @@ RSpace rendezvous.
 
 ### 5.3 Direction profile
 
-Projected from §4.1: **15 CORRECTIVE** (the data-model lineage, schema additions, the
+Projected from §4.1: **18 CORRECTIVE** (the data-model lineage, schema additions, the
 single-registry method repair, corrective in
-the sense that the representation now matches the ruling, the shift-fusion repair, and the slotted
-matcher-network and certified persistent-route repairs, while all
-remain deliberate transitions),
+the sense that the representation now matches the ruling, the shift-fusion repair, the slotted
+matcher-network and certified persistent-route repairs, and the three PathMap 0.3.4 algebra
+corrections, while all remain deliberate transitions),
 **4 PERMISSIVE** (CBR-024, CBR-025, CBR-037, CBR-L07), **4 REGRESSIVE** (CBR-002, CBR-027, CBR-L08,
-CBR-L11). Total 23.
+CBR-L11). Total 26.
 
 ### 5.4 The chain-history questions
 
@@ -3965,7 +4349,7 @@ are retained because the ruling, not the evidence, is what discharges them.
 
 ### 5.5 The conjunction risk
 
-No activation-height machinery exists: `Validate::version` is exact equality, so the 24 entries ship
+No activation-height machinery exists: `Validate::version` is exact equality, so the 27 entries ship
 as one coordinated protocol-version bump. The reviewer's object of study is therefore the
 **conjunction**: if entry $`i`$ carries residual risk $`r_i`$, the bump carries
 $`1 - \prod_i (1 - r_i)`$, and the CBR-027/CBR-030 pair is the register's concrete demonstration
@@ -4126,8 +4510,8 @@ above is the maintenance mechanism.
 
 ## 8. Conclusions
 
-1. The register holds **24** may-change-consensus entries derived from the campaign record: **15**
-   on the F1r3node node, **9** on MeTTaIL's Rholang; **23 landed, 1 in flight**. **55** examined
+1. The register holds **27** may-change-consensus entries derived from the campaign record: **18**
+   on the F1r3node node, **9** on MeTTaIL's Rholang; **26 landed, 1 in flight**. **55** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -4146,7 +4530,7 @@ above is the maintenance mechanism.
    results. The count is not the number of committed RSpace rendezvous. Historical per-op "charge
    site" claims remain diagnostic-weight claims, and the one `UNVERIFIED` cell dissolved in the
    same derivation.
-6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 23 ship as
+6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 27 ship as
    one coordinated bump, and the CBR-027/CBR-030 pair is the in-register proof that entries
    interact.
 

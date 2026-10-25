@@ -62,19 +62,19 @@ fn assert_navigation_at(map: &mut PathMap<usize>, focus: &[u8]) {
                 if borrowed.child_count() != 0 {
                     let subtree: TrieRefBorrowed<'_, usize> = borrowed.trie_ref_at_path([]);
                     let mut rebased = subtree.fork_read_zipper();
-                    const PATHMAP_0_2_2_MAX_NODE_KEY_BYTES: usize = 48;
+                    const PATHMAP_MAX_NODE_KEY_BYTES: usize = 48;
                     assert!(rebased.path().is_empty());
                     assert_eq!(rebased.path_exists(), borrowed.path_exists());
                     assert_eq!(rebased.origin_path(), rebased.root_prefix_path());
                     assert!(focus.ends_with(rebased.root_prefix_path()));
-                    assert!(rebased.origin_path().len() <= PATHMAP_0_2_2_MAX_NODE_KEY_BYTES);
+                    assert!(rebased.origin_path().len() <= PATHMAP_MAX_NODE_KEY_BYTES);
                     assert_eq!(rebased.child_mask(), borrowed.child_mask());
                     assert_eq!(rebased.child_count(), borrowed.child_count());
                     assert_eq!(
                         rebased.val().map(std::ptr::from_ref),
                         borrowed.val().map(std::ptr::from_ref)
                     );
-                    if focus.len() > PATHMAP_0_2_2_MAX_NODE_KEY_BYTES {
+                    if focus.len() > PATHMAP_MAX_NODE_KEY_BYTES {
                         assert!(rebased.origin_path().len() < borrowed.origin_path().len());
                     }
                     let root_prefix = rebased.root_prefix_path().to_vec();

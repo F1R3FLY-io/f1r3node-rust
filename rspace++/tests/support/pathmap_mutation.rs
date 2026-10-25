@@ -77,11 +77,16 @@ fn pathmap_mutation_unwind_child() {
             assert!(parts.next().is_none());
             run_panicking_path_child(shared, case);
         }
-        "upstream" => {
-            let index = parts.next().unwrap().parse::<usize>().unwrap();
-            assert!(parts.next().is_none());
-            run_upstream_create_history_child(index, case);
-        }
+        // Disabled with the move to PathMap 0.3.4: this case reproduced the
+        // 0.2.2 empty-sentinel panic (PMU-006), which 0.3.4 fixes. The
+        // histories now run in process in
+        // raw_four_operation_create_history_creates_the_final_path.
+        //
+        // "upstream" => {
+        //     let index = parts.next().unwrap().parse::<usize>().unwrap();
+        //     assert!(parts.next().is_none());
+        //     run_upstream_create_history_child(index, case);
+        // }
         _ => panic!("unknown PathMap mutation unwind case: {case}"),
     }
 }
@@ -994,26 +999,37 @@ fn run_panicking_path_child(shared: bool, case: &str) {
         .set_val_at(PanickingPath, TrackedPayload::new(2, &verify.incoming_counts));
 }
 
+/// PathMap 0.2.2 panicked on these histories at an empty sentinel node
+/// (PMU-006). Upstream 06d10991a3, released in 0.3.4, makes `get_child_mut`
+/// skip empty children.
 #[test]
-fn pinned_pathmap_0_2_2_raw_four_operation_create_history_hits_empty_sentinel() {
-    for index in 0..histories().len() {
-        assert_mutation_unwind_child(
-            &format!("upstream:{index}"),
-            "Attempted to make_unique on an empty sentinel node",
-        );
+fn raw_four_operation_create_history_creates_the_final_path() {
+    for mut history in histories() {
+        let final_path = history.pop().expect("each history ends in its final path");
+        let mut map = PathMap::<u64>::new();
+        for path in history {
+            map.create_path(path);
+        }
+        assert!(map.create_path(&final_path));
+        assert!(map.path_exists_at(&final_path));
     }
 }
 
-fn run_upstream_create_history_child(index: usize, case: &str) {
-    let mut map = PathMap::<u64>::new();
-    let mut history = histories().into_iter().nth(index).unwrap();
-    let final_path = history.pop().unwrap();
-    for path in history {
-        map.create_path(path);
-    }
-    std::fs::write(mutation_unwind_marker(), case.as_bytes()).unwrap();
-    map.create_path(final_path);
-}
+// Disabled with the move to PathMap 0.3.4: this child reproduced the 0.2.2
+// empty-sentinel panic (PMU-006), which 0.3.4 fixes.
+// raw_four_operation_create_history_creates_the_final_path now checks the same
+// histories in process.
+//
+// fn run_upstream_create_history_child(index: usize, case: &str) {
+//     let mut map = PathMap::<u64>::new();
+//     let mut history = histories().into_iter().nth(index).unwrap();
+//     let final_path = history.pop().unwrap();
+//     for path in history {
+//         map.create_path(path);
+//     }
+//     std::fs::write(mutation_unwind_marker(), case.as_bytes()).unwrap();
+//     map.create_path(final_path);
+// }
 
 #[derive(Clone, Debug)]
 enum MinimalMutation {
@@ -1214,17 +1230,19 @@ fn raw_grafted_parent_removal(prune: bool) -> (Observation, bool, Vec<u8>, usize
     (observation, point_exists, last_path, writer_children)
 }
 
+/// PathMap 0.2.2 left a duplicate empty child at `[1]` here, so the last path
+/// stopped at `[1]` with one child (PMU-008). Upstream 02afb73523, released in
+/// 0.3.4, removes it.
 #[test]
-fn pinned_pathmap_0_2_2_raw_nonpruning_parent_removal_exposes_same_key_child_inconsistency() {
+fn raw_nonpruning_parent_removal_keeps_the_same_key_child_consistent() {
     let actual = raw_grafted_parent_removal(false);
-    assert_eq!(actual.2, vec![1]);
-    assert_eq!(actual.3, 1);
-    assert!(actual.1);
-    eprintln!("raw non-pruning same-key child inconsistency: {actual:?}");
+    let mut expected = Observation::default();
+    expected.create(&[1, 2]);
+    assert_eq!(actual, (expected, true, vec![1, 2], 0));
 }
 
 #[test]
-fn pinned_pathmap_0_2_2_raw_pruning_parent_removal_preserves_same_key_real_child() {
+fn raw_pruning_parent_removal_preserves_same_key_real_child() {
     let actual = raw_grafted_parent_removal(true);
     let mut expected = Observation::default();
     expected.create(&[1, 2]);

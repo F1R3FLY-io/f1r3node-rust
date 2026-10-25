@@ -742,7 +742,11 @@ fn production_candidate_lane_cannot_regain_owned_subtree_checkpoints() {
         "CandidateProductCheckpoint",
         "guarded_focus_snapshot",
         "ZipperSubtries",
+        "ZipperInfallibleSubtries",
         "make_map(",
+        "try_make_map",
+        "trie_ref",
+        "graft_src_at",
         "PathMap<Arc<[u8]>>",
         "cursor.clone()",
     ] {

@@ -1,9 +1,9 @@
 {
   "classified_obligations": {
-    "concrete_witness": 41,
+    "concrete_witness": 47,
     "executable_only": 9,
     "executable_refinement": 138,
-    "proof_only": 518
+    "proof_only": 521
   },
   "families": [
     {
@@ -415,7 +415,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "ddd221c8b2e7da83a0ee91e40dccbe4d3b6c42f78ef35e1489f0174ffc7da378",
+      "manifest_sha256": "62340344e2329d3427f988683ca1b35060c7ceb7d4a687a1ba8b258635d4bf5a",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -811,7 +811,7 @@
           "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
-          "rspace++/Cargo.toml": "61e3374b61b5ac5bbc9c0b269515e04c3f43d0207f4a5fe32c06f6906b3f725c",
+          "rspace++/Cargo.toml": "500cabf522281a2166e15055254daef9630f2bd726ec2daca80b04a877208766",
           "rspace++/tests/bag_spec.rs": "64314c47797e9a9777af0888c52510ca1c17bc2286a0515f5824227af5a3728d"
         },
         "verus_obligations": [
@@ -847,7 +847,7 @@
       "checker": "scripts/check-epathmap-core-obligations.py",
       "family": "epathmap_core",
       "manifest": "formal/epathmap_core_obligations.generated.json",
-      "manifest_sha256": "ae744557757ae8b1c0055affa1524a257e5e4b456c00dd1ee7e9ff024374e848",
+      "manifest_sha256": "7d72bdb9416db6ed16dd0a5d1b7d9f10bc916282558fc58dfe286f68449e014f",
       "obligations": {
         "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
         "delegated_epm1_positional_tla": {
@@ -872,11 +872,35 @@
           },
           {
             "source": "models/tests/epathmap_algebra.rs",
+            "test": "native_restriction_is_the_rebuilt_set_of_members_with_a_selected_prefix"
+          },
+          {
+            "source": "models/tests/epathmap_algebra.rs",
+            "test": "native_set_difference_is_key_by_key_removal_under_prefix_overlap"
+          },
+          {
+            "source": "models/tests/epathmap_algebra.rs",
+            "test": "native_set_difference_is_the_rebuilt_set_of_its_surviving_members"
+          },
+          {
+            "source": "models/tests/epathmap_algebra.rs",
             "test": "nonempty_set_and_map_modes_cannot_mix"
           },
           {
             "source": "models/tests/epathmap_algebra.rs",
+            "test": "restriction_keeps_members_whose_key_the_selector_holds"
+          },
+          {
+            "source": "models/tests/epathmap_algebra.rs",
             "test": "set_algebra_uses_pathmap_lattice_operations"
+          },
+          {
+            "source": "models/tests/epathmap_algebra.rs",
+            "test": "set_difference_keeps_members_under_longer_right_keys"
+          },
+          {
+            "source": "models/tests/epathmap_algebra.rs",
+            "test": "set_difference_leaves_no_path_where_a_member_was_removed"
           },
           {
             "source": "models/tests/epathmap_epm1_snapshot.rs",
@@ -1291,9 +1315,91 @@
                 "symbol": "prefix_restriction_of_empty_base_is_empty",
                 "test_name": null,
                 "test_source": null
+              },
+              {
+                "id": "EPC-RC-02-41",
+                "mode": "concrete_witness",
+                "printed": true,
+                "symbol": "set_subtract_keeps_members_under_longer_right_keys",
+                "test_name": "native_set_difference_is_key_by_key_removal_under_prefix_overlap",
+                "test_source": "models/tests/epathmap_algebra.rs"
+              },
+              {
+                "id": "EPC-RC-02-42",
+                "mode": "concrete_witness",
+                "printed": true,
+                "symbol": "prefix_overlap_witness_keeps_the_bare_member",
+                "test_name": "set_difference_keeps_members_under_longer_right_keys",
+                "test_source": "models/tests/epathmap_algebra.rs"
+              },
+              {
+                "id": "EPC-RC-02-43",
+                "mode": "proof_only",
+                "printed": true,
+                "symbol": "passthrough_dropping_subtract_violates_member_survival",
+                "test_name": null,
+                "test_source": null
+              },
+              {
+                "id": "EPC-RC-02-44",
+                "mode": "concrete_witness",
+                "printed": true,
+                "symbol": "restrict_by_prefix_keeps_members_whose_key_the_selector_holds",
+                "test_name": "native_restriction_is_the_rebuilt_set_of_members_with_a_selected_prefix",
+                "test_source": "models/tests/epathmap_algebra.rs"
+              },
+              {
+                "id": "EPC-RC-02-45",
+                "mode": "concrete_witness",
+                "printed": true,
+                "symbol": "restriction_witness_keeps_the_bare_member",
+                "test_name": "restriction_keeps_members_whose_key_the_selector_holds",
+                "test_source": "models/tests/epathmap_algebra.rs"
+              },
+              {
+                "id": "EPC-RC-02-46",
+                "mode": "proof_only",
+                "printed": true,
+                "symbol": "child_first_restriction_violates_member_survival",
+                "test_name": null,
+                "test_source": null
+              },
+              {
+                "id": "EPC-RC-02-47",
+                "mode": "concrete_witness",
+                "printed": true,
+                "symbol": "set_subtract_leaves_no_path_where_a_member_was_removed",
+                "test_name": "native_set_difference_is_the_rebuilt_set_of_its_surviving_members",
+                "test_source": "models/tests/epathmap_algebra.rs"
+              },
+              {
+                "id": "EPC-RC-02-48",
+                "mode": "concrete_witness",
+                "printed": true,
+                "symbol": "removed_member_witness_leaves_no_path",
+                "test_name": "set_difference_leaves_no_path_where_a_member_was_removed",
+                "test_source": "models/tests/epathmap_algebra.rs"
+              },
+              {
+                "id": "EPC-RC-02-49",
+                "mode": "proof_only",
+                "printed": true,
+                "symbol": "location_keeping_subtract_violates_path_removal",
+                "test_name": null,
+                "test_source": null
               }
             ],
-            "print_assumptions": [],
+            "print_assumptions": [
+              "set_subtract_keeps_members_under_longer_right_keys",
+              "prefix_overlap_witness_keeps_the_bare_member",
+              "passthrough_dropping_subtract_violates_member_survival",
+              "restrict_by_prefix_keeps_members_whose_key_the_selector_holds",
+              "restriction_witness_keeps_the_bare_member",
+              "child_first_restriction_violates_member_survival",
+              "set_subtract_leaves_no_path_where_a_member_was_removed",
+              "removed_member_witness_leaves_no_path",
+              "location_keeping_subtract_violates_path_removal"
+            ],
             "source": "formal/rocq/stack_safe_pda/theories/EPathMap.v"
           },
           {
@@ -1627,14 +1733,14 @@
         "source_sha256": {
           "formal/epm1_positional_obligations.generated.json": "d4998b1be29ead7925c3374bf4ee1b5235909e1a3ac65f948ca6241220a4da24",
           "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
-          "formal/rocq/stack_safe_pda/theories/EPathMap.v": "a0ba6d8381867c02971d94bbb5545f4495b739ed82ab69859da4c109b3b1a6b7",
+          "formal/rocq/stack_safe_pda/theories/EPathMap.v": "d9bdce288155a9b5c6d57fec35bd9145c6896c6812654d38a447d5f976cc3794",
           "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
           "formal/tlaplus/stack_safe_pda/Epm1PositionalAssociation.cfg": "1b1516198abcf597b2ec73ed55b62033d60872c18f9a3c3eceedff23f66b52b3",
           "formal/tlaplus/stack_safe_pda/PDAEquivalence.cfg": "efa8bbad0b869ea2c14e865120c8cbd4c2060e4b75d0b0549f11645accfb4889",
           "formal/tlaplus/stack_safe_pda/PDAEquivalence.tla": "1b010477e0dde9d836b70183c425a9929d47fb70b5caadc3fa54a7e13e1ae173",
           "formal/verus/epathmap_canonical_worklist.rs": "2bfc8da59684812bc6488f0121d31832d7fddcab6019cc86d3b9182978e9ddfb",
-          "models/Cargo.toml": "19bbb25778a91dca252ad9b7f466f1be26e5fb530cc0ae564b5f05c613a285c5",
-          "models/tests/epathmap_algebra.rs": "8b9d018d17d15c96be10466ccae11a8ba265512bc2e62091624ad9911113fc67",
+          "models/Cargo.toml": "48572d3ba4d9846a6e771989ef0cad6b7712fc928a3a3ef819617d8aad894d23",
+          "models/tests/epathmap_algebra.rs": "977bcb70f275bb7362e85d90f48619af0c8b3bbf6f19ba4ba05f2d5e3ada5cb4",
           "models/tests/epathmap_epm1_snapshot.rs": "5066167eeb3d240dacc7e873590a28bfa7cc5efe6ae9c943f78be52c0957c561"
         },
         "tlc": {
@@ -2287,7 +2393,7 @@
       "checker": "scripts/check-parbag-egress-obligations.py",
       "family": "parbag_egress",
       "manifest": "formal/parbag_egress_obligations.generated.json",
-      "manifest_sha256": "51dcfcb4a1d315495d2f5c9a593dccba5202e07655ea8f7dff02f39afce91bb7",
+      "manifest_sha256": "8018da67e9d8910b48c5a6e22d26f23b6767e1518225e07bfc1e8112d6b77011",
       "obligations": {
         "bincode_formal_boundary": "The canonical-egress Verus source models fixed bincode framing and preflight arithmetic; this registry has no separate formal model of the general-purpose bincode encoder.",
         "boundary": "Concrete witnesses exercise selected production bytes and slot order. The canonical-egress Verus source covers bincode envelope and length arithmetic, while full encoder byte equivalence and publication remain proof-only here.",
@@ -3694,7 +3800,7 @@
           "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressMutant.cfg": "88f76d0f24068dc757898b080cb294d019ed164801fb8c3c048837f9c9ad0a3d",
           "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressValidationMutant.cfg": "c8295658de039605037e58c0c25f1e5fab030d1fe2e0e230fdf3dbddee32126b",
           "formal/verus/rspace_canonical_egress.rs": "92897d041c846ba513d875ea0b1c986ab0841880779107ab3abade4b1bc6c997",
-          "models/Cargo.toml": "19bbb25778a91dca252ad9b7f466f1be26e5fb530cc0ae564b5f05c613a285c5",
+          "models/Cargo.toml": "48572d3ba4d9846a6e771989ef0cad6b7712fc928a3a3ef819617d8aad894d23",
           "models/tests/par_protobuf_stack_safety.rs": "991d21786b1e463da13a1c6d84b7edcbc83d92f90c9c4bde7bcfc105de65bb35",
           "models/tests/protobuf_encoder_space.rs": "29484d06eee89826cdacbdb716cd5e888c9c961e661e3afdac93d513e6eb7fe0"
         },
@@ -5300,7 +5406,7 @@
       "checker": "scripts/check-rho-path-v2-obligations.py",
       "family": "rho_path_v2",
       "manifest": "formal/rho_path_v2_obligations.generated.json",
-      "manifest_sha256": "509cb15d7d5f10d992ef9410bba2fa56cdf7ea7700405726999ce0e5ffed6a63",
+      "manifest_sha256": "cf691d4f8a5a5b4bef54ea72b0bcc4ed74a0eb328e0e54719384e73696e9f010",
       "obligations": {
         "boundary": "Rust witnesses exercise selected outer codec behaviors, not the abstract lifecycle, RCI2/RMP2 payload validity, or a formal Rust refinement proof.",
         "excluded_families": [
@@ -5444,7 +5550,7 @@
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.tla": "b2efa3f2d3b184600399f369bbd3d2120e70d3198c69014a64cdbb56a8a74e31",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla": "678019bff3b23322cde42c7cde8482aaecb59188b1af8e338cafd1056455c12a",
-          "rspace++/Cargo.toml": "61e3374b61b5ac5bbc9c0b269515e04c3f43d0207f4a5fe32c06f6906b3f725c",
+          "rspace++/Cargo.toml": "500cabf522281a2166e15055254daef9630f2bd726ec2daca80b04a877208766",
           "rspace++/tests/rho_path_spec.rs": "25d6ed6736474d4bbcd7e678038c459756e53f334f6fa9f53611eff25f2d7eae"
         },
         "tlc": {
@@ -6431,7 +6537,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "55a0f7ee49d1c70b869741476503671beea0db30f027babb5be1f53987249508",
+      "manifest_sha256": "1331c7041ef22bd88b7900f8cc5ec505cd496daf4ff99841e175ca1fd81b1537",
       "obligations": {
         "controls": [
           {
@@ -6786,7 +6892,7 @@
           "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryNoFairnessMutant.cfg": "fff68d00330265d9e3e6d8799cba59903e57d663104d77f2e98e97295dd7da60",
           "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryTwoPublicationsWitness.cfg": "b75d1582adc827021b915bf2d3114492892743600a1f18a79795e5447b08ba90",
           "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryUsableStagedOpenMutant.cfg": "248720144f4a3b3602af64bb2e463f04875d33ed62218ebac80b40e2a35ad2aa",
-          "rholang/Cargo.toml": "788600b18b15ce6dd4239b1d60408402440751e12b9b5c8e5873e3ec1e7fe3ec",
+          "rholang/Cargo.toml": "7a9445c7635ce8433f0b2ec38839448b59828d144a84de3f61826c415360e321",
           "rholang/tests/epathmap_replay_equivalence_spec.rs": "660beba8782f1e658313e6a73bae0321b1bdc2d7736d968a5a43aedb9308192d",
           "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
           "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
@@ -6801,6 +6907,6 @@
       }
     }
   ],
-  "global_obligation_ids": 721,
+  "global_obligation_ids": 730,
   "scope": "PathMap integration formal obligations and normal-suite refinement bindings"
 }

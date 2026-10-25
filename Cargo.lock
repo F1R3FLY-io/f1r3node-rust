@@ -4064,9 +4064,9 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pathmap"
-version = "0.2.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce8d2a6bf5df2e172d398b5e24284cabc6557702102d461118827d02ef0f8f6c"
+checksum = "2baf17b201feabf3df21c7f3f88e96199ed34e7caabf07bad39ea1ed78be82f0"
 dependencies = [
  "arrayvec",
  "dyn-clone",
@@ -4080,6 +4080,7 @@ dependencies = [
  "pathmap-derive",
  "reusing-vec",
  "smallvec",
+ "span-timing",
  "xxhash-rust",
 ]
 
@@ -4092,9 +4093,9 @@ dependencies = [
 
 [[package]]
 name = "pathmap-derive"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "804da4fe149a69b8b63f3870dcfee222a2c6217daf944c8dd072e20aa96c178c"
+checksum = "d3284ce0c679daf4e2c84c4e83b394e7245c657558bcd002125434fb560b5e69"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6029,6 +6030,12 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "span-timing"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6d18f132ea17d8e294fe77795171f281b1c3bf4e72aa59be1dd5db087ea260f"
 
 [[package]]
 name = "spin"

@@ -379,3 +379,175 @@ Theorem prefix_restriction_of_empty_base_is_empty :
   forall (KeyByte : Type) (selectors : list KeyByte -> bool) path,
     restrict_by_prefix (fun _ => false) selectors path = false.
 Proof. reflexivity. Qed.
+
+Definition passes_through {KeyByte : Type}
+  (right : list KeyByte -> bool) (key : list KeyByte) : Prop :=
+  exists byte suffix, right (key ++ byte :: suffix) = true.
+
+Definition keeps_members_under_longer_right_keys {KeyByte : Type}
+  (member : (list KeyByte -> bool) -> (list KeyByte -> bool) -> list KeyByte -> Prop) : Prop :=
+  forall left right key,
+    left key = true -> right key = false -> passes_through right key ->
+    member left right key.
+
+Definition passthrough_dropping_member {KeyByte : Type}
+  (left right : list KeyByte -> bool) (key : list KeyByte) : Prop :=
+  set_subtract left right key = true /\ ~ passes_through right key.
+
+Theorem set_subtract_keeps_members_under_longer_right_keys :
+  forall KeyByte : Type,
+    @keeps_members_under_longer_right_keys KeyByte
+      (fun left right key => set_subtract left right key = true).
+Proof.
+  intros KeyByte left right key member absent _.
+  cbv beta. unfold set_subtract. rewrite member, absent. reflexivity.
+Qed.
+
+Definition prefix_overlap_left (key : list nat) : bool :=
+  match key with
+  | [3; 2] | [3; 4] | [3; 6] | [3; 2; 3; 4; 0] => true
+  | _ => false
+  end.
+
+Definition prefix_overlap_right (key : list nat) : bool :=
+  match key with
+  | [3; 2; 3; 4; 0] => true
+  | _ => false
+  end.
+
+Theorem prefix_overlap_witness_keeps_the_bare_member :
+  set_subtract prefix_overlap_left prefix_overlap_right [3; 2] = true /\
+  set_subtract prefix_overlap_left prefix_overlap_right [3; 4] = true /\
+  set_subtract prefix_overlap_left prefix_overlap_right [3; 6] = true /\
+  set_subtract prefix_overlap_left prefix_overlap_right [3; 2; 3; 4; 0] = false /\
+  passes_through prefix_overlap_right [3; 2].
+Proof.
+  split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+  split; [reflexivity|].
+  exists 3, [4; 0]. reflexivity.
+Qed.
+
+Theorem passthrough_dropping_subtract_violates_member_survival :
+  ~ passthrough_dropping_member prefix_overlap_left prefix_overlap_right [3; 2] /\
+  ~ @keeps_members_under_longer_right_keys nat passthrough_dropping_member.
+Proof.
+  assert (through : passes_through prefix_overlap_right [3; 2])
+    by (exists 3, [4; 0]; reflexivity).
+  split.
+  - intros [_ dropped]. exact (dropped through).
+  - intro survives.
+    destruct (survives prefix_overlap_left prefix_overlap_right [3; 2] eq_refl eq_refl through)
+      as [_ dropped].
+    exact (dropped through).
+Qed.
+
+Definition keeps_members_whose_key_the_selector_holds {KeyByte : Type}
+  (member : (list KeyByte -> bool) -> (list KeyByte -> bool) -> list KeyByte -> Prop) : Prop :=
+  forall base selectors key,
+    base key = true -> selectors key = true -> passes_through selectors key ->
+    member base selectors key.
+
+Definition child_first_restricted_member {KeyByte : Type}
+  (base selectors : list KeyByte -> bool) (key : list KeyByte) : Prop :=
+  restrict_by_prefix base selectors key = true /\ ~ passes_through selectors key.
+
+Theorem restrict_by_prefix_keeps_members_whose_key_the_selector_holds :
+  forall KeyByte : Type,
+    @keeps_members_whose_key_the_selector_holds KeyByte
+      (fun base selectors key => restrict_by_prefix base selectors key = true).
+Proof.
+  intros KeyByte base selectors key member held _.
+  cbv beta. unfold restrict_by_prefix. rewrite member, andb_true_l.
+  apply existsb_exists. exists (length key). split.
+  - apply in_seq. simpl. split; [apply Nat.le_0_l | apply Nat.lt_succ_diag_r].
+  - cbv beta. rewrite firstn_all. exact held.
+Qed.
+
+Definition restriction_witness_base (key : list nat) : bool :=
+  match key with
+  | [3; 2] => true
+  | _ => false
+  end.
+
+Theorem restriction_witness_keeps_the_bare_member :
+  restrict_by_prefix restriction_witness_base prefix_overlap_left [3; 2] = true /\
+  passes_through prefix_overlap_left [3; 2].
+Proof.
+  split; [reflexivity|].
+  exists 3, [4; 0]. reflexivity.
+Qed.
+
+Theorem child_first_restriction_violates_member_survival :
+  ~ child_first_restricted_member restriction_witness_base prefix_overlap_left [3; 2] /\
+  ~ @keeps_members_whose_key_the_selector_holds nat child_first_restricted_member.
+Proof.
+  assert (through : passes_through prefix_overlap_left [3; 2])
+    by (exists 3, [4; 0]; reflexivity).
+  split.
+  - intros [_ dropped]. exact (dropped through).
+  - intro survives.
+    destruct (survives restriction_witness_base prefix_overlap_left [3; 2] eq_refl eq_refl through)
+      as [_ dropped].
+    exact (dropped through).
+Qed.
+
+Definition value_free_paths_hold_no_member {KeyByte : Type}
+  (member endpoint : list KeyByte -> bool) : Prop :=
+  forall key, member key = true -> endpoint key = false.
+
+Definition set_subtract_endpoints {KeyByte : Type}
+  (left_endpoint right_reaches : list KeyByte -> bool) : list KeyByte -> bool :=
+  fun key => left_endpoint key && negb (right_reaches key).
+
+Definition leaves_no_path_where_a_member_was_removed {KeyByte : Type}
+  (endpoints : (list KeyByte -> bool) -> (list KeyByte -> bool) ->
+    (list KeyByte -> bool) -> (list KeyByte -> bool) -> list KeyByte -> bool) : Prop :=
+  forall left_member left_endpoint right_member right_reaches key,
+    value_free_paths_hold_no_member left_member left_endpoint ->
+    left_member key = true -> right_member key = true ->
+    endpoints left_member left_endpoint right_member right_reaches key = false.
+
+Definition location_keeping_subtract_endpoints {KeyByte : Type}
+  (left_member left_endpoint right_member right_reaches : list KeyByte -> bool)
+  : list KeyByte -> bool :=
+  fun key => set_subtract_endpoints left_endpoint right_reaches key
+    || (left_member key && right_member key).
+
+Theorem set_subtract_leaves_no_path_where_a_member_was_removed :
+  forall KeyByte : Type,
+    @leaves_no_path_where_a_member_was_removed KeyByte
+      (fun _ left_endpoint _ right_reaches => set_subtract_endpoints left_endpoint right_reaches).
+Proof.
+  intros KeyByte left_member left_endpoint right_member right_reaches key value_free member _.
+  cbv beta. unfold set_subtract_endpoints. rewrite (value_free key member). reflexivity.
+Qed.
+
+Theorem removed_member_witness_leaves_no_path :
+  set_subtract prefix_overlap_left prefix_overlap_left [3; 6] = false /\
+  set_subtract_endpoints (fun _ => false) prefix_overlap_left [3; 6] = false.
+Proof. split; reflexivity. Qed.
+
+Theorem location_keeping_subtract_violates_path_removal :
+  location_keeping_subtract_endpoints prefix_overlap_left (fun _ => false)
+    prefix_overlap_left prefix_overlap_left [3; 6] = true /\
+  ~ @leaves_no_path_where_a_member_was_removed nat location_keeping_subtract_endpoints.
+Proof.
+  split; [reflexivity|].
+  intro removes.
+  assert (value_free :
+    value_free_paths_hold_no_member prefix_overlap_left (fun _ : list nat => false))
+    by (intros key _; reflexivity).
+  pose proof (removes prefix_overlap_left (fun _ => false) prefix_overlap_left
+    prefix_overlap_left [3; 6] value_free eq_refl eq_refl) as kept.
+  cbv in kept. discriminate kept.
+Qed.
+
+Print Assumptions set_subtract_keeps_members_under_longer_right_keys.
+Print Assumptions prefix_overlap_witness_keeps_the_bare_member.
+Print Assumptions passthrough_dropping_subtract_violates_member_survival.
+Print Assumptions restrict_by_prefix_keeps_members_whose_key_the_selector_holds.
+Print Assumptions restriction_witness_keeps_the_bare_member.
+Print Assumptions child_first_restriction_violates_member_survival.
+Print Assumptions set_subtract_leaves_no_path_where_a_member_was_removed.
+Print Assumptions removed_member_witness_leaves_no_path.
+Print Assumptions location_keeping_subtract_violates_path_removal.
