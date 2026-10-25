@@ -40,24 +40,34 @@ PORTS_YML="$NODE_REPO_DIR/docker/ci-ports.shard.yml"
 [ -f "$PORTS_YML" ] || { echo "missing $PORTS_YML" >&2; exit 2; }
 command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
 
+# docker/.env is not tracked (#745), so a fresh soak checkout has none. Without
+# a local copy, the shard keys and the default deployer key come from the
+# development template docker/.env.example, passed to compose as --env-file.
+ENV_FILE="$NODE_REPO_DIR/docker/.env"
+COMPOSE_ENV=()
+if [ ! -f "$ENV_FILE" ] && [ -f "$NODE_REPO_DIR/docker/.env.example" ]; then
+  ENV_FILE="$NODE_REPO_DIR/docker/.env.example"
+  COMPOSE_ENV=(--env-file "$ENV_FILE")
+fi
+
 # latency-benchmark.sh needs a funded deployer. Default to the shard's own
-# bootstrap key from the checked-in fixture env — the documented default
+# bootstrap key from the shard env file — the documented default
 # ("funded locally and in wallets.txt", docs/vps-cloud-testing.md) that the
 # benchmark script requires but nothing in the soak path ever supplied, which
 # made every soak bench segment die on its first line (run 30713818751:
 # bench_segments=1 bench_failures=1, every week, silently).
 if [ -z "${DEPLOYER_KEY:-}" ]; then
   DEPLOYER_KEY="$(awk -F= '$1 == "BOOTSTRAP_PRIVATE_KEY" { gsub(/^["'\'']|["'\'']$/, "", $2); print $2; exit }' \
-    "$NODE_REPO_DIR/docker/.env" 2>/dev/null || true)"
+    "$ENV_FILE" 2>/dev/null || true)"
   if [ -z "$DEPLOYER_KEY" ]; then
-    echo "DEPLOYER_KEY not set and no BOOTSTRAP_PRIVATE_KEY in $NODE_REPO_DIR/docker/.env" >&2
+    echo "DEPLOYER_KEY not set and no BOOTSTRAP_PRIVATE_KEY in $ENV_FILE" >&2
     exit 2
   fi
 fi
 export DEPLOYER_KEY
 
 mkdir -p "$OUT_DIR"
-COMPOSE=(docker compose -f "$SHARD_YML" -f "$PORTS_YML" -p soak-bench)
+COMPOSE=(docker compose "${COMPOSE_ENV[@]}" -f "$SHARD_YML" -f "$PORTS_YML" -p soak-bench)
 
 # Check the merged configuration before the shard starts. A later edit of
 # either file must not bring a published host port back into the ephemeral
