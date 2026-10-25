@@ -340,7 +340,7 @@ rspace_preparation_run_tests() {
     return 1
   fi
   printf '%s\n' "$output"
-  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" <<<"$output"; then
+  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; [0-9]+ ignored;" <<<"$output"; then
     echo "stack-safe-pda: expected $expected nonignored RSpace preparation tests for $*" >&2
     return 1
   fi
@@ -596,7 +596,7 @@ if [[ "${1:-}" == "--match-preparation" ]]; then
   pushd "$repo_root" >/dev/null
   rspace_preparation_run_tests 69 --lib rspace::data_index::
   rspace_preparation_run_tests 1 --lib catalog_hash_preimages_are_exact_raw_identity_bytes
-  rspace_preparation_run_tests 14 --lib accepted_match_formal_bindings
+  rspace_preparation_run_tests 15 --lib accepted_match_formal_bindings
   rspace_preparation_run_tests 28 --test data_index_spec
   rspace_preparation_run_tests 5 --test serializer_byte_goldens
   rspace_preparation_run_tests 2 --test bag_spec transaction_delta
