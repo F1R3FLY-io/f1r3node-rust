@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
-use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::blocks::proposer::proposer::{ProposeRequest, ProposerResult};
 use casper::rust::errors::CasperError;
 use comm::rust::peer_node::NodeIdentifier;
 use tokio::task::JoinSet;
@@ -18,7 +18,7 @@ use crate::rust::node_environment;
 
 type ProposerQueueEntry = (
     Arc<dyn casper::rust::casper::Casper + Send + Sync>,
-    bool,
+    ProposeRequest,
     tokio::sync::oneshot::Sender<ProposerResult>,
     u8,
 );

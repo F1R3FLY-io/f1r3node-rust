@@ -10,6 +10,7 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::private_key::PrivateKey;
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -88,11 +89,52 @@ impl DeploySelection {
 
 /// Whether a propose request may mint a block without user deploys. Only the
 /// heartbeat lane may also mint past the height constraint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposeRequest {
+    pub is_async: bool,
+    pub require_user_deploys: bool,
+    pub expected_empty_self: Option<BlockHash>,
+}
+
+impl ProposeRequest {
+    pub fn heartbeat_deploy() -> Self {
+        Self {
+            is_async: true,
+            require_user_deploys: true,
+            expected_empty_self: None,
+        }
+    }
+
+    pub fn after_empty_self(mut self, hash: BlockHash) -> Self {
+        self.expected_empty_self = Some(hash);
+        self
+    }
+}
+
+impl From<bool> for ProposeRequest {
+    fn from(is_async: bool) -> Self {
+        Self {
+            is_async,
+            require_user_deploys: false,
+            expected_empty_self: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EmptyBlocks {
     Forbidden,
+    RequireUserDeploys,
     Allowed,
     HeartbeatLane,
+}
+
+pub fn block_has_user_deploys(block: &BlockMessage) -> bool {
+    block
+        .body
+        .deploys
+        .iter()
+        .any(|processed| !crate::rust::system_deploy::is_system_deploy_id(&processed.deploy.sig))
 }
 
 #[allow(async_fn_in_trait)]
@@ -242,7 +284,12 @@ where
                     None,
                 ))
             }
-            CheckProposeConstraintsResult::Success if empty_blocks == EmptyBlocks::Forbidden => {
+            CheckProposeConstraintsResult::Success
+                if matches!(
+                    empty_blocks,
+                    EmptyBlocks::Forbidden | EmptyBlocks::RequireUserDeploys
+                ) =>
+            {
                 DeploySelection::Standard
             }
             CheckProposeConstraintsResult::Success => DeploySelection::StandardAllowEmpty,
@@ -266,6 +313,12 @@ where
                 Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
             }
             BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
+                if empty_blocks == EmptyBlocks::RequireUserDeploys
+                    && !block_has_user_deploys(&block)
+                {
+                    record_propose_steps(constraints_ms, create_ms, 0, 0);
+                    return Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None));
+                }
                 // Publish BlockCreated event immediately after block is created (before validation)
                 self.propose_effect_handler.publish_block_created(&block)?;
 
@@ -397,8 +450,10 @@ where
     pub async fn propose(
         &mut self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        is_async: bool,
+        request: impl Into<ProposeRequest>,
     ) -> Result<ProposeReturnType, CasperError> {
+        let request = request.into();
+        let is_async = request.is_async;
         // Using tracing events instead of spans for async context
         // Span[F].traceI("do-propose") equivalent from Scala
         tracing::info!(target: "f1r3fly.casper.proposer", "do-propose-started");
@@ -450,6 +505,27 @@ where
             Err(err) => return Err(err),
         };
         let snapshot_ms = snapshot_start.elapsed().as_millis();
+        if let Some(expected) = request.expected_empty_self.as_ref() {
+            let same_self = casper_snapshot
+                .dag
+                .latest_message_hash(&self.validator.public_key.bytes)
+                .as_ref()
+                == Some(expected);
+            if !same_self {
+                let result = ProposeResult::failure(ProposeFailure::NoNewDeploys);
+                return Ok(ProposeReturnType {
+                    propose_result_to_send: ProposerResult::failure(
+                        result.propose_status.clone(),
+                        get_validator_next_seq_number(
+                            &casper_snapshot,
+                            &self.validator.public_key.bytes,
+                        ),
+                    ),
+                    propose_result: result,
+                    block_message_opt: None,
+                });
+            }
+        }
 
         let elapsed = start_time.elapsed();
         tracing::info!("getCasperSnapshot [{}ms]", elapsed.as_millis());
@@ -493,7 +569,10 @@ where
             );
         }
 
-        let empty_blocks = if self.allow_empty_blocks && is_async {
+        let empty_blocks = if request.require_user_deploys || request.expected_empty_self.is_some()
+        {
+            EmptyBlocks::RequireUserDeploys
+        } else if self.allow_empty_blocks && is_async {
             EmptyBlocks::HeartbeatLane
         } else if allow_empty_for_recovery {
             EmptyBlocks::Allowed

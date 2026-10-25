@@ -8,7 +8,7 @@ use casper::rust::blocks::proposer::propose_result::{
     ProposeFailure, ProposeResult, ProposeStatus,
 };
 use casper::rust::blocks::proposer::proposer::{
-    ProductionProposer, ProposeReturnType, ProposerResult,
+    ProductionProposer, ProposeRequest, ProposeReturnType, ProposerResult,
 };
 use casper::rust::casper::Casper;
 use casper::rust::errors::CasperError;
@@ -27,7 +27,7 @@ const PROPOSER_MIN_INTERVAL: Duration = Duration::from_millis(250);
 
 type ProposeQueueEntry = (
     Arc<dyn Casper + Send + Sync>,
-    bool,
+    ProposeRequest,
     oneshot::Sender<ProposerResult>,
     u8,
 );
@@ -143,7 +143,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
             let mut last_propose_started_at: Option<Instant> = None;
 
             // Process propose requests - each request carries its own Casper instance
-            while let Some((casper, is_async, propose_id_sender, immediate_retry_count)) =
+            while let Some((casper, request, propose_id_sender, immediate_retry_count)) =
                 propose_requests_queue_rx.recv().await
             {
                 take_queued_request(&propose_queue_pending);
@@ -189,7 +189,9 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                     let validator_public_key = proposer_guard.validator.public_key.bytes.clone();
                     // Await propose directly to avoid canceling in-flight block creation/replay
                     // through timeout-driven future drops.
-                    let res = proposer_guard.propose(casper.clone(), is_async).await;
+                    let res = proposer_guard
+                        .propose(casper.clone(), request.clone())
+                        .await;
                     drop(proposer_guard); // Release proposer lock explicitly
 
                     let should_retry_on_result = match res {
@@ -202,8 +204,10 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
 
                             // Update state with result and clear current propose
                             let result_copy = (propose_result.clone(), block_message_opt.clone());
-                            let should_retry_on_trigger =
-                                should_retry_immediately_on_trigger(&propose_result, is_async);
+                            let should_retry_on_trigger = should_retry_immediately_on_trigger(
+                                &propose_result,
+                                request.is_async,
+                            );
                             {
                                 let mut state_guard = state_clone.write().await;
                                 state_guard.latest_propose_result = Some(result_copy.clone());
@@ -342,7 +346,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                 if let Err(e) = propose_requests_queue_tx_clone
                                     .send((
                                         casper,
-                                        is_async,
+                                        request,
                                         retry_sender,
                                         immediate_retry_count.saturating_add(1),
                                     ))
@@ -495,6 +499,44 @@ mod tests {
             !should_retry_immediately_on_trigger(&result, true),
             "InternalDeployError should not trigger immediate retry"
         );
+    }
+
+    #[tokio::test]
+    async fn bounded_queue_rejection_and_retry_preserve_h1_request_metadata() {
+        use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
+
+        let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        let block = models::rust::block_implicits::get_random_block_default();
+        let casper: Arc<dyn Casper + Send + Sync> = Arc::new(
+            TestCasperWithSnapshot::new_with_pending_deploys(snapshot, block, 0),
+        );
+        let request = ProposeRequest::heartbeat_deploy().after_empty_self(vec![0x71; 32].into());
+        let (tx, mut rx) = mpsc::channel::<ProposeQueueEntry>(1);
+        let (first_tx, first_rx) = oneshot::channel();
+        assert!(tx
+            .try_send((casper.clone(), request.clone(), first_tx, 0))
+            .is_ok());
+        let (retry_tx, retry_rx) = oneshot::channel();
+        let rejected = match tx.try_send((casper, request.clone(), retry_tx, 1)) {
+            Err(mpsc::error::TrySendError::Full(entry)) => entry,
+            _ => panic!("The bounded queue must retain the rejected entry"),
+        };
+        assert_eq!(rejected.1, request);
+        let (_, first, reply, count) = rx.recv().await.unwrap();
+        assert_eq!(first, request);
+        assert_eq!(count, 0);
+        assert!(reply.send(ProposerResult::Empty).is_ok());
+        assert!(matches!(first_rx.await.unwrap(), ProposerResult::Empty));
+        assert!(tx.send(rejected).await.is_ok());
+        let (_, retried, reply, count) = rx.recv().await.unwrap();
+        assert_eq!(retried, request);
+        assert_eq!(count, 1);
+        assert!(!should_retry_immediately_on_trigger(
+            &ProposeResult::failure(ProposeFailure::NoNewDeploys),
+            retried.is_async,
+        ));
+        assert!(reply.send(ProposerResult::Empty).is_ok());
+        assert!(matches!(retry_rx.await.unwrap(), ProposerResult::Empty));
     }
 
     #[test]

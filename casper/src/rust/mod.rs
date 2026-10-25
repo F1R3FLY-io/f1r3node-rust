@@ -41,7 +41,7 @@ use models::rust::block_hash::BlockHash;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::rust::block_status::{BlockError, ValidBlock};
-use crate::rust::blocks::proposer::proposer::ProposerResult;
+use crate::rust::blocks::proposer::proposer::{ProposeRequest, ProposerResult};
 use crate::rust::casper::MultiParentCasper;
 use crate::rust::errors::CasperError;
 
@@ -51,10 +51,9 @@ pub type BlockProcessing<A> = Either<BlockError, A>;
 
 pub type ValidBlockProcessing = BlockProcessing<ValidBlock>;
 
-// Async function that takes Arc<dyn MultiParentCasper> by value and boolean, returns Future of ProposerResult
 pub type ProposeFunction = dyn Fn(
         Arc<dyn MultiParentCasper + Send + Sync>,
-        bool,
+        ProposeRequest,
     ) -> Pin<Box<dyn Future<Output = Result<ProposerResult, CasperError>> + Send>>
     + Send
     + Sync;

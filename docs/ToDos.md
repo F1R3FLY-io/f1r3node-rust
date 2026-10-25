@@ -26,6 +26,8 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+- **Heartbeat H1 coordination (2026-10-19).** `pi-session-heartbeat-h1-cbc` owns H1 implementation and TASK-021-28 after the runtime handoff. `claude-session-f1r3node-rust-71` runs the outside-sandbox checks. F1/F2 are the baseline at `ed9b3c996`. The [design](designs/deploy-heartbeat-wake.md) and [claim](claims/heartbeat-proposal-amplification-bound.md) record the H1 contract. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, not a published reference.
+
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
@@ -1123,6 +1125,8 @@ tasks:
       - "Each fix behavior has a test that fails before its change and passes after it."
       - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in every phase."
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
+    notes:
+      - "2026-10-25: the empty-heartbeat candidate is PR #768 (F1, F2, and H1, TASK-021-28). H1 removed the failing high phases but failed its finalization p95 threshold (design section 5.2), so it needs a revision. Issue #24 measures this task's gate on dev first (issue #764)."
     candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
   - id: TASK-021-14
@@ -1300,6 +1304,29 @@ tasks:
       - "An evidence-copy test with a stale session directory that is still written copies only the files of the failed session."
       - "A maintainer accepts the review package for both CbC-mandatory files."
       - "A daily soak after the merge has .subprocess-data near 1 MB after each segment, and residual-writers.txt names why the owner match missed."
+  - id: TASK-021-28
+    title: "Revise and verify the H1 heartbeat amplification claim"
+    status: in_progress
+    claimed_by: pi-session-heartbeat-h1-cbc
+    claimed_at: 2026-10-18T21:32:01Z
+    branch: fix/issue-24-deploy-heartbeat-wake
+    pr_base_branch: dev
+    blocked_by: []
+    scope: "H1 implementation, claim revision, and source-bound verification. The runtime owner transferred H1 on 2026-10-18 after F1/F2 landed at ed9b3c996."
+    design: docs/designs/deploy-heartbeat-wake.md
+    claim_spec: docs/claims/heartbeat-proposal-amplification-bound.md
+    stage: "H1 acceptance at 0a4acca7a is recorded from the maintainer handoff with its stated limits. Performance and separate display-projection acceptance remain open. External policy/read-back audit is requested."
+    verification_record: docs/casper/validation/heartbeat-h1-verification-2026-10-19.md
+    notes:
+      - "Renumbered from TASK-021-26 on 2026-10-25. The ID collided with the soak disk task that dev merged first. The claim spec and the validation records of 2026-10-19 keep TASK-021-26, because evidence ledgers pin them."
+      - "2026-10-21 comparison (issue #24 comment 6319658249, design section 5.2): H1 failed the finalization p95 threshold of design section 5.1. H1 had 26.8 s, and F1/F2 had 24.7 s. The slow share and the block rate passed."
+      - "2026-10-23 standup plan (issue #764, design section 7): H1 goes into dev and, through ca-sync, into the release train. It merges only after it meets all three thresholds. The revision continues on this branch, or on a new fix/ branch that is promoted to master for a weekend soak."
+    acceptance:
+      - "The revised claim is pending before H1 code begins, and the prior evidence remains unchanged in history."
+      - "The implementation satisfies the routine-block bound, the request-credit bound, and the nonempty exemption under the configured cooldown."
+      - "Tests cover mode expiry, re-entry, failed requests, actual block classification, and recovery timing after exempt blocks."
+      - "Source-bound evidence covers heartbeat_proposer.rs and the proposer.rs nonempty-request enforcement. No historical discharge is reused for H1."
+      - "Required verification and maintainer acceptance complete before this task is marked complete."
 ---
 ```
 

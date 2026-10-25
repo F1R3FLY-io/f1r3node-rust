@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use casper::rust::blocks::block_processor::{
     BlockProcessor, BlockQueueItem, InFlightBlocks, IN_FLIGHT_MARKER_MAX_WARN_AGE,
 };
-use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
+use casper::rust::blocks::proposer::proposer::{
+    ProductionProposer, ProposeRequest, ProposerResult,
+};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
@@ -48,7 +50,7 @@ const _: () = assert!(
 
 type ProposerQueueEntry = (
     Arc<dyn Casper + Send + Sync>,
-    bool,
+    ProposeRequest,
     oneshot::Sender<ProposerResult>,
     u8,
 );
@@ -748,14 +750,14 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let queue_pending = proposer_queue_pending.clone();
         let queue_max_pending = proposer_queue_max_pending;
         Some(Arc::new(
-            move |casper: Arc<dyn MultiParentCasper + Send + Sync>, is_async: bool| {
+            move |casper: Arc<dyn MultiParentCasper + Send + Sync>, request: ProposeRequest| {
                 let queue_tx = queue_tx.clone();
                 let queue_pending = queue_pending.clone();
                 // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper extends Casper)
                 let casper_for_queue: Arc<dyn Casper + Send + Sync> = casper;
 
                 Box::pin(async move {
-                    debug!(async_mode = is_async, "Propose request enqueued");
+                    debug!(async_mode = request.is_async, "Propose request enqueued");
 
                     // Guard against unbounded queue growth under high deploy/autopropose load.
                     let enqueue_reserved = queue_pending
@@ -782,7 +784,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
                     // Send to proposer queue
                     match queue_tx
-                        .send((casper_for_queue, is_async, result_tx, 0))
+                        .send((casper_for_queue, request, result_tx, 0))
                         .await
                     {
                         Ok(()) => {}
