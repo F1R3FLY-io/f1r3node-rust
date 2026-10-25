@@ -34,7 +34,6 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GuardRole {
     Play,
-    Replay,
 }
 
 /// Added by DR-134 (DR-65 item 5, design §8.3): the later holds of one member
@@ -81,8 +80,6 @@ impl LaterHolds {
 
     /// The positive later hold of each purse, in ascending purse order.
     pub(crate) fn holds(&self) -> &BTreeMap<[u8; 32], u128> { &self.holds }
-
-    pub(crate) fn is_empty(&self) -> bool { self.holds.is_empty() }
 }
 
 /// The member whose guard is evaluated: its deploy, its funding root and the
@@ -380,7 +377,6 @@ impl RuntimeManager {
             OfferedUsageKind::HeldCapacityGuard {
                 role: match member.role {
                     GuardRole::Play => OfferedCheckRole::Play,
-                    GuardRole::Replay => OfferedCheckRole::Replay,
                 },
                 holds: outcome.is_ok(),
             },

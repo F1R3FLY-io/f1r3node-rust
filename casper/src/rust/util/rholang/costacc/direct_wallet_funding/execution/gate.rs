@@ -155,6 +155,7 @@ impl OfferedGate {
 /// may pay (`client_lane_set`). The owner room is the number of receipt rows
 /// that the client's payers leave free (R3). The check and its test hook
 /// compute them from the snapshot at R0, so play and replay hold equal terms.
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn offered_owner_terms(
     input: &OfferedGateInput<'_>,
 ) -> Result<(BTreeSet<[u8; 32]>, usize), OfferedGateRejection> {

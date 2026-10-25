@@ -1,5 +1,4 @@
 use crypto::rust::signatures::signed::Cosigned;
-use models::rust::casper::protocol::casper_message::Event;
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::phlo_intent::{
@@ -55,8 +54,6 @@ pub(crate) struct CandidateDraftSettlementPermit {
 pub struct CandidateReplayPermit<'a> {
     processed: &'a OfferedProcessedDeploy,
     settlement_runtime_root: [u8; 32],
-    user_events: usize,
-    grant_events: usize,
 }
 
 impl CandidatePublicationPermit {
@@ -93,40 +90,12 @@ impl<'a> CandidateReplayPermit<'a> {
         Ok(Self {
             processed,
             settlement_runtime_root: independently_reached_root,
-            user_events,
-            grant_events,
         })
     }
 
     pub fn envelope_identity(&self) -> &[u8] { self.processed.identity_bytes() }
 
     pub fn settlement_runtime_root(&self) -> [u8; 32] { self.settlement_runtime_root }
-
-    pub(crate) fn committed_settlement_segments(
-        &self,
-    ) -> Result<(&[Event], &[Event]), CasperError> {
-        let evidence = self
-            .processed
-            .evidence(offered_funded_v6_limits().evidence)
-            .map_err(|error| invalid(&error.to_string()))?;
-        let boundary = self
-            .user_events
-            .checked_add(self.grant_events)
-            .ok_or_else(|| invalid("offered replay event boundary overflows"))?;
-        let wallet_events = usize::try_from(evidence.wallet_settlement_log_events)
-            .map_err(|_| invalid("offered wallet event count overflows"))?;
-        let wallet_end = boundary
-            .checked_add(wallet_events)
-            .ok_or_else(|| invalid("offered wallet event boundary overflows"))?;
-        let log = self.processed.deploy_log();
-        let wallet = log
-            .get(boundary..wallet_end)
-            .ok_or_else(|| invalid("offered wallet event boundary exceeds committed log"))?;
-        let receipts = log
-            .get(wallet_end..)
-            .ok_or_else(|| invalid("offered receipt event boundary exceeds committed log"))?;
-        Ok((wallet, receipts))
-    }
 
     pub fn verify_funding_case(&self, recomputed: &[u8]) -> Result<(), CasperError> {
         let evidence = self

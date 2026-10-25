@@ -258,10 +258,7 @@ impl RuntimeManager {
             grant_issuances: run.grant_issuances.clone(),
             grant_issue_log: run.grant_issue_log.clone(),
             gate: run.gate.clone(),
-            post_run_root: None,
-            guard_claimed: false,
             owner: run.owner.clone(),
-            owner_totals: None,
         };
         let candidate = attempt
             .produce_native_offered_candidate_with_rooted_prepaid(

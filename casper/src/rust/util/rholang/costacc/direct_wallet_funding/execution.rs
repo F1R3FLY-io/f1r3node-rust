@@ -15,7 +15,7 @@ use rholang::rust::interpreter::accounting::authority::AuthorityError;
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativeBudgetTraceLimits;
 // Added by G3 (DR-135, S7).
 use rholang::rust::interpreter::accounting::owner_funding::{
-    OwnerFundingBinding, OwnerTable, OwnerTableEntry, OwnerTotals,
+    OwnerFundingBinding, OwnerTable, OwnerTableEntry,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_offered_phlo_controls, PhloControlsBinding, PhloOffer, PhloScheduleBinding,
@@ -45,9 +45,7 @@ use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, CompatibleAcquisitionTerms,
 };
 #[cfg(any(test, feature = "test-utils"))]
-use crate::rust::util::rholang::costacc::offered_acceptance::{
-    OfferedCheckRecord, OfferedCheckRole, OfferedUsageKind,
-};
+use crate::rust::util::rholang::costacc::offered_acceptance::OfferedUsageKind;
 use crate::rust::util::rholang::costacc::offered_grants::{
     offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
@@ -88,23 +86,10 @@ pub struct NativeOfferedAttempt<'preflight, 'a> {
     /// Added by G1-6 (DR-124): the check before execution. Its resource bound
     /// and bound source bind every later control of the attempt.
     gate: OfferedGate,
-    /// Added by G1-7 (DR-65 item 5, arbitration M2): the root after the run,
-    /// where the held-capacity guard reads the balances. The witness replay
-    /// sets it from its export. Play reads its own settlement checkpoint.
-    post_run_root: Option<[u8; 32]>,
-    /// Added by G1-7 (arbitration M2): the witness replay found a committed
-    /// UserFailure for a run without a user failure, that is, a claimed guard
-    /// failure. `settle_replayed_candidate` accepts it only if the recomputed
-    /// guard fails.
-    guard_claimed: bool,
     /// Added by G3 (DR-135, S7): the owner funding of the run (R11): the
     /// binding of the last discovery pass in play, and the binding of the
     /// recorded owner table in replay.
     owner: Option<Arc<OwnerFundingBinding>>,
-    /// Added by G3 (DR-135, S7): the billed owner sums of the witness replay
-    /// (G-4), which its journal check folded. Play folds its own recording in
-    /// the producer.
-    owner_totals: Option<OwnerTotals>,
 }
 
 impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
@@ -126,22 +111,6 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         match self.owner.as_deref() {
             Some(binding) => binding.is_owner_region(region).map(|owner| !owner),
             None => Ok(true),
-        }
-    }
-
-    /// Added by G3 (DR-135, S8): the owner purses that the owner table of the
-    /// run lists, in ascending custody order (R3). A dropped batch member
-    /// with a hold on one of them makes a truncated batch run again
-    /// (truncation condition (c)).
-    pub(crate) fn owner_purses(&self) -> Vec<[u8; 32]> {
-        match self.owner.as_deref() {
-            Some(binding) => {
-                let entries = binding.table().entries();
-                let mut purses = Vec::with_capacity(entries.len());
-                purses.extend(entries.iter().map(|(custody, _)| *custody));
-                purses
-            }
-            None => Vec::new(),
         }
     }
 
@@ -459,32 +428,6 @@ impl RuntimeManager {
                 }
                 _ => None,
             })
-    }
-
-    /// Added by G1-6 (DR-124), test only: records the decision of one check.
-    #[cfg(any(test, feature = "test-utils"))]
-    fn record_offered_check(
-        &self,
-        role: OfferedCheckRole,
-        envelope: &DeployEnvelope,
-        funding_root: &[u8],
-        gate: Option<&OfferedGate>,
-    ) {
-        let record = match gate {
-            Some(gate) => OfferedCheckRecord::Accepted {
-                complete: matches!(gate.kind(), OfferedEstimateKind::Complete),
-                estimate: gate.estimate_phlo(),
-                resource_bound: gate.resource_bound(),
-                bound_source: gate.bound_source(),
-                total_hold: gate.total_hold(),
-            },
-            None => OfferedCheckRecord::Rejected,
-        };
-        self.record_offered_budget_usage(
-            OfferedUsageKind::Check(role, record),
-            envelope.identity().as_bytes(),
-            funding_root,
-        );
     }
 
     /// Added by G1-6 (DR-124), test only: a hook of this node. The node skips
@@ -808,14 +751,9 @@ impl RuntimeManager {
             grant_issuances,
             grant_issue_log,
             gate,
-            // Added by G1-7: play reads the root after its run from its own
-            // settlement checkpoint, and it never claims a guard failure.
-            post_run_root: None,
-            guard_claimed: false,
             // Added by G3 (DR-135, S7): the binding of the last pass. The
             // producer folds the recording for the owner totals.
             owner: Some(owner),
-            owner_totals: None,
         })
     }
 
@@ -850,40 +788,6 @@ impl RuntimeManager {
         entries.sort_by_key(|(custody, _)| *custody);
         OwnerTable::new(entries, table.room())
             .map_err(|error| CasperError::RuntimeError(error.to_string()))
-    }
-
-    /// Added by G3 (DR-135, S7): checks that each entry of a recorded owner
-    /// table lists the budget of its purse at the execution root of the
-    /// member (R3, plan §6.2 "After the run"). Replay calls it, so a block
-    /// whose table raises a budget is invalid.
-    pub(super) async fn check_owner_table(
-        &self,
-        table: &OwnerTable,
-        execution_root: [u8; 32],
-        gate: &OfferedGate,
-        later: &LaterHolds,
-    ) -> Result<(), CasperError> {
-        let mut purses = Vec::with_capacity(table.len());
-        purses.extend(
-            table
-                .entries()
-                .iter()
-                .map(|(custody, entry)| (*custody, &entry.signature)),
-        );
-        let budgets = self
-            .owner_budgets(&purses, execution_root, gate, later)
-            .await?;
-        if table
-            .entries()
-            .iter()
-            .zip(&budgets)
-            .any(|((_, entry), budget)| entry.budget != *budget)
-        {
-            return Err(CasperError::RuntimeError(
-                "a recorded owner budget differs from its budget at the execution root".to_string(),
-            ));
-        }
-        Ok(())
     }
 
     /// Added by G3 (DR-135, S7): the budget of each owner purse in `purses`

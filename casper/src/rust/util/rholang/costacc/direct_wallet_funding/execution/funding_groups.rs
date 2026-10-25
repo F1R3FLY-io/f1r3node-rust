@@ -68,10 +68,6 @@ pub(crate) enum FundingGroupError {
     SupplyDisagrees { purse: [u8; 32] },
     #[error("a later hold overflows")]
     LaterOverflow,
-    #[error("the batch is not in canonical order at position {position}")]
-    NonCanonicalOrder { position: usize },
-    #[error("a subset of an accepted batch is rejected")]
-    SubsetRejected,
     #[error("a member position is outside the batch")]
     MemberOutOfRange,
 }
@@ -84,25 +80,6 @@ pub(crate) struct GroupDecision {
     pub(crate) group_of: Vec<usize>,
     pub(crate) accepted: Vec<usize>,
     pub(crate) rejected: Vec<RejectedGroup>,
-}
-
-/// The canonical order key of a member (O-9, DR-65 item 1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct CanonicalKey {
-    pub(crate) valid_after_block_number: i64,
-    pub(crate) time_stamp: i64,
-    pub(crate) identity: [u8; 32],
-}
-
-/// The batch must be strictly increasing in canonical order. A repeated
-/// member fails too, because its key equals the key before it.
-pub(crate) fn check_canonical_order(keys: &[CanonicalKey]) -> Result<(), FundingGroupError> {
-    match keys.windows(2).position(|pair| pair[0] >= pair[1]) {
-        Some(position) => Err(FundingGroupError::NonCanonicalOrder {
-            position: position + 1,
-        }),
-        None => Ok(()),
-    }
 }
 
 /// Union-find over candidate positions, with path halving and union by size.
@@ -294,79 +271,6 @@ pub(crate) fn later_holds(
         }
     }
     Ok(later)
-}
-
-/// O-10 (DR-65 note on the play budget): whether a batch that the budget
-/// stopped after `shipped` of its `accepted` members must run its shipped
-/// prefix again from R0. It must when (a) a group holds both a shipped and a
-/// dropped member, because the caps of the shipped members then counted holds
-/// of members that the block does not carry, or (b) a shipped member settled
-/// as a held-capacity-guard rollback, because its guard may have counted a
-/// later hold of a dropped member. Otherwise the shipped results equal what
-/// validators recompute over the shipped prefix.
-///
-/// Added by G3 (DR-135, S8): it must also when (c) a dropped member holds a
-/// positive hold on a purse that the owner table of a shipped member lists,
-/// because the owner budget of that purse then counted a later hold of a
-/// member that the block does not carry (R3, plan §7 "Truncation").
-/// `candidates` are the candidates of the batch, and `shipped_owner_purses`
-/// holds the owner purses of each shipped member.
-pub(crate) fn rerun_after_truncation(
-    decision: &GroupDecision,
-    shipped: usize,
-    guard_rolled_back: &[bool],
-    // Added by G3 (DR-135, S8).
-    candidates: &[BatchCandidate],
-    shipped_owner_purses: &[Vec<[u8; 32]>],
-) -> Result<bool, FundingGroupError> {
-    if shipped > decision.accepted.len() || guard_rolled_back.len() < shipped {
-        return Err(FundingGroupError::MemberOutOfRange);
-    }
-    // Added by G3 (DR-135, S8): at most one list of owner purses for each
-    // shipped member.
-    if shipped_owner_purses.len() > shipped {
-        return Err(FundingGroupError::MemberOutOfRange);
-    }
-    let (kept, dropped) = decision.accepted.split_at(shipped);
-    let kept_groups: BTreeSet<usize> = kept
-        .iter()
-        .map(|member| decision.group_of[*member])
-        .collect();
-    let straddles = dropped
-        .iter()
-        .any(|member| kept_groups.contains(&decision.group_of[*member]));
-    let guard_failed = guard_rolled_back[..shipped].iter().any(|failed| *failed);
-    // Added by G3 (DR-135, S8): condition (c). The owner purses of the
-    // shipped members form one sorted list, and each positive hold of a
-    // dropped member is searched in it.
-    let mut owner_purses: Vec<[u8; 32]> =
-        Vec::with_capacity(shipped_owner_purses.iter().map(Vec::len).sum());
-    owner_purses.extend(shipped_owner_purses.iter().flatten().copied());
-    owner_purses.sort_unstable();
-    owner_purses.dedup();
-    let mut holds_owner_purse = false;
-    for member in dropped {
-        let candidate = candidates
-            .get(*member)
-            .ok_or(FundingGroupError::MemberOutOfRange)?;
-        if candidate
-            .holds
-            .iter()
-            .any(|(purse, hold)| *hold > 0 && owner_purses.binary_search(purse).is_ok())
-        {
-            holds_owner_purse = true;
-            break;
-        }
-    }
-    // Changed by G3 (DR-135, S8): condition (c) joins (a) and (b).
-    // Ok(match (straddles, guard_failed) {
-    //     (false, false) => false,
-    //     _ => true,
-    // })
-    Ok(match (straddles, guard_failed, holds_owner_purse) {
-        (false, false, false) => false,
-        _ => true,
-    })
 }
 
 #[cfg(test)]

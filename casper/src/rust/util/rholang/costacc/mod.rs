@@ -1,7 +1,6 @@
 pub mod check_balance;
 pub mod close_block_deploy;
 pub mod conversion;
-#[allow(dead_code)]
 pub mod direct_wallet_funding;
 pub mod genesis_resource_policy;
 pub mod monetary_cursor;
