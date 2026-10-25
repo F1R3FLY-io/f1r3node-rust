@@ -1,0 +1,51 @@
+@startuml rspace-compaction-lease-closure
+' ============================================================================
+' RSpaceCompaction lease closure (task 5692): the SkipLeasedClosure
+' counterexample that TLC must find, beside the production test showing that
+' a leased generation survives reclamation until its lease is released.
+'   GREEN  #2E7D32  production code under test
+'   BLUE   #1565C0  catalog publication
+'   AMBER  #EF6C00  the lease registry's answer
+'   PURPLE #6A1B9A  a reader taking or releasing a lease
+'   RED    #C62828  the mutant's unsafe deletion
+'   GREY   #616161  old pack and index left untouched
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ParticipantBorderColor #455A64
+skinparam SequenceGroupBorderColor #455A64
+skinparam SequenceGroupBackgroundColor #F4F7FA
+
+title <b>Compaction keeps every leased closure</b>\nthe model counterexample beside the production witness
+
+participant "Reader" as R #E1BEE7
+participant "Lease registry" as L #FFE0B2
+participant "Compactor\n<font:monospaced>compact_generation_v1</font>" as C #C8E6C9
+participant "Catalog" as Cat #BBDEFB
+participant "Reclaimer\n<font:monospaced>reclaim_reclamation_candidate</font>" as Rec #C8E6C9
+participant "Old pack\nand index" as Old #E0E0E0
+
+group Model: SkipLeasedClosure mutant (TLC must report this trace)
+C -[#1565C0]> Cat : Publish: the successor holds the closures of r0 and r1
+R -[#6A1B9A]> L : AcquireLease(r0)
+Rec -[#C62828]> Old : DeleteOld keeps only rootClosure(r0)
+note over Old #FFCDD2
+  <latex>\mathit{deleted} = \{o_0, o_1, o_2\} \setminus \{o_0\} = \{o_1, o_2\}</latex>
+  <latex>\mathit{LeasedClosure} = \mathrm{Closure}(\{o_0\}) = \{o_0, o_1, o_2\}</latex>
+  LeaseSafety fails: <latex>\mathit{deleted} \cap \mathit{LeasedClosure} \neq \emptyset</latex>
+end note
+end
+
+group Production: compaction_keeps_transitive_retained_closure_through_old_pack_lease
+R -[#6A1B9A]> L : acquire(old generation key) returns a pin
+C -[#2E7D32]> Cat : compact: the successor admits all 10 objects;\n<font:monospaced>reclaim.v1</font> names the old generation
+Rec -[#2E7D32]> L : is the old generation leased?
+L -[#EF6C00]-> Rec : yes
+Rec -[#616161]-> Old : deferred_for_reader: pack and index bytes unchanged
+R -[#6A1B9A]> L : drop(pin)
+Rec -[#2E7D32]> Old : delete 1 pack and the index; remove <font:monospaced>reclaim.v1</font>
+Cat -[#1565C0]> Cat : reopen: the successor still admits every object
+end
+@enduml

@@ -1,0 +1,84 @@
+@startuml dag-formal-fault-traceability
+' ============================================================================
+' Persistent DAG formal-fault traceability (task 5692): for each transition,
+' its model, its production hook, its executable witness, and its status.
+'   PURPLE #6A1B9A  formal model or proof
+'   GREEN  #2E7D32  production hook
+'   witness fill:
+'     #A5D6A7 green  a passing test drives the hook and checks the whole outcome
+'     #FFE0B2 amber  the durable owner is tested; the caller's command history
+'                    has its own leaf
+'     #FFCDD2 red    an open production gap, owned by an existing leaf
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+skinparam ranksep 18
+skinparam nodesep 26
+
+title <b>Persistent DAG fault traceability</b>\nmodel, production hook, executable witness, status
+
+package "T1  Fresh checkpoint publication" as P1 #F5F9FF {
+  rectangle "RSpaceGenerationCheckpointPublication.tla\nGenerationCheckpointPublication.v" as M1 #E1BEE7
+  rectangle "publication.rs\n<font:monospaced>prepare_and_write_successor_generation</font>\n<font:monospaced>publish_catalog_slot_compare_and_swap</font>" as H1 #C8E6C9
+  rectangle "118-ID property registry; exact phase traces\n28 mutants fail, 14 witnesses reached" as W1 #A5D6A7
+}
+package "T2  Catalog slot write and recovery" as P2 #F5F9FF {
+  rectangle "<font:monospaced>CrashRecoverySelectsOnlyValidAuthority</font>\nCAT-01 to CAT-06" as M2 #E1BEE7
+  rectangle "catalog.rs selection\nrecovery.rs chain scan" as H2 #C8E6C9
+  rectangle "torn-prefix and damaged-successor tests\ndirty-slot, third-authority, fallback mutants" as W2 #A5D6A7
+}
+package "T3  Incremental append" as P3 #F5F9FF {
+  rectangle "<font:monospaced>CatalogAppointedPrefix</font>\nRSpaceJournalPublicationOwner.tla" as M3 #E1BEE7
+  rectangle "<font:monospaced>publish_incremental_from_lease_v1</font>\nrspace_authority.rs owner" as H3 #C8E6C9
+  rectangle "16-phase retry, torn slots, owner tests\ncaller edges: their own leaves" as W3 #FFE0B2
+}
+package "T4  Compaction lease closure" as P4 #F5F9FF {
+  rectangle "RSpaceCompaction.tla\n<font:monospaced>LeaseSafety</font>, <font:monospaced>RootClosurePreserved</font>" as M4 #E1BEE7
+  rectangle "<font:monospaced>compact_generation_v1</font>\n<font:monospaced>reclaim_reclamation_candidate</font>\nretention.rs lease registry" as H4 #C8E6C9
+  rectangle "transitive-closure lease test\nSkipLeasedClosure mutant fails" as W4 #A5D6A7
+}
+package "T5  Reclaim under dynamic GC roots" as P5 #F5F9FF {
+  rectangle "RSpaceGcProtection.tla\nRSpaceGcPackLeaseRace.tla" as M5 #E1BEE7
+  rectangle "retention.rs <font:monospaced>snapshot_with_manifest</font>\nWAL starts for replay and rollback" as H5 #C8E6C9
+  rectangle "dynamic-root snapshot only in registry tests;\nprocess-local leases; replay/rollback WAL starts\nowners: rspace-gc-retention-runtime,\nrspace-gc-lifecycle-acceptance" as W5 #FFCDD2
+}
+package "T6  Import, migration, state sync, matching" as P6 #F5F9FF {
+  rectangle "affine import, caller and\nmatcher catalogs (scoped)" as M6 #E1BEE7
+  rectangle "rspace.rs, history_repository_impl.rs\nmigration and state-sync modules" as H6 #C8E6C9
+  rectangle "no end-to-end fault matrix yet\nowners: migration, state-sync, lifecycle leaves" as W6 #FFCDD2
+}
+
+M1 -right[#6A1B9A]-> H1 : models
+H1 -right[#2E7D32]-> W1 : tested by
+M2 -right[#6A1B9A]-> H2 : models
+H2 -right[#2E7D32]-> W2 : tested by
+M3 -right[#6A1B9A]-> H3 : models
+H3 -right[#2E7D32]-> W3 : tested by
+M4 -right[#6A1B9A]-> H4 : models
+H4 -right[#2E7D32]-> W4 : tested by
+M5 -right[#6A1B9A]-> H5 : models
+H5 -right[#C62828,dashed]-> W5 : gap
+M6 -right[#6A1B9A]-> H6 : scoped
+H6 -right[#C62828,dashed]-> W6 : gap
+
+M1 -[hidden]down-> M2
+M2 -[hidden]down-> M3
+M3 -[hidden]down-> M4
+M4 -[hidden]down-> M5
+M5 -[hidden]down-> M6
+
+legend bottom
+  |= Fill or line |= Meaning |
+  |<#E1BEE7> | formal model or proof |
+  |<#C8E6C9> | production hook: where the transition becomes observable |
+  |<#A5D6A7> | witness: a passing test drives the hook and checks the whole outcome |
+  |<#FFE0B2> | witness: the durable owner is tested; the caller's command history has its own leaf |
+  |<#FFCDD2> | open production gap, owned by an existing leaf |
+  | <color:#6A1B9A><b>——▶</b></color> | models |
+  | <color:#2E7D32><b>——▶</b></color> | tested by |
+  | <color:#C62828><b>- - ▶</b></color> | gap: no test binds the hook yet |
+endlegend
+@enduml
