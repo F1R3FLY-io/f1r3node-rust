@@ -73,6 +73,79 @@ mr_status:
 
 ---
 
+### EPIC-030: Verified Soak Segment Cleanup
+
+```yaml
+epic_id: EPIC-030
+title: "Verified Soak Segment Cleanup"
+status: in_progress
+priority: p1
+user_story: US-014
+branch: hotfix/soak-driver-shard-stop
+design: docs/designs/soak-cleanup-verification.md
+specification: docs/claims/soak-segment-cleanup.md
+tasks:
+  - id: TASK-030-1
+    title: "Verify segment cleanup and bind launch to accepted control sources"
+    status: in_progress
+    claimed_by: codex-session-soak-cleanup
+    decision: "2026-10-25: the user chose Rust/Bash repository checks and the unchanged pinned shared CbC runtime."
+    integration: "2026-10-25: the user chose a PR #700 backport to retain the master base. Reader tests and owner policies accompany named claims."
+    progress: "Bash implementation verified. All four verification stages pass. Evidence binds 85 inputs. All 37 cleanup records require independent signed acceptance."
+    review_requested_at: 2026-10-25
+    review_type: human
+    claimed_at: 2026-10-25T16:22:36Z
+    files:
+      - .github/.gitattributes
+      - .github/actions/soak-segment/action.yml
+      - .github/workflows/ci.yml
+      - .github/workflows/merge-recovery-soak.yml
+      - docs/.gitattributes
+      - docs/casper/soak-cleanup.json
+      - docs/claims/soak-segment-cleanup.md
+      - formal/.gitattributes
+      - formal/tlaplus/soak_cleanup/EraseReason.cfg
+      - formal/tlaplus/soak_cleanup/IgnoreStopFailure.cfg
+      - formal/tlaplus/soak_cleanup/SkipOwnerStop.cfg
+      - formal/tlaplus/soak_cleanup/SkipResidualStop.cfg
+      - formal/tlaplus/soak_cleanup/SoakCleanup.tla
+      - formal/tlaplus/soak_cleanup/clean.cfg
+      - scripts/.gitattributes
+      - scripts/bench/test-run-merge-recovery-soak.sh
+      - scripts/bench/test-soak-segment-cleanup.sh
+      - scripts/casper-soak/src/host_control.rs
+      - scripts/cbc.sh
+      - scripts/cbc/cbc.sh
+      - scripts/cbc/lib/cbc-acceptance.py
+      - scripts/cbc/lib/cbc-adapters/agentic.sh
+      - scripts/cbc/lib/cbc-adapters/embedded.sh
+      - scripts/cbc/lib/cbc-adapters/mock.sh
+      - scripts/cbc/lib/cbc-attributes.py
+      - scripts/cbc/lib/cbc-gate.sh
+      - scripts/cbc/lib/cbc-identify.sh
+      - scripts/cbc/lib/cbc-ledger.sh
+      - scripts/cbc/lib/cbc-verify.sh
+      - scripts/cbc/upstream.json
+      - scripts/ci/check-soak-cleanup.sh
+      - scripts/ci/configure-cbc-trust.sh
+      - scripts/ci/test-soak-cleanup-model.sh
+      - scripts/ci/test-soak-cleanup-regressions.sh
+      - scripts/ci/test-soak-cleanup.sh
+      - scripts/ci/verify-soak-cleanup.sh
+      - scripts/run-merge-recovery-soak.sh
+    acceptance:
+      - "The bounded cleanup model and its negative controls report their expected verdicts."
+      - "A Linux fixture verifies two segments with different owners and retained failure reasons."
+      - "Permanent mutations reject missing owner cleanup, missing residual cleanup, ignored stop failure, and overwritten reasons."
+      - "CI and soak admission reject missing, stale, or unsigned cleanup evidence for the actual control checkout."
+      - "Nested Git attributes declare mandatory coverage, required acceptance, and evidence routing."
+      - "The PR #700 reader tests pass, and owner policies preserve existing mandatory coverage and weights."
+      - "Current source-bound verification records preserve historical evidence and expose pending acceptance."
+      - "A maintainer supplies independent signed acceptance before discharge or launch succeeds."
+```
+
+---
+
 ### EPIC-029: Trusted Daily Back-merges
 
 ```yaml

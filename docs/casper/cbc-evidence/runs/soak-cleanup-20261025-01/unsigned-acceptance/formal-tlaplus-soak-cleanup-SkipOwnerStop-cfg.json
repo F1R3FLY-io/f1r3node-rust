@@ -1,0 +1,15 @@
+{
+  "schema": "cbc-acceptance/v2",
+  "artifact": "formal/tlaplus/soak_cleanup/SkipOwnerStop.cfg",
+  "source_sha256": "74b614953db737e3d1ec39c4148047aab84042dfa1da12397e1cded8f7bf753c",
+  "claim": {
+    "path": "docs/claims/soak-segment-cleanup.md",
+    "sha256": "edd3ab8b4429376dca9e27b165a7791c67a0a405003a1e1e9ffe22c260b1a0ff"
+  },
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "claim_set_sha256": "196fba5e47ab7501200da49260586c5bb39dc1513d1eeeb1262fc89a673a1131",
+  "evidence_sha256": "0d7bdfc33dc71944715a6d3965e74d04a9a8c3ecbdfd31fb88729c633c0a9ade",
+  "accepted_by": "",
+  "approved_at": "",
+  "approval_ref": ""
+}

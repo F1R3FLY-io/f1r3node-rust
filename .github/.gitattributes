@@ -1,5 +1,4 @@
 /workflows/slashing-tests.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
-/workflows/merge-recovery-soak.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /workflows/ca-soak-dispatch.yml cbc=mandatory cbc-weight=high
 /scripts/ca-soak-dispatch.sh cbc=mandatory cbc-weight=high
 /scripts/report-soak-gate.sh cbc=mandatory cbc-weight=high
@@ -14,3 +13,7 @@
 /workflows/casper-slashing.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /workflows/casper-campaign-control.yml cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/.gitattributes cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/actions/soak-segment/action.yml cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/ci.yml cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/workflows/merge-recovery-soak.yml cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence

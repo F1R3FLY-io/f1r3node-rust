@@ -790,9 +790,41 @@ jobs:
       - name: Build the soak harness
         run: cargo build --locked -p casper-soak --bin casper-soak
 
-      - name: Verify soak fail-closed driver
-        shell: bash -euo pipefail {0}
-        run: scripts/bench/test-run-merge-recovery-soak.sh
+      - name: Install the cleanup model checker
+        timeout-minutes: 5
+        run: |
+          java_home="${JAVA_HOME_21_X64:?The runner image has no JDK 21}"
+          printf '%s\n' "$java_home/bin" >> "$GITHUB_PATH"
+          "$java_home/bin/java" -version
+          curl --fail --location --output "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check
+
+      - name: Verify soak driver and cleanup controls
+        env:
+          TLA2TOOLS_JAR: ${{ runner.temp }}/tla2tools.jar
+        run: bash scripts/ci/verify-soak-cleanup.sh --output target/soak-cleanup-verification
+
+      - name: Configure cleanup acceptance trust
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Require current cleanup discharge
+        env:
+          CBC_CONTROL_REVISION: ${{ needs.build_base.outputs.TARGET_SHA }}
+        run: >-
+          bash scripts/ci/check-soak-cleanup.sh --control-revision "$CBC_CONTROL_REVISION"
+          --output target/soak-cleanup-admission.json
+
+      - name: Retain cleanup verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: soak-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/soak-cleanup-verification/
+            target/soak-cleanup-admission.json
+          if-no-files-found: warn
 
       - name: Verify isolated disk admission and emergency scenarios
         shell: bash -euo pipefail {0}

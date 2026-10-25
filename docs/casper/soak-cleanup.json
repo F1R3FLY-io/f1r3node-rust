@@ -1,0 +1,175 @@
+{
+  "schema": "soak-cleanup/v1",
+  "claims": {
+    "CLAIM-SOAK-CLEANUP-001": "docs/claims/soak-segment-cleanup.md",
+    "CLAIM-CASPER-CAMPAIGN-003": "docs/claims/casper-campaign-execution.md",
+    "CLAIM-CASPER-SOAK-001": "docs/claims/casper-soak-harness.md"
+  },
+  "artifacts": {
+    ".github/.gitattributes": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    ".github/actions/soak-segment/action.yml": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    ".github/workflows/ci.yml": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    ".github/workflows/merge-recovery-soak.yml": [
+      "CLAIM-CASPER-CAMPAIGN-003",
+      "CLAIM-CASPER-SOAK-001",
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "docs/.gitattributes": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "docs/casper/soak-cleanup.json": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "docs/claims/soak-segment-cleanup.md": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "formal/.gitattributes": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "formal/tlaplus/soak_cleanup/EraseReason.cfg": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "formal/tlaplus/soak_cleanup/IgnoreStopFailure.cfg": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "formal/tlaplus/soak_cleanup/SkipOwnerStop.cfg": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "formal/tlaplus/soak_cleanup/SkipResidualStop.cfg": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "formal/tlaplus/soak_cleanup/SoakCleanup.tla": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "formal/tlaplus/soak_cleanup/clean.cfg": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/.gitattributes": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/bench/test-run-merge-recovery-soak.sh": [
+      "CLAIM-CASPER-SOAK-001",
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/bench/test-soak-segment-cleanup.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/casper-soak/src/host_control.rs": [
+      "CLAIM-CASPER-SOAK-001",
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/cbc.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-acceptance.py": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-adapters/agentic.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-adapters/embedded.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-adapters/mock.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-attributes.py": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-gate.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-identify.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-ledger.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/lib/cbc-verify.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/cbc/upstream.json": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/check-soak-cleanup.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/configure-cbc-trust.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/test-soak-cleanup-model.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/test-soak-cleanup-regressions.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/test-soak-cleanup.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/verify-soak-cleanup.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/run-merge-recovery-soak.sh": [
+      "CLAIM-CASPER-SOAK-001",
+      "CLAIM-SOAK-CLEANUP-001"
+    ]
+  },
+  "build_inputs": [
+    ".cargo/config.toml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "scripts/casper-soak/Cargo.toml",
+    "scripts/casper-soak/src/authority_execution.rs",
+    "scripts/casper-soak/src/authority_incarnation.rs",
+    "scripts/casper-soak/src/authority_live.rs",
+    "scripts/casper-soak/src/authority_mapping.rs",
+    "scripts/casper-soak/src/authority_observer.rs",
+    "scripts/casper-soak/src/authority_p2p.rs",
+    "scripts/casper-soak/src/authority_process.rs",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs",
+    "scripts/casper-soak/src/bin/casper-authority-live.rs",
+    "scripts/casper-soak/src/bin/casper-authority-observe.rs",
+    "scripts/casper-soak/src/bin/casper-authority-p2p.rs",
+    "scripts/casper-soak/src/bin/casper-authority-process.rs",
+    "scripts/casper-soak/src/bin/casper-campaign-control.rs",
+    "scripts/casper-soak/src/bin/casper-campaign-models.rs",
+    "scripts/casper-soak/src/bin/casper-campaign-reservation.rs",
+    "scripts/casper-soak/src/bin/casper-campaign-supervisor.rs",
+    "scripts/casper-soak/src/bin/casper-carrier-index.rs",
+    "scripts/casper-soak/src/bin/casper-merge-accounting.rs",
+    "scripts/casper-soak/src/bin/casper-publication.rs",
+    "scripts/casper-soak/src/bin/casper-recovery.rs",
+    "scripts/casper-soak/src/bin/casper-slashing.rs",
+    "scripts/casper-soak/src/bin/casper-version-phlo.rs",
+    "scripts/casper-soak/src/bin/check-casper-bindings.rs",
+    "scripts/casper-soak/src/bin/check-casper-claims.rs",
+    "scripts/casper-soak/src/campaign_control/mod.rs",
+    "scripts/casper-soak/src/campaign_control/models.rs",
+    "scripts/casper-soak/src/campaign_control/operations.rs",
+    "scripts/casper-soak/src/campaign_control/results.rs",
+    "scripts/casper-soak/src/campaign_control/transport.rs",
+    "scripts/casper-soak/src/host_control.rs",
+    "scripts/casper-soak/src/lib.rs",
+    "scripts/casper-soak/src/main.rs",
+    "scripts/casper-soak/src/manifest.rs",
+    "scripts/casper-soak/src/models.rs",
+    "scripts/casper-soak/src/profiles/authority_finality.rs",
+    "scripts/casper-soak/src/profiles/carrier_index.rs",
+    "scripts/casper-soak/src/profiles/merge_accounting.rs",
+    "scripts/casper-soak/src/profiles/publication.rs",
+    "scripts/casper-soak/src/profiles/recovery.rs",
+    "scripts/casper-soak/src/profiles/slashing.rs",
+    "scripts/casper-soak/src/profiles/version_phlo.rs",
+    "scripts/casper-soak/src/runtime.rs"
+  ]
+}

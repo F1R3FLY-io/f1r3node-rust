@@ -1,0 +1,15 @@
+{
+  "schema": "cbc-acceptance/v2",
+  "artifact": ".github/workflows/merge-recovery-soak.yml",
+  "source_sha256": "0d10c4a16190131134990a562eb3d212c8eee3691e88eafbf392f3ca628aef52",
+  "claim": {
+    "path": "docs/claims/soak-segment-cleanup.md",
+    "sha256": "edd3ab8b4429376dca9e27b165a7791c67a0a405003a1e1e9ffe22c260b1a0ff"
+  },
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "claim_set_sha256": "6f44b013257b46489b78c305a6470d7fc147db5b242beae65f5dd6d46e79c3ec",
+  "evidence_sha256": "2b29de2824c1ec05848c9061550cad7f40b37531170564e6d57da319f521b4b5",
+  "accepted_by": "",
+  "approved_at": "",
+  "approval_ref": ""
+}
