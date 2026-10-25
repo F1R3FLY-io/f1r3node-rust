@@ -2,6 +2,7 @@ use std::pin::Pin;
 
 use models::rhoapi::{ListParWithRandom, Par};
 use prost::Message;
+use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 
 use super::dispatch::{DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
@@ -63,20 +64,39 @@ impl ContractCall {
                 let values_vec: Vec<Par> = values.to_vec();
                 let ch_cloned: Par = ch.clone();
                 Box::pin(async move {
+                    let data = ListParWithRandom {
+                        pars: values_vec,
+                        random_state: rand,
+                    };
                     let produce_result = space
-                        .produce(
-                            ch_cloned,
-                            ListParWithRandom {
-                                pars: values_vec,
-                                random_state: rand,
-                            },
-                            false,
-                        )
+                        .produce(ch_cloned.clone(), data.clone(), false)
                         .await?;
 
                     let is_replay = space.is_replay().await;
 
                     let dispatch_result = match produce_result {
+                        Some((cont, channels, produce)) if cont.peek => {
+                            let reducer = dispatcher
+                                .reducer
+                                .get()
+                                .and_then(|weak| weak.upgrade())
+                                .ok_or_else(|| {
+                                    InterpreterError::BugFoundError(
+                                        "Reducer not initialized".to_string(),
+                                    )
+                                })?;
+                            reducer
+                                .continue_produce_process(
+                                    unpack_option_with_peek(Some((cont, channels))),
+                                    ch_cloned,
+                                    data,
+                                    false,
+                                    is_replay,
+                                    produce.output_value,
+                                    produce.failed,
+                                )
+                                .await
+                        }
                         Some((cont, channels, produce)) => {
                             dispatcher
                                 .dispatch(

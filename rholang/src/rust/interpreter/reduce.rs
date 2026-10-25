@@ -674,7 +674,7 @@ impl DebruijnInterpreter {
         .await
     }
 
-    async fn continue_produce_process(
+    pub(super) async fn continue_produce_process(
         &self,
         res: Application,
         chan: Par,
