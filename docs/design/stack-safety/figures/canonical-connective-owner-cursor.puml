@@ -1,0 +1,69 @@
+@startuml canonical-connective-owner-cursor
+' ============================================================================
+' Lifecycle of the canonical ConnectiveBody child cursor (task 10879).
+'   BLUE  #1565C0  validation and the borrowed cursor
+'   AMBER #EF6C00  the bind guard (pointer AND length) and its premise
+'   GREEN #2E7D32  the owned cursor resuming over validated children
+'   RED   #C62828  refusal: no counter is transferred
+'   GREY  #616161  exhaustion
+' Obligation numbers (1)-(4) refer to the Verus proof functions listed in
+' canonical-connective-owner-refinement-2026-10-08.md.
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+skinparam state {
+  BorderColor #455A64
+  FontSize 12
+}
+
+title <b>Canonical Connective child cursor</b>\nvalidate once, suspend by value, bind only the exact owner, resume
+
+state "Borrowed" as Borrowed #BBDEFB
+Borrowed : ""CanonicalConnectiveChildren(message, at, remaining)""
+Borrowed : <latex>\mathrm{Valid}(b, c),\ \mathrm{Pos}(b, c, (0, n))</latex>
+state "Suspended in a PDA frame" as Suspended #E3F2FD
+Suspended : the cursor is ""Copy""; the frame keeps ""(at, remaining)""
+Suspended : beside the pending child obligation
+Suspended : <latex>\mathrm{Pos}(b, c, (a, r))</latex>
+state Guard <<choice>>
+state "Refused" as Refused #FFCDD2
+Refused : ""Err(BodyMismatch)""
+Refused : no owned cursor exists;
+Refused : ""at"" and ""remaining"" were never copied
+state "Owned" as Owned #C8E6C9
+Owned : ""CanonicalOwnedConnectiveChildren(body, at, remaining)""
+Owned : reads only ""body.as_ref()""
+Owned : <latex>\mathrm{Pos}(b_o, c, (a, r)),\ b_o = b</latex>
+state "Exhausted" as Exhausted #E0E0E0
+Exhausted : ""next() = None""
+Exhausted : <latex>r = 0,\ a = |b|</latex>
+
+[*] -[#1565C0,thickness=2]-> Borrowed : ""new(message)"" validates every field-1 child:\nkey byte 10, minimal varint length, exact tiling
+Borrowed -[#1565C0]-> Borrowed : borrowed ""next()"" while <latex>r > 0</latex>\nlends <latex>b[s_k, e_k)</latex>
+Borrowed -[#1565C0]-> Suspended : PDA pushes the cursor\nbefore visiting a child
+Suspended -[#EF6C00,thickness=2]-> Guard : ""bind_owned(owner)""\none ""as_ref()"" view
+Guard -[#C62828,thickness=2]-> Refused : <latex>\alpha_o \neq \alpha_s \lor \ell_o \neq \ell_s</latex>\nobligation (1)
+Guard -[#2E7D32,thickness=2]-> Owned : <latex>\alpha_o = \alpha_s \land \ell_o = \ell_s</latex>\ncounters moved unchanged, obligation (2)
+Owned -[#2E7D32]-> Owned : ""next()"" while <latex>r > 0</latex>: returns <latex>[s_k, e_k)</latex>,\n<latex>(a, r) \leftarrow (e_k, r - 1)</latex>, obligation (3)
+Owned -[#616161,thickness=2]-> Exhausted : ""next()"" when <latex>r = 0</latex>\nobligation (4)
+Refused --> [*]
+Exhausted --> [*]
+
+note right of Guard #FFF3E0
+  **Premise, not a proof:** the owner type implements the
+  unsafe trait ""StableConnectiveBodyOwner"", so equal address
+  and length imply equal bytes:
+  <latex>\alpha_s = \alpha_o \land |b_s| = |b_o| \Rightarrow b_s = b_o</latex>
+  Audited owners: ""&[u8]"", ""Vec<u8>"", ""ProtobufRegion"", ""EncodedRegion"".
+  Length-only and pointer-only guards are the two bind mutants.
+end note
+
+note bottom of Owned #E8F5E9
+  Exhaustion happens exactly after the validated suffix
+  <latex>c_{n-r}, \ldots, c_{n-1}</latex> has been returned, in order.
+  Skip-child, wrong-range and early-exhaustion are the three step mutants.
+end note
+@enduml

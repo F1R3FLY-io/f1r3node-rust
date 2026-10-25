@@ -1,0 +1,56 @@
+@startuml canonical-connective-owner-evidence
+' ============================================================================
+' Evidence chain for the canonical Connective cursor owner refinement (10879):
+' which artefact checks which, and where the trusted premise sits.
+'   GREEN  #2E7D32  production Rust (the code being refined)
+'   BLUE   #1565C0  the Verus source model and its mutant generator
+'   TEAL   #00695C  executable properties and controls
+'   AMBER  #EF6C00  binding: registry, checker, proof runner
+'   PURPLE #6A1B9A  the audited premise that no tool discharges
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+skinparam ranksep 40
+skinparam nodesep 30
+
+title <b>Canonical Connective owner refinement</b>\nwhat checks what
+
+package "Production (models, rholang)" as PROD #E8F5E9 {
+  rectangle "<b>par_bag.rs</b>\n<font:monospaced>CanonicalConnectiveChildren::new</font>\n<font:monospaced>bind_owned</font> (pointer and length guard)\n<font:monospaced>CanonicalOwnedConnectiveChildren::next</font>" as CUR #A5D6A7
+  rectangle "<b>owner implementations</b>\n<font:monospaced>&[u8]</font>, <font:monospaced>Vec<u8></font>, <font:monospaced>ProtobufRegion</font> (par_bag.rs)\n<font:monospaced>EncodedRegion</font> (spatial_matcher_pda.rs)" as OWN #A5D6A7
+  rectangle "<b>call sites</b>\nmatcher PDA <font:monospaced>And</font>/<font:monospaced>Or</font> binds <font:monospaced>EncodedRegion</font>\ncount PDA binds <font:monospaced>ProtobufRegion</font>" as SITES #C8E6C9
+}
+
+package "Formal source model" as FORMAL #E3F2FD {
+  rectangle "<b>canonical_connective_owner_cursor.rs</b> (Verus)\nfour obligations, four concrete mutant witnesses\n<font:monospaced>~--no-cheating ~--rlimit 30</font>: 10 verified" as VERUS #BBDEFB
+  rectangle "<b>generate-canonical-connective-owner-mutant.py</b>\nlength_only, pointer_only, skip_child,\nwrong_range, early_exhaustion" as MUT #BBDEFB
+}
+
+package "Executable evidence" as EXEC #E0F2F1 {
+  rectangle "<b>models/tests/par_bag.rs</b>\nfour concrete cursor tests\n<font:monospaced>generated_connective_cursor_owner_pairing_and_exhaustion</font>\n<font:monospaced>SwitchingOwner</font> runtime control" as PROPS #B2DFDB
+  rectangle "<b>compile_fail doctest</b>\non <font:monospaced>StableConnectiveBodyOwner</font>:\na safe <font:monospaced>AsRef</font> owner cannot bind" as DOCT #B2DFDB
+}
+
+package "Binding and gates" as BIND #FFF3E0 {
+  rectangle "<b>spatial_matcher_obligations.generated.json</b>\nlinks the four formal names to assertions,\npins source hashes" as REG #FFE0B2
+  rectangle "<b>check-stack-safe-pda-proofs.sh</b>\n<font:monospaced>canonical_connective_owner_verus</font>\nplus debug and release cursor runs" as RUN #FFE0B2
+}
+
+rectangle "<b>Audited premise</b>\nunsafe trait <font:monospaced>StableConnectiveBodyOwner</font>:\nequal address and length imply equal bytes\n<latex>\alpha_s = \alpha_o \land |b_s| = |b_o| \Rightarrow b_s = b_o</latex>" as PREM #E1BEE7
+
+VERUS -[#1565C0,thickness=2]-> CUR : models the source bytes,\nthe guard and the step
+MUT -[#1565C0]-> VERUS : each mutant must fail\nat its named postcondition
+PROPS -[#00695C,thickness=2]-> CUR : exercises bind and next\nin debug and release
+DOCT -[#00695C]-> OWN : refuses an owner without\nthe unsafe impl
+PREM -[#6A1B9A,dashed]-> OWN : discharged by source audit,\nnot by Verus
+PREM -[#6A1B9A,dashed]-> VERUS : assumed as\n<font:monospaced>stable_owner_view</font>
+OWN -[#2E7D32]-> CUR : satisfies the\nowner bound
+SITES -[#2E7D32]-> CUR : derive the owner as a subrange\nof the validated region
+REG -[#EF6C00]-> VERUS : formal names
+REG -[#EF6C00]-> PROPS : exact assertions
+RUN -[#EF6C00,thickness=2]-> VERUS : runs model and mutants
+RUN -[#EF6C00]-> PROPS : runs four tests plus\nthe property, both profiles
+@enduml
