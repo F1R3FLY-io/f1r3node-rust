@@ -27,6 +27,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use shared::rust::dag::observation_work::NoopWork;
 
 use super::floor::{self, Floor};
 use crate::rust::errors::CasperError;
@@ -61,6 +62,9 @@ pub struct FloorContext {
     /// merge-time settled-rejection tripwire checks rejected chains
     /// against exactly this set.
     pub settled_floors: Vec<Floor>,
+    /// The main parent's frontier over the frozen snapshot: `F(B)` when the
+    /// pair is block B's own. Persisted with the floor once B is valid.
+    frontier: Floor,
     parents: Vec<BlockHash>,
     /// Disposition walks memoized per scan bound. Bounds are data-dependent
     /// (each consumer derives its own from the deploys it holds), so equal
@@ -85,9 +89,15 @@ impl FloorContext {
         latest_messages: &BTreeMap<Validator, BlockHash>,
         ftt: FtThreshold,
     ) -> Result<Self, CasperError> {
-        let (floor, settled_floors) =
-            floor::finalized_floor_with_candidates(dag, block_store, parents, latest_messages, ftt)
-                .await?;
+        let (floor, settled_floors, frontier) = floor::finalized_floor_with_frontier_metered(
+            &NoopWork,
+            dag,
+            block_store,
+            parents,
+            latest_messages,
+            ftt,
+        )
+        .await?;
         let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
             CasperError::RuntimeError(format!(
                 "finalized-floor block {} not in block store",
@@ -99,10 +109,25 @@ impl FloorContext {
             floor,
             floor_state,
             settled_floors,
+            frontier,
             parents: parents.to_vec(),
             dispositions: parking_lot::Mutex::new(HashMap::new()),
             effect_memo: parking_lot::Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Persist this derivation as `block_hash`'s floor and frontier, so
+    /// [`floor::floor_of_block`] does not derive it a second time. Only for
+    /// a block that passed validation with exactly this context's frozen
+    /// pair: the cache is keyed by hash and never revisited.
+    pub fn cache_for_block(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        block_hash: &BlockHash,
+    ) -> Result<(), CasperError> {
+        dag.put_cached_floor(block_hash.clone(), self.floor.hash.clone())?;
+        dag.put_cached_frontier(block_hash.clone(), self.frontier.hash.clone())?;
+        Ok(())
     }
 
     /// The floor block's post-state as a history-repository hash (the
