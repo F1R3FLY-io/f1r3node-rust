@@ -670,7 +670,7 @@ impl DebruijnInterpreter {
 
     /// `retry` holds the channel and data of a persistent produce, which is
     /// issued again after its COMM fires; it is `None` for a linear produce.
-    async fn continue_produce_process(
+    pub(super) async fn continue_produce_process(
         &self,
         res: Application,
         retry: Option<(Par, ListParWithRandom)>,

@@ -2,6 +2,7 @@ use std::pin::Pin;
 
 use models::rhoapi::{ListParWithRandom, Par};
 use prost::Message;
+use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 
 use super::dispatch::{DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
@@ -77,6 +78,26 @@ impl ContractCall {
                     let is_replay = space.is_replay().await;
 
                     let dispatch_result = match produce_result {
+                        Some((cont, channels, produce)) if cont.peek => {
+                            let reducer = dispatcher
+                                .reducer
+                                .get()
+                                .and_then(|weak| weak.upgrade())
+                                .ok_or_else(|| {
+                                    InterpreterError::BugFoundError(
+                                        "Reducer not initialized".to_string(),
+                                    )
+                                })?;
+                            reducer
+                                .continue_produce_process(
+                                    unpack_option_with_peek(Some((cont, channels))),
+                                    None,
+                                    is_replay,
+                                    produce.output_value,
+                                    produce.failed,
+                                )
+                                .await
+                        }
                         Some((cont, channels, produce)) => {
                             dispatcher
                                 .dispatch(
