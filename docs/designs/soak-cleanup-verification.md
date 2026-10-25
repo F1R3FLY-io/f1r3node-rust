@@ -19,14 +19,31 @@ Nested Git attributes declare mandatory coverage, required acceptance, and the e
 Claim inventories and ledgers declare claim IDs and verification status.
 Attributes do not duplicate mutable verification results.
 
-The master-based integration includes the CbC migration from PR #700, merge commit dc285a9958d5ceed69a87cfe37ab86bb71f862b9.
+The dev base includes the CbC migration from PR #700, merge commit dc285a9958d5ceed69a87cfe37ab86bb71f862b9.
 Repository readers support named claims before cleanup records use that format.
 Owner files retain existing policy and combine the cleanup requirements with the migrated evidence routes.
+Promote dev to master before the next weekend soak.
+Recheck admission against the promoted control sources before launch.
 
 Repository checks use Bash.
-The shared CbC runtime retains its upstream Python dependencies.
-A pinned copy of the shared CbC implementation supplies claim inventories, evidence routing, and signature validation.
-The copy retains its upstream source hashes.
+
+The shared CbC runtime is an external tool dependency.
+A lockfile pins its immutable upstream revision and source hashes.
+The Bash installer fetches only the required runtime files into an external cache.
+The installer checks every file hash before it publishes the cache entry.
+The Bash launcher checks those hashes before each runtime invocation.
+Missing or modified runtime files prevent execution.
+
+CI installs the runtime before verification and admission checks.
+Local commands use the same installer and verified cache.
+The launcher preserves this repository as the working directory.
+It forwards the shared command interfaces without duplicating ledger parsing or signature validation.
+Its record command forwards JSON to the shared runtime's existing ledger command.
+Verification records the validated runtime revision and source hashes.
+
+The launcher, installer, lockfile, and repository checks require CbC verification and independent signed acceptance.
+Runtime source remains outside Git tracking and carries no repository attribute tags.
+The language policy permits this external tool dependency and adds no exception for copied Python source.
 
 The verification runner records test results against source hashes taken before execution.
 A changed source invalidates the recorded result.
@@ -82,14 +99,15 @@ reference:
 
 ## Operator procedure
 
-1. Review the verification report and its source hashes.
-2. Configure the external allowed-signers file through cbc.acceptanceAllowedSigners.
-3. Export each cleanup approval with scripts/cbc.sh acceptance-payload and the cleanup claim ID.
-4. Complete the maintainer identity, timestamp, and review reference in each payload.
-5. Sign each completed payload independently in the cbc-acceptance namespace.
-6. Import each approval with scripts/cbc.sh accept and the cleanup claim ID.
-7. Set CBC_ACCEPTANCE_ALLOWED_SIGNERS to the same approved public signers in the repository configuration.
-8. Run scripts/ci/check-soak-cleanup.sh before launch.
+1. Install the pinned runtime with bash scripts/ci/install-cbc-runtime.sh.
+2. Review the verification report and its source hashes.
+3. Configure the external allowed-signers file through cbc.acceptanceAllowedSigners.
+4. Export each cleanup approval with scripts/cbc.sh acceptance-payload and the cleanup claim ID.
+5. Complete the maintainer identity, timestamp, and review reference in each payload.
+6. Sign each completed payload independently in the cbc-acceptance namespace.
+7. Import each approval with scripts/cbc.sh accept and the cleanup claim ID.
+8. Set CBC_ACCEPTANCE_ALLOWED_SIGNERS to the same approved public signers in the repository configuration.
+9. Run scripts/ci/check-soak-cleanup.sh before launch.
 
 The agent prepares unsigned payloads only.
 The shared skill requires independent maintainer acceptance.

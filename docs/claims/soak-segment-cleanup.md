@@ -28,6 +28,12 @@ Candidate node sources cannot establish acceptance for control sources.
 A source, claim, or evidence change invalidates the corresponding acceptance.
 Missing policy, records, trust configuration, or signatures prevents launch.
 
+The launcher uses the pinned shared CbC runtime from an external cache.
+Missing or modified runtime files prevent verification and launch.
+The runtime lockfile records an immutable revision and the expected source hashes.
+Verification binds that lockfile and the validated runtime identity into the evidence.
+Repository source contains no shared-runtime copy.
+
 ## Bounds and assumptions
 
 The bounded model covers two segments, one owned writer, one residual writer, and one unrelated process.

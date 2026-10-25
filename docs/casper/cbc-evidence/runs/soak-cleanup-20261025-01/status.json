@@ -1,10 +1,10 @@
 {
   "schema": "soak-cleanup-admission/v1",
-  "control_revision": "1b16819729e5aef31e7632d5b4d450fcd53464d2",
+  "control_revision": "c894695f42923f2d1b8ba2e24d8b41946b71750b",
   "candidate_revision": "",
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "status": "rejected",
-  "gaps": 37,
+  "gaps": 29,
   "items": [
     {
       "path": ".github/.gitattributes",
@@ -13,7 +13,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -24,7 +25,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -35,7 +37,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -46,15 +49,18 @@
       "claims": [
         {
           "claim_id": "CLAIM-CASPER-CAMPAIGN-003",
-          "status": "pending"
+          "status": "pending",
+          "gate": "pending"
         },
         {
           "claim_id": "CLAIM-CASPER-SOAK-001",
-          "status": "pending"
+          "status": "pending",
+          "gate": "pending"
         },
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -65,7 +71,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -76,7 +83,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -87,7 +95,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -98,7 +107,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -109,7 +119,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -120,7 +131,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -131,7 +143,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -142,7 +155,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -153,7 +167,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -164,7 +179,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -175,7 +191,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -186,11 +203,13 @@
       "claims": [
         {
           "claim_id": "CLAIM-CASPER-SOAK-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         },
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -201,7 +220,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -212,11 +232,25 @@
       "claims": [
         {
           "claim_id": "CLAIM-CASPER-SOAK-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         },
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
+        }
+      ]
+    },
+    {
+      "path": "scripts/cbc-runtime.lock.json",
+      "status": "acceptance_required",
+      "artifact_status": "acceptance_required",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -227,128 +261,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/cbc.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-acceptance.py",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-adapters/agentic.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-adapters/embedded.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-adapters/mock.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-attributes.py",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-gate.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-identify.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-ledger.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/lib/cbc-verify.sh",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cbc/upstream.json",
-      "status": "acceptance_required",
-      "artifact_status": "acceptance_required",
-      "claims": [
-        {
-          "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -359,7 +273,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -370,7 +285,32 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/install-cbc-runtime.sh",
+      "status": "acceptance_required",
+      "artifact_status": "acceptance_required",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "acceptance_required"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/test-cbc-runtime.sh",
+      "status": "acceptance_required",
+      "artifact_status": "acceptance_required",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -381,7 +321,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -392,7 +333,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -403,7 +345,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -414,7 +357,8 @@
       "claims": [
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     },
@@ -425,11 +369,13 @@
       "claims": [
         {
           "claim_id": "CLAIM-CASPER-SOAK-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         },
         {
           "claim_id": "CLAIM-SOAK-CLEANUP-001",
-          "status": "acceptance_required"
+          "status": "discharged",
+          "gate": "acceptance_required"
         }
       ]
     }

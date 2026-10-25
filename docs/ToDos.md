@@ -81,7 +81,7 @@ title: "Verified Soak Segment Cleanup"
 status: in_progress
 priority: p1
 user_story: US-014
-branch: hotfix/soak-driver-shard-stop
+branch: fix/soak-driver-shard-stop
 design: docs/designs/soak-cleanup-verification.md
 specification: docs/claims/soak-segment-cleanup.md
 tasks:
@@ -90,8 +90,8 @@ tasks:
     status: in_progress
     claimed_by: codex-session-soak-cleanup
     decision: "2026-10-25: the user chose Rust/Bash repository checks and the unchanged pinned shared CbC runtime."
-    integration: "2026-10-25: the user chose a PR #700 backport to retain the master base. Reader tests and owner policies accompany named claims."
-    progress: "Bash implementation verified. All four verification stages pass. Evidence binds 85 inputs. All 37 cleanup records require independent signed acceptance."
+    integration: "2026-10-25: the user moved this branch to dev. PR #700 supplies the CbC migration. Promote dev to master before the weekend soak."
+    progress: "All four verification stages pass on dev with the external runtime. Evidence binds 77 inputs and 29 cleanup records. Signed acceptance remains pending."
     review_requested_at: 2026-10-25
     review_type: human
     claimed_at: 2026-10-25T16:22:36Z
@@ -115,17 +115,6 @@ tasks:
       - scripts/bench/test-soak-segment-cleanup.sh
       - scripts/casper-soak/src/host_control.rs
       - scripts/cbc.sh
-      - scripts/cbc/cbc.sh
-      - scripts/cbc/lib/cbc-acceptance.py
-      - scripts/cbc/lib/cbc-adapters/agentic.sh
-      - scripts/cbc/lib/cbc-adapters/embedded.sh
-      - scripts/cbc/lib/cbc-adapters/mock.sh
-      - scripts/cbc/lib/cbc-attributes.py
-      - scripts/cbc/lib/cbc-gate.sh
-      - scripts/cbc/lib/cbc-identify.sh
-      - scripts/cbc/lib/cbc-ledger.sh
-      - scripts/cbc/lib/cbc-verify.sh
-      - scripts/cbc/upstream.json
       - scripts/ci/check-soak-cleanup.sh
       - scripts/ci/configure-cbc-trust.sh
       - scripts/ci/test-soak-cleanup-model.sh
@@ -142,6 +131,42 @@ tasks:
       - "The PR #700 reader tests pass, and owner policies preserve existing mandatory coverage and weights."
       - "Current source-bound verification records preserve historical evidence and expose pending acceptance."
       - "A maintainer supplies independent signed acceptance before discharge or launch succeeds."
+  - id: TASK-030-2
+    title: "Use the pinned shared CbC runtime as an external dependency"
+    status: in_progress
+    claimed_by: codex-session-soak-cleanup
+    claimed_at: 2026-10-25T19:24:00Z
+    decision: "The user approved removing the copied runtime and installing a pinned external dependency."
+    progress: "The external runtime is implemented. All four verification stages pass, including 14 dependency tests and 18 admission checks. Signed acceptance remains pending."
+    review_requested_at: 2026-10-25
+    review_type: human
+    files:
+      - AGENTS.md
+      - CLAUDE.md
+      - scripts/cbc.sh
+      - scripts/cbc-runtime.lock.json
+      - scripts/ci/install-cbc-runtime.sh
+      - scripts/ci/test-cbc-runtime.sh
+      - scripts/ci/check-soak-cleanup.sh
+      - scripts/ci/test-soak-cleanup.sh
+      - scripts/ci/verify-soak-cleanup.sh
+      - scripts/.gitattributes
+      - docs/casper/soak-cleanup.json
+      - docs/claims/soak-segment-cleanup.md
+      - .github/workflows/ci.yml
+      - .github/workflows/merge-recovery-soak.yml
+      - docs/Glossary.md
+      - docs/UserStories.md
+      - docs/designs/soak-cleanup-verification.md
+    acceptance:
+      - "The repository contains no copied shared CbC runtime source."
+      - "The installer checks the immutable revision and every runtime file hash before use."
+      - "Local commands and CI use the same external runtime and preserve the project working directory."
+      - "Missing, modified, or incorrectly pinned runtime files prevent verification and admission."
+      - "Repository checks use the launcher command interfaces instead of runtime source paths."
+      - "The launcher, installer, lockfile, and tests have mandatory attributes and current verification records."
+      - "The refreshed evidence binds current repository inputs and the validated runtime identity."
+      - "The test suite covers cold installation, verified reuse, failed downloads, and corrupted runtime files."
 ```
 
 ---

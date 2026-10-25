@@ -39,6 +39,8 @@ This document captures user stories that drive feature development. User stories
 - [x] Negative controls demonstrate that missing cleanup and ignored failures fail verification.
 - [x] Launch checks bind the actual control checkout to current evidence and signed maintainer acceptance.
 - [x] Git attributes route mandatory artifacts to their claim and verification records.
+- [x] A pinned external CbC runtime supplies shared verification commands without copied runtime source.
+- [x] Missing or modified runtime files prevent verification and launch.
 
 - [ ] A maintainer independently accepts the verified cleanup sources before launch.
 

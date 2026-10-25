@@ -23,8 +23,8 @@ if [ "$record" -eq 1 ]; then [[ "$output" == "$ROOT/"* ]] || exit 4; fi
 manifest=docs/casper/soak-cleanup.json
 claim=CLAIM-SOAK-CLEANUP-001
 specification=docs/claims/soak-segment-cleanup.md
-acceptance=scripts/cbc/lib/cbc-acceptance.py
-attributes=scripts/cbc/lib/cbc-attributes.py
+cbc=scripts/cbc.sh
+bash scripts/ci/install-cbc-runtime.sh --check >/dev/null
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 hash() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -63,17 +63,19 @@ snapshot | jq -s from_entries >"$TMP/after.json"
 cmp -s "$TMP/before.json" "$TMP/after.json" || { printf 'A verification input changed.\n' >&2; exit 4; }
 jq -n --slurpfile sources "$TMP/before.json" --slurpfile checks "$TMP/checks" \
     --slurpfile model "$output/model.json" --slurpfile regressions "$output/regressions.json" \
+    --slurpfile runtime scripts/cbc-runtime.lock.json \
     --arg at "$(date -u +%FT%TZ)" --arg revision "$(git rev-parse HEAD)" \
     --arg jar "$(hash "${TLA2TOOLS_JAR:?TLA2TOOLS_JAR is required}")" --arg harness "$(hash "$harness")" \
     '{schema:"soak-cleanup-verification/v1",verified_at:$at,control_revision:$revision,
-      source_digests:$sources[0],checks:$checks,model:$model[0],regressions:$regressions[0],
+      source_digests:$sources[0],runtime:($runtime[0]|{repository,revision,source_directory,sha256}),
+      checks:$checks,model:$model[0],regressions:$regressions[0],
       tlc_sha256:$jar,harness_binary_sha256:$harness,scope:"bounded-segment-cleanup",
       node_execution:false,maintainer_acceptance:"pending",live_soak:"pending"}' >"$output/report.json"
 if [ "$record" -eq 1 ]; then
     reference="${output#"$ROOT/"}/report.json"
     mkdir "$output/unsigned-acceptance"
     while IFS= read -r path; do
-        ledger="$(python3 "$attributes" evidence-path "$path")"
+        ledger="$(bash "$cbc" attributes evidence-path "$path")"
         if [ -f "$ledger" ] && [ ! -e "${ledger%.md}.claims.json" ]; then
             mkdir -p "$(dirname "$ledger")/history"
             cp -n "$ledger" "$(dirname "$ledger")/history/$(hash "$ledger")-$(basename "$ledger")"
@@ -91,8 +93,8 @@ if [ "$record" -eq 1 ]; then
             done < <(jq -r '.claim_ids[]' <<<"$old")
         fi
         ids=()
-        while IFS= read -r id; do ids+=("$id"); done < <(jq -r --arg path "$path" '.artifacts[$path][]' "$manifest")
-        python3 "$acceptance" claim-set "$path" "$ledger" "${ids[@]}" >/dev/null
+        while IFS= read -r id; do ids+=(--claim-id "$id"); done < <(jq -r --arg path "$path" '.artifacts[$path][]' "$manifest")
+        bash "$cbc" claim-set "$path" "${ids[@]}" >/dev/null
         inputs="$(jq -nc --arg path "$path" --arg claim "$specification" --slurpfile hashes "$TMP/before.json" \
             '{artifact:$path,source_sha256:$hashes[0][$path],claim:{path:$claim,sha256:$hashes[0][$claim]}}')"
         jq -n --arg path "$path" --arg revision "$(git rev-parse HEAD)" --arg ref "$reference" \
@@ -100,8 +102,8 @@ if [ "$record" -eq 1 ]; then
             '{artifact:{path:$path,commit:$revision,commit_is_base:true,working_tree:true},
               claim:$claim,adapter:"bounded-model-and-linux-fixture",status:"discharged",scope:"bounded-segment-cleanup",
               evidence:{kind:"bounded-model-and-linux-fixture",ref:$ref},waiver:null,verified_at:$at}' |
-            python3 "$acceptance" record "$path" "$ledger" "$specification" "$inputs" "$claim" >/dev/null
-        python3 "$acceptance" payload "$path" "$ledger" "$claim" >"$output/unsigned-acceptance/$(basename "${ledger%.md}").json"
+            bash "$cbc" record "$path" "$ledger" "$specification" "$inputs" "$claim" >/dev/null
+        bash "$cbc" acceptance-payload "$path" --claim-id "$claim" >"$output/unsigned-acceptance/$(basename "${ledger%.md}").json"
     done < <(jq -r '.artifacts|keys[]' "$manifest")
     status=0
     bash scripts/ci/check-soak-cleanup.sh --root "$ROOT" --output "$output/status.json" >/dev/null || status=$?

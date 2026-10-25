@@ -790,6 +790,10 @@ jobs:
       - name: Build the soak harness
         run: cargo build --locked -p casper-soak --bin casper-soak
 
+      - name: Install the pinned CbC runtime
+        timeout-minutes: 5
+        run: bash scripts/ci/install-cbc-runtime.sh
+
       - name: Install the cleanup model checker
         timeout-minutes: 5
         run: |

@@ -4,11 +4,11 @@
   "source_sha256": "619b1d7ba46247e88b1d5c31ebf1797a2f47cc735eaad4a7a3a0e02bc5f3488b",
   "claim": {
     "path": "docs/claims/soak-segment-cleanup.md",
-    "sha256": "edd3ab8b4429376dca9e27b165a7791c67a0a405003a1e1e9ffe22c260b1a0ff"
+    "sha256": "76d21c461e55290ad6abca40ae18b5def403780ce497af5cc36ec0188452ea3a"
   },
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "claim_set_sha256": "5b858fbee9b2000b89b5321a83e3f01a84a3f583f49d1b060b31896f8d4fa2da",
-  "evidence_sha256": "87c1899aab4ebf39912ddd305c8311641b39d53a579edd2e70f58986e7f7ea78",
+  "evidence_sha256": "f01ce0598cf49f6383953e9e9c14574e62b238a47f70d5c658d1ddea4ce0e7ac",
   "accepted_by": "",
   "approved_at": "",
   "approval_ref": ""

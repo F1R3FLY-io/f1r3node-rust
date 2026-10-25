@@ -64,46 +64,22 @@
       "CLAIM-CASPER-SOAK-001",
       "CLAIM-SOAK-CLEANUP-001"
     ],
+    "scripts/cbc-runtime.lock.json": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
     "scripts/cbc.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/cbc.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-acceptance.py": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-adapters/agentic.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-adapters/embedded.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-adapters/mock.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-attributes.py": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-gate.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-identify.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-ledger.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/lib/cbc-verify.sh": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/cbc/upstream.json": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
     "scripts/ci/check-soak-cleanup.sh": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
     "scripts/ci/configure-cbc-trust.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/install-cbc-runtime.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
+    "scripts/ci/test-cbc-runtime.sh": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
     "scripts/ci/test-soak-cleanup-model.sh": [

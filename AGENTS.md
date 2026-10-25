@@ -102,6 +102,8 @@ docker compose -f docker/shard.yml up
 ### Rust Guidelines
 - **No comments** unless explicitly requested by user
 - **Rust and bash only for new work.** Do not add Python, Ruby, or other languages.
+  - The pinned shared CbC runtime is an external tool dependency. Install its source outside this repository.
+  - Keep the CbC launcher, installer, and repository checks in Rust or Bash.
   - Legacy Python remains in the z3 witnesses under `formal/` and in a few inline `python3` calls in older scripts. It leaves when that code is next touched.
   - One scoped exception stays: `scripts/bench/extend-issue24-metrics.py` and its test.
   - They edit and verify the external system-integration harness's own Python module, and they run only where that harness runs.

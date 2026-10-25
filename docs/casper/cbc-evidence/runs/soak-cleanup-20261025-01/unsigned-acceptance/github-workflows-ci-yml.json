@@ -1,14 +1,14 @@
 {
   "schema": "cbc-acceptance/v2",
   "artifact": ".github/workflows/ci.yml",
-  "source_sha256": "9ea5de0bf58e9c3238d25cd8d9e4f99377057206d3e67ff82eb8868167ba655d",
+  "source_sha256": "3dca206d354670fae4fc9d35510d657fd3c1a1b17f863c71b1d9a827ee5747dd",
   "claim": {
     "path": "docs/claims/soak-segment-cleanup.md",
-    "sha256": "edd3ab8b4429376dca9e27b165a7791c67a0a405003a1e1e9ffe22c260b1a0ff"
+    "sha256": "76d21c461e55290ad6abca40ae18b5def403780ce497af5cc36ec0188452ea3a"
   },
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "claim_set_sha256": "58ed1475d9ac8b465a9eaa1a8f11ad19cd7b5006bc856a392d55b88fccd9a544",
-  "evidence_sha256": "cdcbf315bd202ec2d0296bbea49dca56387256d0be90a3c7ad9eb0b948a33034",
+  "evidence_sha256": "47c1a971e653756588b937ba8d07cc6847c668ccd240378ef834b832fab1ea41",
   "accepted_by": "",
   "approved_at": "",
   "approval_ref": ""

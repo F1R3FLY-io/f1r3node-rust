@@ -32,8 +32,7 @@ revision="$(git rev-parse HEAD)"
 [ -z "$control" ] || [ "$control" = "$revision" ] || reject 'The control checkout has a different revision.'
 manifest=docs/casper/soak-cleanup.json
 claim=CLAIM-SOAK-CLEANUP-001
-acceptance=scripts/cbc/lib/cbc-acceptance.py
-attributes=scripts/cbc/lib/cbc-attributes.py
+cbc=scripts/cbc.sh
 hash() {
     shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -50,6 +49,7 @@ local_file() {
 local_file "$manifest"
 jq -e '.schema=="soak-cleanup/v1" and (.artifacts|type=="object") and (.claims|type=="object") and (.build_inputs|type=="array")' "$manifest" >/dev/null
 for required in "$manifest" scripts/ci/check-soak-cleanup.sh scripts/run-merge-recovery-soak.sh \
+    scripts/cbc.sh scripts/cbc-runtime.lock.json scripts/ci/install-cbc-runtime.sh \
     scripts/casper-soak/src/host_control.rs .github/actions/soak-segment/action.yml \
     .github/workflows/merge-recovery-soak.yml .github/workflows/ci.yml docs/claims/soak-segment-cleanup.md; do
     jq -e --arg path "$required" '.artifacts|has($path)' "$manifest" >/dev/null || reject 'The cleanup manifest omits a required artifact.'
@@ -63,9 +63,9 @@ while IFS= read -r path; do
     policy="$(git check-attr cbc cbc-acceptance -- "$path")"
     printf '%s\n' "$policy" | grep -q ': cbc: mandatory$' || reject "Cleanup verification is not mandatory: $path"
     printf '%s\n' "$policy" | grep -q ': cbc-acceptance: required$' || reject "Cleanup acceptance is not required: $path"
-    ledger="$(python3 "$attributes" evidence-path "$path")"
+    ledger="$(bash "$cbc" attributes evidence-path "$path")"
     local_file "$ledger"
-    status="$(python3 "$acceptance" report "$path" "$ledger" required)"
+    status="$(bash "$cbc" status "$path" --json)"
     expected="$(jq -c --arg path "$path" '.artifacts[$path]|sort' "$manifest")"
     actual="$(jq -c '.claim_ids|sort' "${ledger%.md}.claims.json")"
     [ "$expected" = "$actual" ] || reject "The declared cleanup claims differ: $path"
@@ -77,6 +77,7 @@ while IFS= read -r path; do
     if [[ "$checked" != *"|$reference|"* ]]; then
         local_file "$reference"
         [ "$(jq -r '.schema' "$reference")" = soak-cleanup-verification/v1 ] || reject 'The cleanup report schema differs.'
+        [ "$(jq -cS '.runtime' "$reference")" = "$(jq -cS '{repository,revision,source_directory,sha256}' scripts/cbc-runtime.lock.json)" ] || reject 'The cleanup runtime binding differs.'
         [ "$(jq -c '.source_digests|keys|sort' "$reference")" = "$inputs" ] || reject 'The cleanup report does not bind the complete source set.'
         while IFS= read -r source; do
             local_file "$source"
@@ -86,7 +87,7 @@ while IFS= read -r path; do
         checked="$checked$reference|"
     fi
     jq -c --arg claim "$claim" '. as $full | (.claims[]|select(.claim_id==$claim)) as $selected |
-        {path:$full.path,status:$selected.status,artifact_status:$full.status,claims:$full.claims}' <<<"$status" >>"$rows"
+        {path:$full.path,status:$selected.gate,artifact_status:$full.gate,claims:$full.claims}' <<<"$status" >>"$rows"
 done < <(jq -r '.artifacts|keys[]' "$manifest")
 result="$(jq -s --arg control "$revision" --arg candidate "$candidate" --arg claim "$claim" '
     map(select(.status!="discharged"))|length' "$rows")"

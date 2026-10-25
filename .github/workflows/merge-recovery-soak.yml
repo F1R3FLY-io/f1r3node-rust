@@ -1371,6 +1371,12 @@ jobs:
           path: ci-control
           persist-credentials: false
 
+      - name: Install the pinned CbC runtime before runner launch
+        if: steps.resolve.outputs.should_run == 'true'
+        timeout-minutes: 5
+        working-directory: ci-control
+        run: bash scripts/ci/install-cbc-runtime.sh
+
       - name: Configure cleanup acceptance trust
         if: steps.resolve.outputs.should_run == 'true'
         working-directory: ci-control
@@ -2068,6 +2074,11 @@ jobs:
         env:
           CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
         run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Install the pinned CbC runtime on this runner
+        timeout-minutes: 5
+        working-directory: ci-control
+        run: bash scripts/ci/install-cbc-runtime.sh
 
       - name: Require accepted cleanup on this runner
         env:

@@ -1,14 +1,14 @@
 {
   "schema": "cbc-acceptance/v2",
   "artifact": "docs/casper/soak-cleanup.json",
-  "source_sha256": "53f74b77af81bc5deacbe6d8a3bfcd4e502cb16e2fddfc328b68aa7f8be897f5",
+  "source_sha256": "36bdcbdcc3904580539129784c9581dba7cd5f2493548d5e115da4f70b039982",
   "claim": {
     "path": "docs/claims/soak-segment-cleanup.md",
-    "sha256": "edd3ab8b4429376dca9e27b165a7791c67a0a405003a1e1e9ffe22c260b1a0ff"
+    "sha256": "76d21c461e55290ad6abca40ae18b5def403780ce497af5cc36ec0188452ea3a"
   },
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "claim_set_sha256": "07df1bff7535e748d87de428490f598e0d35920184fd5e01a6d282d77f16a993",
-  "evidence_sha256": "fedf2beeef413a62123d74312e6813beeb058a2cb0bedda19c6b5595b646e8b6",
+  "evidence_sha256": "53dfd3dcf39ec8efe0ebe6761ce4938d32dead5ecf045a758d3c414e893219ca",
   "accepted_by": "",
   "approved_at": "",
   "approval_ref": ""
