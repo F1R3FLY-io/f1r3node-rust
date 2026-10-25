@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # Reruns the newest ci.yml pull_request run of a pull request head after the
-# ci-heavy label is added. ci.yml does not run on labeled events: a label run
+# ci-heavy label is added, or after a ci-maintainers waiver removes it. ci.yml does not run on labeled events: a label run
 # replaces the checks of the head, so the queued and dequeued labels of the
 # merge queue made the required checks pending again and the merge failed
 # (pull request #826). A rerun keeps the pull_request event, so Commit Policy
 # and Promotion Source keep their pull request checks, and build_base reads the
-# current labels to start the heavy pipeline.
+# current labels to start or skip the heavy pipeline.
 #
 # A running run is cancelled first, because a run in progress cannot be rerun.
+# The cancel also stops its OCI jobs.
 #
-# Environment: REPOSITORY (owner/name), HEAD_SHA (40 hex), GH_TOKEN, and for
-# tests RERUN_POLL_SECONDS and RERUN_POLL_ATTEMPTS.
+# WANT_HEAVY (true or false) is whether the pull request carries ci-heavy now.
+# A run whose Integration Pipeline jobs already run or passed is not rerun when
+# WANT_HEAVY is true, so the label that Mergify adds at open does not restart
+# the run that the open started. A completed run without Integration Pipeline
+# jobs is not rerun when WANT_HEAVY is false. Without WANT_HEAVY, the run is
+# always rerun.
+#
+# Environment: REPOSITORY (owner/name), HEAD_SHA (40 hex), GH_TOKEN,
+# WANT_HEAVY, and for tests RERUN_POLL_SECONDS and RERUN_POLL_ATTEMPTS.
 set -euo pipefail
 
 : "${REPOSITORY:?REPOSITORY is required}"
@@ -33,6 +41,26 @@ fi
 }
 
 status="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}" --jq '.status')"
+want="${WANT_HEAVY:-}"
+if [ -n "$want" ]; then
+	[[ "$want" =~ ^(true|false)$ ]] || {
+		echo "::error::WANT_HEAVY must be true or false" >&2
+		exit 2
+	}
+	heavy="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+		--jq '[.jobs[] | select(.name | startswith("Integration Pipeline /")) | select(.conclusion != "skipped")]
+			| if length == 0 then "none"
+			elif any(.[]; .status != "completed" or .conclusion == "success") and all(.[]; .status != "completed" or .conclusion == "success") then "active"
+			else "failed" end')"
+	if [ "$want" = true ] && [ "$heavy" = active ]; then
+		echo "CI run ${run_id} for ${HEAD_SHA} already runs the heavy pipeline. No rerun."
+		exit 0
+	fi
+	if [ "$want" = false ] && [ "$heavy" = none ] && [ "$status" = completed ]; then
+		echo "CI run ${run_id} for ${HEAD_SHA} has no heavy pipeline. No rerun."
+		exit 0
+	fi
+fi
 if [ "$status" != completed ]; then
 	gh api -X POST "repos/${REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null
 	for _ in $(seq 1 "$poll_attempts"); do
@@ -47,4 +75,4 @@ if [ "$status" != completed ]; then
 fi
 
 gh api -X POST "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null
-echo "Reran CI run ${run_id} for ${HEAD_SHA} with the ci-heavy label."
+echo "Reran CI run ${run_id} for ${HEAD_SHA} with the current labels."

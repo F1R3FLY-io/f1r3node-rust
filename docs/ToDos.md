@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-13
+last_updated: 2026-10-19
 mr_status:
   ready: false
   target_branch: master
@@ -206,79 +206,6 @@ tasks:
       - "The record also evaluates the Tokio options: a dedicated runtime or thread pool for consensus work (as the HTTP API already has), the worker count, explicit yield points in long CPU work, and an OS thread priority for the proposer."
       - "Each option that reduces durability states the crash-recovery result before a maintainer accepts it."
       - "No option changes code unless TASK-024-3 shows a disk cause."
----
-```
-
----
-
-### EPIC-026: Hierarchical CbC Attributes (Nested .gitattributes Files)
-
-```yaml
----
-epic_id: EPIC-026
-title: "Hierarchical CbC Attributes (Nested .gitattributes Files)"
-status: blocked
-priority: p2
-user_story: null
-blocked_by: ["top-level-gitlab-profile docs/ToDos.md INBOX: hierarchical cbc .gitattributes design (2026-10-12)"]
-created_at: 2026-10-12
-updated_at: 2026-10-12
-plan: docs/plans/cbc-hierarchical-attributes.md
-claimed_by: claude-session-dfac55a4
-claimed_at: 2026-10-12T14:00:00Z
-branch: chore/cbc-hierarchical-attributes
-pr_base_branch: dev
-origin: "On 2026-10-12 the maintainer asked to move the cbc=mandatory tags out of the flat root .gitattributes (160 lines) into .gitattributes files in subdirectories, following the new CbC workflow in top-level-gitlab-profile."
-roles:
-  design: "top-level-gitlab-profile owns the design, the tooling change, and its tests (its docs/ToDos.md INBOX entry of 2026-10-12)."
-  implementation: "This epic. It applies the ratified design to this repository and reorganizes the .gitattributes files."
-execution_contract:
-  design_policy: "No change to any .gitattributes file before the maintainer approves the design. The rule moves follow docs/plans/cbc-hierarchical-attributes.md. The revised R1 to R7 apply: the owner map routes proposals only, existing rules keep their coverage, and R7 is a separate change."
-  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
-baseline:
-  root_file: ".gitattributes has 160 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 125) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
-  evidence_dirs: "docs/cbc-evidence/ (tooling default) and docs/casper/cbc-evidence/ (selected through CBC_EVIDENCE_DIR in docs/casper/README.md)."
-  acceptance: "No entry sets cbc-acceptance yet."
-tasks:
-  - id: TASK-026-1
-    title: "Record the attribute baseline"
-    status: pending
-    blocked_by: []
-    acceptance:
-      - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
-  - id: TASK-026-2
-    title: "Declare the owner directories"
-    status: pending
-    blocked_by: ["design approval", "shared owner map interface (R1)"]
-    acceptance:
-      - "The owner map of the shared tooling lists the nine owner directories of plan section 4."
-      - "The owner map routes new proposals only. The snapshot diff stays empty."
-  - id: TASK-026-3
-    title: "Move the rules into the owner .gitattributes files"
-    status: pending
-    blocked_by: [TASK-026-1, TASK-026-2]
-    acceptance:
-      - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
-      - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
-      - "No owner file uses an [attr] macro."
-      - "The snapshot diff against the previous commit is empty after each commit."
-      - "The root file keeps only rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
-  - id: TASK-026-4
-    title: "Remove the duplicate lines"
-    status: pending
-    blocked_by: [TASK-026-3]
-    acceptance:
-      - "A separate commit removes the second copy of .github/workflows/slashing-tests.yml and scripts/ci/check-tla-invariants.sh."
-      - "The snapshot diff is empty."
-  - id: TASK-026-5
-    title: "Prove that the migration is exact"
-    status: pending
-    blocked_by: [TASK-026-4, "shared R5 snapshot command"]
-    acceptance:
-      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work. Each such path is recorded with its commit."
-      - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
-      - "cbc discharge --strict gives the same result at the branch base and the branch head."
-      - "The independent verifier in top-level-gitlab-profile confirms the result."
 ---
 ```
 
@@ -3845,6 +3772,46 @@ tasks:
       - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
       - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
       - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
+
+  - id: TASK-012-31
+    title: "Plan deploy pool read reuse for issue #711"
+    status: complete
+    issues: [711]
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: null
+    claimed_at: null
+    completed_at: 2026-10-19
+    blocked_by: []
+    notes:
+      - "The user requested investigation and a plan before implementation."
+      - "The plan belongs in docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "The plan records snapshot behavior, S1 through S8, stage metrics, regression tests, and the independent PR #730."
+    acceptance:
+      - "The plan identifies the four reads, the shared snapshot boundary, and the relevant claim requirements."
+      - "The plan defines regression tests, measurement criteria, and the pull request target dev."
+      - "The investigation changes no Rust code and creates no commit or pull request."
+
+  - id: TASK-012-32
+    title: "Reuse the deploy pool snapshot during block creation"
+    status: review
+    issues: [711]
+    pr: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/771"
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: null
+    claimed_at: null
+    blocked_by: []
+    notes:
+      - "Implement docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "Preserve admission statements S1 through S8 and the existing stage metric definitions."
+    progress: "All 72 focused unit tests and 15 focused integration tests pass. Formatting and workspace clippy pass. The full release suite remains in progress."
+    acceptance:
+      - "Normal proposal preparation performs one full deploy pool read, and RecoveryEmpty performs none."
+      - "Both statistics functions and selection use the same captured deploy set."
+      - "Scope checks stop at the first matching deploy through any."
+      - "Snapshot, admission, quarantine, retry, and metric regression tests pass."
+      - "The pull request targets dev and records the test results and claim evidence."
 ---
 ```
 

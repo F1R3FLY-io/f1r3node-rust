@@ -958,8 +958,8 @@ jobs:
   # completed test passing. It runs here as two nextest count-partition
   # shards so each leg carries roughly half the test wall-clock. Larger
   # GitHub-hosted runners are not an option: the org's plan does not support
-  # them, and OCI ephemeral runners are reserved for the approval-gated
-  # heavy pipeline (shared daily instance quota).
+  # them, and OCI ephemeral runners are reserved for the ci-heavy
+  # pipeline (shared daily instance quota).
   test_casper:
     name: Test (casper ${{ matrix.partition }}/2)
     needs: [build_base, static_checks]
