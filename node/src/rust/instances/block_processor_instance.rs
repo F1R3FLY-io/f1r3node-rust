@@ -657,6 +657,8 @@ mod tests {
 
         fn get_validator(&self) -> Option<ValidatorIdentity> { None }
 
+        fn is_local_validator_bonded(&self) -> bool { false }
+
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
             panic!("Unexpected history export")
         }

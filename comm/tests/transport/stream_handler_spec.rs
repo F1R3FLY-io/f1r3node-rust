@@ -108,6 +108,35 @@ mod stream_handler_spec {
     }
 
     #[tokio::test]
+    async fn should_restore_exact_bytes_from_multi_chunk_streams() {
+        for content_length in [32 * 1024, 600 * 1024] {
+            let mut rng = StdRng::seed_from_u64(content_length as u64);
+            let content: Vec<u8> = (0..content_length).map(|_| rng.random::<u8>()).collect();
+            let blob = Blob {
+                sender: peer_node("sender"),
+                packet: Packet {
+                    type_id: "BlockMessageTest".to_string(),
+                    content: Bytes::from(content.clone()),
+                },
+            };
+            let chunks = Chunker::chunk_it(NETWORK_ID, &blob, 4096);
+            assert!(chunks.len() > 2);
+
+            let cache = Arc::new(dashmap::DashMap::new());
+            let message = StreamHandler::handle_stream(stream::iter(chunks), never_break, &cache)
+                .await
+                .expect("stream should complete");
+            assert_eq!(message.compressed, content_length > 500 * 1024);
+
+            let restored = StreamHandler::restore(&message, &cache)
+                .await
+                .expect("stream should restore");
+            assert_eq!(restored.packet.content.as_ref(), content);
+            assert!(cache.is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn should_handle_zero_length_content() {
         // given
         let stream = create_stream(Some(1024), Some(0), None, None).await; // Zero content length
