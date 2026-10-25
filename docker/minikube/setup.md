@@ -49,10 +49,14 @@ kube-system   storage-provisioner                1/1     Running   1 (30m ago)  
 
 ## Deploy RNode
 
-Deploy RNode into Minikube:
+Deploy RNode into Minikube. The chart reads the validator private key from a Kubernetes Secret, see [Validator keys](../helm/setup.md#validator-keys). The key of node 0 must match `nodeKeys[0].publicKey` in `../helm/f1r3fly/values.yaml`.
 ```sh
 cd docker/minikube || true
-helm upgrade --install f1r3fly ../helm/f1r3fly -n f1r3fly --create-namespace -f ./minikube-values.yaml
+kubectl create namespace f1r3fly
+kubectl create secret generic f1r3fly-validator-keys -n f1r3fly \
+  --from-literal=validator-0=<private key of node 0>
+helm upgrade --install f1r3fly ../helm/f1r3fly -n f1r3fly -f ./minikube-values.yaml \
+  --set validatorKeys.existingSecret=f1r3fly-validator-keys
 ```
 
 ### Check status
