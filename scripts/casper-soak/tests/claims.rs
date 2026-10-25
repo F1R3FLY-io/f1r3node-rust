@@ -194,3 +194,66 @@ fn claim_scope_source_and_evidence_are_independent_of_soak() {
     std::os::unix::fs::symlink(&outside, path.parent().unwrap()).unwrap();
     assert_eq!(selected("symlink-ledger-parent.json"), 2);
 }
+
+#[test]
+fn named_claim_ledgers_select_only_the_audited_claim() {
+    use serde_json::json;
+    let root = fixture();
+    let spec = "docs/claims/casper-soak-harness.md";
+    let header = "```yaml\nclaim_id: CLAIM-CASPER-SOAK-001\nstatus: discharged\nartifacts:\n  - source_file.txt\nconstruction: not-applicable\nrefutation: bounded-safety-pass\nbinding: passed\nsoak: pending\n```\nSynthetic audit input, not verification evidence.\n";
+    fs::write(root.path().join(spec), header).unwrap();
+    fs::write(root.path().join("source_file.txt"), "source").unwrap();
+    let report = json!({"claim_discharge":"discharged","claim_ids":["CLAIM-CASPER-SOAK-001"],"phase":"pre_pr216_merge","purpose":"synthetic-audit-input","source_digests":{"source_file.txt":casper_soak::hash(b"source")},"claim_digests":{spec:casper_soak::hash(header.as_bytes())},"tiers":{"refutation":"bounded-safety-pass","binding":"passed","construction":"not-applicable"}});
+    fs::write(
+        root.path().join("verification.json"),
+        casper_soak::encoded(&report).unwrap(),
+    )
+    .unwrap();
+    let discharged = json!({"schema":"cbc-claim/v1","claim_id":"CLAIM-CASPER-SOAK-001","artifact":{"path":"source_file.txt","sha256":casper_soak::hash(b"source"),"commit":"0".repeat(40)},"verified_at":"2026-09-18T00:00:00Z","claim_digests":{spec:casper_soak::hash(header.as_bytes())},"claim_ids":["CLAIM-CASPER-SOAK-001"],"status":"discharged","phase_status":{"pre_pr216_merge":"discharged"},"evidence":{"ref":"verification.json","sha256":casper_soak::file_hash(&root.path().join("verification.json")).unwrap()},"waiver":null});
+    let other = json!({"schema":"cbc-claim/v1","claim_id":"CLAIM-SOAK-GATE-001","artifact":{"path":"source_file.txt"},"status":"pending"});
+    let path = root
+        .path()
+        .join("docs/casper/cbc-evidence/source-file-txt.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let save = |records: &[&serde_json::Value]| {
+        let blocks: Vec<_> = records
+            .iter()
+            .map(|record| format!("```json\n{record}\n```\n"))
+            .collect();
+        fs::write(&path, blocks.join("\n")).unwrap();
+    };
+    let selected = |name: &str| {
+        Command::new(binary())
+            .args(["--claim", "CLAIM-CASPER-SOAK-001", "--strict", "--root"])
+            .arg(root.path())
+            .arg("--output")
+            .arg(root.path().join(name))
+            .output()
+            .unwrap()
+            .status
+            .code()
+            .unwrap()
+    };
+    save(&[&other, &discharged]);
+    assert_eq!(selected("named.json"), 0);
+    save(&[&other]);
+    assert_eq!(selected("single-other-claim.json"), 2);
+    save(&[&other, &other.clone()]);
+    assert_eq!(selected("other-claims-only.json"), 2);
+    let mut duplicate = other.clone();
+    duplicate["claim_id"] = json!("CLAIM-CASPER-SOAK-001");
+    save(&[&duplicate, &discharged]);
+    assert_eq!(selected("duplicate-claim.json"), 2);
+    let mut unidentified = other.clone();
+    unidentified.as_object_mut().unwrap().remove("claim_id");
+    save(&[&unidentified, &discharged]);
+    assert_eq!(selected("unidentified-record.json"), 2);
+    let mut untyped = other.clone();
+    untyped.as_object_mut().unwrap().remove("schema");
+    save(&[&untyped, &discharged]);
+    assert_eq!(selected("untyped-record.json"), 2);
+    let mut pending = discharged.clone();
+    pending["status"] = json!("pending");
+    save(&[&other, &pending]);
+    assert_eq!(selected("pending-selected-claim.json"), 2);
+}

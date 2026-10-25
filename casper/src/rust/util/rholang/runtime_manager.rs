@@ -849,6 +849,11 @@ impl RuntimeManager {
             Vec<ProcessedDeploy>,
             Vec<ProcessedSystemDeploy>,
             Vec<Bond>,
+            // Per-deploy Merkle leaves in commit order (user deploys
+            // first, then system deploys).  Fed to
+            // `proto_util::hash_block_with_leaves` by the propose path
+            // to skip re-hashing the body at package time.
+            Vec<[u8; 32]>,
         ),
         CasperError,
     > {
@@ -952,7 +957,29 @@ impl RuntimeManager {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_drop_runtime_ops", rss_kb);
         }
 
-        Ok((state_hash, usr_processed, sys_processed, bonds))
+        // Per-deploy Merkle leaves for `hash_block_with_leaves`.  Computed
+        // from the processed deploys after the propose loop; cheaper than
+        // rehashing from the body at package time, and keeps the Merkle
+        // hash recipe owned by `proto_util`.
+        let mut block_hash_leaves: Vec<[u8; 32]> =
+            Vec::with_capacity(usr_processed.len() + sys_processed.len());
+        for pd in &usr_processed {
+            block_hash_leaves.push(crate::rust::util::proto_util::hash_processed_deploy_leaf(
+                pd,
+            ));
+        }
+        for psd in &sys_processed {
+            block_hash_leaves
+                .push(crate::rust::util::proto_util::hash_processed_system_deploy_leaf(psd));
+        }
+
+        Ok((
+            state_hash,
+            usr_processed,
+            sys_processed,
+            bonds,
+            block_hash_leaves,
+        ))
     }
 
     pub async fn compute_genesis(
@@ -1072,7 +1099,15 @@ impl RuntimeManager {
             .await;
         metrics::histogram!(BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(execute_start.elapsed().as_secs_f64());
-        let (state_hash, mergeable_chs) = replay_result?;
+        // Discard per-deploy Merkle leaves at this API boundary: callers of
+        // `RuntimeManager::replay_compute_state` only need the state hash.
+        // The leaves exist to give fail-fast replay semantics (bad deploy
+        // detected the moment its leaf is computed); they are also used on
+        // the propose path (`compute_state_with_bonds`) to feed
+        // `hash_block_with_leaves` without rehashing.  Validation computes
+        // `block_hash` via `Validate::block_hash` which recomputes leaves
+        // from the stored block body.
+        let (state_hash, mergeable_chs, _block_hash_leaves) = replay_result?;
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);

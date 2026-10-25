@@ -51,43 +51,42 @@ pub struct Substitute {
 impl Substitute {
     pub fn substitute_and_charge<A>(
         &self,
-        term: &A,
+        term: A,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: Clone + prost::Message,
+        A: prost::Message,
     {
-        // scala 'charge' function built in here
-        match self.substitute(term.clone(), depth, env) {
-            Ok(subst_term) => {
-                self.cost.charge(Cost::create(
-                    subst_term.encoded_len() as i64,
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
-                Err(th)
-            }
-        }
+        let term_len = term.encoded_len();
+        let substituted = self.substitute(term, depth, env);
+        self.charge_substitution(substituted, term_len)
     }
 
     pub fn substitute_no_sort_and_charge<A>(
         &self,
-        term: &A,
+        term: A,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: Clone + prost::Message,
+        A: prost::Message,
     {
-        // scala 'charge' function built in here
-        match self.substitute_no_sort(term.clone(), depth, env) {
+        let term_len = term.encoded_len();
+        let substituted = self.substitute_no_sort(term, depth, env);
+        self.charge_substitution(substituted, term_len)
+    }
+
+    /// Charges the size of the substituted term, or of the original term
+    /// (`term_len`) when substitution failed.
+    fn charge_substitution<A: prost::Message>(
+        &self,
+        substituted: Result<A, InterpreterError>,
+        term_len: usize,
+    ) -> Result<A, InterpreterError> {
+        match substituted {
             Ok(subst_term) => {
                 self.cost.charge(Cost::create(
                     subst_term.encoded_len() as i64,
@@ -96,8 +95,7 @@ impl Substitute {
                 Ok(subst_term)
             }
             Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
+                self.cost.charge(Cost::create(term_len as i64, ""))?;
                 Err(th)
             }
         }
@@ -202,21 +200,27 @@ impl Substitute {
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
         exprs.into_iter().try_fold(Par::default(), |par, expr| {
-            match unwrap_option_safe(expr.clone().expr_instance)? {
+            match unwrap_option_safe(expr.expr_instance)? {
                 ExprInstance::EVarBody(e) => match self.maybe_substitute_evar(e, depth, env)? {
-                    Either::Left(_e) => Ok(prepend_expr(
+                    Either::Left(e) => Ok(prepend_expr(
                         par,
                         Expr {
-                            expr_instance: Some(ExprInstance::EVarBody(_e)),
+                            expr_instance: Some(ExprInstance::EVarBody(e)),
                         },
                         depth,
                     )),
-                    Either::Right(_par) => Ok(concatenate_pars(_par, par)),
+                    Either::Right(substituted) => Ok(concatenate_pars(substituted, par)),
                 },
-                _ => match self.substitute_no_sort(expr, depth, env) {
-                    Ok(e) => Ok(prepend_expr(par, e, depth)),
-                    Err(e) => Err(e),
-                },
+                instance => {
+                    let substituted = self.substitute_no_sort(
+                        Expr {
+                            expr_instance: Some(instance),
+                        },
+                        depth,
+                        env,
+                    )?;
+                    Ok(prepend_expr(par, substituted, depth))
+                }
             }
         })
     }
@@ -1340,10 +1344,7 @@ mod tests {
 
     fn bound(index: i32) -> Par { new_boundvar_par(index, Vec::new(), false) }
 
-    fn env_with(value: Par) -> Env<Par> {
-        let mut env = Env::new();
-        env.put(value)
-    }
+    fn env_with(value: Par) -> Env<Par> { Env::new().put(value) }
 
     type BinOp = fn(Par, Par) -> ExprInstance;
 
@@ -1932,20 +1933,20 @@ mod tests {
         let substitute = substitute_instance();
         let env = env_with(gint(42));
 
-        let charged: Par = substitute
-            .substitute_and_charge(&bound(0), 0, &env)
-            .unwrap();
+        let charged: Par = substitute.substitute_and_charge(bound(0), 0, &env).unwrap();
         assert_eq!(charged, gint(42));
 
         let charged_no_sort: Par = substitute
-            .substitute_no_sort_and_charge(&bound(0), 0, &env)
+            .substitute_no_sort_and_charge(bound(0), 0, &env)
             .unwrap();
         assert_eq!(charged_no_sort, gint(42));
 
         let free = new_freevar_par(0, Vec::new());
-        assert!(substitute.substitute_and_charge(&free, 0, &env).is_err());
         assert!(substitute
-            .substitute_no_sort_and_charge(&free, 0, &env)
+            .substitute_and_charge(free.clone(), 0, &env)
+            .is_err());
+        assert!(substitute
+            .substitute_no_sort_and_charge(free, 0, &env)
             .is_err());
     }
 
