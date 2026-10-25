@@ -135,11 +135,7 @@ async fn finalized_keys_all_nodes(
     nodes: &[TestNode],
     writes: &[(String, i64)],
 ) -> (i64, Vec<String>) {
-    let lfb0 = nodes[0]
-        .casper
-        .last_finalized_block()
-        .await
-        .expect("lfb node0");
+    let lfb0 = nodes[0].casper.finalize().await.expect("lfb node0");
     // Single-value-cell invariant (the integration's node-log check, made explicit and
     // deterministic): @"m" must hold EXACTLY ONE datum. A multi-datum cell is the merge
     // defect; checked before the peek read, it turns the flaky cross-node coin-flip into a
@@ -153,7 +149,7 @@ async fn finalized_keys_all_nodes(
     let mut fs0 = present_keys(&nodes[0], &lfb0.body.state.post_state_hash, writes).await;
     fs0.sort();
     for (j, node) in nodes.iter().enumerate().skip(1) {
-        let lfbj = node.casper.last_finalized_block().await.expect("lfb");
+        let lfbj = node.casper.finalize().await.expect("lfb");
         let nj = m_datum_count(node, &lfbj.body.state.post_state_hash).await;
         assert_eq!(
             nj, 1,

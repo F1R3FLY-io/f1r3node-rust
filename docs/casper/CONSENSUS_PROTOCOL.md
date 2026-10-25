@@ -107,8 +107,6 @@ Proposals are triggered by the [heartbeat proposer](#8-liveness-heartbeat-propos
 
 **Why snapshot first?** The snapshot is immutable once created. This prevents race conditions — the proposal works against a consistent view of the DAG even as new blocks arrive concurrently.
 
-**Guard**: If finalization is in progress (`finalization_in_progress` flag), snapshot creation fails. This prevents proposing against a stale view that the finalizer is about to advance.
-
 ### Step 2: Check Constraints
 
 Before building a block, the proposer verifies:
@@ -320,7 +318,7 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 ### Trigger
 
-Finalization runs asynchronously after each valid block is added to the DAG. A single-flight guard (`finalizer_task_in_progress`) prevents concurrent runs. A `finalization_in_progress` flag prevents snapshot creation during finalization (avoids stale proposals).
+Finalization runs asynchronously after each valid block is added to the DAG. Every cycle runs on the casper instance's one finalizer task, one cycle at a time, so the LFB has one writer; reading the LFB never advances it. After every cycle, the same task writes the deploy verdicts the persisted LFB decides and releases the pool copy of every deploy with a verdict. Snapshot creation does not wait for a cycle.
 
 ### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 
