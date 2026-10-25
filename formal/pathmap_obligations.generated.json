@@ -5808,7 +5808,7 @@
       "checker": "scripts/check-spatial-matcher-obligations.py",
       "family": "spatial_matcher",
       "manifest": "formal/spatial_matcher_obligations.generated.json",
-      "manifest_sha256": "aac82fac8ea25aeec5f136decd5f51506706fe4ecff8c7bbb2715154846be70f",
+      "manifest_sha256": "8c2dfbc0627acf52281d5ce96f3094923f6f636f5b146ef0a95fe4b73dd91dba",
       "obligations": {
         "generated_properties": [
           {
@@ -5891,7 +5891,7 @@
           "models/tests/par_bag.rs": "89e5726b89dea6e89c7b633fa814c1dca6995e27d5c5f3e4b318ae87ec805074",
           "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "51e70145a53a2ec7e3cb1e23e40b56197c105b013f22c4e5209047d031072c4f",
           "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
-          "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "b810a920257f932b10d45dc0c4064bd2058d386cbed40dfeb0d0dbd3beff8065",
+          "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "50d93ada2ffcac322f5f6ac4457ae9861a2baa1198a63ec364c7de1d9d2e8578",
           "scripts/generate-canonical-connective-owner-mutant.py": "876cbc6d6edb7a0aa330b1d2f4c141c68e8c4cae535600089182f70b3e29650c"
         },
         "tla_invariants": [

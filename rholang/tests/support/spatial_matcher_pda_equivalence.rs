@@ -3193,6 +3193,147 @@ fn send_candidate_query_preserves_matches_across_ignored_cost_and_local_metadata
     assert_eq!(stats.edge_evaluations, 2);
 }
 
+/// Arbitrary values for the Send fields that the authoritative Send equation
+/// never reads: `cost_region` (absent, or populated down to a nested signer)
+/// and `locally_free`. `connective_used` keeps the values a normalized pattern
+/// and datum carry.
+fn ignored_send_metadata() -> impl Strategy<Value = (Option<CostRegion>, Vec<u8>)> {
+    let region = (
+        any::<u32>(),
+        any::<u64>(),
+        any::<u64>(),
+        any::<u64>(),
+        any::<u64>(),
+        prop::option::of(prop::collection::vec(any::<u8>(), 0..4)),
+        any::<u32>(),
+    )
+        .prop_map(
+            |(version, start_line, start_column, end_line, end_column, signer, ordinal)| {
+                CostRegion {
+                    version,
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
+                    signer: signer.map(|ground| CostSignature {
+                        atoms: vec![CostSignatureAtom {
+                            form: Some(models::rhoapi::cost_signature_atom::Form::Ground(ground)),
+                        }],
+                    }),
+                    ordinal,
+                }
+            },
+        );
+    (
+        prop::option::of(region),
+        prop::collection::vec(any::<u8>(), 0..3),
+    )
+}
+
+// SpatialMatcher.v::source_wildcard_effect_preserves_capture_state and
+// source_query_success_has_unique_emitted_captures, on a Send root. Both Send
+// equations (evaluate_send and the recursive oracle) compare only
+// `persistent`, `chan` and `data`, and the query compiler skips each ignored
+// field as one wildcard. So an ignored field never binds a capture the
+// spatial equation observes: the published captures are exactly the levels
+// the oracle binds, a repeated compared level still declines without
+// publishing a capture, and a linear query accepts every oracle success,
+// whatever either side's ignored fields hold.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn send_ignored_fields_never_bind_a_capture_the_spatial_equation_observes(
+        chan_level in 0i32..8,
+        repeated in any::<bool>(),
+        chan in -50i64..50,
+        datum in -50i64..50,
+        (pattern_region, pattern_locally_free) in ignored_send_metadata(),
+        (target_region, target_locally_free) in ignored_send_metadata(),
+    ) {
+        let data_level = if repeated { chan_level } else { chan_level + 1 };
+        let bare_pattern = send_value(
+            new_freevar_par(chan_level, Vec::new()),
+            vec![new_freevar_par(data_level, Vec::new())],
+            true,
+        );
+        let bare_target = send_value(
+            new_gint_par(chan, Vec::new(), false),
+            vec![new_gint_par(datum, Vec::new(), false)],
+            false,
+        );
+        let mut pattern = bare_pattern.clone();
+        pattern.cost_region = pattern_region;
+        pattern.locally_free = pattern_locally_free;
+        let mut target = bare_target.clone();
+        target.cost_region = target_region;
+        target.locally_free = target_locally_free;
+
+        let oracle = |target: &Send, pattern: &Send| {
+            let mut context = RecursiveContext::new();
+            let verdict = context
+                .spatial_match(
+                    send_par_of(target.clone()),
+                    send_par_of(pattern.clone()),
+                )
+                .is_some();
+            (verdict, context.free_map)
+        };
+        let (verdict, bindings) = oracle(&target, &pattern);
+        let (bare_verdict, bare_bindings) = oracle(&bare_target, &bare_pattern);
+        prop_assert_eq!(
+            verdict,
+            bare_verdict,
+            "the spatial verdict observed an ignored Send field"
+        );
+        prop_assert_eq!(
+            &bindings,
+            &bare_bindings,
+            "the spatial bindings observed an ignored Send field"
+        );
+
+        let mut captures = PathMap::new();
+        let atom = rho_path_query_cursor_atom(ParCursor::from(&pattern), false, &mut captures);
+        let mut bare_captures = PathMap::new();
+        let bare_atom =
+            rho_path_query_cursor_atom(ParCursor::from(&bare_pattern), false, &mut bare_captures);
+        prop_assert_eq!(&atom, &bare_atom, "an ignored Send field changed the compiled query");
+
+        if repeated {
+            prop_assert!(atom.is_none(), "a repeated compared level compiled a query");
+            prop_assert_eq!(captures.val_count(), 0, "a declined query published captures");
+            return Ok(());
+        }
+        let atom = atom.expect("a linear Send pattern compiles");
+        prop_assert!(verdict, "the oracle rejected a linear Send pattern");
+        prop_assert_eq!(captures.val_count(), bindings.len());
+        for level in bindings.keys() {
+            let level = u32::try_from(*level).expect("FreeVar levels are nonnegative");
+            prop_assert!(
+                captures.contains(level.to_be_bytes()),
+                "the query did not publish the oracle-bound level {}",
+                level
+            );
+        }
+        let target_structure = encode_structural_sequence(
+            [encode_match_path(ParCursor::from(&target)).as_slice()],
+        );
+        prop_assert!(
+            RhoPathQuery::structural_sequence([atom], false).matches_structure(&target_structure),
+            "the Send query rejected an oracle success"
+        );
+    }
+}
+
+fn send_par_of(value: Send) -> Par {
+    let connective_used = value.connective_used;
+    models::par_from_default! {
+        sends: vec![value],
+        connective_used,
+        ..Default::default()
+    }
+}
+
 #[test]
 fn conditional_target_index_retains_distinct_generated_byte_identities() {
     let first = If {
