@@ -1615,6 +1615,7 @@ do
   fi
 done
 bash "$repo_root/scripts/check-rspace-journal-owner-model.sh"
+TLC_RSS=4G bash "$repo_root/scripts/check-rspace-compaction-model.sh"
 tlc_run "$tla_metadir" \
   RSpaceIncrementalPrepareStreaming.cfg \
   RSpaceIncrementalPrepareStreaming.tla -cleanup

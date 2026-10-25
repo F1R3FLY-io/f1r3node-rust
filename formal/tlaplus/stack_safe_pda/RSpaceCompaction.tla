@@ -9,11 +9,13 @@ No action may expose a mixed catalog, delete an object needed by a pinned reader
 or publish a closure with a dangling edge.
 ******************************************************************************)
 
-CONSTANTS Objects, Roots, MaxWork, oldPack, newPack, oldCatalog, newCatalog
+CONSTANTS Objects, Roots, MaxWork, oldPack, newPack, oldCatalog, newCatalog,
+          SkipLeasedClosure
 
 ASSUME Objects # {}
 ASSUME Roots # {}
 ASSUME MaxWork \in Nat
+ASSUME SkipLeasedClosure \in BOOLEAN
 
 edges(x) == IF x = "o0" THEN {"o1"} ELSE IF x = "o1" THEN {"o2"} ELSE {}
 rootClosure(r) == IF r = "r0" THEN {"o0"} ELSE {"o2"}
@@ -39,6 +41,7 @@ Closure(seed) ==
   IN CHOOSE S \in closed : seed \subseteq S /\ \A T \in closed : seed \subseteq T => S \subseteq T
 
 AllRetainedRoots == currentRoots \cup retainedRoots \cup leases
+LeasedClosure == UNION {Closure(rootClosure(r)) : r \in leases}
 
 Init ==
   /\ Objects = {"o0", "o1", "o2"}
@@ -103,16 +106,17 @@ Publish ==
 DeleteOld ==
   /\ phase = "published"
   /\ published
-  /\ deleted' = deleted \cup (marked \ UNION {rootClosure(r) : r \in leases})
+  /\ deleted' = deleted \cup
+       (marked \ (IF SkipLeasedClosure
+                  THEN UNION {rootClosure(r) : r \in leases}
+                  ELSE LeasedClosure))
   /\ phase' = "done"
   /\ UNCHANGED <<leases,
                  marked, copied, catalog, published, work, failed>>
 
 AcquireLease ==
   /\ phase = "published"
-  /\ \E r \in Roots : r \notin leases
-  /\ LET r == CHOOSE x \in Roots : x \notin leases
-     IN leases' = leases \cup {r}
+  /\ \E r \in Roots \ leases : leases' = leases \cup {r}
   /\ UNCHANGED <<marked, copied, catalog, published, deleted, work, phase, failed>>
 
 ReleaseLease ==
@@ -149,7 +153,8 @@ NoDanglingEdge ==
   /\ copied = marked => UNION {edges(x) : x \in copied} \subseteq marked
 
 RootClosurePreserved ==
-  /\ published => \A r \in AllRetainedRoots : rootClosure(r) \subseteq copied
+  /\ published => \A r \in AllRetainedRoots :
+                     Closure(rootClosure(r)) \subseteq copied
 
 CatalogAtomicity ==
   catalog \in {oldCatalog, newCatalog}
@@ -158,7 +163,7 @@ PrePublishRollback ==
   /\ ~published => catalog = oldCatalog
 
 LeaseSafety ==
-  deleted \cap UNION {rootClosure(r) : r \in leases} = {}
+  deleted \cap LeasedClosure = {}
 
 NoDeletionBeforePublication ==
   deleted # {} => published
@@ -167,6 +172,7 @@ BoundedFrontier == Cardinality(work) <= MaxWork
 
 THEOREM Spec => [](
   TypeInvariant /\ CatalogAtomicity /\ PrePublishRollback /\
+  RootClosurePreserved /\ LeaseSafety /\
   NoDeletionBeforePublication /\ BoundedFrontier)
 
 =============================================================================

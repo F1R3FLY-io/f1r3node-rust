@@ -28,7 +28,7 @@ use crate::rspace::persistence::durable::{
     DurableStartupErrorV1, GenerationCheckpointPublicationErrorV1,
     GenerationCheckpointPublicationHookPointV1, GenerationCheckpointPublicationOutcomeV1,
     IndexBindingDispositionV1, InventoryMismatchKindV1, PreparedGenerationCheckpointIndexV1,
-    arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
+    SemanticallyAdmittedDurableWriterV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
     arm_generation_checkpoint_publication_failpoint, arm_generation_checkpoint_publication_hook,
     index_file_name, pack_file_name, start_generation_checkpoint_publication_trace,
     take_generation_checkpoint_publication_trace,
@@ -409,6 +409,18 @@ fn publish(
         LogPackDecodeLimits::UNBOUNDED,
         DurableAdmissionLimitsV1::UNBOUNDED,
     )
+}
+
+fn assert_admitted_objects(
+    writer: &SemanticallyAdmittedDurableWriterV1<TestSemanticProfile>,
+    objects: &[(ObjectRefV1, Vec<u8>)],
+) {
+    for (reference, bytes) in objects {
+        let actual = writer
+            .get_object_bounded(&reference.digest(), reference.encoded_len())
+            .unwrap();
+        assert_eq!(actual.as_deref(), Some(bytes.as_slice()));
+    }
 }
 
 #[test]
@@ -1860,6 +1872,78 @@ fn checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open() {
             .acquire(GenerationLeaseKeyV1::from_catalog(successor))
             .is_ok()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn compaction_keeps_transitive_retained_closure_through_old_pack_lease() {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let (source, historical_report) = historically_larger_checkpoint_source_fixture();
+    assert_eq!(historical_report.node_objects, 10);
+    let objects = source.objects.clone();
+    let scratch = test_scratch::acquire("rspace-gc-transitive-lease-");
+    install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source));
+    let old_pack_path = scratch.path().join(pack_file_name(PackId::GENESIS));
+    let old_index_path = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST));
+    let old_pack_bytes = fs::read(&old_pack_path).unwrap();
+    let old_index_bytes = fs::read(&old_index_path).unwrap();
+
+    let writer = admit(scratch.path());
+    assert_admitted_objects(&writer, &objects);
+    let old_key = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let registry = writer.generation_leases();
+    let pin = registry.acquire(old_key).unwrap();
+
+    let published = writer
+        .compact_generation_v1(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    let successor = published.catalog();
+    assert_eq!(fs::read(&old_pack_path).unwrap(), old_pack_bytes);
+    assert_eq!(fs::read(&old_index_path).unwrap(), old_index_bytes);
+    assert!(scratch.path().join("reclaim.v1").exists());
+    assert_admitted_objects(&published, &objects);
+    drop(published);
+
+    let reopened = admit(scratch.path());
+    assert_eq!(reopened.catalog(), successor);
+    assert_eq!(fs::read(&old_pack_path).unwrap(), old_pack_bytes);
+    assert_eq!(fs::read(&old_index_path).unwrap(), old_index_bytes);
+    assert_admitted_objects(&reopened, &objects);
+    let (mut lease, admitted_source) = reopened.into_parts();
+    let candidate = lease.read_reclamation_candidate().unwrap().unwrap();
+    assert_eq!(candidate.old(), old_key);
+    assert!(
+        lease
+            .reclaim_reclamation_candidate(candidate, successor)
+            .unwrap()
+            .deferred_for_reader
+    );
+    assert_eq!(fs::read(&old_pack_path).unwrap(), old_pack_bytes);
+    assert_eq!(fs::read(&old_index_path).unwrap(), old_index_bytes);
+
+    drop(pin);
+    let outcome = lease
+        .reclaim_reclamation_candidate(candidate, successor)
+        .unwrap();
+    assert_eq!(outcome.deleted_packs, 1);
+    assert!(outcome.deleted_index);
+    assert!(!outcome.deferred_for_reader);
+    assert!(!old_pack_path.exists());
+    assert!(!old_index_path.exists());
+    assert!(!scratch.path().join("reclaim.v1").exists());
+    drop(admitted_source);
+    drop(lease);
+
+    let reopened = admit(scratch.path());
+    assert_eq!(reopened.catalog(), successor);
+    assert_admitted_objects(&reopened, &objects);
 }
 
 #[test]
