@@ -24,7 +24,7 @@ services:
       - --host=${STANDALONE_HOST:-rnode.standalone}
       - >-
         --validator-private-key=${STANDALONE_PRIVATE_KEY:?STANDALONE_PRIVATE_KEY
-        must be set}
+        must be set, copy docker/.env.example to docker/.env}
       - --allow-private-addresses
       - --native-token-name=${NATIVE_TOKEN_NAME:-F1R3CAP}
       - --native-token-symbol=${NATIVE_TOKEN_SYMBOL:-F1R3}
