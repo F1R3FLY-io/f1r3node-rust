@@ -541,7 +541,7 @@ impl NativeOfferedAttempt<'_, '_> {
         inventory_limits: NativePrepaidInventoryLimits,
         receipt_limits: PrepaidReceiptLimits,
         resumed: Option<bool>,
-    ) -> Result<NativeOfferedCandidateResult, CasperError> {
+    ) -> Result<Option<NativeOfferedCandidateResult>, CasperError> {
         let settlement = OfferedSettlementContext::from_block_inputs(&envelope, &self.block_data)?;
         let adopted = self.adopted.clone();
         // Changed by DR-134 (DR-65 amendment of 2026-10-12): the prepaid stacks
@@ -604,6 +604,7 @@ impl NativeOfferedAttempt<'_, '_> {
                     production,
                 )
                 .await
+                .map(Some)
             }
             Some(rolled_back) => {
                 self.produce_resumed_offered_candidate(
@@ -640,7 +641,7 @@ impl NativeOfferedAttempt<'_, '_> {
         initial_rand: Blake2b512Random,
         production: NativeOfferedProductionLimits,
         rolled_back: bool,
-    ) -> Result<NativeOfferedCandidateResult, CasperError> {
+    ) -> Result<Option<NativeOfferedCandidateResult>, CasperError> {
         if rolled_back {
             self.evaluation.authority_stack_births.clear();
             self.evaluation.mergeable.clear();
@@ -665,13 +666,11 @@ impl NativeOfferedAttempt<'_, '_> {
             )
             .await;
         let result = match produced {
-            Ok(ProducedOutcome::Settled(candidate)) => Ok(candidate),
-            Ok(ProducedOutcome::GuardFailed) => {
-                Err(invalid("the held-capacity guard failed after the merge"))
-            }
+            Ok(ProducedOutcome::Settled(candidate)) => Ok(Some(candidate)),
+            Ok(ProducedOutcome::GuardFailed) => Ok(None),
             Err(error) => Err(error),
         };
-        if result.is_err() {
+        if !matches!(result, Ok(Some(_))) {
             let baseline = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
             self.runtime.runtime.reset(&baseline).await?;
         }

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::deploy_envelope::DeployEnvelope;
@@ -16,19 +17,19 @@ use super::settlement::{
     PurseDebit, SettledEnvelope, Settlement, SettlementOutcome,
 };
 use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::costacc::direct_wallet_funding::RecordedRun;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::{OfferedRun, RecordedRun};
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 fn invalid(message: &str) -> CasperError { CasperError::RuntimeError(message.to_string()) }
 
-fn root_of(root: &StateHash) -> Result<[u8; 32], CasperError> {
+pub(super) fn root_of(root: &StateHash) -> Result<[u8; 32], CasperError> {
     root.as_ref()
         .try_into()
         .map_err(|_| invalid("a settlement root is not 32 bytes"))
 }
 
-fn offers(block: &BlockMessage) -> Vec<Option<&DeployEnvelope>> {
+pub(super) fn offers(block: &BlockMessage) -> Vec<Option<&DeployEnvelope>> {
     block
         .body
         .deploys
@@ -40,7 +41,7 @@ fn offers(block: &BlockMessage) -> Vec<Option<&DeployEnvelope>> {
         .collect()
 }
 
-fn verdict_of(admission: &Result<Vec<([u8; 32], u128)>, String>) -> GateVerdict {
+pub(super) fn verdict_of(admission: &Result<Vec<([u8; 32], u128)>, String>) -> GateVerdict {
     match admission {
         Ok(holds) => GateVerdict::Admitted {
             holds: holds.clone(),
@@ -49,6 +50,48 @@ fn verdict_of(admission: &Result<Vec<([u8; 32], u128)>, String>) -> GateVerdict 
             cause: cause.clone(),
         },
     }
+}
+
+pub(super) fn base_outcome(run: &OfferedRun) -> EnvelopeOutcome {
+    match run.evaluation().errors.iter().any(exhausts) {
+        true => EnvelopeOutcome::Exhausted,
+        false if run.failed() => EnvelopeOutcome::UserFailure,
+        false => EnvelopeOutcome::Completed,
+    }
+}
+
+fn not_run(envelope_id: Bytes, verdict: GateVerdict) -> EnvelopeRun {
+    EnvelopeRun::recorded(ExecutedEnvelope {
+        envelope_id,
+        verdict,
+        outcome: EnvelopeOutcome::NotRun,
+        phlo_used: 0,
+        budget_recording: Bytes::new(),
+        operation_journal: Bytes::new(),
+        user_log: Vec::new(),
+    })
+}
+
+fn executed_run(
+    envelope_id: Bytes,
+    verdict: GateVerdict,
+    run: OfferedRun,
+) -> Result<EnvelopeRun, CasperError> {
+    let (budget, journal) = run.recording()?;
+    Ok(EnvelopeRun {
+        executed: ExecutedEnvelope {
+            envelope_id,
+            verdict,
+            outcome: base_outcome(&run),
+            phlo_used: run
+                .phlo_used()
+                .ok_or_else(|| invalid("an offered run has no phlo usage"))?,
+            budget_recording: Bytes::from(budget),
+            operation_journal: Bytes::from(journal),
+            user_log: run.user_log(),
+        },
+        run: Some(Arc::new(run)),
+    })
 }
 
 pub struct RhoSettlement {
@@ -85,15 +128,7 @@ impl RhoSettlement {
             let verdict = verdict_of(&plan.admissions()[position]);
             let (Some(member), Some(envelope)) = (plan.position_of(position), offered[position])
             else {
-                runs.push(EnvelopeRun::recorded(ExecutedEnvelope {
-                    envelope_id,
-                    verdict,
-                    outcome: EnvelopeOutcome::NotRun,
-                    phlo_used: 0,
-                    budget_recording: Bytes::new(),
-                    operation_journal: Bytes::new(),
-                    user_log: Vec::new(),
-                }));
+                runs.push(not_run(envelope_id, verdict));
                 continue;
             };
             let run = self
@@ -109,29 +144,69 @@ impl RhoSettlement {
                     &self.policy,
                 )
                 .await?;
-            let (budget, journal) = run.recording()?;
-            let outcome = match run.evaluation().errors.iter().any(exhausts) {
-                true => EnvelopeOutcome::Exhausted,
-                false if run.failed() => EnvelopeOutcome::UserFailure,
-                false => EnvelopeOutcome::Completed,
-            };
             root = run.post_root();
-            runs.push(EnvelopeRun {
-                executed: ExecutedEnvelope {
-                    envelope_id,
-                    verdict,
-                    outcome,
-                    phlo_used: run
-                        .phlo_used()
-                        .ok_or_else(|| invalid("an offered run has no phlo usage"))?,
-                    budget_recording: Bytes::from(budget),
-                    operation_journal: Bytes::from(journal),
-                    user_log: run.user_log(),
-                },
-                run: Some(Arc::new(run)),
-            });
+            runs.push(executed_run(envelope_id, verdict, run)?);
         }
         Ok((runs, Bytes::copy_from_slice(&root)))
+    }
+
+    pub async fn run_from_pre_state(
+        &self,
+        block: &BlockMessage,
+        pre_root: &StateHash,
+        workers: usize,
+    ) -> Result<Vec<EnvelopeRun>, CasperError> {
+        let funding_root = root_of(pre_root)?;
+        let data = block_data(block);
+        let offered = offers(block);
+        let plan = self
+            .runtime_manager
+            .plan_offered_block(funding_root, data.time_stamp, &self.policy, &offered)
+            .await?;
+        let later = plan.later()?;
+        let mut jobs = Vec::with_capacity(offered.len());
+        for (position, deploy) in block.body.deploys.iter().enumerate() {
+            let envelope_id = Bytes::copy_from_slice(deploy.identity_bytes());
+            let verdict = verdict_of(&plan.admissions()[position]);
+            let job = match (plan.position_of(position), offered[position]) {
+                (Some(member), Some(envelope)) => {
+                    Some((envelope.clone(), plan.gate(member)?, later[member].clone()))
+                }
+                _ => None,
+            };
+            jobs.push((envelope_id, verdict, job));
+        }
+        stream::iter(jobs)
+            .map(|(envelope_id, verdict, job)| {
+                let runtime_manager = Arc::clone(&self.runtime_manager);
+                let policy = Arc::clone(&self.policy);
+                let data = data.clone();
+                async move {
+                    let Some((envelope, gate, later)) = job else {
+                        return Ok(not_run(envelope_id, verdict));
+                    };
+                    let run = tokio::spawn(async move {
+                        runtime_manager
+                            .run_offered_envelope(
+                                &envelope,
+                                funding_root,
+                                funding_root,
+                                gate,
+                                &later,
+                                &data,
+                                &HashMap::new(),
+                                &policy,
+                            )
+                            .await
+                    })
+                    .await
+                    .map_err(|error| invalid(&format!("an offered run task failed: {error}")))??;
+                    executed_run(envelope_id, verdict, run)
+                }
+            })
+            .buffered(workers.max(1))
+            .try_collect()
+            .await
     }
 
     pub async fn replay_runs(
@@ -198,15 +273,14 @@ impl RhoSettlement {
     }
 }
 
-#[async_trait]
-impl Settlement for RhoSettlement {
-    async fn settle(
+impl RhoSettlement {
+    pub async fn settle_checked(
         &self,
         block: &BlockMessage,
         pre_root: &StateHash,
         mid_root: &StateHash,
         runs: &[EnvelopeRun],
-    ) -> Result<SettlementOutcome, CasperError> {
+    ) -> Result<Result<SettlementOutcome, usize>, CasperError> {
         let executed = executed_of(runs);
         check_executed(block, &executed).map_err(|error| invalid(&error))?;
         let funding_root = root_of(pre_root)?;
@@ -246,7 +320,7 @@ impl Settlement for RhoSettlement {
                     "the executed phlo usage differs from the local run",
                 ));
             }
-            let offer = self
+            let Some(offer) = self
                 .runtime_manager
                 .settle_offered_envelope(
                     envelope,
@@ -259,7 +333,10 @@ impl Settlement for RhoSettlement {
                     &invalid_blocks,
                     &self.policy,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(Err(position));
+            };
             let completed = offer.failure_class == NativeCostFailureClass::Success;
             if completed != (entry.outcome == EnvelopeOutcome::Completed) {
                 return Err(invalid(
@@ -307,11 +384,26 @@ impl Settlement for RhoSettlement {
                 None,
             )
             .await?;
-        Ok(SettlementOutcome {
+        Ok(Ok(SettlementOutcome {
             post_root,
             settled,
             system_deploys,
-        })
+        }))
+    }
+}
+
+#[async_trait]
+impl Settlement for RhoSettlement {
+    async fn settle(
+        &self,
+        block: &BlockMessage,
+        pre_root: &StateHash,
+        mid_root: &StateHash,
+        runs: &[EnvelopeRun],
+    ) -> Result<SettlementOutcome, CasperError> {
+        self.settle_checked(block, pre_root, mid_root, runs)
+            .await?
+            .map_err(|_| invalid("the held-capacity guard failed after the merge"))
     }
 
     async fn replay(

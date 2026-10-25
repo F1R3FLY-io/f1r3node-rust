@@ -17,6 +17,7 @@ use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 use rspace_plus_plus::rspace::trace::event::Event;
 
 use super::block_gate::offered_member_limits;
@@ -48,6 +49,7 @@ pub struct OfferedRun {
     gate: OfferedGate,
     owner: Option<Arc<OwnerFundingBinding>>,
     post_root: [u8; 32],
+    number_channels: NumberChannelsEndVal,
 }
 
 impl OfferedRun {
@@ -60,6 +62,7 @@ impl OfferedRun {
         gate: OfferedGate,
         owner: Option<Arc<OwnerFundingBinding>>,
         post_root: [u8; 32],
+        number_channels: NumberChannelsEndVal,
     ) -> Self {
         OfferedRun {
             evaluation,
@@ -69,6 +72,7 @@ impl OfferedRun {
             gate,
             owner,
             post_root,
+            number_channels,
         }
     }
 
@@ -82,6 +86,8 @@ impl OfferedRun {
     }
 
     pub fn post_root(&self) -> [u8; 32] { self.post_root }
+
+    pub fn number_channels(&self) -> &NumberChannelsEndVal { &self.number_channels }
 
     pub fn phlo_used(&self) -> Option<u64> { self.evaluation.native_phlo_usage }
 
@@ -158,6 +164,10 @@ impl RuntimeManager {
             )
             .await?;
         let post_root = root_bytes(&attempt.runtime.runtime.create_checkpoint().await.root)?;
+        let number_channels = attempt
+            .runtime
+            .get_number_channels_data(&attempt.evaluation.mergeable)
+            .await?;
         Ok(OfferedRun {
             evaluation: attempt.evaluation,
             replay_log: attempt.replay_log,
@@ -166,6 +176,7 @@ impl RuntimeManager {
             gate: attempt.gate,
             owner: attempt.owner,
             post_root,
+            number_channels,
         })
     }
 
@@ -181,7 +192,7 @@ impl RuntimeManager {
         block_data: &BlockData,
         invalid_blocks: &HashMap<BlockHash, Validator>,
         adopted: &AdoptedResourcePolicy,
-    ) -> Result<SettledOffer, CasperError> {
+    ) -> Result<Option<SettledOffer>, CasperError> {
         let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
             return Err(invalid(
                 "an offered settlement needs an offered-funded envelope",
@@ -282,6 +293,9 @@ impl RuntimeManager {
                 Some(rolled_back),
             )
             .await?;
+        let Some(candidate) = candidate else {
+            return Ok(None);
+        };
         let protocol = offered_funded_v6_limits();
         let evidence = candidate
             .processed
@@ -313,11 +327,11 @@ impl RuntimeManager {
             return Err(invalid("two wallet receipt rows name one purse"));
         }
         let failure_class = evidence.failure_class;
-        Ok(SettledOffer {
+        Ok(Some(SettledOffer {
             processed: candidate.processed,
             final_root: candidate.final_root,
             failure_class,
             debits,
-        })
+        }))
     }
 }

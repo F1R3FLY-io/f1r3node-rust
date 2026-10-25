@@ -252,6 +252,9 @@ impl RuntimeManager {
                 )
                 .await?
         };
+        let number_channels = runtime
+            .get_number_channels_data(&evaluation.mergeable)
+            .await?;
         let grant_log = runtime.runtime.take_event_log().await;
         let grant_casper: Vec<CasperEvent> = grant_log
             .iter()
@@ -279,6 +282,7 @@ impl RuntimeManager {
             gate,
             Some(owner),
             post_root,
+            number_channels,
         ))
     }
 }
