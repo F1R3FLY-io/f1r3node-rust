@@ -343,7 +343,14 @@ env:
   #   #851), which failed test_validator_lifecycle on 1a35dd9. Verified:
   #   descends from 1a35dd9; test_validator_lifecycle passes locally without
   #   the duplicate.
-  SYSTEM_INTEGRATION_REF: 2d3a8d45f80a30d0a167683b1ece320e64a6c71c
+  # 2026-10-24: 2d3a8d4 -> e1e00ee (system-integration MAIN — the #165 merge
+  #   commit). #165 raises the test shard's max-parent-depth from 15 to 25,
+  #   so the 3s tick keeps a 75s citability window above the node's 58s
+  #   block re-request span, and sets protocol-client.network-timeout to 3s.
+  #   Clears three startup warnings on every shard. Verified: descends from
+  #   2d3a8d4; test_concurrent_bridge_locks passes locally with none of the
+  #   warnings on any node.
+  SYSTEM_INTEGRATION_REF: e1e00ee503ea3071c03abb84245cc0d48e441e82
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
