@@ -210,6 +210,12 @@ path = "tests/pathmap_integration_tests.rs"
 name = "pathmap_native_query_walk"
 path = "tests/pathmap_native_query_walk.rs"
 
+# The PathMap native-algebra corpus, blessed on PathMap 0.2.2 before the move to
+# 0.3.4, so a release's behavioural differences show up case by case.
+[[test]]
+name = "pathmap_native_algebra_corpus"
+path = "tests/pathmap_native_algebra_corpus.rs"
+
 # ★ THE GROUP BOMB. Wire type 3 (`StartGroup`) is ATTACKER-CHOSEN: proto3 emits
 # no groups, so nothing this node writes can carry one, but skipping an UNKNOWN
 # field is a walk over bytes a peer sent and prost's `skip_field` self-recurses
