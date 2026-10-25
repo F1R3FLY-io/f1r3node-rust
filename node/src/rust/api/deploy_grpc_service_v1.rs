@@ -33,6 +33,7 @@ use models::casper::{
     PendingDeployInfo, PendingDeploysQuery, PendingDeploysResponsePayload, PrivateNamePreviewQuery,
     ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
+use models::rust::deploy_envelope::DeployEnvelopeFormat;
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
 use tracing::error;
@@ -258,27 +259,43 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<DeployDataProto>,
     ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
-        // Convert DeployDataProto to Signed<DeployData>
-        let signed_deploy =
-            match models::rust::casper::protocol::casper_message::DeployData::from_proto(
-                request.into_inner(),
-            ) {
-                Ok(signed) => signed,
-                Err(err_msg) => {
-                    let error = Self::create_service_error(err_msg);
-                    return Self::create_error_deploy_response(error);
-                }
-            };
+        let proto = request.into_inner();
+        let is_offered = DeployEnvelopeFormat::from_authorization_version(
+            proto
+                .authorization_v61
+                .as_ref()
+                .map(|authorization| authorization.format_version),
+        ) == Ok(DeployEnvelopeFormat::OfferedFunded);
+        let result = if is_offered {
+            BlockAPI::deploy_offered(
+                &self.engine_cell,
+                proto,
+                &self.trigger_propose_f,
+                self.is_node_read_only,
+                &self.shard_id,
+            )
+            .await
+        } else {
+            let signed_deploy =
+                match models::rust::casper::protocol::casper_message::DeployData::from_proto(proto)
+                {
+                    Ok(signed) => signed,
+                    Err(err_msg) => {
+                        let error = Self::create_service_error(err_msg);
+                        return Self::create_error_deploy_response(error);
+                    }
+                };
+            BlockAPI::deploy(
+                &self.engine_cell,
+                signed_deploy,
+                &self.trigger_propose_f,
+                self.is_node_read_only,
+                &self.shard_id,
+            )
+            .await
+        };
 
-        match BlockAPI::deploy(
-            &self.engine_cell,
-            signed_deploy,
-            &self.trigger_propose_f,
-            self.is_node_read_only,
-            &self.shard_id,
-        )
-        .await
-        {
+        match result {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
                 let is_duplicate = e.chain().any(|cause| {

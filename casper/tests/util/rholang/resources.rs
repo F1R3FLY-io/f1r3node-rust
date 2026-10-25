@@ -415,12 +415,17 @@ pub async fn key_value_deploy_storage_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use block_storage::rust::deploy::key_value_deploy_storage::{
-        KeyValueDeployStorage, DEPLOY_STORAGE_DB, DEPLOY_STORAGE_QUARANTINE_DB,
+        KeyValueDeployStorage, DEPLOY_ENVELOPE_STORAGE_DB, DEPLOY_STORAGE_DB,
+        DEPLOY_STORAGE_QUARANTINE_DB,
     };
 
     let deploy_storage_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_DB).await?;
     let quarantine_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_QUARANTINE_DB).await?;
-    KeyValueDeployStorage::from_stores(deploy_storage_kv_store, quarantine_kv_store)
+    let envelope_kv_store = store_from_dyn(kvm, DEPLOY_ENVELOPE_STORAGE_DB).await?;
+    Ok(
+        KeyValueDeployStorage::from_stores(deploy_storage_kv_store, quarantine_kv_store)?
+            .with_envelope_store(envelope_kv_store),
+    )
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(

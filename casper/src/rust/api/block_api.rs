@@ -11,14 +11,20 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use futures::future;
 use models::casper::{
-    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, LightBlockInfo, RejectedDeployInfo,
-    WaitingContinuationInfo,
+    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployDataProto, LightBlockInfo,
+    RejectedDeployInfo, WaitingContinuationInfo,
 };
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat, DeployEnvelopeRef};
+use models::rust::phlo_intent::{
+    PhloConversionCompositionV2, PhloFundingIntentV2Limits, PhloFundingIntentVersioned,
+};
+use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Bytes;
@@ -40,6 +46,7 @@ use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle, MIN_FAULT_TOLERANCE};
 use crate::rust::state::instances::proposer_state::ProposerState;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{event_converter, proto_util};
@@ -109,6 +116,209 @@ fn deploy_is_block_expired(
         latest_block_number,
         deploy_lifespan,
     )?)
+}
+
+fn offered_validation_error(message: impl Into<String>) -> eyre::Report {
+    eyre::Report::new(DeployValidationError {
+        message: message.into(),
+    })
+}
+
+fn decode_offered_submission(proto: DeployDataProto, shard_id: &str) -> ApiErr<DeployEnvelope> {
+    let limits = offered_funded_v6_limits().envelope;
+    if proto.encoded_len() > limits.payload.deploy_bytes {
+        return Err(offered_validation_error(
+            "offered-funded deploy exceeds the fixed v6 syntax limit",
+        ));
+    }
+    if DeployEnvelopeFormat::from_authorization_version(
+        proto
+            .authorization_v61
+            .as_ref()
+            .map(|auth| auth.format_version),
+    )
+    .map_err(offered_validation_error)?
+        != DeployEnvelopeFormat::OfferedFunded
+    {
+        return Err(offered_validation_error(
+            "offered-funded submission requires the offered-funded authorization format",
+        ));
+    }
+    let envelope =
+        DeployEnvelope::from_proto(proto.clone(), limits).map_err(offered_validation_error)?;
+    if envelope.to_proto().map_err(offered_validation_error)? != proto {
+        return Err(offered_validation_error(
+            "offered-funded submission is not canonical",
+        ));
+    }
+    if envelope.body().shard_id != shard_id {
+        return Err(offered_validation_error(format!(
+            "Deploy shardId '{}' is not as expected network shard '{}'.",
+            envelope.body().shard_id,
+            shard_id
+        )));
+    }
+    if envelope.signers().iter().any(|signer| {
+        standard_deploys::system_public_keys()
+            .iter()
+            .any(|key| **key == signer.pk)
+    }) {
+        return Err(offered_validation_error(
+            "Deploy refused because it is signed with a forbidden private key.",
+        ));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    if envelope.body().is_expired_at(now) {
+        return Err(offered_validation_error(
+            "Offered-funded deploy has expired.",
+        ));
+    }
+    Ok(envelope)
+}
+
+fn check_offered_submission_policy(
+    envelope: &DeployEnvelope,
+    policy: &AdoptedResourcePolicy,
+) -> ApiErr<()> {
+    if !policy.offered_funded_v6_active() {
+        return Err(offered_validation_error(
+            "offered-funded deploy format is not active under the approved genesis policy",
+        ));
+    }
+    let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
+        return Err(offered_validation_error("expected offered-funded envelope"));
+    };
+    let syntax = offered_funded_v6_limits().envelope.payload.funding;
+    let v2_limits = PhloFundingIntentV2Limits {
+        wire: syntax.wire,
+        base: syntax,
+        grant_uses: syntax.wire.total_bytes / 8,
+        grant_id_bytes: syntax.wire.field_bytes,
+        quote_evidence_bytes: syntax.wire.field_bytes,
+    };
+    let intent = PhloFundingIntentVersioned::decode(offer.data.funding_intent(), v2_limits)
+        .map_err(|error| offered_validation_error(error.to_string()))?;
+    let base = match intent {
+        PhloFundingIntentVersioned::V1(_) => {
+            return Err(offered_validation_error(
+                "production offered funding requires explicit V2 composition terms",
+            ));
+        }
+        PhloFundingIntentVersioned::V2(v2) => {
+            if !matches!(v2.conversion, PhloConversionCompositionV2::NoConversion) {
+                return Err(offered_validation_error(
+                    "offered conversion requires authenticated asset custody and atomic settlement",
+                ));
+            }
+            v2.base
+        }
+    };
+    let limit = u64::try_from(offer.data.phlo_limit())
+        .map_err(|_| offered_validation_error("offered phloLimit is negative"))?;
+    let price = u64::try_from(offer.data.phlo_price())
+        .map_err(|_| offered_validation_error("offered phloPrice is negative"))?;
+    if limit > base.controls.limit || price > base.controls.price_ceiling {
+        return Err(offered_validation_error(
+            "offered phloLimit or phloPrice exceeds signed funding controls",
+        ));
+    }
+    for schedule in &base.controls.permitted_schedules {
+        let encoded = schedule
+            .encode(PhloGenesisPolicy::LIMITS)
+            .map_err(|error| offered_validation_error(error.to_string()))?;
+        if schedule
+            .digest(syntax.controls.schedule(syntax.controls.total_classes))
+            .map_err(|error| offered_validation_error(error.to_string()))?
+            != base.schedule_commitment
+        {
+            continue;
+        }
+        if schedule.actual_price != price {
+            return Err(offered_validation_error(
+                "offered phloPrice differs from selected signed schedule",
+            ));
+        }
+        policy
+            .check_acquisition_terms(&encoded)
+            .map_err(|error| offered_validation_error(error.to_string()))?;
+        return Ok(());
+    }
+    Err(offered_validation_error(
+        "signed offered price schedule is absent",
+    ))
+}
+
+fn spawn_deploy_propose(
+    trigger_propose: &Option<Arc<ProposeFunction>>,
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+) {
+    let Some(tp) = trigger_propose else {
+        return;
+    };
+    let tp = Arc::clone(tp);
+    let casper_for_propose = casper;
+    let max_attempts = deploy_propose_max_attempts();
+    let retry_delay = deploy_propose_retry_delay();
+    tokio::spawn(async move {
+        let mut attempt = 1u32;
+        loop {
+            match tp(casper_for_propose.clone(), true).await {
+                Ok(proposer_result) => match proposer_result {
+                    ProposerResult::Failure(status, seq_number) => {
+                        if should_retry_deploy_propose(&status) && attempt < max_attempts {
+                            tracing::info!(
+                                "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
+                                attempt,
+                                max_attempts,
+                                seq_number,
+                                status,
+                                retry_delay
+                            );
+                            attempt += 1;
+                            tokio::time::sleep(retry_delay).await;
+                            continue;
+                        }
+
+                        if let Some(msg) = recoverable_propose_failure_message(&status) {
+                            tracing::info!("{} (seqNum {})", msg, seq_number);
+                        } else {
+                            tracing::error!("Failure: {} (seqNum {})", status, seq_number);
+                        }
+                    }
+                    ProposerResult::Empty => {
+                        tracing::debug!("Propose already in progress");
+                    }
+                    ProposerResult::Started(seq_number) => {
+                        tracing::debug!("Propose started (seqNum {})", seq_number);
+                    }
+                    ProposerResult::Success(_, block) => {
+                        let block_hash_hex =
+                            PrettyPrinter::build_string_no_limit(&block.block_hash);
+                        tracing::info!("Success! Block {} created and added.", block_hash_hex);
+                    }
+                },
+                Err(err) => {
+                    if attempt < max_attempts {
+                        tracing::warn!(
+                            "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
+                            attempt,
+                            max_attempts,
+                            err,
+                            retry_delay
+                        );
+                        attempt += 1;
+                        tokio::time::sleep(retry_delay).await;
+                        continue;
+                    }
+                    tracing::error!(error = %err, "deploy-triggered propose failed");
+                }
+            }
+            break;
+        }
+    });
 }
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
@@ -500,79 +710,7 @@ impl BlockAPI {
             // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
             // Deploy success should not block on proposal completion; finalization is checked via
             // propose/finalization APIs separately in integration flows.
-            if let Some(tp) = trigger_propose {
-                let tp = Arc::clone(tp);
-                let casper_for_propose = casper.clone();
-                let max_attempts = deploy_propose_max_attempts();
-                let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(casper_for_propose.clone(), true).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
-                                            attempt,
-                                            max_attempts,
-                                            seq_number,
-                                            status,
-                                            retry_delay
-                                        );
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
-
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
-                                        );
-                                    }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
-                                        attempt,
-                                        max_attempts,
-                                        err,
-                                        retry_delay
-                                    );
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
-                                }
-                                tracing::error!(error = %err, "deploy-triggered propose failed");
-                            }
-                        }
-                        break;
-                    }
-                });
-            }
+            spawn_deploy_propose(trigger_propose, casper);
 
             Ok(format!(
                 "Success!\nDeployId is: {}",
@@ -689,6 +827,64 @@ impl BlockAPI {
         } else {
             log_warn(&log_error_message)
         }
+    }
+
+    pub async fn deploy_offered(
+        engine_cell: &EngineCell,
+        proto: DeployDataProto,
+        trigger_propose: &Option<Arc<ProposeFunction>>,
+        is_node_read_only: bool,
+        shard_id: &str,
+    ) -> ApiErr<String> {
+        if is_node_read_only {
+            return Err(offered_validation_error(
+                "Deploy was rejected because node is running in read-only mode.",
+            ));
+        }
+        let envelope = decode_offered_submission(proto, shard_id)?;
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| offered_validation_error("Casper instance was not available"))?;
+        let adopted = casper
+            .adopted_resource_policy()
+            .ok_or_else(|| offered_validation_error("this shard has no genesis resource policy"))?;
+        check_offered_submission_policy(&envelope, &adopted)?;
+        let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
+            return Err(offered_validation_error("expected offered-funded envelope"));
+        };
+        let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+        if offer.data.phlo_price() < min_phlo_price {
+            return Err(offered_validation_error(format!(
+                "Phlo price {} is less than minimum price {}.",
+                offer.data.phlo_price(),
+                min_phlo_price
+            )));
+        }
+        let dag = casper.block_dag().await?;
+        let next_block_number = dag.latest_block_number() + 1;
+        let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
+        if deploy_is_block_expired(
+            envelope.body().valid_after_block_number,
+            next_block_number,
+            deploy_lifespan,
+        )? {
+            return Err(offered_validation_error(format!(
+                "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                envelope.body().valid_after_block_number,
+                next_block_number,
+                deploy_lifespan
+            )));
+        }
+        let deploy_id = match casper.deploy_envelope(envelope)? {
+            Either::Left(error) => return Err(error.into()),
+            Either::Right(deploy_id) => deploy_id,
+        };
+        spawn_deploy_propose(trigger_propose, casper);
+        Ok(format!(
+            "Success!\nDeployId is: {}",
+            PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+        ))
     }
 
     #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]

@@ -30,8 +30,8 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
-    WebApi,
+    DeployRequest, ExploreDeployRequest, OfferedDeployRequest, RhoDataResponse,
+    SimpleExploreDeployRequest, ViewMode, WebApi,
 };
 
 #[derive(Clone)]
@@ -502,6 +502,29 @@ pub async fn deploy_handler(
 ) -> Response {
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.deploy(request).await }).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/deploy/offered",
+    request_body = OfferedDeployRequest,
+    responses(
+        (status = 200, description = "Offered-funded deploy accepted; returns the deploy ID (hex)", body = String),
+        (status = 400, description = "Malformed or non-canonical offered-funded deploy, or inactive genesis policy (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure", body = ApiErrorResponse),
+    ),
+    tag = "Deployment"
+)]
+pub async fn deploy_offered_handler(
+    State(app_state): State<AppState>,
+    AppJson(request): AppJson<OfferedDeployRequest>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.deploy_offered(request).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }

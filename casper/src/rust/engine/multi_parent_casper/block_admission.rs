@@ -14,7 +14,8 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::normalizer_env::normalizer_env_from_deploy;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat};
+use models::rust::normalizer_env::{normalizer_env_from_deploy, normalizer_env_from_envelope};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -115,6 +116,73 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
             Ok(deploy_result)
         }
     }
+}
+
+pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    envelope: DeployEnvelope,
+) -> Result<Either<DeployError, DeployId>, CasperError> {
+    if !this
+        .casper_shard_conf
+        .adopted_resource_policy
+        .as_ref()
+        .is_some_and(|policy| policy.offered_funded_v6_active())
+    {
+        return Err(CasperError::RuntimeError(
+            "offered-funded deploy admission is not active under the current genesis policy"
+                .to_string(),
+        ));
+    }
+    if envelope.format() != DeployEnvelopeFormat::OfferedFunded {
+        return Err(CasperError::RuntimeError(
+            "only offered-funded envelopes use funded admission".to_string(),
+        ));
+    }
+    let deploy_id = envelope.identity().as_bytes().to_vec();
+    if deploy_is_known(this, &deploy_id)? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
+    if let Err(interpreter_error) = interpreter_util::mk_term(
+        &envelope.body().term,
+        normalizer_env_from_envelope(&envelope),
+    ) {
+        return Ok(Either::Left(DeployError::parsing_error(format!(
+            "Error in parsing term: \n{}",
+            interpreter_error
+        ))));
+    }
+    if !reserve_envelope(this, &envelope)? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    }
+    tracing::info!(deploy_id = %hex::encode(&deploy_id), "Received offered-funded deploy");
+    if this.casper_shard_conf.deploy_heartbeat_wake_enabled {
+        if let Some(signal) = this.heartbeat_signal_ref.get() {
+            signal.trigger_wake();
+        }
+    }
+    Ok(Either::Right(deploy_id))
+}
+
+fn reserve_envelope<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    envelope: &DeployEnvelope,
+) -> Result<bool, CasperError> {
+    let deploy_id = envelope.identity().as_bytes();
+    if this
+        .block_dag_storage
+        .deploy_canonical_appearance(&deploy_id.to_vec())?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let mut deploy_storage = this.deploy_storage.lock();
+    let rejected_deploys = this.rejected_deploy_buffer.lock()?;
+    if rejected_deploys.contains_sig(deploy_id)? {
+        return Ok(false);
+    }
+    deploy_storage
+        .add_envelope_if_absent(envelope)
+        .map_err(Into::into)
 }
 
 fn deploy_is_known<T: TransportLayer + Send + Sync>(

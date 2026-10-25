@@ -112,6 +112,23 @@ pub trait Casper {
         deploy: Signed<DeployData>,
     ) -> Result<Either<DeployError, DeployId>, CasperError>;
 
+    fn adopted_resource_policy(
+        &self,
+    ) -> Option<
+        Arc<crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy>,
+    > {
+        None
+    }
+
+    fn deploy_envelope(
+        &self,
+        _envelope: models::rust::deploy_envelope::DeployEnvelope,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        Err(CasperError::RuntimeError(
+            "offered-funded deploy admission is not active".to_string(),
+        ))
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,

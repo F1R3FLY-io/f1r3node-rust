@@ -77,6 +77,21 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_deploy(self, deploy)
     }
 
+    fn adopted_resource_policy(
+        &self,
+    ) -> Option<
+        Arc<crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy>,
+    > {
+        self.casper_shard_conf.adopted_resource_policy.clone()
+    }
+
+    fn deploy_envelope(
+        &self,
+        envelope: models::rust::deploy_envelope::DeployEnvelope,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        super::block_admission::admit_deploy_envelope(self, envelope)
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,

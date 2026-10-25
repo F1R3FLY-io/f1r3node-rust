@@ -1177,7 +1177,7 @@ impl TestNode {
             floor_seed: None,
             sigs: vec![],
         };
-        let shard_conf = CasperShardConf {
+        let mut shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
@@ -1210,6 +1210,23 @@ impl TestNode {
             mergeable_channels_gc_depth_buffer: 10,
             ..CasperShardConf::new()
         };
+        if v6_enabled {
+            let policy =
+                casper::rust::util::rholang::costacc::genesis_resource_policy::GenesisResourcePolicy::load(
+                    &runtime_manager,
+                    &genesis,
+                )
+                .await
+                .expect("the v6 genesis has a resource policy");
+            shard_conf.min_phlo_price =
+                i64::try_from(policy.minimum_price()).expect("the genesis minimum price fits");
+            let adopted = policy
+                .adopt(&shard_conf)
+                .expect("the test node adopts the genesis policy");
+            if adopted.offered_funded_v6_active() {
+                shard_conf.adopted_resource_policy = Some(Arc::new(adopted));
+            }
+        }
 
         let v6_engine = if v6_enabled {
             let engine = casper::rust::v6::V6Engine::new(

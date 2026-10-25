@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeLimits, StoredDeployEnvelope};
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
+use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -18,6 +21,7 @@ pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
 pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
 pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
 pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
+pub const DEPLOY_ENVELOPE_STORAGE_DB: &str = "deploy_envelope_storage";
 
 const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
 const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
@@ -25,6 +29,7 @@ const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decode
 pub trait DeployStoreName {
     const NAME: &'static str;
     const QUARANTINE_NAME: &'static str;
+    const ENVELOPE_NAME: Option<&'static str> = None;
     const SIZE_WARNING_THRESHOLD: Option<usize> = None;
 }
 
@@ -34,6 +39,7 @@ pub struct DeployStorageName;
 impl DeployStoreName for DeployStorageName {
     const NAME: &'static str = DEPLOY_STORAGE_DB;
     const QUARANTINE_NAME: &'static str = DEPLOY_STORAGE_QUARANTINE_DB;
+    const ENVELOPE_NAME: Option<&'static str> = Some(DEPLOY_ENVELOPE_STORAGE_DB);
 }
 
 #[derive(Clone)]
@@ -48,6 +54,7 @@ impl DeployStoreName for RejectedDeployBufferName {
 #[derive(Clone)]
 pub struct KeyValueDeployStore<N: DeployStoreName> {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+    pub envelope_store: KeyValueTypedStoreImpl<ByteString, StoredDeployEnvelope>,
     quarantine: DeployRecordQuarantine,
     _name: PhantomData<N>,
 }
@@ -65,7 +72,11 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let kv_store = kvm.store(N::NAME.to_string()).await?;
         let quarantine_kv_store = kvm.store(N::QUARANTINE_NAME.to_string()).await?;
-        Self::from_stores(kv_store, quarantine_kv_store)
+        let storage = Self::from_stores(kv_store, quarantine_kv_store)?;
+        match N::ENVELOPE_NAME {
+            Some(name) => Ok(storage.with_envelope_store(kvm.store(name.to_string()).await?)),
+            None => Ok(storage),
+        }
     }
 
     pub fn from_stores(
@@ -78,6 +89,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 super::deploy_codec::encode,
                 super::deploy_codec::decode,
             ),
+            envelope_store: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             quarantine: DeployRecordQuarantine::new(N::NAME, quarantine),
             _name: PhantomData,
         };
@@ -102,12 +114,19 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
 
     pub fn contains_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         let key: ByteString = sig.to_vec();
-        Ok(self
+        if self
             .store
             .contains(vec![key])?
             .into_iter()
             .next()
-            .unwrap_or(false))
+            .unwrap_or(false)
+        {
+            return Ok(true);
+        }
+        match DeployIdV6::try_from(sig) {
+            Ok(deploy_id) => self.contains_envelope_id(&deploy_id),
+            Err(_) => Ok(false),
+        }
     }
 
     pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -124,9 +143,69 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .next()
             .unwrap_or(false);
         if !exists {
-            return Ok(false);
+            return match DeployIdV6::try_from(sig) {
+                Ok(deploy_id) => self.remove_envelope_by_id(&deploy_id),
+                Err(_) => Ok(false),
+            };
         }
         self.store.delete(vec![key])?;
+        Ok(true)
+    }
+
+    pub fn with_envelope_store(mut self, store: Arc<dyn KeyValueStore>) -> Self {
+        self.envelope_store = KeyValueTypedStoreImpl::new(store);
+        self
+    }
+
+    pub fn contains_envelope_id(&self, deploy_id: &DeployIdV6) -> Result<bool, KvStoreError> {
+        Ok(self
+            .envelope_store
+            .contains(vec![deploy_id.as_ref().to_vec()])?
+            .into_iter()
+            .next()
+            .unwrap_or(false))
+    }
+
+    pub fn add_envelope_if_absent(
+        &mut self,
+        envelope: &DeployEnvelope,
+    ) -> Result<bool, KvStoreError> {
+        let DeployLookupId::V6(deploy_id) = envelope.identity() else {
+            return Err(KvStoreError::InvalidArgument(
+                "legacy envelopes belong in legacy deploy storage".to_string(),
+            ));
+        };
+        let stored =
+            StoredDeployEnvelope::new(envelope).map_err(KvStoreError::SerializationError)?;
+        self.envelope_store
+            .put_one_if_absent(deploy_id.as_ref().to_vec(), stored)
+    }
+
+    pub fn read_all_envelopes(
+        &self,
+        limits: DeployEnvelopeLimits,
+    ) -> Result<Vec<DeployEnvelope>, KvStoreError> {
+        let mut envelopes = Vec::new();
+        for (key, stored) in self.envelope_store.to_map()? {
+            let deploy_id = DeployIdV6::try_from(key.as_slice())
+                .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+            envelopes.push(
+                stored
+                    .decode(&DeployLookupId::V6(deploy_id), limits)
+                    .map_err(KvStoreError::SerializationError)?,
+            );
+        }
+        envelopes
+            .sort_by(|left, right| left.identity().as_bytes().cmp(right.identity().as_bytes()));
+        Ok(envelopes)
+    }
+
+    pub fn remove_envelope_by_id(&mut self, deploy_id: &DeployIdV6) -> Result<bool, KvStoreError> {
+        if !self.contains_envelope_id(deploy_id)? {
+            return Ok(false);
+        }
+        self.envelope_store
+            .delete(vec![deploy_id.as_ref().to_vec()])?;
         Ok(true)
     }
 
@@ -154,7 +233,9 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
-    pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
+    pub fn non_empty(&self) -> Result<bool, KvStoreError> {
+        Ok(self.store.non_empty()? || self.envelope_store.non_empty()?)
+    }
 }
 
 #[cfg(test)]
@@ -164,7 +245,10 @@ mod tests {
 
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signed::Cosigned;
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+    use models::rust::cost_deploy_data::DeployData as CostDeployData;
+    use models::rust::cost_protocol_limits::offered_funded_v6_limits;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use shared::rust::store::key_value_store::KeyValueStore;
@@ -215,6 +299,89 @@ mod tests {
         assert!(storage.remove_by_sig(&d1.sig).unwrap());
         assert!(!storage.remove_by_sig(&d1.sig).unwrap());
         assert!(!storage.non_empty().unwrap());
+    }
+
+    fn body_envelope() -> DeployEnvelope {
+        let body = CostDeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let signed = Cosigned::create_single_envelope(
+            body,
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[2; 32]),
+        )
+        .unwrap();
+        DeployEnvelope::from_body_envelope(signed).unwrap()
+    }
+
+    fn v6_id(envelope: &DeployEnvelope) -> DeployIdV6 {
+        match envelope.identity() {
+            DeployLookupId::V6(id) => *id,
+            DeployLookupId::Legacy(_) => panic!("expected a v6 identity"),
+        }
+    }
+
+    #[tokio::test]
+    async fn envelope_pool_keeps_legacy_rows_and_survives_reopen() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let limits = offered_funded_v6_limits().envelope;
+        let legacy = deploy(5);
+        let envelope = body_envelope();
+        let id = v6_id(&envelope);
+        storage.add_if_absent(legacy.clone()).unwrap();
+        assert!(storage.add_envelope_if_absent(&envelope).unwrap());
+        assert!(!storage.add_envelope_if_absent(&envelope).unwrap());
+        assert!(storage.contains_envelope_id(&id).unwrap());
+        assert_eq!(storage.read_all_envelopes(limits).unwrap(), vec![
+            envelope.clone()
+        ]);
+        assert_eq!(storage.read_all().unwrap(), HashSet::from([legacy.clone()]));
+        let reopened = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        assert_eq!(reopened.read_all_envelopes(limits).unwrap(), vec![envelope]);
+        assert!(storage.remove_envelope_by_id(&id).unwrap());
+        assert!(!storage.remove_envelope_by_id(&id).unwrap());
+        assert!(!storage.contains_envelope_id(&id).unwrap());
+        assert!(storage.contains_sig(&legacy.sig).unwrap());
+        assert!(storage.non_empty().unwrap());
+        storage.remove_by_sig(&legacy.sig).unwrap();
+        assert!(!storage.non_empty().unwrap());
+    }
+
+    #[tokio::test]
+    async fn identity_lookups_find_an_envelope_by_its_deploy_id() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let legacy = deploy(5);
+        let envelope = body_envelope();
+        let id = v6_id(&envelope);
+        storage.add_if_absent(legacy.clone()).unwrap();
+        assert!(storage.add_envelope_if_absent(&envelope).unwrap());
+        assert!(storage.non_empty().unwrap());
+        assert!(storage.contains_sig(id.as_ref()).unwrap());
+        assert!(!storage.contains_sig(&[7; 32]).unwrap());
+        assert!(storage.remove_by_sig(id.as_ref()).unwrap());
+        assert!(!storage.contains_sig(id.as_ref()).unwrap());
+        assert!(!storage.remove_by_sig(id.as_ref()).unwrap());
+        assert!(storage.contains_sig(&legacy.sig).unwrap());
+    }
+
+    #[tokio::test]
+    async fn stores_without_an_envelope_name_keep_envelopes_in_memory() {
+        let mut storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        let envelope = body_envelope();
+        assert!(storage.add_envelope_if_absent(&envelope).unwrap());
+        assert!(storage.contains_envelope_id(&v6_id(&envelope)).unwrap());
     }
 
     async fn buffer() -> KeyValueRejectedDeployBuffer {

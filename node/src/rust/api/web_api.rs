@@ -5,8 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -22,8 +24,9 @@ use crypto::rust::signatures::{
 };
 use eyre::{eyre, Result};
 use hex;
-use models::casper::LightBlockInfo;
+use models::casper::{DeployDataProto, LightBlockInfo};
 use models::rust::casper::protocol::casper_message::DeployData;
+use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -57,6 +60,12 @@ pub trait WebApi {
 
     /// Deploy a contract
     async fn deploy(&self, request: DeployRequest) -> Result<String>;
+
+    async fn deploy_offered(&self, _request: OfferedDeployRequest) -> Result<String> {
+        Err(eyre!(
+            "offered-funded deploy admission is not active under the current genesis policy"
+        ))
+    }
 
     /// Get data at a par (parallel expression)
     async fn get_data_at_par(
@@ -494,6 +503,18 @@ impl WebApi for WebApiImpl {
         BlockAPI::deploy(
             &self.engine_cell,
             signed_deploy,
+            &self.trigger_propose_f,
+            self.is_node_read_only,
+            &self.shard_id,
+        )
+        .await
+    }
+
+    async fn deploy_offered(&self, request: OfferedDeployRequest) -> Result<String> {
+        let proto = decode_offered_deploy_proto(&request)?;
+        BlockAPI::deploy_offered(
+            &self.engine_cell,
+            proto,
             &self.trigger_propose_f,
             self.is_node_read_only,
             &self.shard_id,
@@ -1314,6 +1335,38 @@ pub enum RhoUnforg {
     UnforgDeploy { data: String },
     UnforgDeployer { data: String },
     UnforgSysAuthToken,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OfferedDeployRequest {
+    #[serde(rename = "deployDataProtoBase64")]
+    pub deploy_data_proto_base64: String,
+}
+
+fn decode_offered_deploy_proto(request: &OfferedDeployRequest) -> Result<DeployDataProto> {
+    let wire = STANDARD
+        .decode(&request.deploy_data_proto_base64)
+        .map_err(|error| {
+            eyre::Report::new(DeployValidationError {
+                message: format!("Invalid offered-funded base64: {}", error),
+            })
+        })?;
+    if STANDARD.encode(&wire) != request.deploy_data_proto_base64 {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded base64 is not canonical".to_string(),
+        }));
+    }
+    let proto = DeployDataProto::decode(wire.as_slice()).map_err(|error| {
+        eyre::Report::new(DeployValidationError {
+            message: format!("Invalid offered-funded protobuf: {}", error),
+        })
+    })?;
+    if proto.encode_to_vec() != wire {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: "Offered-funded protobuf is not canonical".to_string(),
+        }));
+    }
+    Ok(proto)
 }
 
 // API request & response types

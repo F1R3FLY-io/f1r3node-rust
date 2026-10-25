@@ -8,8 +8,9 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, F1r3flyState, Header, ProcessedDeploy, ProcessedUserDeploy,
+    BlockMessage, Body, Bond, F1r3flyState, Header,
 };
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -19,7 +20,7 @@ use super::concurrent_record::ConcurrentRecord;
 use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
 use super::gate::{admitted, AdmitAll, BlockGate};
 use super::linearizer::{Advance, Linearizer};
-use super::propose::{select_envelopes, SelectionContext};
+use super::propose::{select_envelopes, PoolEntry, SelectionContext};
 use super::record::ExecutionRecord;
 use super::validity::{check_structure, Limits};
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -273,7 +274,17 @@ impl<R: ExecutionRecord> V6Engine<R> {
             })
             .collect();
 
-        let pool = self.deploy_storage.lock().read_all()?;
+        let (legacy_pool, offered_pool) = {
+            let storage = self.deploy_storage.lock();
+            (
+                storage.read_all()?,
+                storage.read_all_envelopes(offered_funded_v6_limits().envelope)?,
+            )
+        };
+        let pool = legacy_pool
+            .into_iter()
+            .map(PoolEntry::from)
+            .chain(offered_pool.into_iter().map(PoolEntry::from));
         let in_scope = |sig: &Bytes| snapshot.deploys_in_scope.contains(sig);
         let selected = select_envelopes(pool, &SelectionContext {
             next_block_number,
@@ -290,8 +301,9 @@ impl<R: ExecutionRecord> V6Engine<R> {
             now_millis,
             selected
                 .into_iter()
-                .map(|envelope| ProcessedUserDeploy::from(ProcessedDeploy::empty(envelope)))
-                .collect(),
+                .map(PoolEntry::into_processed)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CasperError::RuntimeError)?,
         )
         .await?;
         if envelopes.is_empty() && records.is_empty() && !selection.allows_empty() {

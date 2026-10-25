@@ -43,6 +43,10 @@ impl WebApiRoutes {
             .route("/prepare-deploy", post(prepare_deploy_post_handler))
             .route("/deploy", post(shared_handlers::deploy_handler))
             .route(
+                "/deploy/offered",
+                post(shared_handlers::deploy_offered_handler),
+            )
+            .route(
                 "/explore-deploy",
                 post(shared_handlers::explore_deploy_handler),
             )
