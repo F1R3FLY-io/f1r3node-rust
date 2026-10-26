@@ -9,6 +9,7 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::genesis_resource_policy::shard_resource_schedule;
 use casper::rust::util::rholang::costacc::owner_offer::owner_direct_offer;
 use casper::rust::v6::block_record::BlockRecord;
+use casper::rust::v6::receipt::OfferedStatus;
 use casper::rust::v6::validity::{check_structure, Limits};
 use casper::rust::v6::V6Engine;
 use crypto::rust::private_key::PrivateKey;
@@ -339,4 +340,107 @@ async fn a_protocol_6_shard_refuses_legacy_deploys() {
         .unwrap_err();
     assert!(message(error).contains("accepts only offered-funded deploys"));
     assert!(!node.deploy_storage.lock().non_empty().unwrap());
+}
+
+async fn status(node: &TestNode, id: &[u8]) -> OfferedStatus {
+    BlockAPI::offered_status(&node.engine_cell, id)
+        .await
+        .expect("an offered status")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_offer_reports_pending_then_ordered_then_its_receipt() {
+    let genesis = v6_genesis().await;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_v6_network(genesis, 3).await.unwrap();
+    let proto = offer(
+        &construct_deploy::DEFAULT_SEC,
+        body(&shard_id, now(), None),
+        1,
+    );
+    let id = identity(&proto);
+    assert_eq!(status(&nodes[0], &id).await, OfferedStatus::Unknown);
+    submit(&nodes[0], proto, &shard_id).await.unwrap();
+    assert_eq!(status(&nodes[0], &id).await, OfferedStatus::Pending);
+
+    let block = propose(&nodes[0]).await;
+    for node in nodes.iter_mut() {
+        let processed = node.process_block(block.clone()).await.unwrap();
+        assert!(matches!(processed, Either::Right(_)), "{:?}", processed);
+    }
+    match status(&nodes[1], &id).await {
+        OfferedStatus::Ordered { block_hash } => assert_eq!(block_hash, block.block_hash),
+        OfferedStatus::Executed(receipt) => assert_eq!(receipt.block_hash, block.block_hash),
+        other => panic!("expected the offer to be ordered, got {:?}", other),
+    }
+
+    for round in 0..240 {
+        if nodes
+            .iter()
+            .all(|node| engine(node).record(&block.block_hash).is_some())
+        {
+            break;
+        }
+        for node in &nodes {
+            engine(node).wake();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let heartbeat = propose(&nodes[(round + 1) % nodes.len()]).await;
+        for node in nodes.iter_mut() {
+            node.process_block(heartbeat.clone()).await.unwrap();
+        }
+    }
+    for node in &nodes {
+        let record = engine(node)
+            .record(&block.block_hash)
+            .expect("the executed record is retained");
+        let entry = &record.entries()[0];
+        let OfferedStatus::Executed(receipt) = status(node, &id).await else {
+            panic!("expected a receipt");
+        };
+        assert_eq!(receipt.block_hash, block.block_hash);
+        assert_eq!(receipt.outcome, entry.executed.outcome);
+        assert_eq!(receipt.phlo_used, entry.executed.phlo_used);
+        assert_eq!(receipt.debits, entry.settled.debits);
+        assert_eq!(receipt.rev_spent, entry.settled.rev_spent);
+        assert!(receipt.verdict.is_admitted());
+        assert!(!receipt.debits.is_empty());
+        let charges = receipt.charges.expect("decoded cost evidence");
+        assert_eq!(charges.phlo_limit, LIMIT);
+        assert_eq!(charges.phlo_price, 1);
+    }
+}
+
+#[tokio::test]
+async fn an_unfunded_offer_is_removed_at_proposal_and_reports_why() {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    let genesis = v6_genesis().await;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let node = TestNode::create_v6_network(genesis, 1)
+        .await
+        .unwrap()
+        .remove(0);
+    let (unfunded, _) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
+    let proto = offer(&unfunded, body(&shard_id, now(), None), 1);
+    let id = identity(&proto);
+    submit(&node, proto.clone(), &shard_id).await.unwrap();
+    assert_eq!(status(&node, &id).await, OfferedStatus::Pending);
+
+    let block = propose(&node).await;
+    assert!(block.body.deploys.is_empty());
+    assert!(!node.deploy_storage.lock().non_empty().unwrap());
+    let OfferedStatus::Rejected(rejection) = status(&node, &id).await else {
+        panic!("expected the offer to be rejected");
+    };
+    assert_eq!(rejection.deploy_id.as_ref(), id.as_slice());
+    assert_eq!(rejection.block_number, block.body.state.block_number);
+    assert_eq!(
+        rejection.pre_state_root.as_deref(),
+        Some(block.body.state.pre_state_hash.as_ref())
+    );
+    assert!(!rejection.reason.is_empty());
+
+    submit(&node, proto, &shard_id).await.unwrap();
+    assert_eq!(status(&node, &id).await, OfferedStatus::Pending);
 }

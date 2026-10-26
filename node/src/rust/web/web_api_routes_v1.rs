@@ -17,6 +17,10 @@ impl WebApiRoutesV1 {
                 post(shared_handlers::deploy_offered_handler),
             )
             .route(
+                "/deploy/offered/{deploy_id}/receipt",
+                get(shared_handlers::offered_receipt_handler),
+            )
+            .route(
                 "/explore-deploy",
                 post(shared_handlers::explore_deploy_handler),
             )

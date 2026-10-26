@@ -92,6 +92,20 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_deploy_envelope(self, envelope)
     }
 
+    fn offered_pool_status(
+        &self,
+        deploy_id: &models::rust::deploy_id::DeployIdV6,
+    ) -> Result<crate::rust::v6::receipt::PoolStatus, CasperError> {
+        let storage = self.deploy_storage.lock();
+        if storage.contains_envelope_id(deploy_id)? {
+            return Ok(crate::rust::v6::receipt::PoolStatus::Pending);
+        }
+        Ok(match storage.envelope_rejection(deploy_id) {
+            Some(rejection) => crate::rust::v6::receipt::PoolStatus::Rejected(rejection),
+            None => crate::rust::v6::receipt::PoolStatus::Absent,
+        })
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,

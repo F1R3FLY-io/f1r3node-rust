@@ -47,6 +47,10 @@ impl WebApiRoutes {
                 post(shared_handlers::deploy_offered_handler),
             )
             .route(
+                "/deploy/offered/{deploy_id}/receipt",
+                get(shared_handlers::offered_receipt_handler),
+            )
+            .route(
                 "/explore-deploy",
                 post(shared_handlers::explore_deploy_handler),
             )
@@ -714,6 +718,18 @@ mod tests {
         async fn find_deploy(&self, _: String, view: ViewMode) -> eyre::Result<DeployResponse> {
             Ok(sample_deploy_response(view))
         }
+        async fn offered_receipt(
+            &self,
+            deploy_id: String,
+        ) -> eyre::Result<crate::rust::api::web_api::OfferedReceiptResponse> {
+            let id = crate::rust::api::web_api::parse_offered_id(&deploy_id)?;
+            Ok(
+                crate::rust::api::web_api::OfferedReceiptResponse::from_status(
+                    hex::encode(id),
+                    casper::rust::v6::receipt::OfferedStatus::Unknown,
+                ),
+            )
+        }
         async fn exploratory_deploy(
             &self,
             _: String,
@@ -867,6 +883,18 @@ mod tests {
         Router::new()
             .route("/deploy/{deploy_id}", get(test_find_deploy_handler))
             .route(
+                "/deploy/offered/{deploy_id}/receipt",
+                get(
+                    |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
+                     AppPath(deploy_id): AppPath<String>| async move {
+                        match web_api.offered_receipt(deploy_id).await {
+                            Ok(response) => Json(response).into_response(),
+                            Err(e) => AppError(e).into_response(),
+                        }
+                    },
+                ),
+            )
+            .route(
                 "/pending-deploys",
                 get(
                     move |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
@@ -881,6 +909,30 @@ mod tests {
     async fn body_to_string(body: Body) -> String {
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn offered_receipt_route_answers_unknown_ids_and_refuses_bad_ones() {
+        let id = "ab".repeat(32);
+        let request = axum::http::Request::builder()
+            .uri(format!("/deploy/offered/{id}/receipt"))
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(response.into_body()).await).unwrap();
+        assert_eq!(body["status"], "unknown");
+        assert_eq!(body["deployId"], id);
+
+        for bad in ["zz", "abcd"] {
+            let request = axum::http::Request::builder()
+                .uri(format!("/deploy/offered/{bad}/receipt"))
+                .body(Body::empty())
+                .unwrap();
+            let response = test_router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
     }
 
     #[tokio::test]

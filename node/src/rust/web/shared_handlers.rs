@@ -30,8 +30,8 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, OfferedDeployRequest, RhoDataResponse,
-    SimpleExploreDeployRequest, ViewMode, WebApi,
+    DeployRequest, ExploreDeployRequest, OfferedDeployRequest, OfferedReceiptResponse,
+    RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
 };
 
 #[derive(Clone)]
@@ -525,6 +525,30 @@ pub async fn deploy_offered_handler(
 ) -> Response {
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.deploy_offered(request).await }).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/deploy/offered/{deploy_id}/receipt",
+    params(
+        ("deploy_id" = String, Path, description = "Hex-encoded 32-byte offered deploy ID"),
+    ),
+    responses(
+        (status = 200, description = "Offered deploy status: `unknown`, `pending`, `rejected` (with the reason, pre-state root and block number), `ordered`, `notRetained`, or `executed` (with the receipt)", body = OfferedReceiptResponse),
+        (status = 400, description = "Deploy ID is not hex or not 32 bytes (`invalid_hash`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure", body = ApiErrorResponse),
+    ),
+    tag = "Deployment"
+)]
+pub async fn offered_receipt_handler(
+    State(app_state): State<AppState>,
+    AppPath(deploy_id): AppPath<String>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.offered_receipt(deploy_id).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }

@@ -129,6 +129,13 @@ pub trait Casper {
         ))
     }
 
+    fn offered_pool_status(
+        &self,
+        _deploy_id: &models::rust::deploy_id::DeployIdV6,
+    ) -> Result<crate::rust::v6::receipt::PoolStatus, CasperError> {
+        Ok(crate::rust::v6::receipt::PoolStatus::Absent)
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,

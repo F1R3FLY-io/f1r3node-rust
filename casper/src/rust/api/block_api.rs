@@ -21,6 +21,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat, DeployEnvelopeRef};
+use models::rust::deploy_id::DeployIdV6;
 use models::rust::phlo_intent::{
     PhloConversionCompositionV2, PhloFundingIntentV2Limits, PhloFundingIntentVersioned,
 };
@@ -50,6 +51,7 @@ use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourc
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{event_converter, proto_util};
+use crate::rust::v6::receipt::{receipt_of, OfferedStatus, PoolStatus};
 use crate::rust::ProposeFunction;
 pub struct BlockAPI;
 
@@ -890,6 +892,42 @@ impl BlockAPI {
             "Success!\nDeployId is: {}",
             PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
         ))
+    }
+
+    pub async fn offered_status(
+        engine_cell: &EngineCell,
+        deploy_id: &[u8],
+    ) -> ApiErr<OfferedStatus> {
+        let id = DeployIdV6::try_from(deploy_id).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a 32-byte deploy id",
+                hex::encode(deploy_id)
+            )))
+        })?;
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| eyre::eyre!("Casper instance was not available"))?;
+        let dag = casper.block_dag().await?;
+        if let Some(block_hash) = dag.deploy_canonical_appearance(deploy_id)? {
+            let Some(engine) = casper.v6_engine() else {
+                return Ok(OfferedStatus::Ordered { block_hash });
+            };
+            if let Some(record) = engine.record(&block_hash) {
+                if let Some(receipt) = receipt_of(&record, &block_hash, deploy_id) {
+                    return Ok(OfferedStatus::Executed(receipt));
+                }
+            }
+            return Ok(match engine.executed(&block_hash) {
+                Some(_) => OfferedStatus::NotRetained { block_hash },
+                None => OfferedStatus::Ordered { block_hash },
+            });
+        }
+        Ok(match casper.offered_pool_status(&id)? {
+            PoolStatus::Pending => OfferedStatus::Pending,
+            PoolStatus::Rejected(rejection) => OfferedStatus::Rejected(rejection),
+            PoolStatus::Absent => OfferedStatus::Unknown,
+        })
     }
 
     #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]

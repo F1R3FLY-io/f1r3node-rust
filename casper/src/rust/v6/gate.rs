@@ -110,12 +110,14 @@ impl BlockGate for RhoBlockGate {
     }
 }
 
-pub async fn admitted(
+pub type Screened = (Vec<ProcessedUserDeploy>, Vec<(ProcessedUserDeploy, String)>);
+
+pub async fn screen(
     gate: &dyn BlockGate,
     root: &StateHash,
     block_time: i64,
     envelopes: Vec<ProcessedUserDeploy>,
-) -> Result<Vec<ProcessedUserDeploy>, CasperError> {
+) -> Result<Screened, CasperError> {
     let inputs: Vec<GateInput<'_>> = envelopes.iter().map(GateInput::from).collect();
     let verdicts = gate.gate(root, block_time, &inputs).await?;
     if verdicts.len() != envelopes.len() {
@@ -125,12 +127,24 @@ pub async fn admitted(
             envelopes.len()
         )));
     }
-    Ok(envelopes
-        .into_iter()
-        .zip(verdicts)
-        .filter(|(_, verdict)| verdict.is_admitted())
-        .map(|(envelope, _)| envelope)
-        .collect())
+    let mut kept = Vec::with_capacity(envelopes.len());
+    let mut refused = Vec::new();
+    for (envelope, verdict) in envelopes.into_iter().zip(verdicts) {
+        match verdict {
+            GateVerdict::Admitted { .. } => kept.push(envelope),
+            GateVerdict::Rejected { cause } => refused.push((envelope, cause)),
+        }
+    }
+    Ok((kept, refused))
+}
+
+pub async fn admitted(
+    gate: &dyn BlockGate,
+    root: &StateHash,
+    block_time: i64,
+    envelopes: Vec<ProcessedUserDeploy>,
+) -> Result<Vec<ProcessedUserDeploy>, CasperError> {
+    Ok(screen(gate, root, block_time, envelopes).await?.0)
 }
 
 #[cfg(test)]

@@ -4,12 +4,13 @@ use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
 
 use super::body::{Attestation, StateHash};
-use super::record::{ExecutionRecord, RecordDigest};
+use super::record::ExecutionRecord;
 
 #[derive(Clone, Debug)]
 pub struct CoreParams {
     pub max_speculation: usize,
     pub fallback_distance: usize,
+    pub retained_records: usize,
 }
 
 impl Default for CoreParams {
@@ -17,6 +18,7 @@ impl Default for CoreParams {
         CoreParams {
             max_speculation: 32,
             fallback_distance: 8,
+            retained_records: 1024,
         }
     }
 }
@@ -81,6 +83,8 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     cited: HashSet<(BlockHash, StateHash)>,
     pending_attestations: HashMap<BlockHash, Vec<(BlockHash, StateHash)>>,
     evidence: Vec<Evidence>,
+    retained: HashMap<BlockHash, R>,
+    retained_order: VecDeque<BlockHash>,
 }
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
@@ -100,6 +104,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             cited: HashSet::new(),
             pending_attestations: HashMap::new(),
             evidence: Vec::new(),
+            retained: HashMap::new(),
+            retained_order: VecDeque::new(),
         }
     }
 
@@ -133,6 +139,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     }
 
     pub fn executed(&self, block: &BlockHash) -> Option<&StateHash> { self.executed.get(block) }
+
+    pub fn record(&self, block: &BlockHash) -> Option<&R> { self.retained.get(block) }
 
     pub fn canonical_len(&self) -> usize { self.canon_pos }
 
@@ -184,8 +192,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 .map(|own| own.target() == &target && own.digest() == candidate.record.digest())
                 .unwrap_or(false);
             if matches_own {
-                let digest = candidate.record.digest();
-                self.fix(target, candidate.record.post_root().clone(), Some(digest));
+                self.fix(target, candidate.record);
                 continue;
             }
             return Action::Replay {
@@ -220,9 +227,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             return;
         }
         match result {
-            Ok(root) if root == *record.post_root() => {
-                self.fix(target.clone(), root, Some(record.digest()))
-            }
+            Ok(root) if root == *record.post_root() => self.fix(target.clone(), record.clone()),
             _ => {
                 self.evidence.push(Evidence {
                     against: citer.clone(),
@@ -298,16 +303,28 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         }
     }
 
-    fn fix(&mut self, target: BlockHash, root: StateHash, digest: Option<RecordDigest>) {
+    fn fix(&mut self, target: BlockHash, record: R) {
+        let root = record.post_root().clone();
+        let digest = record.digest();
         match self.spec.front() {
             Some(own)
                 if own.target() == &target
                     && own.post_root() == &root
-                    && digest.is_none_or(|digest| own.digest() == digest) =>
+                    && own.digest() == digest =>
             {
                 self.spec.pop_front();
             }
             _ => self.spec.clear(),
+        }
+        if self.params.retained_records > 0 {
+            if self.retained.insert(target.clone(), record).is_none() {
+                self.retained_order.push_back(target.clone());
+            }
+            while self.retained_order.len() > self.params.retained_records {
+                if let Some(oldest) = self.retained_order.pop_front() {
+                    self.retained.remove(&oldest);
+                }
+            }
         }
         self.executed.insert(target.clone(), root.clone());
         self.canon_root = root.clone();
@@ -358,7 +375,32 @@ mod tests {
         ExecutorCore::new(h("g"), h("r0"), CoreParams {
             max_speculation: 4,
             fallback_distance: 2,
+            retained_records: 2,
         })
+    }
+
+    #[test]
+    fn fixed_records_are_retained_up_to_the_bound() {
+        let mut c = core();
+        c.emit(block("b1", "v1", vec![]));
+        c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
+        c.emit(block("b3", "v3", vec![rec("b2", "r1", "r2")]));
+        c.emit(block("b4", "v4", vec![rec("b3", "r2", "r3")]));
+        for _ in 0..3 {
+            let Action::Replay {
+                target,
+                citer,
+                record,
+            } = c.next_action()
+            else {
+                panic!("expected a replay")
+            };
+            let root = record.post_root().clone();
+            c.apply_replay(&target, &citer, &record, Ok(root));
+        }
+        assert_eq!(c.record(&h("b1")), None);
+        assert_eq!(c.record(&h("b2")), Some(&rec("b2", "r1", "r2")));
+        assert_eq!(c.record(&h("b3")), Some(&rec("b3", "r2", "r3")));
     }
 
     #[test]

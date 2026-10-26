@@ -4,22 +4,25 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    EnvelopeRejection, KeyValueDeployStorage,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, F1r3flyState, Header,
+    BlockMessage, Body, Bond, F1r3flyState, Header, ProcessedUserDeploy,
 };
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
-use super::body::{Attestation, V6Body};
+use super::body::{Attestation, StateHash, V6Body};
 use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
 use super::executor::BlockExecutor;
-use super::gate::{admitted, BlockGate, RhoBlockGate};
+use super::gate::{screen, BlockGate, RhoBlockGate};
 use super::linearizer::{Advance, Linearizer};
 use super::propose::{select_envelopes, PoolEntry, SelectionContext};
 use super::record::ExecutionRecord;
@@ -142,6 +145,32 @@ impl<R: ExecutionRecord> V6Engine<R> {
 
     pub fn executed(&self, block: &BlockHash) -> Option<Bytes> {
         self.core.lock().executed(block).cloned()
+    }
+
+    pub fn record(&self, block: &BlockHash) -> Option<R> { self.core.lock().record(block).cloned() }
+
+    fn quarantine(
+        &self,
+        refused: &[(ProcessedUserDeploy, String)],
+        root: &StateHash,
+        block_number: i64,
+    ) -> Result<(), CasperError> {
+        let mut storage = self.deploy_storage.lock();
+        for (deploy, cause) in refused {
+            let Some(envelope) = deploy.as_ordered() else {
+                continue;
+            };
+            let DeployLookupId::V6(deploy_id) = envelope.identity() else {
+                continue;
+            };
+            storage.quarantine_envelope(EnvelopeRejection {
+                deploy_id: *deploy_id,
+                pre_state_root: Some(root.to_vec()),
+                block_number,
+                reason: cause.clone(),
+            })?;
+        }
+        Ok(())
     }
 
     pub fn evidence(&self) -> Vec<Evidence> { self.core.lock().evidence().to_vec() }
@@ -309,7 +338,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             in_scope: &in_scope,
             limits: &self.limits,
         });
-        let envelopes = admitted(
+        let (envelopes, refused) = screen(
             self.gate.as_ref(),
             &attestation.root,
             now_millis,
@@ -320,6 +349,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 .map_err(CasperError::RuntimeError)?,
         )
         .await?;
+        self.quarantine(&refused, &attestation.root, next_block_number)?;
         if envelopes.is_empty() && records.is_empty() && !selection.allows_empty() {
             return Ok(BlockCreatorResult::NoNewDeploys);
         }

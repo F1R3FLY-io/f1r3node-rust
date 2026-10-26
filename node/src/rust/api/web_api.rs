@@ -12,6 +12,8 @@ use casper::rust::api::block_api::{
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::v6::gate::GateVerdict;
+use casper::rust::v6::receipt::OfferedStatus;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -62,6 +64,12 @@ pub trait WebApi {
     async fn deploy(&self, request: DeployRequest) -> Result<String>;
 
     async fn deploy_offered(&self, _request: OfferedDeployRequest) -> Result<String> {
+        Err(eyre!(
+            "offered-funded deploy admission is not active under the current genesis policy"
+        ))
+    }
+
+    async fn offered_receipt(&self, _deploy_id: String) -> Result<OfferedReceiptResponse> {
         Err(eyre!(
             "offered-funded deploy admission is not active under the current genesis policy"
         ))
@@ -520,6 +528,15 @@ impl WebApi for WebApiImpl {
             &self.shard_id,
         )
         .await
+    }
+
+    async fn offered_receipt(&self, deploy_id: String) -> Result<OfferedReceiptResponse> {
+        let id = parse_offered_id(&deploy_id)?;
+        let status = BlockAPI::offered_status(&self.engine_cell, &id).await?;
+        Ok(OfferedReceiptResponse::from_status(
+            hex::encode(&id),
+            status,
+        ))
     }
 
     async fn get_data_at_par(
@@ -1335,6 +1352,133 @@ pub enum RhoUnforg {
     UnforgDeploy { data: String },
     UnforgDeployer { data: String },
     UnforgSysAuthToken,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedRejectionJson {
+    pub reason: String,
+    pub pre_state_root: Option<String>,
+    pub block_number: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedDebitJson {
+    pub purse: String,
+    pub resource_rev: String,
+    pub fee_rev: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedChargesJson {
+    pub phlo_limit: u64,
+    pub phlo_price: u64,
+    pub fresh_phlo: u64,
+    pub retained_phlo: u64,
+    pub owner_phlo: u64,
+    pub owner_rev: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptJson {
+    pub outcome: String,
+    pub admitted: bool,
+    pub cause: Option<String>,
+    pub phlo_used: u64,
+    pub rev_spent: String,
+    pub fee_rev: String,
+    pub debits: Vec<OfferedDebitJson>,
+    pub charges: Option<OfferedChargesJson>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptResponse {
+    pub deploy_id: String,
+    pub status: String,
+    pub block_hash: Option<String>,
+    pub rejection: Option<OfferedRejectionJson>,
+    pub receipt: Option<OfferedReceiptJson>,
+}
+
+pub fn parse_offered_id(deploy_id: &str) -> Result<Vec<u8>> {
+    match hex::decode(deploy_id.trim_start_matches("0x")) {
+        Ok(id) if id.len() == 32 => Ok(id),
+        _ => Err(eyre::Report::new(InvalidHashError(format!(
+            "'{}' is not a 32-byte hex deploy id",
+            deploy_id
+        )))),
+    }
+}
+
+impl OfferedReceiptResponse {
+    pub fn from_status(deploy_id: String, status: OfferedStatus) -> Self {
+        let mut response = OfferedReceiptResponse {
+            deploy_id,
+            status: String::new(),
+            block_hash: None,
+            rejection: None,
+            receipt: None,
+        };
+        response.status = match status {
+            OfferedStatus::Unknown => "unknown",
+            OfferedStatus::Pending => "pending",
+            OfferedStatus::Rejected(rejection) => {
+                response.rejection = Some(OfferedRejectionJson {
+                    reason: rejection.reason,
+                    pre_state_root: rejection.pre_state_root.map(hex::encode),
+                    block_number: rejection.block_number,
+                });
+                "rejected"
+            }
+            OfferedStatus::Ordered { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "ordered"
+            }
+            OfferedStatus::NotRetained { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "notRetained"
+            }
+            OfferedStatus::Executed(receipt) => {
+                response.block_hash = Some(hex::encode(&receipt.block_hash));
+                let (admitted, cause) = match receipt.verdict {
+                    GateVerdict::Admitted { .. } => (true, None),
+                    GateVerdict::Rejected { cause } => (false, Some(cause)),
+                };
+                response.receipt = Some(OfferedReceiptJson {
+                    outcome: format!("{:?}", receipt.outcome),
+                    admitted,
+                    cause,
+                    phlo_used: receipt.phlo_used,
+                    rev_spent: receipt.rev_spent.to_string(),
+                    fee_rev: receipt.fee_rev.to_string(),
+                    debits: receipt
+                        .debits
+                        .iter()
+                        .map(|debit| OfferedDebitJson {
+                            purse: hex::encode(debit.purse),
+                            resource_rev: debit.resource_rev.to_string(),
+                            fee_rev: debit.fee_rev.to_string(),
+                        })
+                        .collect(),
+                    charges: receipt.charges.map(|charges| OfferedChargesJson {
+                        phlo_limit: charges.phlo_limit,
+                        phlo_price: charges.phlo_price,
+                        fresh_phlo: charges.fresh_phlo,
+                        retained_phlo: charges.retained_phlo,
+                        owner_phlo: charges.owner_phlo,
+                        owner_rev: charges.owner_rev.to_string(),
+                    }),
+                });
+                "executed"
+            }
+        }
+        .to_string();
+        response
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -2175,6 +2319,97 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn offered_ids_must_be_32_hex_bytes() {
+        let id = "ab".repeat(32);
+        assert_eq!(parse_offered_id(&id).unwrap(), vec![0xab; 32]);
+        assert_eq!(parse_offered_id(&format!("0x{id}")).unwrap(), vec![
+            0xab;
+            32
+        ]);
+        for bad in ["zz", "abcd", &"ab".repeat(33)] {
+            assert!(parse_offered_id(bad)
+                .unwrap_err()
+                .downcast_ref::<InvalidHashError>()
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn offered_statuses_serialize_with_their_details() {
+        use block_storage::rust::deploy::key_value_deploy_storage::EnvelopeRejection;
+        use casper::rust::v6::receipt::{EvidenceCharges, OfferedReceipt};
+        use casper::rust::v6::settlement::{EnvelopeOutcome, PurseDebit};
+
+        let unknown = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Unknown,
+        ))
+        .unwrap();
+        assert_eq!(unknown["status"], "unknown");
+        assert!(unknown["receipt"].is_null());
+
+        let rejected = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Rejected(EnvelopeRejection {
+                deploy_id: models::rust::deploy_id::DeployIdV6::try_from(&[7u8; 32][..]).unwrap(),
+                pre_state_root: Some(vec![1, 2]),
+                block_number: 9,
+                reason: "unfunded".into(),
+            }),
+        ))
+        .unwrap();
+        assert_eq!(rejected["status"], "rejected");
+        assert_eq!(rejected["rejection"]["reason"], "unfunded");
+        assert_eq!(rejected["rejection"]["preStateRoot"], "0102");
+        assert_eq!(rejected["rejection"]["blockNumber"], 9);
+
+        let ordered = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::NotRetained {
+                block_hash: vec![0xcd].into(),
+            },
+        ))
+        .unwrap();
+        assert_eq!(ordered["status"], "notRetained");
+        assert_eq!(ordered["blockHash"], "cd");
+
+        let executed = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Executed(OfferedReceipt {
+                block_hash: vec![0xef].into(),
+                outcome: EnvelopeOutcome::Completed,
+                verdict: GateVerdict::Admitted { holds: Vec::new() },
+                phlo_used: 11,
+                rev_spent: u128::MAX,
+                fee_rev: 3,
+                debits: vec![PurseDebit {
+                    purse: [5; 32],
+                    resource_rev: 8,
+                    fee_rev: 3,
+                }],
+                charges: Some(EvidenceCharges {
+                    phlo_limit: 100,
+                    phlo_price: 1,
+                    fresh_phlo: 11,
+                    retained_phlo: 0,
+                    owner_phlo: 0,
+                    owner_rev: 0,
+                }),
+            }),
+        ))
+        .unwrap();
+        assert_eq!(executed["status"], "executed");
+        assert_eq!(executed["blockHash"], "ef");
+        let receipt = &executed["receipt"];
+        assert_eq!(receipt["outcome"], "Completed");
+        assert_eq!(receipt["admitted"], true);
+        assert_eq!(receipt["phloUsed"], 11);
+        assert_eq!(receipt["revSpent"], u128::MAX.to_string());
+        assert_eq!(receipt["debits"][0]["purse"], "05".repeat(32));
+        assert_eq!(receipt["charges"]["phloLimit"], 100);
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {

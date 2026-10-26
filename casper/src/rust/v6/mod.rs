@@ -9,6 +9,7 @@ pub mod gate;
 pub mod linearizer;
 pub mod merge;
 pub mod propose;
+pub mod receipt;
 pub mod record;
 pub mod rho_settlement;
 pub mod settlement;
