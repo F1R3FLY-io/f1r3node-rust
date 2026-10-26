@@ -1,14 +1,19 @@
+use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use proptest::prelude::*;
 use proptest::test_runner::{TestCaseError, TestRunner};
 
+use super::checkpoint_wal::SyntheticCheckpointSource;
 use super::property_support::independent_inventory_digest;
-use super::support::{TEST_SEMANTIC_PROFILE_ID, nonzero};
+use super::support::{TEST_SEMANTIC_PROFILE_ID, TracingStore, node as dag_node, nonzero};
 use crate::rspace::persistence::checkpoint::{
-    CheckpointObjectInventoryV1, GENERATION_CHECKPOINT_DOMAIN, GenerationCheckpointErrorV1,
+    CheckpointObjectInventoryV1, GENERATION_CHECKPOINT_DOMAIN, GenerationCheckpointDescriptorV1,
+    GenerationCheckpointDescriptorViewV1, GenerationCheckpointErrorV1,
     OrderedObjectInventoryBuilderV1,
 };
 use crate::rspace::persistence::closure::RetainedUnionClosureReportV1;
@@ -17,13 +22,20 @@ use crate::rspace::persistence::retention::RETENTION_MANIFEST_DOMAIN;
 use crate::rspace::persistence::retention::v2_format::{
     EMPTY_RETENTION_RADIX_NODE, EMPTY_RETENTION_RADIX_NODE_LEN, GENERATION_CHECKPOINT_V2_DOMAIN,
     RETENTION_ANCHOR_CANONICAL_LEN, RETENTION_ANCHOR_DOMAIN, RETENTION_KEY_LEN,
-    RETENTION_RADIX_DOMAIN, RetentionAnchorV2, RetentionKeyV2, empty_retention_radix_ref,
+    RETENTION_RADIX_DOMAIN, RetentionAnchorV2, RetentionFormat as ProductionRetentionFormat,
+    RetentionKeyV2, RetentionReader, empty_retention_radix_ref,
 };
+use crate::rspace::persistence::retention::v2_reader::{
+    AppointedRetention, RetentionRadixErrorV2, RetentionRadixRefusalV2, admit_retention_history_v2,
+};
+use crate::rspace::persistence::wal::validate_object_for;
 use crate::rspace::persistence::{
-    CanonicalDagNode, CanonicalDagNodeView, CanonicalEncode, CanonicalFormatError,
-    CanonicalObjectKind, CanonicalObjectView, DagChild, EndpointValue, ObjectDigest, ObjectRefV1,
-    RetainedStateV1, RetentionManifestV1, RetentionManifestView, SemanticRoots,
-    SemanticStateManifestV1, SemanticStateManifestView, StateVersionV1,
+    AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, CanonicalBlob,
+    CanonicalBlobKind, CanonicalDagNode, CanonicalDagNodeView, CanonicalEncode,
+    CanonicalFormatError, CanonicalObjectKind, CanonicalObjectView, DagChild, EndpointValue,
+    LogPackFormatError, ObjectDigest, ObjectRefV1, RetainedStateV1, RetentionManifestV1,
+    RetentionManifestView, SemanticRoots, SemanticStateManifestV1, SemanticStateManifestView,
+    StateVersionV1,
 };
 
 const KEY_WIDTH: usize = 48;
@@ -1477,4 +1489,1793 @@ fn arbitrary_retention_v2_bytes_are_total() {
             },
         )
         .expect("retention V2 parsers are total");
+}
+
+const RADIX_NODE_NAME: &str = "RSpace retention radix node";
+const DAG_NODE_NAME: &str = "RSpace DAG node";
+const V1_CHECKPOINT_NAME: &str = "RSpace generation checkpoint";
+const UNKNOWN_METADATA_DOMAIN: &[u8; 16] = b"RSpaceDAG.RetX\0\0";
+const READER_DOMAINS: [&[u8; 16]; 11] = [
+    b"RSpaceDAG.Node\0\0",
+    b"RSpaceDAG.Blob\0\0",
+    b"RSpaceDAG.SMan\0\0",
+    b"RSpaceDAG.AMan\0\0",
+    b"RSpaceDAG.Retn\0\0",
+    b"RSpaceDAG.Chkpt\0",
+    b"RSpace.Blob.CSrc",
+    MODEL_ANCHOR_DOMAIN,
+    MODEL_RADIX_DOMAIN,
+    MODEL_CHECKPOINT_V2_DOMAIN,
+    UNKNOWN_METADATA_DOMAIN,
+];
+const STREAM_WIDTHS: [usize; 12] = [2, 7, 15, 16, 31, 32, 39, 40, 41, 255, 256, 257];
+const ENUMERABLE_ENTRIES: u64 = 4096;
+
+type ObjectIdentity = Result<(CanonicalObjectKind, ObjectRefV1), CanonicalFormatError>;
+type AppointedSummary =
+    Result<(ProductionRetentionFormat, RetainedStateV1, u64), CanonicalFormatError>;
+type AdmittedImage = (Vec<RetainedStateV1>, Vec<ObjectRefV1>, u64);
+
+fn fail(message: String) -> TestCaseError { TestCaseError::fail(message) }
+
+fn model_current() -> RetainedStateV1 { retained(state(u64::MAX, [0xcc; 32], 64), 4096) }
+
+fn renamed_version(error: CanonicalFormatError, name: &'static str) -> CanonicalFormatError {
+    match error {
+        CanonicalFormatError::UnsupportedVersion { version, .. } => {
+            CanonicalFormatError::UnsupportedVersion {
+                domain: name,
+                version,
+            }
+        }
+        error => error,
+    }
+}
+
+fn with_version(bytes: &[u8], version: u64) -> Vec<u8> {
+    let mut versioned = bytes.to_vec();
+    versioned[16..24].copy_from_slice(&version.to_le_bytes());
+    versioned
+}
+
+/// The V1 object domains, written out independently of the production
+/// classifier.
+fn v1_domain_kind(bytes: &[u8]) -> Result<CanonicalObjectKind, CanonicalFormatError> {
+    let Some(domain) = bytes.get(..16) else {
+        return Err(CanonicalFormatError::Truncated {
+            offset: 0,
+            needed: 16,
+            available: bytes.len(),
+        });
+    };
+    match domain {
+        b"RSpaceDAG.Node\0\0" => Ok(CanonicalObjectKind::DagNode),
+        b"RSpaceDAG.Blob\0\0" => Ok(CanonicalObjectKind::Blob),
+        b"RSpaceDAG.SMan\0\0" => Ok(CanonicalObjectKind::SemanticManifest),
+        b"RSpaceDAG.AMan\0\0" => Ok(CanonicalObjectKind::AcceleratorManifest),
+        b"RSpaceDAG.Retn\0\0" => Ok(CanonicalObjectKind::RetentionManifest),
+        _ => Err(CanonicalFormatError::UnknownObjectDomain),
+    }
+}
+
+fn dual_domain_kind(bytes: &[u8]) -> Result<CanonicalObjectKind, CanonicalFormatError> {
+    match (v1_domain_kind(bytes), bytes.get(..16)) {
+        (Err(CanonicalFormatError::UnknownObjectDomain), Some(b"RSpaceDAG.RetA\0\0")) => {
+            Ok(CanonicalObjectKind::RetentionAnchor)
+        }
+        (Err(CanonicalFormatError::UnknownObjectDomain), Some(b"RSpaceDAG.RetR\0\0")) => {
+            Ok(CanonicalObjectKind::RetentionRadixNode)
+        }
+        (classified, _) => classified,
+    }
+}
+
+fn strict_identity(bytes: &[u8]) -> ObjectIdentity {
+    let object = CanonicalObjectView::parse(bytes)?;
+    Ok((object.kind(), reference_of(bytes)))
+}
+
+/// The dual reader's contiguous oracle: the anchor parser on the anchor
+/// domain, the unchanged DAG parser after a retag on the radix domain, and
+/// the strict reader everywhere else.
+fn dual_identity(bytes: &[u8]) -> ObjectIdentity {
+    match bytes.get(..16) {
+        Some(domain) if domain == MODEL_ANCHOR_DOMAIN => {
+            RetentionAnchorV2::parse(bytes)?;
+            Ok((CanonicalObjectKind::RetentionAnchor, reference_of(bytes)))
+        }
+        Some(domain) if domain == MODEL_RADIX_DOMAIN => {
+            CanonicalDagNodeView::parse(&with_domain(bytes, DAG_NODE_DOMAIN))
+                .map_err(|error| renamed_version(error, RADIX_NODE_NAME))?;
+            Ok((CanonicalObjectKind::RetentionRadixNode, reference_of(bytes)))
+        }
+        _ => strict_identity(bytes),
+    }
+}
+
+fn stream_identity(bytes: &[u8], reader: RetentionReader, widths: &[usize]) -> ObjectIdentity {
+    let mut validator = CanonicalObjectStreamValidatorV1::new_for(bytes.len(), reader);
+    let mut offset = 0_usize;
+    for width in widths {
+        let end = offset.saturating_add(*width).min(bytes.len());
+        validator.feed(&bytes[offset..end])?;
+        offset = end;
+    }
+    if offset < bytes.len() {
+        validator.feed(&bytes[offset..])?;
+    }
+    let identity = validator.finish()?;
+    Ok((identity.kind(), identity.reference()))
+}
+
+/// The whole input, one-byte steps, every split for inputs of at most 160
+/// bytes (a stride above that), and the fixed chunk widths.
+fn stream_partitions(len: usize) -> Vec<Vec<usize>> {
+    let stride = match len {
+        0..=160 => 1,
+        _ => len / 64 + 1,
+    };
+    let mut partitions = Vec::with_capacity(2 + len / stride + 1 + STREAM_WIDTHS.len());
+    partitions.push(vec![usize::MAX]);
+    partitions.push(vec![1; len]);
+    partitions.extend(
+        (0..=len)
+            .step_by(stride)
+            .map(|split| vec![split, len - split]),
+    );
+    partitions.extend(
+        STREAM_WIDTHS
+            .iter()
+            .map(|width| vec![*width; len / width + 2]),
+    );
+    partitions
+}
+
+fn declared_reference(bytes: &[u8]) -> ObjectRefV1 {
+    ObjectRefV1::new(ObjectDigest::of_canonical_bytes(bytes), (bytes.len() as u64).max(32))
+        .expect("the declared length covers an envelope")
+}
+
+fn expected_validation(
+    identity: &ObjectIdentity,
+    declared: ObjectRefV1,
+) -> Result<CanonicalObjectKind, LogPackFormatError> {
+    match identity {
+        Ok((kind, actual)) if *actual == declared => Ok(*kind),
+        Ok((_, actual)) => Err(LogPackFormatError::ObjectReference {
+            declared,
+            actual: *actual,
+        }),
+        Err(error) => Err(LogPackFormatError::Canonical(error.clone())),
+    }
+}
+
+fn check_object_readers(bytes: &[u8]) -> Result<(), TestCaseError> {
+    let strict = strict_identity(bytes);
+    let dual = dual_identity(bytes);
+    prop_assert_eq!(CanonicalObjectKind::from_domain_prefix(bytes), v1_domain_kind(bytes));
+    prop_assert_eq!(
+        CanonicalObjectKind::from_domain_prefix_for(bytes, RetentionReader::V1Only),
+        v1_domain_kind(bytes)
+    );
+    prop_assert_eq!(
+        CanonicalObjectKind::from_domain_prefix_for(bytes, RetentionReader::Dual),
+        dual_domain_kind(bytes)
+    );
+    if let Ok((kind, _)) = &strict {
+        prop_assert_eq!(Ok(*kind), v1_domain_kind(bytes));
+    }
+    match bytes.get(..16) {
+        Some(domain) if domain == MODEL_ANCHOR_DOMAIN || domain == MODEL_RADIX_DOMAIN => {
+            prop_assert_eq!(strict.clone().err(), Some(CanonicalFormatError::UnknownObjectDomain));
+        }
+        _ => prop_assert_eq!(&dual, &strict),
+    }
+    let declared = declared_reference(bytes);
+    let foreign = ObjectRefV1::new(ObjectDigest::from_array([0x5c; 32]), declared.encoded_len())
+        .expect("the foreign declaration covers an envelope");
+    for (reader, expected) in [(RetentionReader::V1Only, &strict), (RetentionReader::Dual, &dual)] {
+        for widths in stream_partitions(bytes.len()) {
+            prop_assert_eq!(
+                &stream_identity(bytes, reader, &widths),
+                expected,
+                "reader {:?} widths {:?}",
+                reader,
+                widths
+            );
+        }
+        for declaration in [declared, foreign] {
+            prop_assert_eq!(
+                validate_object_for(declaration, bytes, reader),
+                expected_validation(expected, declaration)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn check_descriptor_readers(bytes: &[u8]) -> Result<(), TestCaseError> {
+    let strict = GenerationCheckpointDescriptorViewV1::parse(bytes);
+    prop_assert_eq!(
+        GenerationCheckpointDescriptorViewV1::parse_for(bytes, RetentionReader::V1Only),
+        strict.clone()
+    );
+    if let Ok(view) = strict {
+        prop_assert_eq!(view.format(), ProductionRetentionFormat::V1);
+        prop_assert_eq!(&encoded(&GenerationCheckpointDescriptorV1::from_view(view)), bytes);
+    }
+    let dual = GenerationCheckpointDescriptorViewV1::parse_for(bytes, RetentionReader::Dual);
+    match bytes.get(..16) {
+        Some(domain) if domain == MODEL_CHECKPOINT_V2_DOMAIN => {
+            prop_assert_eq!(
+                strict.err(),
+                Some(GenerationCheckpointErrorV1::Canonical(CanonicalFormatError::InvalidDomain {
+                    expected: GENERATION_CHECKPOINT_DOMAIN,
+                }))
+            );
+            let retagged = GenerationCheckpointDescriptorViewV1::parse(&with_domain(
+                bytes,
+                GENERATION_CHECKPOINT_DOMAIN,
+            ));
+            match (&dual, &retagged) {
+                (Err(GenerationCheckpointErrorV1::Canonical(error)), _) => {
+                    prop_assert_eq!(
+                        retagged.clone().err(),
+                        Some(GenerationCheckpointErrorV1::Canonical(renamed_version(
+                            error.clone(),
+                            V1_CHECKPOINT_NAME,
+                        )))
+                    );
+                }
+                (_, Err(GenerationCheckpointErrorV1::Canonical(error))) => {
+                    return Err(fail(format!(
+                        "the retagged strict parse refuses {error:?} but the dual parse gives \
+                         {dual:?}"
+                    )));
+                }
+                (Ok(view), _) => {
+                    prop_assert_eq!(view.format(), ProductionRetentionFormat::V2);
+                    prop_assert_eq!(
+                        &encoded(&GenerationCheckpointDescriptorV1::from_view(*view)),
+                        bytes
+                    );
+                    prop_assert_eq!(
+                        view.retention_manifest().encoded_len(),
+                        RETENTION_ANCHOR_CANONICAL_LEN
+                    );
+                    prop_assert!(view.data_objects() >= view.retained_union_objects() + 2);
+                    prop_assert!(
+                        view.data_canonical_bytes().get() >=
+                            view.retained_union_canonical_bytes().get() + 186
+                    );
+                }
+                (Err(_), _) => {}
+            }
+        }
+        _ => prop_assert_eq!(dual, strict),
+    }
+    Ok(())
+}
+
+fn appointed_summary(bytes: &[u8], reader: RetentionReader) -> AppointedSummary {
+    let appointed = AppointedRetention::parse(bytes, reader)?;
+    Ok((appointed.format(), appointed.current(), appointed.historical_count()?))
+}
+
+fn check_appointed_readers(bytes: &[u8]) -> Result<(), TestCaseError> {
+    let v1 = RetentionManifestView::parse(bytes).map(|manifest| {
+        (ProductionRetentionFormat::V1, manifest.current(), manifest.historical().len() as u64)
+    });
+    let dual = match bytes.get(..16) {
+        Some(domain) if domain == MODEL_ANCHOR_DOMAIN => {
+            RetentionAnchorV2::parse(bytes).map(|anchor| {
+                (ProductionRetentionFormat::V2, anchor.current(), anchor.historical_count())
+            })
+        }
+        _ => v1.clone(),
+    };
+    prop_assert_eq!(appointed_summary(bytes, RetentionReader::V1Only), v1);
+    prop_assert_eq!(appointed_summary(bytes, RetentionReader::Dual), dual);
+    Ok(())
+}
+
+fn check_all_readers(bytes: &[u8]) -> Result<(), TestCaseError> {
+    check_object_readers(bytes)?;
+    check_descriptor_readers(bytes)?;
+    check_appointed_readers(bytes)
+}
+
+fn reader_descriptor(
+    format: ProductionRetentionFormat,
+    retained_union: &[ObjectRefV1],
+    retention: ObjectRefV1,
+    metadata: &[ObjectRefV1],
+) -> Vec<u8> {
+    let retained_bytes = retained_union
+        .iter()
+        .map(|reference| reference.encoded_len())
+        .sum::<u64>();
+    let mut data = Vec::with_capacity(retained_union.len() + metadata.len() + 1);
+    data.extend_from_slice(retained_union);
+    match format {
+        ProductionRetentionFormat::V1 => data.push(retention),
+        ProductionRetentionFormat::V2 => data.extend_from_slice(metadata),
+    }
+    data.sort_unstable_by_key(|reference| reference.digest());
+    let data_bytes = data
+        .iter()
+        .map(|reference| reference.encoded_len())
+        .sum::<u64>();
+    let mut builder = OrderedObjectInventoryBuilderV1::new(data.len() as u64, data_bytes);
+    for reference in &data {
+        builder
+            .push(*reference)
+            .expect("reader DATA is strictly ordered");
+    }
+    let ordered = builder.finish().expect("reader DATA is complete");
+    let report = RetainedUnionClosureReportV1 {
+        distinct_objects: retained_union.len() as u64,
+        canonical_bytes: retained_bytes,
+    };
+    let inventory = match format {
+        ProductionRetentionFormat::V1 => {
+            CheckpointObjectInventoryV1::from_test_ordered(report, retention, ordered)
+        }
+        ProductionRetentionFormat::V2 => CheckpointObjectInventoryV1::from_test_ordered_v2(
+            report,
+            metadata.len() as u64,
+            data_bytes - retained_bytes,
+            ordered,
+        ),
+    }
+    .expect("reader inventories are coherent");
+    let current = retained_union[0];
+    encoded(
+        &GenerationCheckpointDescriptorV1::from_test_inventory(
+            TEST_SEMANTIC_PROFILE_ID,
+            StateVersionV1::new(7, current),
+            retention,
+            1,
+            current.encoded_len(),
+            inventory,
+        )
+        .expect("reader descriptors are valid"),
+    )
+}
+
+/// Valid objects of every V1 kind, the V2 anchor and radix nodes of one
+/// history, and a V1 and a V2 checkpoint descriptor over one retained union.
+fn reader_objects(history: &History, retained_union: &[ObjectRefV1], seed: u8) -> Vec<Vec<u8>> {
+    let image = build_radix(history);
+    let anchor = history_anchor(history, &image);
+    let metadata = metadata_closure(anchor, &image)
+        .expect("model radix images are readable")
+        .into_values()
+        .collect::<Vec<_>>();
+    let historical = history
+        .iter()
+        .map(|(key, claim)| retained(model_decode_key(key).expect("model keys decode"), *claim))
+        .collect::<Vec<_>>();
+    let v1_manifest = encoded(
+        &RetentionManifestV1::new(anchor.current(), historical)
+            .expect("the model history is a V1 history"),
+    );
+    let (semantic, semantic_bytes) = semantic_manifest(seed);
+    let accelerator = AcceleratorManifestV1::new(semantic.object_ref(), 7, [
+        AcceleratorArtifact {
+            kind: AcceleratorArtifactKind::ChannelReceives,
+            object: reference([seed; 32], 64),
+        },
+        AcceleratorArtifact {
+            kind: AcceleratorArtifactKind::ActImage,
+            object: reference([seed ^ 0x10; 32], 65),
+        },
+    ])
+    .expect("the accelerator manifest is valid");
+    let blob = CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, vec![seed; 17])
+        .expect("the blob is valid");
+    let wide =
+        encoded(&dag_node(&[seed, 2, 3], EndpointValue::Unit, 17).expect("the wide node is valid"));
+    let mut objects = Vec::with_capacity(image.objects.len() + 11);
+    objects.push(encoded(&anchor));
+    objects.extend(image.objects.values().cloned());
+    objects.push(with_domain(&wide, MODEL_RADIX_DOMAIN));
+    objects.push(v1_manifest.clone());
+    objects.push(semantic_bytes);
+    objects.push(encoded(&accelerator));
+    objects.push(encoded(&blob));
+    objects.push(wide);
+    objects.push(encoded(&CanonicalDagNode::empty()));
+    objects.push(reader_descriptor(
+        ProductionRetentionFormat::V1,
+        retained_union,
+        reference_of(&v1_manifest),
+        &[],
+    ));
+    objects.push(reader_descriptor(
+        ProductionRetentionFormat::V2,
+        retained_union,
+        anchor.object_ref(),
+        &metadata,
+    ));
+    objects
+}
+
+#[test]
+fn dual_object_readers_extend_v1_readers_only_on_metadata_domains() {
+    for (reader, format, admitted) in [
+        (RetentionReader::V1Only, ProductionRetentionFormat::V1, true),
+        (RetentionReader::V1Only, ProductionRetentionFormat::V2, false),
+        (RetentionReader::Dual, ProductionRetentionFormat::V1, true),
+        (RetentionReader::Dual, ProductionRetentionFormat::V2, true),
+    ] {
+        assert_eq!(reader.admits(format), admitted, "{reader:?} admits {format:?}");
+    }
+
+    let aliases = History::from([
+        (model_key(state(1, [0x11; 32], 50)), 50),
+        (model_key(state(2, [0x11; 32], 50)), 60),
+        (model_key(state(2, [0x11; 32], 51)), 51),
+    ]);
+    let fixed =
+        reader_objects(&aliases, &[reference([0x31; 32], 64), reference([0x32; 32], 96)], 7)
+            .into_iter()
+            .chain(reader_objects(&History::new(), &[reference([0x41; 32], 50)], 9));
+    for valid in fixed {
+        let candidates = READER_DOMAINS
+            .iter()
+            .map(|domain| with_domain(&valid, domain))
+            .chain([with_version(&valid, 2), valid.clone()]);
+        for bytes in candidates {
+            check_all_readers(&bytes).expect("fixed reader candidates agree with their oracles");
+        }
+    }
+
+    runner(64)
+        .run(
+            &(
+                history_strategy(6),
+                retained_union(),
+                any::<u8>(),
+                any::<prop::sample::Index>(),
+                any::<prop::sample::Index>(),
+                1_u8..=255,
+                any::<prop::sample::Index>(),
+                any::<prop::sample::Index>(),
+            ),
+            |(history, union, seed, pick, position, flip, cut, domain)| {
+                let objects = reader_objects(&history, &union, seed);
+                let valid = &objects[pick.index(objects.len())];
+                let mut flipped = valid.clone();
+                flipped[position.index(valid.len())] ^= flip;
+                let mut extended = valid.clone();
+                extended.push(flip);
+                for bytes in [
+                    valid.clone(),
+                    flipped,
+                    valid[..cut.index(valid.len())].to_vec(),
+                    extended,
+                    with_version(valid, 2),
+                    with_domain(valid, READER_DOMAINS[domain.index(READER_DOMAINS.len())]),
+                ] {
+                    check_all_readers(&bytes)?;
+                }
+                Ok(())
+            },
+        )
+        .expect("dual readers extend V1 readers only on the metadata domains");
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AdmissionClass {
+    Radix(RadixRefusal),
+    History(CanonicalFormatError),
+    Unmapped(String),
+}
+
+/// The correspondence from production refusals to reference refusals:
+/// every store-level length or digest disagreement is a reference mismatch,
+/// body errors agree modulo the envelope name, and every other refusal maps
+/// one to one.
+fn production_class(error: RetentionRadixErrorV2<CanonicalFormatError>) -> AdmissionClass {
+    match error {
+        RetentionRadixErrorV2::Store(CanonicalFormatError::ResourceLimit {
+            resource: "materialized object bytes",
+            ..
+        }) |
+        RetentionRadixErrorV2::Canonical(
+            CanonicalFormatError::ObjectLengthMismatch { .. } |
+            CanonicalFormatError::DigestMismatch { .. },
+        ) => AdmissionClass::Radix(RadixRefusal::ReferenceMismatch),
+        RetentionRadixErrorV2::Canonical(CanonicalFormatError::MissingObject(_)) => {
+            AdmissionClass::Radix(RadixRefusal::MissingObject)
+        }
+        RetentionRadixErrorV2::Canonical(error) => AdmissionClass::History(error),
+        RetentionRadixErrorV2::Store(error) => AdmissionClass::Unmapped(format!("store {error:?}")),
+        RetentionRadixErrorV2::Refusal(refusal) => match refusal {
+            RetentionRadixRefusalV2::NotRadixDomain { .. } => {
+                AdmissionClass::Radix(RadixRefusal::NotRadixDomain)
+            }
+            RetentionRadixRefusalV2::Body(error) => {
+                AdmissionClass::Radix(RadixRefusal::Body(renamed_version(error, DAG_NODE_NAME)))
+            }
+            RetentionRadixRefusalV2::EndpointKind { endpoint } => {
+                AdmissionClass::Radix(RadixRefusal::EndpointKind(endpoint))
+            }
+            RetentionRadixRefusalV2::EndpointDepth { remaining, prefix } => {
+                AdmissionClass::Radix(RadixRefusal::EndpointDepth { remaining, prefix })
+            }
+            RetentionRadixRefusalV2::EmptyBelowRoot => {
+                AdmissionClass::Radix(RadixRefusal::EmptyBelowRoot)
+            }
+            RetentionRadixRefusalV2::LeafKey(_) => AdmissionClass::Radix(RadixRefusal::LeafKey),
+            RetentionRadixRefusalV2::LeafClaim(error) => {
+                AdmissionClass::Radix(RadixRefusal::LeafClaim(error))
+            }
+            RetentionRadixRefusalV2::CountMismatch { declared, counted } => {
+                AdmissionClass::Radix(RadixRefusal::CountMismatch {
+                    declared,
+                    unfolded: counted,
+                })
+            }
+            RetentionRadixRefusalV2::CountOverflow => {
+                AdmissionClass::Radix(RadixRefusal::CountOverflow)
+            }
+            refusal @ RetentionRadixRefusalV2::EntryAllocation { .. } => {
+                AdmissionClass::Unmapped(format!("{refusal:?}"))
+            }
+        },
+    }
+}
+
+fn tracing_store(objects: &ObjectSet) -> TracingStore {
+    let store = TracingStore::default();
+    for (digest, bytes) in objects {
+        store
+            .inner
+            .put_prehashed_for_test(*digest, Arc::from(bytes.as_slice()))
+            .expect("each model digest enters the store once");
+    }
+    store
+}
+
+fn production_admission(
+    objects: &ObjectSet,
+    anchor: RetentionAnchorV2,
+) -> Result<AdmittedImage, AdmissionClass> {
+    let store = tracing_store(objects);
+    let admitted = admit_retention_history_v2(&store, anchor).map_err(production_class)?;
+    Ok((
+        admitted.entries().to_vec(),
+        admitted.metadata().objects().to_vec(),
+        admitted.metadata().canonical_bytes(),
+    ))
+}
+
+/// The reference pipeline: unfold the radix image, then apply the V1 history
+/// rules to the decoded entries.
+fn reference_admission(
+    objects: &ObjectSet,
+    anchor: RetentionAnchorV2,
+) -> Result<Vec<RetainedStateV1>, AdmissionClass> {
+    let leaves = unfold_radix(objects, anchor.historical_root(), anchor.historical_count())
+        .map_err(AdmissionClass::Radix)?;
+    let entries = leaves
+        .iter()
+        .map(|leaf| {
+            retained(model_decode_key(&leaf.key).expect("unfolded keys decode"), leaf.claim)
+        })
+        .collect::<Vec<_>>();
+    RetentionManifestV1::new(anchor.current(), entries.clone()).map_err(AdmissionClass::History)?;
+    Ok(entries)
+}
+
+/// Phase one of the reader as a model: every node is checked at the key width
+/// still unread where it is reached, and counts are memoized by (digest,
+/// remaining width). A digest reached through another reference is refused
+/// before the memo is consulted, as the reader refuses a cached digest under
+/// another length. With `keyed_by_depth` false the memo is keyed by digest
+/// alone, which is the mutant that accepts a shared leaf at the wrong depth.
+fn shape_strict_count(
+    objects: &ObjectSet,
+    root: ObjectRefV1,
+    keyed_by_depth: bool,
+) -> Result<u64, RadixRefusal> {
+    let memo_key = |digest: ObjectDigest, remaining: usize| match keyed_by_depth {
+        true => (digest, remaining),
+        false => (digest, 0),
+    };
+    let mut memo = BTreeMap::<(ObjectDigest, usize), u64>::new();
+    let mut references = BTreeMap::<ObjectDigest, ObjectRefV1>::new();
+    let mut pending = vec![(root, KEY_WIDTH, false)];
+    while let Some((reference, remaining, expanded)) = pending.pop() {
+        if *references.entry(reference.digest()).or_insert(reference) != reference {
+            return Err(RadixRefusal::ReferenceMismatch);
+        }
+        let key = memo_key(reference.digest(), remaining);
+        if !expanded && memo.contains_key(&key) {
+            continue;
+        }
+        let node = load_radix_node(objects, reference)?;
+        let prefix = node.prefix.len();
+        match (node.endpoint, node.children.is_empty(), prefix.cmp(&remaining), expanded) {
+            (EndpointValue::Multiplicity(_), true, Ordering::Equal, _) => {
+                memo.insert(key, 1);
+            }
+            (EndpointValue::Absent, true, _, _) => return Err(RadixRefusal::EmptyBelowRoot),
+            (EndpointValue::Absent, false, Ordering::Less, false) => {
+                pending.push((reference, remaining, true));
+                let below = remaining - prefix - 1;
+                pending.extend(
+                    node.children
+                        .iter()
+                        .rev()
+                        .map(|child| (child.target, below, false)),
+                );
+            }
+            (EndpointValue::Absent, false, Ordering::Less, true) => {
+                let below = remaining - prefix - 1;
+                let mut total = 0_u64;
+                for child in &node.children {
+                    let count = memo
+                        .get(&memo_key(child.target.digest(), below))
+                        .copied()
+                        .expect("children are counted before their parent");
+                    total = total
+                        .checked_add(count)
+                        .ok_or(RadixRefusal::CountOverflow)?;
+                }
+                memo.insert(key, total);
+            }
+            (EndpointValue::Absent | EndpointValue::Multiplicity(_), _, _, _) => {
+                return Err(RadixRefusal::EndpointDepth { remaining, prefix });
+            }
+            (endpoint, _, _, _) => return Err(RadixRefusal::EndpointKind(endpoint.name())),
+        }
+    }
+    Ok(memo
+        .get(&memo_key(root.digest(), KEY_WIDTH))
+        .copied()
+        .expect("the root is counted"))
+}
+
+fn model_count_by_depth(objects: &ObjectSet, root: ObjectRefV1) -> Result<u64, RadixRefusal> {
+    shape_strict_count(objects, root, true)
+}
+
+fn digest_only_memoized_count(objects: &ObjectSet, root: ObjectRefV1) -> Result<u64, RadixRefusal> {
+    shape_strict_count(objects, root, false)
+}
+
+/// The enumeration-order mutant: children visited in reverse edge order.
+fn reverse_edge_enumeration(objects: &ObjectSet, root: ObjectRefV1) -> Vec<RetainedStateV1> {
+    let mut entries = Vec::new();
+    let mut pending = vec![(root, Vec::with_capacity(KEY_WIDTH))];
+    while let Some((reference, mut key)) = pending.pop() {
+        let node = load_radix_node(objects, reference).expect("valid images load");
+        key.extend_from_slice(&node.prefix);
+        match node.endpoint {
+            EndpointValue::Multiplicity(claim) => entries
+                .push(retained(model_decode_key(&key).expect("valid keys decode"), claim.get())),
+            _ => {
+                for child in &node.children {
+                    let mut child_key = Vec::with_capacity(KEY_WIDTH);
+                    child_key.extend_from_slice(&key);
+                    child_key.push(child.edge);
+                    pending.push((child.target, child_key));
+                }
+            }
+        }
+    }
+    entries
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum RadixDefect {
+    Drop,
+    LengthShift { longer: bool },
+    ForgeDigest,
+    Retag { anchor_domain: bool },
+    Endpoint { kind: usize },
+    ShortLeaf,
+    MultiplicityWithChildren,
+    EmptyChild,
+    ClaimBelowLength,
+    KeyLengthBelow32,
+    WrongCount { more: bool },
+    CurrentInHistory,
+    EnvelopeVersion2,
+    UnaryNode,
+    UnorderedEdges,
+}
+
+const RADIX_DEFECTS: [RadixDefect; 20] = [
+    RadixDefect::Drop,
+    RadixDefect::LengthShift { longer: false },
+    RadixDefect::LengthShift { longer: true },
+    RadixDefect::ForgeDigest,
+    RadixDefect::Retag {
+        anchor_domain: false,
+    },
+    RadixDefect::Retag {
+        anchor_domain: true,
+    },
+    RadixDefect::Endpoint { kind: 0 },
+    RadixDefect::Endpoint { kind: 1 },
+    RadixDefect::Endpoint { kind: 2 },
+    RadixDefect::ShortLeaf,
+    RadixDefect::MultiplicityWithChildren,
+    RadixDefect::EmptyChild,
+    RadixDefect::ClaimBelowLength,
+    RadixDefect::KeyLengthBelow32,
+    RadixDefect::WrongCount { more: false },
+    RadixDefect::WrongCount { more: true },
+    RadixDefect::CurrentInHistory,
+    RadixDefect::EnvelopeVersion2,
+    RadixDefect::UnaryNode,
+    RadixDefect::UnorderedEdges,
+];
+
+fn radix_defect_strategy() -> impl Strategy<Value = RadixDefect> {
+    prop::sample::select(RADIX_DEFECTS.to_vec())
+}
+
+/// One occurrence of a radix node in the unfolded tree: the child indices
+/// from the root, the node, and the key bytes read before it.
+#[derive(Clone, Debug)]
+struct RadixOccurrence {
+    path: Vec<usize>,
+    reference: ObjectRefV1,
+    node: RadixNodeImage,
+    key_prefix: Vec<u8>,
+}
+
+impl RadixOccurrence {
+    fn is_leaf(&self) -> bool {
+        matches!(self.node.endpoint, EndpointValue::Multiplicity(_)) &&
+            self.node.children.is_empty()
+    }
+
+    fn is_inner(&self) -> bool {
+        matches!(self.node.endpoint, EndpointValue::Absent) && !self.node.children.is_empty()
+    }
+
+    fn leaf_key(&self) -> Vec<u8> { [&self.key_prefix[..], &self.node.prefix[..]].concat() }
+}
+
+fn radix_occurrences(objects: &ObjectSet, root: ObjectRefV1) -> Vec<RadixOccurrence> {
+    let mut occurrences = Vec::new();
+    let mut pending = vec![(root, Vec::new(), Vec::with_capacity(KEY_WIDTH))];
+    while let Some((reference, path, key_prefix)) = pending.pop() {
+        let node = load_radix_node(objects, reference).expect("occurrences come from valid images");
+        for (index, child) in node.children.iter().enumerate().rev() {
+            let mut child_path = Vec::with_capacity(path.len() + 1);
+            child_path.extend_from_slice(&path);
+            child_path.push(index);
+            let mut child_key = Vec::with_capacity(KEY_WIDTH);
+            child_key.extend_from_slice(&key_prefix);
+            child_key.extend_from_slice(&node.prefix);
+            child_key.push(child.edge);
+            pending.push((child.target, child_path, child_key));
+        }
+        occurrences.push(RadixOccurrence {
+            path,
+            reference,
+            node,
+            key_prefix,
+        });
+    }
+    occurrences
+}
+
+/// Replace the reference reached along `path` and re-encode every ancestor
+/// on that path; other occurrences of shared nodes keep the originals.
+fn rewrite_radix_path(
+    objects: &mut ObjectSet,
+    root: ObjectRefV1,
+    path: &[usize],
+    replacement: ObjectRefV1,
+) -> ObjectRefV1 {
+    let mut ancestors = Vec::with_capacity(path.len());
+    let mut reference = root;
+    for index in path {
+        let node = load_radix_node(objects, reference).expect("ancestors are valid radix nodes");
+        reference = node.children[*index].target;
+        ancestors.push((node, *index));
+    }
+    let mut target = replacement;
+    while let Some((mut node, index)) = ancestors.pop() {
+        node.children[index].target = target;
+        target = insert_object(objects, radix_node(&node.prefix, node.endpoint, &node.children));
+    }
+    target
+}
+
+fn raw_radix_node(prefix: &[u8], endpoint: &[u8], children: &[DagChild]) -> Vec<u8> {
+    let branch = match children.len() {
+        0 => 0_u8,
+        1..=4 => 1,
+        _ => 2,
+    };
+    let mut body = Vec::with_capacity(8 + prefix.len() + endpoint.len() + 9 + 41 * children.len());
+    body.extend_from_slice(&(prefix.len() as u64).to_le_bytes());
+    body.extend_from_slice(prefix);
+    body.extend_from_slice(endpoint);
+    body.push(branch);
+    body.extend_from_slice(&(children.len() as u64).to_le_bytes());
+    for child in children {
+        body.push(child.edge);
+        body.extend_from_slice(&reference_bytes(child.target));
+    }
+    envelope(MODEL_RADIX_DOMAIN, &body)
+}
+
+struct DefectImage {
+    objects: ObjectSet,
+    anchor: RetentionAnchorV2,
+}
+
+/// Apply one defect at one occurrence, or return `None` when the defect does
+/// not apply there.
+fn apply_radix_defect(
+    objects: &ObjectSet,
+    anchor: RetentionAnchorV2,
+    defect: RadixDefect,
+    occurrence: &RadixOccurrence,
+    position: usize,
+) -> Option<DefectImage> {
+    let mut objects = objects.clone();
+    let count = anchor.historical_count();
+    let root = anchor.historical_root();
+    let node = &occurrence.node;
+    let is_root = occurrence.path.is_empty();
+    let digest = occurrence.reference.digest();
+    let stored = objects
+        .get(&digest)
+        .cloned()
+        .expect("occurrences are stored");
+    let leaf_length = match occurrence.is_leaf() {
+        true => {
+            let key = occurrence.leaf_key();
+            Some(u64::from_be_bytes(key[40..48].try_into().expect("leaf keys are 48 bytes")))
+        }
+        false => None,
+    };
+    let replace = |objects: &mut ObjectSet, bytes: Vec<u8>| {
+        let replacement = insert_object(objects, bytes);
+        rewrite_radix_path(objects, root, &occurrence.path, replacement)
+    };
+    let rerooted = match (defect, leaf_length) {
+        (RadixDefect::Drop, _) => {
+            objects.remove(&digest);
+            root
+        }
+        (RadixDefect::LengthShift { longer }, _) if is_root => {
+            let mut bytes = stored;
+            match longer {
+                true => bytes.push(0),
+                false => {
+                    bytes.pop();
+                }
+            }
+            objects.insert(digest, bytes);
+            root
+        }
+        (RadixDefect::LengthShift { longer }, _) => {
+            let length = occurrence.reference.encoded_len();
+            let shifted = match longer {
+                true => length + 1,
+                false => length - 1,
+            };
+            let shifted = ObjectRefV1::new(digest, shifted).expect("radix nodes exceed 33 bytes");
+            rewrite_radix_path(&mut objects, root, &occurrence.path, shifted)
+        }
+        (RadixDefect::ForgeDigest, _) => {
+            let mut bytes = stored;
+            let index = position % bytes.len();
+            bytes[index] ^= 1;
+            objects.insert(digest, bytes);
+            root
+        }
+        (RadixDefect::Retag { anchor_domain }, _) if count > 0 => {
+            let domain = match anchor_domain {
+                true => MODEL_ANCHOR_DOMAIN,
+                false => DAG_NODE_DOMAIN,
+            };
+            replace(&mut objects, with_domain(&stored, domain))
+        }
+        (RadixDefect::Endpoint { kind }, _) if count > 0 => {
+            let endpoint = [
+                EndpointValue::ValueFree,
+                EndpointValue::Unit,
+                EndpointValue::Content(reference([0x22; 32], 64)),
+            ][kind];
+            replace(&mut objects, radix_node(&node.prefix, endpoint, &node.children))
+        }
+        (RadixDefect::ShortLeaf, Some(_)) => {
+            let prefix = match node.prefix.split_first() {
+                Some((_, rest)) => rest.to_vec(),
+                None => vec![0],
+            };
+            replace(&mut objects, radix_node(&prefix, node.endpoint, &[]))
+        }
+        (RadixDefect::MultiplicityWithChildren, _) if occurrence.is_inner() => replace(
+            &mut objects,
+            radix_node(&node.prefix, EndpointValue::Multiplicity(nonzero(50)), &node.children),
+        ),
+        (RadixDefect::EmptyChild, _) if !is_root => {
+            objects
+                .insert(empty_retention_radix_ref().digest(), EMPTY_RETENTION_RADIX_NODE.to_vec());
+            rewrite_radix_path(&mut objects, root, &occurrence.path, empty_retention_radix_ref())
+        }
+        (RadixDefect::ClaimBelowLength, Some(length)) => replace(
+            &mut objects,
+            radix_node(&node.prefix, EndpointValue::Multiplicity(nonzero(length - 1)), &[]),
+        ),
+        (RadixDefect::KeyLengthBelow32, Some(length))
+            if length < 256 && !node.prefix.is_empty() =>
+        {
+            let mut prefix = node.prefix.clone();
+            let last = prefix.len() - 1;
+            prefix[last] = 31;
+            replace(&mut objects, radix_node(&prefix, node.endpoint, &[]))
+        }
+        (RadixDefect::WrongCount { more }, _) if is_root && count > 0 && (more || count > 1) => {
+            let declared = match more {
+                true => count + 1,
+                false => count - 1,
+            };
+            let anchor = RetentionAnchorV2::new(anchor.current(), declared, root)
+                .expect("a nonzero count keeps the radix root");
+            return Some(DefectImage { objects, anchor });
+        }
+        (RadixDefect::CurrentInHistory, Some(_)) => {
+            let EndpointValue::Multiplicity(claim) = node.endpoint else {
+                unreachable!("a leaf carries a multiplicity");
+            };
+            let current = model_decode_key(&occurrence.leaf_key()).expect("valid leaf keys decode");
+            let anchor = RetentionAnchorV2::new(retained(current, claim.get()), count, root)
+                .expect("the history is unchanged");
+            return Some(DefectImage { objects, anchor });
+        }
+        (RadixDefect::EnvelopeVersion2, _) if count > 0 => {
+            replace(&mut objects, with_version(&stored, 2))
+        }
+        (RadixDefect::UnaryNode, _) if occurrence.is_inner() => {
+            replace(&mut objects, raw_radix_node(&node.prefix, &[0], &node.children[..1]))
+        }
+        (RadixDefect::UnorderedEdges, _)
+            if occurrence.is_inner() && (2..=16).contains(&node.children.len()) =>
+        {
+            let mut children = node.children.clone();
+            children.swap(0, 1);
+            replace(&mut objects, raw_radix_node(&node.prefix, &[0], &children))
+        }
+        _ => return None,
+    };
+    let anchor = RetentionAnchorV2::new(anchor.current(), count, rerooted)
+        .expect("a defect keeps the declared count's root rule");
+    Some(DefectImage { objects, anchor })
+}
+
+/// One single-defect case: the reference must refuse it (non-vacuity), and
+/// production must refuse it with the corresponding class.
+fn check_radix_defect(
+    objects: &ObjectSet,
+    anchor: RetentionAnchorV2,
+    defect: RadixDefect,
+    occurrence: &RadixOccurrence,
+    position: usize,
+) -> Result<bool, TestCaseError> {
+    let Some(image) = apply_radix_defect(objects, anchor, defect, occurrence, position) else {
+        return Ok(false);
+    };
+    let expected = reference_admission(&image.objects, image.anchor);
+    prop_assert!(expected.is_err(), "the reference refuses {:?} at {:?}", defect, occurrence.path);
+    prop_assert_eq!(
+        production_admission(&image.objects, image.anchor).err(),
+        expected.err(),
+        "defect {:?} at {:?}",
+        defect,
+        occurrence.path
+    );
+    let root = image.anchor.historical_root();
+    if let Ok(count) = model_count_by_depth(&image.objects, root) {
+        match unfold_radix(&image.objects, root, count) {
+            Ok(leaves) => prop_assert_eq!(leaves.len() as u64, count),
+            Err(RadixRefusal::LeafKey | RadixRefusal::LeafClaim(_)) => {}
+            Err(refusal) => {
+                return Err(fail(format!(
+                    "a shape-strict count of {count} unfolds to {refusal:?} after {defect:?}"
+                )));
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn check_valid_admission(history: &History) -> Result<(), TestCaseError> {
+    let image = build_radix(history);
+    let anchor = history_anchor(history, &image);
+    let expected = reference_admission(&image.objects, anchor)
+        .map_err(|class| fail(format!("the reference refuses a valid history: {class:?}")))?;
+    let (entries, metadata, metadata_bytes) = production_admission(&image.objects, anchor)
+        .map_err(|class| fail(format!("production refuses a valid history: {class:?}")))?;
+    prop_assert_eq!(&entries, &expected);
+    let closure = metadata_closure(anchor, &image)
+        .map_err(|refusal| fail(format!("{refusal:?}")))?
+        .into_values()
+        .collect::<Vec<_>>();
+    prop_assert_eq!(&metadata, &closure);
+    prop_assert_eq!(
+        metadata_bytes,
+        closure
+            .iter()
+            .map(|reference| reference.encoded_len())
+            .sum::<u64>()
+    );
+    if !history.is_empty() {
+        prop_assert_eq!(model_count_by_depth(&image.objects, image.root), Ok(history.len() as u64));
+    }
+    Ok(())
+}
+
+fn defect_histories() -> Vec<History> {
+    let aliases = [
+        state(1, [0x11; 32], 50),
+        state(2, [0x11; 32], 50),
+        state(2, [0x11; 32], 51),
+        state(3, [0x12; 32], 32),
+    ];
+    let product = (0..3_u64)
+        .flat_map(|generation| [0x21_u8, 0x22, 0x23].map(|seed| state(generation, [seed; 32], 50)));
+    let wide = (0..6_u64).map(|generation| state(generation, [0x31; 32], 50));
+    vec![
+        History::new(),
+        History::from([(model_key(state(4, [0x41; 32], 50)), 50)]),
+        aliases
+            .into_iter()
+            .map(|state| (model_key(state), state.manifest().encoded_len() + 1))
+            .collect(),
+        product.map(|state| (model_key(state), 50)).collect(),
+        wide.map(|state| (model_key(state), 64)).collect(),
+    ]
+}
+
+#[test]
+fn production_radix_admission_refines_the_reference_decoder() {
+    let current = model_current();
+    let leaf47 = [&[0_u8; 7][..], &[0x47; 32][..], &50_u64.to_be_bytes()[..]].concat();
+    let mut objects = ObjectSet::new();
+    let empty = insert_object(&mut objects, EMPTY_RETENTION_RADIX_NODE.to_vec());
+    let leaf = insert_object(
+        &mut objects,
+        radix_node(&leaf47, EndpointValue::Multiplicity(nonzero(50)), &[]),
+    );
+    let root = insert_object(
+        &mut objects,
+        radix_node(&[], EndpointValue::Absent, &[
+            DagChild {
+                edge: 0,
+                target: empty,
+            },
+            DagChild {
+                edge: 1,
+                target: leaf,
+            },
+        ]),
+    );
+    let anchor = RetentionAnchorV2::new(current, 1, root).expect("one entry is declared");
+    let empty_below_root = AdmissionClass::Radix(RadixRefusal::EmptyBelowRoot);
+    assert_eq!(production_admission(&objects, anchor).err(), Some(empty_below_root.clone()));
+    assert_eq!(reference_admission(&objects, anchor).err(), Some(empty_below_root));
+    assert_eq!(model_count_by_depth(&objects, root), Err(RadixRefusal::EmptyBelowRoot));
+    assert_eq!(memoized_count(&objects, root), Ok(1));
+
+    let history = defect_histories().swap_remove(3);
+    let image = build_radix(&history);
+    let mutant = reverse_edge_enumeration(&image.objects, image.root);
+    assert_eq!(mutant.len(), history.len());
+    assert_eq!(
+        RetentionManifestV1::new(current, mutant).err(),
+        Some(CanonicalFormatError::RetainedStatesNotStrict)
+    );
+    let (entries, _, _) = production_admission(&image.objects, history_anchor(&history, &image))
+        .expect("the product history is admitted");
+    assert!(RetentionManifestV1::new(current, entries).is_ok());
+
+    let contained = state(4, [0x41; 32], 50);
+    let history = History::from([(model_key(contained), 50)]);
+    let image = build_radix(&history);
+    let anchor = RetentionAnchorV2::new(retained(contained, 50), 1, image.root)
+        .expect("the anchor appoints its leaf");
+    let contains_current = AdmissionClass::History(CanonicalFormatError::RetentionContainsCurrent);
+    assert_eq!(production_admission(&image.objects, anchor).err(), Some(contains_current.clone()));
+    assert_eq!(reference_admission(&image.objects, anchor).err(), Some(contains_current));
+
+    let mut applied = BTreeSet::new();
+    for history in defect_histories() {
+        check_valid_admission(&history).expect("fixed histories are admitted");
+        let image = build_radix(&history);
+        let anchor = history_anchor(&history, &image);
+        for occurrence in radix_occurrences(&image.objects, image.root) {
+            for (position, defect) in RADIX_DEFECTS.into_iter().enumerate() {
+                if check_radix_defect(&image.objects, anchor, defect, &occurrence, position * 7)
+                    .expect("single defects refuse with corresponding classes")
+                {
+                    applied.insert(defect);
+                }
+            }
+        }
+    }
+    assert_eq!(applied, RADIX_DEFECTS.into_iter().collect::<BTreeSet<_>>());
+
+    let random_applied = RefCell::new(BTreeSet::new());
+    runner(256)
+        .run(
+            &(
+                prop_oneof![
+                    history_strategy(24),
+                    product_history().prop_map(|(history, _, _)| history)
+                ],
+                radix_defect_strategy(),
+                any::<prop::sample::Index>(),
+                any::<usize>(),
+            ),
+            |(history, defect, pick, position)| {
+                check_valid_admission(&history)?;
+                let image = build_radix(&history);
+                let anchor = history_anchor(&history, &image);
+                let occurrences = radix_occurrences(&image.objects, image.root);
+                let occurrence = &occurrences[pick.index(occurrences.len())];
+                if check_radix_defect(&image.objects, anchor, defect, occurrence, position)? {
+                    random_applied.borrow_mut().insert(defect);
+                }
+                Ok(())
+            },
+        )
+        .expect("production radix admission refines the reference decoder");
+    assert!(random_applied.borrow().len() >= RADIX_DEFECTS.len() / 2);
+}
+
+/// A shared DAG of `levels` inner nodes, each pointing every edge in
+/// `0..arity` at the level below, over one leaf with the given prefix.
+fn shared_radix_dag(arity: usize, levels: usize, leaf_prefix: &[u8]) -> (ObjectSet, ObjectRefV1) {
+    let mut objects = ObjectSet::new();
+    let mut target = insert_object(
+        &mut objects,
+        radix_node(leaf_prefix, EndpointValue::Multiplicity(nonzero(u64::MAX)), &[]),
+    );
+    for _ in 0..levels {
+        let children = (0..arity)
+            .map(|edge| DagChild {
+                edge: u8::try_from(edge).expect("radix edges are bytes"),
+                target,
+            })
+            .collect::<Vec<_>>();
+        target = insert_object(&mut objects, radix_node(&[], EndpointValue::Absent, &children));
+    }
+    (objects, target)
+}
+
+/// A comb of depth 49: inner node `d` (empty prefix) branches to leaf `d` on
+/// edge 0 and to inner node `d + 1` on edge 1; the last inner node branches to
+/// two leaves. Leaves above depth 40 end in a 50-byte manifest length.
+fn radix_comb() -> (ObjectSet, ObjectRefV1) {
+    let mut objects = ObjectSet::new();
+    let mut spine = insert_object(
+        &mut objects,
+        radix_node(&[], EndpointValue::Multiplicity(nonzero(u64::MAX - 1)), &[]),
+    );
+    for depth in (0..KEY_WIDTH).rev() {
+        let mut prefix = vec![0xff_u8; KEY_WIDTH - 1 - depth];
+        if depth < 40 {
+            let end = prefix.len();
+            prefix[end - 8..].copy_from_slice(&50_u64.to_be_bytes());
+        }
+        let leaf = insert_object(
+            &mut objects,
+            radix_node(&prefix, EndpointValue::Multiplicity(nonzero(u64::MAX)), &[]),
+        );
+        spine = insert_object(
+            &mut objects,
+            radix_node(&[], EndpointValue::Absent, &[
+                DagChild {
+                    edge: 0,
+                    target: leaf,
+                },
+                DagChild {
+                    edge: 1,
+                    target: spine,
+                },
+            ]),
+        );
+    }
+    (objects, spine)
+}
+
+fn assert_read_once(store: &TracingStore, objects: &ObjectSet, reads: u64) {
+    assert_eq!(store.total_reads(), reads);
+    for digest in objects.keys() {
+        assert_eq!(store.read_count(*digest), 1);
+    }
+}
+
+#[test]
+fn radix_memo_is_keyed_by_depth_and_shared_graphs_cannot_force_enumeration() {
+    let current = model_current();
+    let suffix = |zeros: usize| {
+        [&vec![0_u8; zeros][..], &[0x19; 32][..], &50_u64.to_be_bytes()[..]].concat()
+    };
+    let mut objects = ObjectSet::new();
+    let leaf = |objects: &mut ObjectSet, prefix: &[u8]| {
+        insert_object(objects, radix_node(prefix, EndpointValue::Multiplicity(nonzero(50)), &[]))
+    };
+    let node2 = leaf(&mut objects, &suffix(7));
+    let node4 = leaf(&mut objects, &suffix(6));
+    let node3 = insert_object(
+        &mut objects,
+        radix_node(&[], EndpointValue::Absent, &[
+            DagChild {
+                edge: 0,
+                target: node2,
+            },
+            DagChild {
+                edge: 1,
+                target: node4,
+            },
+        ]),
+    );
+    let root = insert_object(
+        &mut objects,
+        radix_node(&[], EndpointValue::Absent, &[
+            DagChild {
+                edge: 0,
+                target: node2,
+            },
+            DagChild {
+                edge: 1,
+                target: node3,
+            },
+        ]),
+    );
+    let misplaced = RadixRefusal::EndpointDepth {
+        remaining: 46,
+        prefix: 47,
+    };
+    let store = tracing_store(&objects);
+    let anchor = RetentionAnchorV2::new(current, 3, root).expect("three entries are declared");
+    assert_eq!(
+        admit_retention_history_v2(&store, anchor)
+            .map_err(production_class)
+            .err(),
+        Some(AdmissionClass::Radix(misplaced.clone()))
+    );
+    assert_eq!([root, node2, node3, node4].map(|node| store.read_count(node.digest())), [
+        1, 1, 1, 0
+    ]);
+    assert_eq!(unfold_radix(&objects, root, 3).err(), Some(misplaced.clone()));
+    assert_eq!(model_count_by_depth(&objects, root), Err(misplaced));
+    assert_eq!(digest_only_memoized_count(&objects, root), Ok(3));
+
+    let (objects, root) = shared_radix_dag(2, 48, &[]);
+    assert_eq!(objects.len(), 49);
+    let declared = (1_u64 << 48) - 1;
+    let store = tracing_store(&objects);
+    let anchor = RetentionAnchorV2::new(current, declared, root).expect("the count is nonzero");
+    assert_eq!(
+        admit_retention_history_v2(&store, anchor)
+            .map_err(production_class)
+            .err(),
+        Some(AdmissionClass::Radix(RadixRefusal::CountMismatch {
+            declared,
+            unfolded: 1 << 48,
+        }))
+    );
+    assert_read_once(&store, &objects, 49);
+    assert_eq!(unfold_radix(&objects, root, declared).err(), Some(RadixRefusal::LeafKey));
+    assert_eq!(model_count_by_depth(&objects, root), Ok(1 << 48));
+
+    let (objects, root) = shared_radix_dag(4, 32, &[0x44; 16]);
+    let store = tracing_store(&objects);
+    let anchor = RetentionAnchorV2::new(current, u64::MAX, root).expect("the count is nonzero");
+    assert_eq!(
+        admit_retention_history_v2(&store, anchor)
+            .map_err(production_class)
+            .err(),
+        Some(AdmissionClass::Radix(RadixRefusal::CountOverflow))
+    );
+    assert_read_once(&store, &objects, 33);
+    assert_eq!(model_count_by_depth(&objects, root), Err(RadixRefusal::CountOverflow));
+
+    let (objects, root) = shared_radix_dag(256, 7, &[0x56; 41]);
+    let store = tracing_store(&objects);
+    let anchor = RetentionAnchorV2::new(current, 1 << 56, root).expect("the count is nonzero");
+    assert!(matches!(
+        admit_retention_history_v2(&store, anchor),
+        Err(RetentionRadixErrorV2::Refusal(RetentionRadixRefusalV2::EntryAllocation { entries }))
+            if entries == 1 << 56
+    ));
+    assert_read_once(&store, &objects, 8);
+    assert_eq!(model_count_by_depth(&objects, root), Ok(1 << 56));
+
+    let (objects, root) = radix_comb();
+    assert_eq!(objects.len(), 97);
+    let anchor = RetentionAnchorV2::new(current, 49, root).expect("the comb holds 49 entries");
+    let expected = reference_admission(&objects, anchor).expect("the comb unfolds");
+    let (entries, metadata, _) = std::thread::Builder::new()
+        .name("retention-v2-comb".into())
+        .stack_size(256 * 1024)
+        .spawn(move || production_admission(&objects, anchor))
+        .expect("the small-stack thread starts")
+        .join()
+        .expect("the depth-49 comb fits a 256 KiB stack")
+        .expect("the depth-49 comb is admitted");
+    assert_eq!(entries.len(), 49);
+    assert_eq!(entries, expected);
+    assert_eq!(metadata.len(), 98);
+
+    runner(256)
+        .run(
+            &prop_oneof![
+                history_strategy(24),
+                product_history().prop_map(|(history, _, _)| history)
+            ],
+            |history| {
+                let image = build_radix(&history);
+                let anchor = history_anchor(&history, &image);
+                let store = tracing_store(&image.objects);
+                let admitted = admit_retention_history_v2(&store, anchor)
+                    .map_err(|error| fail(format!("{:?}", production_class(error))))?;
+                prop_assert_eq!(admitted.metadata().object_count(), image.objects.len() as u64 + 1);
+                prop_assert_eq!(store.total_reads(), admitted.metadata().object_count() - 1);
+                for digest in image.objects.keys() {
+                    prop_assert_eq!(store.read_count(*digest), 1);
+                }
+                if !history.is_empty() {
+                    prop_assert_eq!(
+                        digest_only_memoized_count(&image.objects, image.root),
+                        model_count_by_depth(&image.objects, image.root)
+                    );
+                }
+                Ok(())
+            },
+        )
+        .expect("valid radix histories are read once");
+}
+
+type GraphNodeSpec = (usize, u8, u8, u64, Vec<(u8, usize)>);
+
+fn arbitrary_graph_strategy() -> impl Strategy<Value = Vec<GraphNodeSpec>> {
+    prop::collection::vec(
+        (
+            prop_oneof![
+                Just(0_usize),
+                Just(6_usize),
+                Just(7_usize),
+                Just(40_usize),
+                Just(46_usize),
+                Just(47_usize),
+                Just(48_usize),
+                0_usize..=49
+            ],
+            any::<u8>(),
+            0_u8..6,
+            prop_oneof![Just(31_u64), Just(50_u64), Just(u64::MAX), any::<u64>()],
+            prop::collection::vec((any::<u8>(), any::<usize>()), 0..=5),
+        ),
+        1..=10,
+    )
+}
+
+fn endpoint_bytes(choice: u8, claim: u64, seed: u8) -> Vec<u8> {
+    match choice {
+        0 | 1 => vec![0],
+        2 => [&[3_u8][..], &claim.to_le_bytes()[..]].concat(),
+        3 => vec![1],
+        4 => vec![2],
+        _ => [&[4_u8][..], &reference_bytes(reference([seed; 32], 64))[..]].concat(),
+    }
+}
+
+/// An arbitrary graph of radix-domain objects: honest nodes may only point at
+/// earlier nodes or at a forged object stored under a digest that its own
+/// children reference.
+fn arbitrary_graph(specs: &[GraphNodeSpec], forged: [u8; 32]) -> (ObjectSet, Vec<ObjectRefV1>) {
+    let forged_len = (32 + 8 + 1 + 1 + 8 + 2 * 41) as u64;
+    let forged_reference = reference(forged, forged_len);
+    let forged_bytes = raw_radix_node(&[], &[0], &[
+        DagChild {
+            edge: 0,
+            target: forged_reference,
+        },
+        DagChild {
+            edge: 1,
+            target: forged_reference,
+        },
+    ]);
+    assert_eq!(forged_bytes.len() as u64, forged_len);
+    let mut objects = ObjectSet::new();
+    let mut references = Vec::with_capacity(specs.len() + 1);
+    references.push(forged_reference);
+    for (prefix_len, prefix_byte, endpoint, claim, children) in specs {
+        let children = children
+            .iter()
+            .map(|(edge, pick)| DagChild {
+                edge: *edge,
+                target: references[pick % references.len()],
+            })
+            .collect::<Vec<_>>();
+        let bytes = raw_radix_node(
+            &vec![*prefix_byte; *prefix_len],
+            &endpoint_bytes(*endpoint, *claim, *prefix_byte),
+            &children,
+        );
+        references.push(insert_object(&mut objects, bytes));
+    }
+    objects
+        .entry(forged_reference.digest())
+        .or_insert(forged_bytes);
+    (objects, references)
+}
+
+fn check_arbitrary_graph(
+    objects: &ObjectSet,
+    root: ObjectRefV1,
+    extra_count: u64,
+) -> Result<(), TestCaseError> {
+    let model_count = model_count_by_depth(objects, root);
+    let _ = memoized_count(objects, root);
+    let mut declared_counts = vec![0, 1, 2, extra_count];
+    if let Ok(count) = model_count {
+        if count <= ENUMERABLE_ENTRIES {
+            declared_counts.push(count);
+        }
+    }
+    for declared in declared_counts {
+        let Ok(anchor) = RetentionAnchorV2::new(model_current(), declared, root) else {
+            continue;
+        };
+        let store = tracing_store(objects);
+        let result = admit_retention_history_v2(&store, anchor);
+        for digest in objects.keys() {
+            prop_assert!(store.read_count(*digest) <= 1);
+        }
+        prop_assert!(store.total_reads() <= objects.len() as u64);
+        match result {
+            Ok(admitted) => {
+                prop_assert!(declared <= ENUMERABLE_ENTRIES);
+                let expected = reference_admission(objects, anchor)
+                    .map_err(|class| fail(format!("{class:?}")))?;
+                prop_assert_eq!(admitted.entries(), &expected[..]);
+            }
+            Err(RetentionRadixErrorV2::Refusal(RetentionRadixRefusalV2::CountMismatch {
+                counted,
+                ..
+            })) => prop_assert_eq!(model_count.clone(), Ok(counted)),
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn dual_retention_readers_are_total_on_arbitrary_bytes_and_graphs() {
+    runner(64)
+        .run(
+            &(
+                prop::collection::vec(any::<u8>(), 0..=256),
+                (history_strategy(6), retained_union(), any::<u8>()),
+                (any::<prop::sample::Index>(), 1_u8..=255, any::<prop::sample::Index>()),
+                prop::collection::vec(0_usize..64, 0..32),
+                (arbitrary_graph_strategy(), any::<[u8; 32]>(), any::<prop::sample::Index>()),
+                0_u64..=64,
+            ),
+            |(arbitrary, (history, union, seed), (position, flip, cut), widths, graph, extra)| {
+                let objects = reader_objects(&history, &union, seed);
+                let mut candidates = Vec::with_capacity(3 * objects.len() + 1);
+                candidates.push(arbitrary);
+                for valid in &objects {
+                    let mut flipped = valid.clone();
+                    flipped[position.index(valid.len())] ^= flip;
+                    candidates.push(flipped);
+                    candidates.push(valid[..cut.index(valid.len())].to_vec());
+                    let mut extended = valid.clone();
+                    extended.push(flip);
+                    candidates.push(extended);
+                }
+                for bytes in &candidates {
+                    let dual = dual_identity(bytes);
+                    prop_assert_eq!(
+                        CanonicalObjectKind::from_domain_prefix_for(bytes, RetentionReader::Dual),
+                        dual_domain_kind(bytes)
+                    );
+                    prop_assert_eq!(
+                        stream_identity(bytes, RetentionReader::Dual, &widths),
+                        dual.clone()
+                    );
+                    let declared = declared_reference(bytes);
+                    prop_assert_eq!(
+                        validate_object_for(declared, bytes, RetentionReader::Dual),
+                        expected_validation(&dual, declared)
+                    );
+                    if let Ok(view) = GenerationCheckpointDescriptorViewV1::parse_for(
+                        bytes,
+                        RetentionReader::Dual,
+                    ) {
+                        prop_assert_eq!(
+                            &encoded(&GenerationCheckpointDescriptorV1::from_view(view)),
+                            bytes
+                        );
+                    }
+                    if let Ok(anchor) = RetentionAnchorV2::parse(bytes) {
+                        prop_assert_eq!(&encoded(&anchor), bytes);
+                    }
+                    if let Ok(AppointedRetention::V2(anchor)) =
+                        AppointedRetention::parse(bytes, RetentionReader::Dual)
+                    {
+                        prop_assert_eq!(&encoded(&anchor), bytes);
+                    }
+                    let _ = CanonicalDagNodeView::parse_in_domain(
+                        bytes,
+                        RETENTION_RADIX_DOMAIN,
+                        RADIX_NODE_NAME,
+                    );
+                }
+
+                let (specs, forged, root) = graph;
+                let (objects, references) = arbitrary_graph(&specs, forged);
+                check_arbitrary_graph(&objects, references[root.index(references.len())], extra)?;
+                check_arbitrary_graph(&objects, references[0], extra)
+            },
+        )
+        .expect("dual retention readers are total");
+}
+
+/// Replace a V1 checkpoint source's retention manifest by the given anchor
+/// and radix objects under their stated references: DATA becomes the
+/// retained union plus the metadata, and the descriptor is re-sealed under
+/// the V2 inventory rule. A stated reference need not authenticate its bytes,
+/// so a fixture can carry a forged object into the durable pack.
+pub(super) fn v2_source_from_objects(
+    v1_source: &SyntheticCheckpointSource,
+    anchor: (ObjectRefV1, Vec<u8>),
+    radix_objects: impl IntoIterator<Item = (ObjectRefV1, Vec<u8>)>,
+) -> SyntheticCheckpointSource {
+    let descriptor = v1_source.descriptor;
+    let inventory = descriptor.inventory();
+    let manifest = descriptor.retention_manifest();
+    let anchor_reference = anchor.0;
+    let mut source = v1_source.clone();
+    source
+        .objects
+        .retain(|(reference, _)| *reference != manifest);
+    let mut present = source
+        .objects
+        .iter()
+        .map(|(reference, _)| reference.digest())
+        .collect::<BTreeSet<_>>();
+    let (mut metadata_objects, mut metadata_bytes) = (0_u64, 0_u64);
+    for (reference, bytes) in std::iter::once(anchor).chain(radix_objects) {
+        if present.insert(reference.digest()) {
+            metadata_objects += 1;
+            metadata_bytes += reference.encoded_len();
+            source.push_object((reference, bytes));
+        }
+    }
+    source.sort_objects_by_digest();
+    let data_bytes = source
+        .objects
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum::<u64>();
+    let mut builder = OrderedObjectInventoryBuilderV1::new(source.objects.len() as u64, data_bytes);
+    for (reference, _) in &source.objects {
+        builder
+            .push(*reference)
+            .expect("V2 DATA is strictly ordered");
+    }
+    let report = RetainedUnionClosureReportV1 {
+        distinct_objects: inventory.retained_union_objects(),
+        canonical_bytes: inventory.retained_union_canonical_bytes().get(),
+    };
+    let inventory = CheckpointObjectInventoryV1::from_test_ordered_v2(
+        report,
+        metadata_objects,
+        metadata_bytes,
+        builder.finish().expect("V2 DATA is complete"),
+    )
+    .expect("V2 DATA is the retained union plus the metadata");
+    source.descriptor = GenerationCheckpointDescriptorV1::from_test_inventory(
+        descriptor.profile_id(),
+        descriptor.state(),
+        anchor_reference,
+        descriptor.current_state_objects(),
+        descriptor.current_state_canonical_bytes().get(),
+        inventory,
+    )
+    .expect("the V2 descriptor satisfies the V2 inventory rule");
+    source
+}
+
+/// [`v2_source_from_objects`] with every reference computed from its bytes.
+pub(super) fn v2_source_from_parts(
+    v1_source: &SyntheticCheckpointSource,
+    anchor_bytes: Vec<u8>,
+    radix_objects: Vec<Vec<u8>>,
+) -> SyntheticCheckpointSource {
+    v2_source_from_objects(
+        v1_source,
+        (reference_of(&anchor_bytes), anchor_bytes),
+        radix_objects
+            .into_iter()
+            .map(|bytes| (reference_of(&bytes), bytes)),
+    )
+}
+
+fn history_of(historical: &[RetainedStateV1]) -> History {
+    let history = historical
+        .iter()
+        .map(|entry| (model_key(entry.state()), entry.canonical_bytes()))
+        .collect::<History>();
+    assert_eq!(history.len(), historical.len(), "a V2 history has distinct keys");
+    history
+}
+
+/// A V2 source over the given current state and history. Every historical
+/// manifest must already be in the V1 source's retained union.
+pub(super) fn v2_source_with_history(
+    v1_source: &SyntheticCheckpointSource,
+    current: RetainedStateV1,
+    historical: &[RetainedStateV1],
+) -> SyntheticCheckpointSource {
+    let history = history_of(historical);
+    let image = build_radix(&history);
+    let anchor = RetentionAnchorV2::new(current, history.len() as u64, image.root)
+        .expect("the anchor appoints its radix root");
+    v2_source_from_parts(v1_source, encoded(&anchor), image.objects.into_values().collect())
+}
+
+/// [`v2_source_with_history`] with the radix child reached along `path`
+/// replaced by `replacement(original)` and every ancestor re-encoded; the
+/// anchor keeps the declared count. Returns the source and the original
+/// child reference.
+pub(super) fn v2_source_with_radix_child(
+    v1_source: &SyntheticCheckpointSource,
+    current: RetainedStateV1,
+    historical: &[RetainedStateV1],
+    path: &[usize],
+    replacement: impl FnOnce(ObjectRefV1) -> ObjectRefV1,
+) -> (SyntheticCheckpointSource, ObjectRefV1) {
+    let history = history_of(historical);
+    let mut image = build_radix(&history);
+    let original = radix_occurrences(&image.objects, image.root)
+        .into_iter()
+        .find(|occurrence| occurrence.path == path)
+        .expect("the path reaches a radix node")
+        .reference;
+    let root = rewrite_radix_path(&mut image.objects, image.root, path, replacement(original));
+    let anchor = RetentionAnchorV2::new(current, history.len() as u64, root)
+        .expect("the anchor appoints its radix root");
+    let source =
+        v2_source_from_parts(v1_source, encoded(&anchor), image.objects.into_values().collect());
+    (source, original)
+}
+
+pub(super) fn v1_manifest_entries(
+    v1_source: &SyntheticCheckpointSource,
+) -> (RetainedStateV1, Vec<RetainedStateV1>) {
+    let manifest_reference = v1_source.descriptor.retention_manifest();
+    let (_, manifest_bytes) = v1_source
+        .objects
+        .iter()
+        .find(|(reference, _)| *reference == manifest_reference)
+        .expect("a V1 source carries its retention manifest");
+    let manifest =
+        RetentionManifestView::parse(manifest_bytes).expect("the V1 retention manifest parses");
+    let historical = manifest
+        .historical()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("a parsed V1 manifest's entries decode");
+    (manifest.current(), historical)
+}
+
+/// The V2 twin of a V1 checkpoint source: the same retained union and
+/// history, with the manifest replaced by an anchor over a radix image.
+pub(super) fn migrate_checkpoint_source_to_v2(
+    v1_source: &SyntheticCheckpointSource,
+) -> SyntheticCheckpointSource {
+    let (current, historical) = v1_manifest_entries(v1_source);
+    v2_source_with_history(v1_source, current, &historical)
+}
+
+/// Replace a V1 checkpoint source's retention manifest by the given bytes,
+/// which need not parse: DATA becomes the retained union plus the new
+/// manifest, and the descriptor is re-sealed under the V1 inventory rule.
+pub(super) fn v1_source_with_manifest(
+    v1_source: &SyntheticCheckpointSource,
+    manifest_bytes: Vec<u8>,
+) -> SyntheticCheckpointSource {
+    let descriptor = v1_source.descriptor;
+    let inventory = descriptor.inventory();
+    let old_manifest = descriptor.retention_manifest();
+    let manifest = reference_of(&manifest_bytes);
+    let mut source = v1_source.clone();
+    source
+        .objects
+        .retain(|(reference, _)| *reference != old_manifest);
+    source.push_object((manifest, manifest_bytes));
+    source.sort_objects_by_digest();
+    let data_bytes = source
+        .objects
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum::<u64>();
+    let mut builder = OrderedObjectInventoryBuilderV1::new(source.objects.len() as u64, data_bytes);
+    for (reference, _) in &source.objects {
+        builder
+            .push(*reference)
+            .expect("V1 DATA is strictly ordered");
+    }
+    let report = RetainedUnionClosureReportV1 {
+        distinct_objects: inventory.retained_union_objects(),
+        canonical_bytes: inventory.retained_union_canonical_bytes().get(),
+    };
+    let inventory = CheckpointObjectInventoryV1::from_test_ordered(
+        report,
+        manifest,
+        builder.finish().expect("V1 DATA is complete"),
+    )
+    .expect("V1 DATA is the retained union plus the manifest");
+    source.descriptor = GenerationCheckpointDescriptorV1::from_test_inventory(
+        descriptor.profile_id(),
+        descriptor.state(),
+        manifest,
+        descriptor.current_state_objects(),
+        descriptor.current_state_canonical_bytes().get(),
+        inventory,
+    )
+    .expect("the V1 descriptor satisfies the V1 inventory rule");
+    source
+}
+
+/// Every radix defect applied at its first applicable occurrence in the
+/// migrated image of a V1 source, as a durable V2 source together with the
+/// unit reader's refusal of the defective image. Stored bytes keep their
+/// digest-keyed references, so a forged object reaches the durable pack.
+pub(super) fn radix_defect_sources(
+    v1_source: &SyntheticCheckpointSource,
+) -> Vec<(RadixDefect, SyntheticCheckpointSource, RetentionRadixErrorV2<CanonicalFormatError>)> {
+    let (current, historical) = v1_manifest_entries(v1_source);
+    let history = history_of(&historical);
+    let image = build_radix(&history);
+    let anchor = RetentionAnchorV2::new(current, history.len() as u64, image.root)
+        .expect("the anchor appoints its radix root");
+    let occurrences = radix_occurrences(&image.objects, image.root);
+    let mut sources = Vec::with_capacity(RADIX_DEFECTS.len());
+    for defect in RADIX_DEFECTS {
+        let defective = occurrences
+            .iter()
+            .find_map(|occurrence| {
+                apply_radix_defect(&image.objects, anchor, defect, occurrence, 0)
+            })
+            .unwrap_or_else(|| panic!("{defect:?} applies to the fixture's radix image"));
+        let refusal = match admit_retention_history_v2(
+            &tracing_store(&defective.objects),
+            defective.anchor,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("the unit reader refuses {defect:?}"),
+        };
+        let anchor_bytes = encoded(&defective.anchor);
+        let objects = defective.objects.into_iter().map(|(digest, bytes)| {
+            let reference = ObjectRefV1::new(digest, bytes.len() as u64)
+                .expect("defective radix objects keep an envelope");
+            (reference, bytes)
+        });
+        let source =
+            v2_source_from_objects(v1_source, (reference_of(&anchor_bytes), anchor_bytes), objects);
+        sources.push((defect, source, refusal));
+    }
+    sources
 }

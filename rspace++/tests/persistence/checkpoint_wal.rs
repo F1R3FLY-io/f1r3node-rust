@@ -1,7 +1,14 @@
 use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 
-use super::support::{TestSemanticProfile, nonzero};
+use proptest::prelude::*;
+use proptest::test_runner::{TestCaseError, TestRunner};
+
+use super::property_support::independent_inventory_digest;
+use super::retention_v2_format_properties::{
+    migrate_checkpoint_source_to_v2, v2_source_from_parts,
+};
+use super::support::{TestSemanticProfile, nonzero, synthetic_ref};
 use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::checkpoint::{
@@ -16,7 +23,9 @@ use crate::rspace::persistence::durable::{
     PreparedGenerationCheckpointIndexVisitErrorV1,
 };
 use crate::rspace::persistence::retention::v2_format::{
-    GENERATION_CHECKPOINT_V2_DOMAIN, RetentionAnchorV2, empty_retention_radix_ref,
+    EMPTY_RETENTION_RADIX_NODE, GENERATION_CHECKPOINT_V2_DOMAIN, RETENTION_ANCHOR_CANONICAL_LEN,
+    RETENTION_METADATA_MIN_CANONICAL_BYTES, RETENTION_METADATA_MIN_OBJECTS, RetentionAnchorV2,
+    RetentionFormat, RetentionReader, empty_retention_radix_ref,
 };
 use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1,
@@ -28,12 +37,12 @@ use crate::rspace::persistence::wal::{
 };
 use crate::rspace::persistence::{
     COMMIT_DISCRIMINATOR_LEN_V1, CanonicalBlob, CanonicalBlobKind, CanonicalDagNode,
-    CanonicalEncode, CanonicalFormatError, CanonicalSink, CommitPublicationV1, CommitRecordKindV1,
-    DagChild, EndpointValue, LegacyHistoryRoot, LogPackAddress, LogPackDecodeLimits,
-    LogPackFormatError, LogPackSequence, ObjectDigest, ObjectRefV1, PREPARE_DISCRIMINATOR_LEN_V1,
-    PhysicalDigest, PrepareRecordKindV1, RetainedStateV1, RetentionManifestV1, SemanticProfileId,
-    SemanticRoots, SemanticStateManifestV1, StateVersionV1, StoreId, decode_commit_kind_v1,
-    decode_prepare_kind_v1,
+    CanonicalEncode, CanonicalFormatError, CanonicalObjectKind, CanonicalSink, CommitPublicationV1,
+    CommitRecordKindV1, DagChild, EndpointValue, LegacyHistoryRoot, LogPackAddress,
+    LogPackDecodeLimits, LogPackFormatError, LogPackSequence, ObjectDigest, ObjectRefV1,
+    PREPARE_DISCRIMINATOR_LEN_V1, PhysicalDigest, PrepareRecordKindV1, RetainedStateV1,
+    RetentionManifestV1, SemanticProfileId, SemanticRoots, SemanticStateManifestV1, StateVersionV1,
+    StoreId, decode_commit_kind_v1, decode_prepare_kind_v1,
 };
 use crate::rspace::rho_path::RhoPathV1;
 use crate::rspace::serializers::serializers::{
@@ -484,7 +493,7 @@ pub(super) fn fixture_with_retained_union_cardinality(
     SyntheticCheckpointSource::new(descriptor, objects)
 }
 
-fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource {
+pub(super) fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource {
     fixture_with_root_and_profile(root, PROFILE)
 }
 
@@ -1707,4 +1716,610 @@ fn v1_checkpoint_records_refuse_the_frozen_v2_descriptor() {
             Some(LogPackFormatError::Checkpoint(expected))
         );
     }
+}
+
+const PREPARE_DESCRIPTOR_EXTENT: std::ops::Range<usize> = 64..280;
+const COMMIT_DESCRIPTOR_EXTENT: std::ops::Range<usize> = 152..368;
+const COMMIT_INDEX_TAIL_OFFSET: usize = 368;
+const DESCRIPTOR_VERSION_OFFSET: usize = 16;
+const DESCRIPTOR_RETENTION_OFFSET: usize = 96;
+const DESCRIPTOR_DATA_OBJECTS_OFFSET: usize = 168;
+const DESCRIPTOR_DATA_BYTES_OFFSET: usize = 176;
+
+/// Every accessor of one checkpoint COMMIT view, in record order.
+type CommitViewFields = (
+    LogPackSequence,
+    StoreId,
+    PhysicalDigest,
+    LogPackAddress,
+    PhysicalDigest,
+    GenerationCheckpointDescriptorViewV1,
+    CommitPublicationV1,
+    PhysicalDigest,
+);
+
+type ReaderOutcome = (
+    Result<GenerationCheckpointDescriptorViewV1, GenerationCheckpointErrorV1>,
+    Result<GenerationCheckpointPrepareIdentityV1, LogPackFormatError>,
+    Result<CommitViewFields, LogPackFormatError>,
+);
+
+/// The unchanged strict entry points, and the two retention readers.
+#[derive(Clone, Copy, Debug)]
+enum RecordReader {
+    Strict,
+    V1Only,
+    Dual,
+}
+
+impl RecordReader {
+    const ALL: [Self; 3] = [Self::Strict, Self::V1Only, Self::Dual];
+
+    fn descriptor(
+        self,
+        bytes: &[u8],
+    ) -> Result<GenerationCheckpointDescriptorViewV1, GenerationCheckpointErrorV1> {
+        match self {
+            Self::Strict => GenerationCheckpointDescriptorViewV1::parse(bytes),
+            Self::V1Only => {
+                GenerationCheckpointDescriptorViewV1::parse_for(bytes, RetentionReader::V1Only)
+            }
+            Self::Dual => {
+                GenerationCheckpointDescriptorViewV1::parse_for(bytes, RetentionReader::Dual)
+            }
+        }
+    }
+
+    fn prepare(
+        self,
+        bytes: &[u8],
+    ) -> Result<GenerationCheckpointPrepareIdentityV1, LogPackFormatError> {
+        let limits = LogPackDecodeLimits::UNBOUNDED;
+        match self {
+            Self::Strict => GenerationCheckpointPrepareRecordViewV1::parse(bytes, limits),
+            Self::V1Only => GenerationCheckpointPrepareRecordViewV1::parse_for(
+                bytes,
+                limits,
+                RetentionReader::V1Only,
+            ),
+            Self::Dual => GenerationCheckpointPrepareRecordViewV1::parse_for(
+                bytes,
+                limits,
+                RetentionReader::Dual,
+            ),
+        }
+        .map(GenerationCheckpointPrepareIdentityV1::from_record_view)
+    }
+
+    fn commit(self, bytes: &[u8]) -> Result<CommitViewFields, LogPackFormatError> {
+        match self {
+            Self::Strict => GenerationCheckpointCommitViewV1::parse(bytes),
+            Self::V1Only => {
+                GenerationCheckpointCommitViewV1::parse_for(bytes, RetentionReader::V1Only)
+            }
+            Self::Dual => GenerationCheckpointCommitViewV1::parse_for(bytes, RetentionReader::Dual),
+        }
+        .map(|view| {
+            (
+                view.sequence(),
+                view.store_id(),
+                view.previous_commit(),
+                view.prepare_address(),
+                view.prepare_digest(),
+                view.descriptor(),
+                view.publication(),
+                view.digest(),
+            )
+        })
+    }
+
+    fn read(self, images: &CheckpointRecordImages) -> ReaderOutcome {
+        (
+            self.descriptor(&images.descriptor),
+            self.prepare(&images.prepare),
+            self.commit(&images.commit),
+        )
+    }
+}
+
+/// A checkpoint's descriptor and the PREPARE and COMMIT records embedding it.
+#[derive(Clone)]
+struct CheckpointRecordImages {
+    descriptor: Vec<u8>,
+    prepare: Vec<u8>,
+    commit: Vec<u8>,
+    writer_identity: GenerationCheckpointPrepareIdentityV1,
+}
+
+impl CheckpointRecordImages {
+    fn of(source: &SyntheticCheckpointSource) -> Self {
+        let (prepare, writer_identity) = encode_checkpoint_with_identity(source);
+        let (commit, ..) = checkpoint_commit_fixture(source);
+        Self {
+            descriptor: prepare[PREPARE_DESCRIPTOR_EXTENT].to_vec(),
+            prepare,
+            commit,
+            writer_identity,
+        }
+    }
+
+    /// Apply one descriptor edit to the descriptor and to both records, then
+    /// reseal the record checksums so the edit reaches the descriptor parser.
+    fn edited(&self, edit: impl Fn(&mut [u8])) -> Self {
+        let mut images = self.clone();
+        edit(&mut images.descriptor);
+        edit(&mut images.prepare[PREPARE_DESCRIPTOR_EXTENT]);
+        reseal_prepare(&mut images.prepare);
+        edit(&mut images.commit[COMMIT_DESCRIPTOR_EXTENT]);
+        rewrite_commit_crc(&mut images.commit);
+        images
+    }
+}
+
+fn prepare_record_len(descriptor: GenerationCheckpointDescriptorViewV1) -> u64 {
+    GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 +
+        40 * descriptor.data_objects() +
+        descriptor.data_canonical_bytes().get() +
+        8
+}
+
+fn index_tail(data_objects: u64) -> u64 { INDEX_HEADER_LEN_V1 + INDEX_RECORD_LEN_V1 * data_objects }
+
+fn reencoded(descriptor: GenerationCheckpointDescriptorViewV1) -> Vec<u8> {
+    GenerationCheckpointDescriptorV1::from_view(descriptor)
+        .try_canonical_bytes()
+        .expect("a parsed descriptor re-encodes")
+}
+
+fn invalid_v1_domain() -> GenerationCheckpointErrorV1 {
+    GenerationCheckpointErrorV1::Canonical(CanonicalFormatError::InvalidDomain {
+        expected: GENERATION_CHECKPOINT_DOMAIN,
+    })
+}
+
+fn check_v1_reader_parity(images: &CheckpointRecordImages) -> Result<(), TestCaseError> {
+    let strict = RecordReader::Strict.read(images);
+    let (descriptor, prepare, commit) = &strict;
+    prop_assert_eq!(descriptor.as_ref().map(|view| view.format()), Ok(RetentionFormat::V1));
+    prop_assert_eq!(prepare, &Ok(images.writer_identity));
+    prop_assert!(commit.is_ok(), "strict COMMIT refusal: {:?}", commit);
+    for reader in [RecordReader::V1Only, RecordReader::Dual] {
+        prop_assert_eq!(&reader.read(images), &strict, "{:?}", reader);
+    }
+    Ok(())
+}
+
+fn check_shared_refusal(
+    images: &CheckpointRecordImages,
+    reader: RecordReader,
+    expected: &GenerationCheckpointErrorV1,
+) -> Result<(), TestCaseError> {
+    let (descriptor, prepare, commit) = reader.read(images);
+    prop_assert_eq!(descriptor.err(), Some(expected.clone()), "{:?} descriptor", reader);
+    prop_assert_eq!(
+        prepare.err(),
+        Some(LogPackFormatError::Checkpoint(expected.clone())),
+        "{:?} PREPARE",
+        reader
+    );
+    prop_assert_eq!(
+        commit.err(),
+        Some(LogPackFormatError::Checkpoint(expected.clone())),
+        "{:?} COMMIT",
+        reader
+    );
+    Ok(())
+}
+
+/// V1Only is the strict reader; Dual is the strict reader outside the V2
+/// domain; and under every reader a record refuses exactly with its
+/// descriptor's refusal, or carries the descriptor the reader parsed.
+fn check_reader_composition(images: &CheckpointRecordImages) -> Result<(), TestCaseError> {
+    let strict = RecordReader::Strict.read(images);
+    prop_assert_eq!(&RecordReader::V1Only.read(images), &strict);
+    let dual = RecordReader::Dual.read(images);
+    if !images
+        .descriptor
+        .starts_with(GENERATION_CHECKPOINT_V2_DOMAIN)
+    {
+        prop_assert_eq!(&dual, &strict);
+    }
+    for (descriptor, prepare, commit) in [strict, dual] {
+        match descriptor {
+            Err(error) => {
+                prop_assert_eq!(prepare.err(), Some(LogPackFormatError::Checkpoint(error.clone())));
+                prop_assert_eq!(commit.err(), Some(LogPackFormatError::Checkpoint(error)));
+            }
+            Ok(view) => {
+                if let Ok(identity) = prepare {
+                    prop_assert_eq!(identity.descriptor().as_view(), view);
+                }
+                if let Ok(fields) = commit {
+                    prop_assert_eq!(fields.5, view);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_versioned_checkpoint_codec(
+    retained_union_objects: usize,
+    corrupted_offset: usize,
+    corruption: u8,
+) -> Result<(), TestCaseError> {
+    let v1_source = fixture_with_retained_union_cardinality(retained_union_objects);
+    let v2_source = migrate_checkpoint_source_to_v2(&v1_source);
+    let v1 = CheckpointRecordImages::of(&v1_source);
+    let v2 = CheckpointRecordImages::of(&v2_source);
+    check_v1_reader_parity(&v1)?;
+
+    let manifest = v1_source.descriptor.retention_manifest();
+    let retained = v1_source
+        .objects
+        .iter()
+        .map(|(reference, _)| *reference)
+        .filter(|reference| *reference != manifest)
+        .collect::<Vec<_>>();
+    let retained_digests = retained
+        .iter()
+        .map(|reference| reference.digest())
+        .collect::<BTreeSet<_>>();
+    let metadata = v2_source
+        .objects
+        .iter()
+        .map(|(reference, _)| *reference)
+        .filter(|reference| !retained_digests.contains(&reference.digest()))
+        .collect::<Vec<_>>();
+    let canonical_bytes = |references: &[ObjectRefV1]| {
+        references
+            .iter()
+            .map(|reference| reference.encoded_len())
+            .sum::<u64>()
+    };
+    let mut merged = Vec::with_capacity(retained.len() + metadata.len());
+    merged.extend_from_slice(&retained);
+    merged.extend_from_slice(&metadata);
+    merged.sort_unstable_by_key(|reference| reference.digest());
+    prop_assert!(metadata.len() as u64 >= RETENTION_METADATA_MIN_OBJECTS);
+    prop_assert!(canonical_bytes(&metadata) >= RETENTION_METADATA_MIN_CANONICAL_BYTES);
+    prop_assert!(
+        merged
+            .windows(2)
+            .all(|pair| pair[0].digest() < pair[1].digest())
+    );
+
+    let prepare = match GenerationCheckpointPrepareRecordViewV1::parse_for(
+        &v2.prepare,
+        LogPackDecodeLimits::UNBOUNDED,
+        RetentionReader::Dual,
+    ) {
+        Ok(prepare) => prepare,
+        Err(error) => {
+            return Err(TestCaseError::fail(format!("dual PREPARE refusal: {error:?}")));
+        }
+    };
+    let listed = prepare
+        .objects()
+        .map(|object| object.reference())
+        .collect::<Vec<_>>();
+    prop_assert_eq!(&listed, &merged);
+    let descriptor = prepare.preflight().descriptor();
+    prop_assert_eq!(descriptor.format(), RetentionFormat::V2);
+    prop_assert_eq!(descriptor.retention_manifest().encoded_len(), RETENTION_ANCHOR_CANONICAL_LEN);
+    prop_assert_eq!(descriptor.retained_union_objects(), retained.len() as u64);
+    prop_assert_eq!(descriptor.retained_union_canonical_bytes().get(), canonical_bytes(&retained));
+    prop_assert_eq!(descriptor.data_objects(), merged.len() as u64);
+    prop_assert_eq!(
+        descriptor.data_canonical_bytes().get(),
+        canonical_bytes(&retained) + canonical_bytes(&metadata)
+    );
+    prop_assert_eq!(descriptor.ordered_digest(), independent_inventory_digest(&merged));
+    prop_assert_eq!(reencoded(descriptor), v2.descriptor.clone());
+    prop_assert_eq!(
+        GenerationCheckpointPrepareIdentityV1::from_record_view(prepare),
+        v2.writer_identity
+    );
+    let commit =
+        match GenerationCheckpointCommitViewV1::parse_for(&v2.commit, RetentionReader::Dual) {
+            Ok(commit) => commit,
+            Err(error) => {
+                return Err(TestCaseError::fail(format!("dual COMMIT refusal: {error:?}")));
+            }
+        };
+    prop_assert_eq!(commit.descriptor(), descriptor);
+    prop_assert_eq!(
+        commit.publication().durable_index_tail(),
+        index_tail(descriptor.data_objects())
+    );
+    prop_assert_eq!(commit.verify_prepare(v2.writer_identity), Ok(()));
+    for reader in [RecordReader::Strict, RecordReader::V1Only] {
+        check_shared_refusal(&v2, reader, &invalid_v1_domain())?;
+    }
+
+    let v2_under_v1_domain =
+        v2.edited(|bytes| bytes[..16].copy_from_slice(GENERATION_CHECKPOINT_DOMAIN));
+    let plus_one_refusal = GenerationCheckpointErrorV1::InventoryIncoherent {
+        expected_objects: retained.len() as u64 + 1,
+        actual_objects: descriptor.data_objects(),
+        expected_bytes: canonical_bytes(&retained) + RETENTION_ANCHOR_CANONICAL_LEN,
+        actual_bytes: descriptor.data_canonical_bytes().get(),
+    };
+    for reader in RecordReader::ALL {
+        check_shared_refusal(&v2_under_v1_domain, reader, &plus_one_refusal)?;
+    }
+
+    let historical_states = (retained_union_objects - 2) as u64;
+    prop_assert_eq!(manifest.encoded_len(), 96 + 56 * historical_states);
+    let v1_under_v2_domain =
+        v1.edited(|bytes| bytes[..16].copy_from_slice(GENERATION_CHECKPOINT_V2_DOMAIN));
+    check_shared_refusal(
+        &v1_under_v2_domain,
+        RecordReader::Dual,
+        &GenerationCheckpointErrorV1::RetentionAnchorLength {
+            actual: manifest.encoded_len(),
+        },
+    )?;
+    for reader in [RecordReader::Strict, RecordReader::V1Only] {
+        check_shared_refusal(&v1_under_v2_domain, reader, &invalid_v1_domain())?;
+    }
+
+    let mut v1_sized_tail = v2.commit.clone();
+    replace_u64(
+        &mut v1_sized_tail,
+        COMMIT_INDEX_TAIL_OFFSET,
+        index_tail(retained.len() as u64 + 1),
+    );
+    rewrite_commit_crc(&mut v1_sized_tail);
+    prop_assert_eq!(
+        RecordReader::Dual.commit(&v1_sized_tail).err(),
+        Some(LogPackFormatError::CheckpointIndexTail {
+            expected: index_tail(descriptor.data_objects()),
+            actual: index_tail(retained.len() as u64 + 1),
+        })
+    );
+
+    for images in [&v1, &v2] {
+        check_reader_composition(&images.edited(|bytes| bytes[corrupted_offset] ^= corruption))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn versioned_checkpoint_codec_accepts_v2_inventory_only_under_the_dual_reader() {
+    for source in [fixture(), semantic_fixture(), historically_larger_semantic_fixture().0] {
+        check_v1_reader_parity(&CheckpointRecordImages::of(&source))
+            .expect("every reader parses a V1 checkpoint identically");
+    }
+
+    let source = fixture();
+    let v1 = CheckpointRecordImages::of(&source);
+    let inventory = source.descriptor.inventory();
+    let retained_objects = inventory.retained_union_objects();
+    let retained_bytes = inventory.retained_union_canonical_bytes().get();
+    let manifest_len = source.descriptor.retention_manifest().encoded_len();
+    assert_eq!(manifest_len, 96);
+    let current = RetainedStateV1::new(
+        source.descriptor.state(),
+        source.descriptor.current_state_canonical_bytes().get(),
+    )
+    .expect("the fixture's current closure covers its manifest");
+    let anchor = RetentionAnchorV2::new(current, 0, empty_retention_radix_ref())
+        .expect("an empty history appoints the empty radix node")
+        .object_ref();
+
+    let retagged = v1.edited(|bytes| bytes[..16].copy_from_slice(GENERATION_CHECKPOINT_V2_DOMAIN));
+    let appointed = v1.edited(|bytes| {
+        bytes[DESCRIPTOR_RETENTION_OFFSET..DESCRIPTOR_RETENTION_OFFSET + 32]
+            .copy_from_slice(anchor.digest().as_bytes());
+        replace_u64(bytes, DESCRIPTOR_RETENTION_OFFSET + 32, anchor.encoded_len());
+        replace_u64(
+            bytes,
+            DESCRIPTOR_DATA_OBJECTS_OFFSET,
+            retained_objects + RETENTION_METADATA_MIN_OBJECTS,
+        );
+        replace_u64(
+            bytes,
+            DESCRIPTOR_DATA_BYTES_OFFSET,
+            retained_bytes + RETENTION_METADATA_MIN_CANONICAL_BYTES,
+        );
+    });
+    let both =
+        appointed.edited(|bytes| bytes[..16].copy_from_slice(GENERATION_CHECKPOINT_V2_DOMAIN));
+    let incoherent = GenerationCheckpointErrorV1::InventoryIncoherent {
+        expected_objects: retained_objects + 1,
+        actual_objects: retained_objects + RETENTION_METADATA_MIN_OBJECTS,
+        expected_bytes: retained_bytes + anchor.encoded_len(),
+        actual_bytes: retained_bytes + RETENTION_METADATA_MIN_CANONICAL_BYTES,
+    };
+    for reader in [RecordReader::Strict, RecordReader::V1Only] {
+        check_shared_refusal(&retagged, reader, &invalid_v1_domain())
+            .expect("strict readers refuse the V2 domain");
+        check_shared_refusal(&both, reader, &invalid_v1_domain())
+            .expect("strict readers refuse the V2 domain");
+    }
+    for reader in RecordReader::ALL {
+        check_shared_refusal(&appointed, reader, &incoherent)
+            .expect("the V1 domain keeps the V1 inventory rule under every reader");
+    }
+    check_shared_refusal(
+        &retagged,
+        RecordReader::Dual,
+        &GenerationCheckpointErrorV1::RetentionAnchorLength {
+            actual: manifest_len,
+        },
+    )
+    .expect("a retagged V1 descriptor appoints a manifest, never an anchor");
+    let (descriptor, prepare, commit) = RecordReader::Dual.read(&both);
+    let view = descriptor.expect("the dual reader accepts the appointed V2 descriptor");
+    assert_eq!(view.format(), RetentionFormat::V2);
+    assert_eq!(reencoded(view), both.descriptor);
+    assert_eq!(prepare_record_len(view), both.prepare.len() as u64 + 40 + 186 - manifest_len);
+    assert_eq!(
+        prepare.err(),
+        Some(LogPackFormatError::LengthMismatch {
+            declared: both.prepare.len() as u64,
+            actual: prepare_record_len(view),
+        })
+    );
+    assert_eq!(
+        commit.err(),
+        Some(LogPackFormatError::CheckpointIndexTail {
+            expected: index_tail(view.data_objects()),
+            actual: index_tail(retained_objects + 1),
+        })
+    );
+
+    let migrated = CheckpointRecordImages::of(&migrate_checkpoint_source_to_v2(&source));
+    let minimum = RecordReader::Dual
+        .descriptor(&migrated.descriptor)
+        .expect("the migrated minimum parses under the dual reader");
+    assert_eq!(minimum.format(), RetentionFormat::V2);
+    assert_eq!(minimum.retention_manifest(), anchor);
+    assert_eq!(minimum.retained_union_objects(), retained_objects);
+    assert_eq!(minimum.retained_union_canonical_bytes().get(), retained_bytes);
+    let data_objects = minimum.data_objects();
+    let data_bytes = minimum.data_canonical_bytes().get();
+    assert_eq!(data_objects, retained_objects + RETENTION_METADATA_MIN_OBJECTS);
+    assert_eq!(data_bytes, retained_bytes + RETENTION_METADATA_MIN_CANONICAL_BYTES);
+    assert_eq!(reencoded(minimum), migrated.descriptor);
+    let below =
+        |data_objects, data_bytes| GenerationCheckpointErrorV1::RetentionMetadataBelowMinimum {
+            data_objects,
+            retained_objects,
+            data_bytes,
+            retained_bytes,
+        };
+    let edits = [
+        (DESCRIPTOR_DATA_OBJECTS_OFFSET, data_objects + 1, Ok(())),
+        (DESCRIPTOR_DATA_BYTES_OFFSET, data_bytes + 1, Ok(())),
+        (
+            DESCRIPTOR_DATA_OBJECTS_OFFSET,
+            data_objects - 1,
+            Err(below(data_objects - 1, data_bytes)),
+        ),
+        (DESCRIPTOR_DATA_BYTES_OFFSET, data_bytes - 1, Err(below(data_objects, data_bytes - 1))),
+        (
+            DESCRIPTOR_DATA_OBJECTS_OFFSET,
+            retained_objects - 1,
+            Err(below(retained_objects - 1, data_bytes)),
+        ),
+        (
+            DESCRIPTOR_DATA_BYTES_OFFSET,
+            retained_bytes - 1,
+            Err(below(data_objects, retained_bytes - 1)),
+        ),
+        (
+            DESCRIPTOR_RETENTION_OFFSET + 32,
+            RETENTION_ANCHOR_CANONICAL_LEN - 1,
+            Err(GenerationCheckpointErrorV1::RetentionAnchorLength {
+                actual: RETENTION_ANCHOR_CANONICAL_LEN - 1,
+            }),
+        ),
+        (
+            DESCRIPTOR_RETENTION_OFFSET + 32,
+            RETENTION_ANCHOR_CANONICAL_LEN + 1,
+            Err(GenerationCheckpointErrorV1::RetentionAnchorLength {
+                actual: RETENTION_ANCHOR_CANONICAL_LEN + 1,
+            }),
+        ),
+        (
+            DESCRIPTOR_VERSION_OFFSET,
+            2,
+            Err(GenerationCheckpointErrorV1::Canonical(CanonicalFormatError::UnsupportedVersion {
+                domain: "RSpace generation checkpoint V2",
+                version: 2,
+            })),
+        ),
+    ];
+    for (offset, value, expected) in edits {
+        let edited = migrated.edited(|bytes| replace_u64(bytes, offset, value));
+        for reader in [RecordReader::Strict, RecordReader::V1Only] {
+            check_shared_refusal(&edited, reader, &invalid_v1_domain())
+                .expect("strict readers refuse every V2 descriptor edit at the domain");
+        }
+        check_reader_composition(&edited).expect("records refuse with their descriptor");
+        match (RecordReader::Dual.read(&edited), expected) {
+            ((Err(error), _, _), Err(expected)) => assert_eq!(error, expected),
+            ((Ok(view), prepare, commit), Ok(())) => {
+                assert_eq!(reencoded(view), edited.descriptor);
+                assert_eq!(
+                    prepare.err(),
+                    Some(LogPackFormatError::LengthMismatch {
+                        declared: edited.prepare.len() as u64,
+                        actual: prepare_record_len(view),
+                    })
+                );
+                if view.data_objects() == data_objects {
+                    let commit = GenerationCheckpointCommitViewV1::parse_for(
+                        &edited.commit,
+                        RetentionReader::Dual,
+                    )
+                    .expect("a COMMIT lower-bounds the metadata it does not carry");
+                    assert_eq!(
+                        commit.verify_prepare(migrated.writer_identity),
+                        Err(LogPackFormatError::CheckpointDescriptorMismatch)
+                    );
+                } else {
+                    assert_eq!(
+                        commit.err(),
+                        Some(LogPackFormatError::CheckpointIndexTail {
+                            expected: index_tail(view.data_objects()),
+                            actual: index_tail(data_objects),
+                        })
+                    );
+                }
+            }
+            (outcome, expected) => {
+                panic!(
+                    "descriptor offset {offset} set to {value}: {outcome:?} against {expected:?}"
+                )
+            }
+        }
+    }
+
+    let impostor = CanonicalDagNode::new(vec![0xA5_u8; 4], EndpointValue::Absent, vec![
+        DagChild {
+            edge: 0x10,
+            target: synthetic_ref(0x10),
+        },
+        DagChild {
+            edge: 0x20,
+            target: synthetic_ref(0x20),
+        },
+    ])
+    .expect("a two-child node with an absent endpoint is canonical");
+    let (impostor_reference, impostor_bytes) = encoded(&impostor);
+    assert_eq!(impostor_reference.encoded_len(), RETENTION_ANCHOR_CANONICAL_LEN);
+    let impostor_images =
+        CheckpointRecordImages::of(&v2_source_from_parts(&source, impostor_bytes, vec![
+            EMPTY_RETENTION_RADIX_NODE.to_vec(),
+        ]));
+    assert!(
+        RecordReader::Dual
+            .descriptor(&impostor_images.descriptor)
+            .is_ok()
+    );
+    assert_eq!(
+        RecordReader::Dual.prepare(&impostor_images.prepare).err(),
+        Some(LogPackFormatError::CheckpointDesignatedObjectKind {
+            role: "retention anchor",
+            reference: impostor_reference,
+            expected: CanonicalObjectKind::RetentionAnchor,
+            actual: CanonicalObjectKind::DagNode,
+        })
+    );
+
+    TestRunner::new(ProptestConfig {
+        cases: 64,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    })
+    .run(
+        &(2_usize..=10, 0..PREPARE_DESCRIPTOR_EXTENT.len(), 1_u8..=u8::MAX),
+        |(retained_union_objects, corrupted_offset, corruption)| {
+            check_versioned_checkpoint_codec(retained_union_objects, corrupted_offset, corruption)
+        },
+    )
+    .expect("the versioned checkpoint codec refines the V2 inventory rule");
 }

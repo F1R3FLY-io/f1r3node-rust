@@ -15,6 +15,10 @@ pub(crate) const EMPTY_RETENTION_RADIX_NODE: [u8; EMPTY_RETENTION_RADIX_NODE_LEN
     empty_retention_radix_node();
 pub(crate) const RETENTION_ANCHOR_CANONICAL_LEN: u64 = OBJECT_ENVELOPE_HEADER_LEN + ANCHOR_BODY_LEN;
 
+pub(crate) const RETENTION_METADATA_MIN_OBJECTS: u64 = 2;
+pub(crate) const RETENTION_METADATA_MIN_CANONICAL_BYTES: u64 =
+    RETENTION_ANCHOR_CANONICAL_LEN + EMPTY_RETENTION_RADIX_NODE_LEN as u64;
+
 const EMPTY_RADIX_BODY_LEN: u64 = 8 + 1 + 1 + 8;
 const ANCHOR_BODY_LEN: u64 = STATE_ENTRY_LEN + 8 + OBJECT_DIGEST_LEN as u64 + 8;
 
@@ -22,6 +26,25 @@ const _: () = assert!(
     EMPTY_RETENTION_RADIX_NODE_LEN as u64 == OBJECT_ENVELOPE_HEADER_LEN + EMPTY_RADIX_BODY_LEN
 );
 const _: () = assert!(RETENTION_ANCHOR_CANONICAL_LEN == 136);
+const _: () = assert!(RETENTION_METADATA_MIN_CANONICAL_BYTES == 186);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetentionFormat {
+    V1,
+    V2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetentionReader {
+    V1Only,
+    Dual,
+}
+
+impl RetentionReader {
+    pub(crate) const fn admits(self, format: RetentionFormat) -> bool {
+        matches!((self, format), (_, RetentionFormat::V1) | (Self::Dual, RetentionFormat::V2))
+    }
+}
 
 const fn empty_retention_radix_node() -> [u8; EMPTY_RETENTION_RADIX_NODE_LEN] {
     let mut bytes = [0_u8; EMPTY_RETENTION_RADIX_NODE_LEN];

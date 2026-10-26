@@ -27,6 +27,7 @@ use crate::rspace::persistence::durable::{
     INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1,
 };
 use crate::rspace::persistence::physical::{PhysicalDigest, StoreId};
+use crate::rspace::persistence::retention::v2_format::RetentionReader;
 
 const CHECKPOINT_COMMIT_AUTH_LEN: usize = 392;
 pub(crate) const GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1: u64 =
@@ -133,6 +134,13 @@ pub(crate) struct GenerationCheckpointCommitViewV1 {
 
 impl GenerationCheckpointCommitViewV1 {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, LogPackFormatError> {
+        Self::parse_for(bytes, RetentionReader::V1Only)
+    }
+
+    pub(crate) fn parse_for(
+        bytes: &[u8],
+        reader: RetentionReader,
+    ) -> Result<Self, LogPackFormatError> {
         let actual = checked_len(bytes.len(), "checkpoint COMMIT record")?;
         if actual != GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1 {
             return Err(LogPackFormatError::LengthMismatch {
@@ -173,8 +181,9 @@ impl GenerationCheckpointCommitViewV1 {
         let prepare_address =
             LogPackAddress::new(cursor.read_u64()?, cursor.read_u64()?, cursor.read_u64()?)?;
         let prepare_digest = read_physical_digest(&mut cursor)?;
-        let descriptor = GenerationCheckpointDescriptorViewV1::parse(
+        let descriptor = GenerationCheckpointDescriptorViewV1::parse_for(
             cursor.read_exact(GENERATION_CHECKPOINT_CANONICAL_LEN as usize)?,
+            reader,
         )?;
         let durable_index_tail = cursor.read_u64()?;
         let first_live_pack = cursor.read_u64()?;

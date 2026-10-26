@@ -38,7 +38,16 @@ Import ListNotations.
     and the current and retained root counters of [CheckedDomainComposition];
   - a transfer-session binding that includes the retention format separates
     the V1 and V2 representations of one state, while a binding over the state
-    version alone resumes across formats.
+    version alone resumes across formats;
+  - the cold reader may count before it enumerates: a successful count
+    guarantees an enumeration with exactly that many entries, while a count
+    without the inner-node shape check accepts an empty node below the root;
+  - a memoized count keyed by (object, remaining width) agrees with the
+    count, while a memo keyed by the object alone accepts a misplaced shared
+    leaf;
+  - duplicate-free data that includes a disjoint retained union and metadata
+    closure, with a matching count, is exactly their disjoint union, while
+    without disjointness the same checks accept an unauthenticated object.
 
   Old-reader refusal of a V2 slot without a stale fallback is a selection and
   recovery property; the TLA+ module [RSpaceRetentionV2Upgrade] checks it.
@@ -1477,6 +1486,479 @@ Theorem state_version_only_binding_mutant_resumes_across_formats :
     state_version_only_binding (DurableRepresentation state RetentionFormatV2 v2_reference).
 Proof. reflexivity. Qed.
 
+(** * Cold reader *)
+
+(** The cold reader admits a V2 history in two phases.  Phase one validates
+    the radix and counts its entry occurrences, reading each object at most
+    once and memoizing the count of an object at one remaining key width.
+    Only after the count equals the anchor's declared count does phase two
+    reserve exactly that many entries and enumerate them without further
+    reads.  This section proves that the count authorizes the enumeration,
+    that the memo must be keyed by the remaining width, and that count and
+    inclusion checks authenticate the disjoint union of the retained objects
+    and the metadata closure. *)
+
+Lemma count_children_with_ext :
+  forall (left right : nat -> option nat) children,
+    (forall edge child, In (edge, child) children -> left child = right child) ->
+    count_children_with left children = count_children_with right children.
+Proof.
+  intros left right children.
+  induction children as [|[edge child] rest IH]; intro same.
+  - reflexivity.
+  - cbn [count_children_with].
+    rewrite (same edge child (in_eq _ _)).
+    rewrite IH; [reflexivity|].
+    intros next target member. exact (same next target (in_cons _ _ _ member)).
+Qed.
+
+(** Fuel beyond the remaining width never changes a count: every inner step
+    strictly shortens the remaining width, so [S remaining] steps reach every
+    endpoint the count can reach. *)
+Lemma remaining_width_is_sufficient_fuel :
+  forall fuel other store remaining object,
+    S remaining <= fuel ->
+    S remaining <= other ->
+    radix_count fuel store remaining object = radix_count other store remaining object.
+Proof.
+  induction fuel as [|smaller IH]; intros other store remaining object enough other_enough.
+  - lia.
+  - destruct other as [|other_smaller]; [lia|].
+    cbn [radix_count].
+    destruct (lookup_radix_node store object) as [[prefix claim children]|];
+      [|reflexivity].
+    cbn [radix_prefix radix_claim radix_children].
+    destruct (Nat.compare_spec (length prefix) remaining) as [at_depth|below|above];
+      [reflexivity| |reflexivity].
+    destruct claim as [claim|]; [reflexivity|].
+    cbv beta iota.
+    destruct (edges_strictly_increasing children && (2 <=? length children));
+      [|reflexivity].
+    apply count_children_with_ext. intros edge child _.
+    apply IH; lia.
+Qed.
+
+Lemma count_children_with_unfolds :
+  forall (count_child : nat -> option nat) (unfold_child : nat -> option (list radix_leaf)),
+    (forall object count,
+        count_child object = Some count ->
+        exists leaves, unfold_child object = Some leaves /\ length leaves = count) ->
+    forall children count,
+      count_children_with count_child children = Some count ->
+      exists leaves,
+        unfold_children_with unfold_child children = Some leaves /\ length leaves = count.
+Proof.
+  intros count_child unfold_child child_unfolds children.
+  induction children as [|[edge child] rest IH]; intros count counted.
+  - cbn [count_children_with] in counted. injection counted as count_is. subst count.
+    exists []. split; reflexivity.
+  - cbn [count_children_with] in counted.
+    destruct (count_child child) as [here|] eqn:here_counted;
+      cbv beta iota in counted; [|discriminate counted].
+    destruct (count_children_with count_child rest) as [later|] eqn:later_counted;
+      cbv beta iota in counted; [|discriminate counted].
+    injection counted as count_is. subst count.
+    destruct (child_unfolds child here here_counted) as [here_leaves [here_unfolded here_length]].
+    destruct (IH later eq_refl) as [later_leaves [later_unfolded later_length]].
+    exists (map (prepend_leaf [edge]) here_leaves ++ later_leaves).
+    cbn [unfold_children_with]. rewrite here_unfolded, later_unfolded.
+    split; [reflexivity|]. rewrite length_app, length_map. lia.
+Qed.
+
+(** Capstone 16: a successful count guarantees that the enumeration succeeds
+    with exactly that many entries, so a reader that reserves the declared
+    count after the count check never reallocates and never enumerates an
+    unauthenticated radix. *)
+Theorem radix_count_success_unfolds_with_that_many_leaves :
+  forall fuel store remaining object count,
+    radix_count fuel store remaining object = Some count ->
+    exists leaves,
+      radix_unfold fuel store remaining object = Some leaves /\ length leaves = count.
+Proof.
+  induction fuel as [|smaller IH]; intros store remaining object count counted.
+  - discriminate counted.
+  - cbn [radix_count] in counted. cbn [radix_unfold].
+    destruct (lookup_radix_node store object) as [[prefix claim children]|];
+      cbv beta iota in counted |- *; [|discriminate counted].
+    cbn [radix_prefix radix_claim radix_children] in counted |- *.
+    destruct (Nat.compare (length prefix) remaining); cbv beta iota in counted |- *.
+    + destruct claim as [claim|]; destruct children as [|first rest];
+        cbv beta iota in counted |- *; try discriminate counted.
+      injection counted as count_is. subst count.
+      eexists. split; reflexivity.
+    + destruct claim as [claim|]; cbv beta iota in counted |- *; [discriminate counted|].
+      destruct (edges_strictly_increasing children && (2 <=? length children));
+        cbv beta iota in counted |- *; [|discriminate counted].
+      destruct (count_children_with_unfolds
+                  (radix_count smaller store (remaining - S (length prefix)))
+                  (radix_unfold smaller store (remaining - S (length prefix)))
+                  (IH store (remaining - S (length prefix)))
+                  children count counted)
+        as [leaves [unfolded leaves_length]].
+      rewrite unfolded. exists (map (prepend_leaf prefix) leaves).
+      split; [reflexivity|]. rewrite length_map. exact leaves_length.
+    + destruct claim as [claim|]; destruct children as [|first rest];
+        cbv beta iota in counted; discriminate counted.
+Qed.
+
+(** The shape-free mutant drops the inner-node shape check (strictly
+    increasing edges and at least two children), so an empty node below the
+    root counts as zero entries instead of refusing. *)
+Fixpoint shape_free_count_mutant
+    (fuel : nat) (store : list (nat * radix_node)) (remaining object : nat)
+    {struct fuel} : option nat :=
+  match fuel with
+  | 0 => None
+  | S smaller =>
+      match lookup_radix_node store object with
+      | None => None
+      | Some node =>
+          match Nat.compare (length (radix_prefix node)) remaining,
+                radix_claim node, radix_children node with
+          | Eq, Some _, [] => Some 1
+          | Lt, None, children =>
+              count_children_with
+                (shape_free_count_mutant smaller store
+                   (remaining - S (length (radix_prefix node))))
+                children
+          | _, _, _ => None
+          end
+      end
+  end.
+
+(** A root whose children are an empty node and a leaf with the 47-byte
+    suffix of a full key. *)
+Definition empty_child_store : list (nat * radix_node) :=
+  [(1, RadixNode [] None [(0, 2); (1, 3)]);
+   (2, RadixNode [] None []);
+   (3, RadixNode (repeat 0 47) (Some 50) [])].
+
+(** Capstone 17 (negative control): the shape-free count accepts a radix that
+    neither the count nor the enumeration accepts, so it would authorize an
+    enumeration that fails (it violates capstone 16). *)
+Theorem shape_free_count_mutant_counts_an_empty_node_below_the_root :
+  radix_count 49 empty_child_store retention_key_len 1 = None /\
+  radix_unfold 49 empty_child_store retention_key_len 1 = None /\
+  shape_free_count_mutant 49 empty_child_store retention_key_len 1 = Some 1.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** A memo entry ((object, remaining), count) records the count of one object
+    at one remaining key width. *)
+Definition count_memo : Type := list ((nat * nat) * nat).
+
+Fixpoint memo_lookup (memo : count_memo) (object remaining : nat) : option nat :=
+  match memo with
+  | [] => None
+  | ((candidate, width), count) :: rest =>
+      if Nat.eqb candidate object && Nat.eqb width remaining then Some count
+      else memo_lookup rest object remaining
+  end.
+
+(** [memo_count_children_with] counts the children from left to right and
+    threads the memo through them. *)
+Fixpoint memo_count_children_with {Memo : Type}
+    (count_child : Memo -> nat -> option (nat * Memo))
+    (memo : Memo) (children : list (nat * nat)) : option (nat * Memo) :=
+  match children with
+  | [] => Some (0, memo)
+  | (_, child) :: rest =>
+      match count_child memo child with
+      | None => None
+      | Some (here, after_child) =>
+          match memo_count_children_with count_child after_child rest with
+          | None => None
+          | Some (later, after_rest) => Some (here + later, after_rest)
+          end
+      end
+  end.
+
+Definition record_count (object remaining : nat) (computed : option (nat * count_memo))
+    : option (nat * count_memo) :=
+  match computed with
+  | Some (count, after) => Some (count, ((object, remaining), count) :: after)
+  | None => None
+  end.
+
+(** [memoized_radix_count] is the phase-one count of the cold reader: a memo
+    hit at the same object and remaining width returns the recorded count;
+    a miss computes the count as [radix_count] does and records it. *)
+Fixpoint memoized_radix_count
+    (fuel : nat) (store : list (nat * radix_node)) (memo : count_memo)
+    (remaining object : nat) {struct fuel} : option (nat * count_memo) :=
+  match fuel with
+  | 0 => None
+  | S smaller =>
+      match memo_lookup memo object remaining with
+      | Some count => Some (count, memo)
+      | None =>
+          record_count object remaining
+            match lookup_radix_node store object with
+            | None => None
+            | Some node =>
+                match Nat.compare (length (radix_prefix node)) remaining,
+                      radix_claim node, radix_children node with
+                | Eq, Some _, [] => Some (1, memo)
+                | Lt, None, children =>
+                    if edges_strictly_increasing children && (2 <=? length children) then
+                      memo_count_children_with
+                        (fun current child =>
+                           memoized_radix_count smaller store current
+                             (remaining - S (length (radix_prefix node))) child)
+                        memo children
+                    else None
+                | _, _, _ => None
+                end
+            end
+      end
+  end.
+
+(** A memo is sound when every recorded count is the count of its object at
+    its remaining width. *)
+Definition memo_sound (store : list (nat * radix_node)) (memo : count_memo) : Prop :=
+  forall object remaining count,
+    memo_lookup memo object remaining = Some count ->
+    radix_count (S remaining) store remaining object = Some count.
+
+(** A memoized result agrees with an expected count when both refuse, or both
+    succeed with the same count and the returned memo is sound. *)
+Definition agrees_with_count
+    (store : list (nat * radix_node)) (expected : option nat)
+    (result : option (nat * count_memo)) : Prop :=
+  match result with
+  | Some (count, memo) => expected = Some count /\ memo_sound store memo
+  | None => expected = None
+  end.
+
+Lemma memo_sound_extend :
+  forall store memo object remaining count,
+    memo_sound store memo ->
+    radix_count (S remaining) store remaining object = Some count ->
+    memo_sound store (((object, remaining), count) :: memo).
+Proof.
+  intros store memo object remaining count sound counted.
+  intros probe width found found_lookup. cbn [memo_lookup] in found_lookup.
+  destruct (Nat.eqb object probe && Nat.eqb remaining width) eqn:hit.
+  - apply andb_prop in hit as [same_object same_width].
+    apply Nat.eqb_eq in same_object. apply Nat.eqb_eq in same_width.
+    subst probe width. injection found_lookup as found_is. subst found. exact counted.
+  - exact (sound probe width found found_lookup).
+Qed.
+
+Lemma record_count_agrees :
+  forall store object remaining computed,
+    agrees_with_count store (radix_count (S remaining) store remaining object) computed ->
+    agrees_with_count store (radix_count (S remaining) store remaining object)
+      (record_count object remaining computed).
+Proof.
+  intros store object remaining [[count after]|] agrees;
+    cbn [record_count agrees_with_count] in agrees |- *.
+  - destruct agrees as [counted after_sound].
+    split; [exact counted|]. exact (memo_sound_extend store after object remaining count
+                                      after_sound counted).
+  - exact agrees.
+Qed.
+
+Lemma memo_count_children_with_agrees :
+  forall store width (count_child : count_memo -> nat -> option (nat * count_memo)),
+    (forall memo child,
+        memo_sound store memo ->
+        agrees_with_count store (radix_count (S width) store width child)
+          (count_child memo child)) ->
+    forall children memo,
+      memo_sound store memo ->
+      agrees_with_count store
+        (count_children_with (radix_count (S width) store width) children)
+        (memo_count_children_with count_child memo children).
+Proof.
+  intros store width count_child child_agrees children.
+  induction children as [|[edge child] rest IH]; intros memo sound.
+  - cbn [memo_count_children_with count_children_with agrees_with_count].
+    split; [reflexivity | exact sound].
+  - cbn [memo_count_children_with count_children_with].
+    pose proof (child_agrees memo child sound) as here_agrees.
+    destruct (count_child memo child) as [[here after_child]|];
+      cbn [agrees_with_count] in here_agrees.
+    + destruct here_agrees as [here_count after_child_sound].
+      rewrite here_count. cbv beta iota.
+      pose proof (IH after_child after_child_sound) as rest_agrees.
+      destruct (memo_count_children_with count_child after_child rest)
+        as [[later after_rest]|];
+        cbn [agrees_with_count] in rest_agrees |- *.
+      * destruct rest_agrees as [later_count after_rest_sound].
+        rewrite later_count. split; [reflexivity | exact after_rest_sound].
+      * rewrite rest_agrees. reflexivity.
+    + rewrite here_agrees. cbn [agrees_with_count]. reflexivity.
+Qed.
+
+(** Capstone 18: from a sound memo, the memoized count refuses exactly when
+    the count refuses, and otherwise returns the same count with a sound
+    memo.  Keying the memo by (object, remaining width) is what makes reuse
+    sound, because one object may be valid at one width and invalid at
+    another. *)
+Theorem memoized_radix_count_agrees_with_radix_count :
+  forall fuel store memo remaining object,
+    memo_sound store memo ->
+    S remaining <= fuel ->
+    agrees_with_count store (radix_count (S remaining) store remaining object)
+      (memoized_radix_count fuel store memo remaining object).
+Proof.
+  induction fuel as [|smaller IH]; intros store memo remaining object sound enough.
+  - lia.
+  - cbn [memoized_radix_count].
+    destruct (memo_lookup memo object remaining) as [cached|] eqn:cached_lookup.
+    + cbn [agrees_with_count].
+      split; [exact (sound object remaining cached cached_lookup) | exact sound].
+    + apply record_count_agrees.
+      cbn [radix_count].
+      destruct (lookup_radix_node store object) as [[prefix claim children]|];
+        cbn [agrees_with_count radix_prefix radix_claim radix_children]; [|reflexivity].
+      destruct (Nat.compare_spec (length prefix) remaining) as [at_depth|below|above].
+      * destruct claim as [claim|]; destruct children as [|first rest];
+          cbn [agrees_with_count]; try reflexivity.
+        split; [reflexivity | exact sound].
+      * destruct claim as [claim|]; cbn [agrees_with_count]; [reflexivity|].
+        destruct (edges_strictly_increasing children && (2 <=? length children));
+          cbn [agrees_with_count]; [|reflexivity].
+        rewrite (count_children_with_ext
+                   (radix_count remaining store (remaining - S (length prefix)))
+                   (radix_count (S (remaining - S (length prefix))) store
+                      (remaining - S (length prefix)))).
+        -- apply memo_count_children_with_agrees; [|exact sound].
+           intros current child current_sound.
+           apply IH; [exact current_sound | lia].
+        -- intros edge child _. apply remaining_width_is_sufficient_fuel; lia.
+      * destruct claim as [claim|]; destruct children as [|first rest];
+          cbn [agrees_with_count]; reflexivity.
+Qed.
+
+Fixpoint digest_memo_lookup (memo : list (nat * nat)) (object : nat) : option nat :=
+  match memo with
+  | [] => None
+  | (candidate, count) :: rest =>
+      if Nat.eqb candidate object then Some count else digest_memo_lookup rest object
+  end.
+
+(** The digest-only mutant keys its memo by the object alone, so it reuses a
+    count recorded at one remaining width at another width. *)
+Fixpoint digest_only_memo_mutant
+    (fuel : nat) (store : list (nat * radix_node)) (memo : list (nat * nat))
+    (remaining object : nat) {struct fuel} : option (nat * list (nat * nat)) :=
+  match fuel with
+  | 0 => None
+  | S smaller =>
+      match digest_memo_lookup memo object with
+      | Some count => Some (count, memo)
+      | None =>
+          match
+            match lookup_radix_node store object with
+            | None => None
+            | Some node =>
+                match Nat.compare (length (radix_prefix node)) remaining,
+                      radix_claim node, radix_children node with
+                | Eq, Some _, [] => Some (1, memo)
+                | Lt, None, children =>
+                    if edges_strictly_increasing children && (2 <=? length children) then
+                      memo_count_children_with
+                        (fun current child =>
+                           digest_only_memo_mutant smaller store current
+                             (remaining - S (length (radix_prefix node))) child)
+                        memo children
+                    else None
+                | _, _, _ => None
+                end
+            end
+          with
+          | Some (count, after) => Some (count, (object, count) :: after)
+          | None => None
+          end
+      end
+  end.
+
+(** Leaf object 2 holds a 47-byte suffix, so it is a valid endpoint below the
+    root but not below node 3, where only 46 key bytes remain. *)
+Definition misplaced_shared_leaf_store : list (nat * radix_node) :=
+  [(1, RadixNode [] None [(0, 2); (1, 3)]);
+   (2, RadixNode (repeat 0 47) (Some 50) []);
+   (3, RadixNode [] None [(0, 2); (1, 4)]);
+   (4, RadixNode (repeat 0 46) (Some 50) [])].
+
+(** Capstone 19 (negative control): a memo keyed by the object alone accepts
+    a radix whose shared leaf is misplaced, and declares three entries where
+    the count and the width-keyed memo refuse (it violates capstone 18). *)
+Theorem digest_only_memo_mutant_accepts_a_misplaced_shared_leaf :
+  radix_count 49 misplaced_shared_leaf_store retention_key_len 1 = None /\
+  option_map fst (memoized_radix_count 49 misplaced_shared_leaf_store [] retention_key_len 1) =
+    None /\
+  option_map fst (digest_only_memo_mutant 49 misplaced_shared_leaf_store [] retention_key_len 1) =
+    Some 3.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** Capstone 20: when the checkpoint data, the retained union and the
+    metadata closure are each duplicate-free, the retained union and the
+    metadata closure are disjoint and both included in the data, and the
+    data count is the sum of their counts, then the data is exactly their
+    disjoint union and its canonical bytes are the sum of theirs.  The cold
+    reader therefore authenticates the metadata closure separately from the
+    retained union with an inclusion check per object and one count check. *)
+Theorem count_and_inclusion_authenticate_the_disjoint_union :
+  forall data retained metadata : list inventory_object,
+    NoDup data -> NoDup retained -> NoDup metadata ->
+    (forall object, In object retained -> ~ In object metadata) ->
+    incl retained data -> incl metadata data ->
+    length data = length retained + length metadata ->
+    Permutation data (retained ++ metadata) /\
+    canonical_byte_sum snd data =
+      canonical_byte_sum snd retained + canonical_byte_sum snd metadata.
+Proof.
+  intros data retained metadata data_distinct retained_distinct metadata_distinct
+    disjoint retained_included metadata_included counted.
+  assert (union_distinct : NoDup (retained ++ metadata)).
+  { apply NoDup_app; [exact retained_distinct | exact metadata_distinct | exact disjoint]. }
+  assert (union_included : incl (retained ++ metadata) data).
+  { apply incl_app; [exact retained_included | exact metadata_included]. }
+  assert (data_included : incl data (retained ++ metadata)).
+  { apply NoDup_length_incl; [exact union_distinct | | exact union_included].
+    rewrite length_app. lia. }
+  assert (permutation : Permutation data (retained ++ metadata)).
+  { apply NoDup_Permutation; [exact data_distinct | exact union_distinct |].
+    intro object. split; [apply data_included | apply union_included]. }
+  split; [exact permutation|].
+  rewrite (canonical_byte_sum_permutation snd permutation).
+  apply canonical_byte_sum_app.
+Qed.
+
+(** Object 2 is both retained and metadata; object 4 is neither.  The
+    metadata closure is the V2 minimum: one radix node of 50 bytes and the
+    136-byte anchor. *)
+Definition overlapping_retained : list inventory_object := [(1, 50); (2, 50)].
+Definition overlapping_metadata : list inventory_object := [(2, 50); (3, 136)].
+Definition overlapping_data : list inventory_object := [(1, 50); (2, 50); (3, 136); (4, 50)].
+
+(** Capstone 21 (negative control): without disjointness, the inclusion,
+    count and byte checks all pass while the data holds an object that is in
+    neither the retained union nor the metadata closure (it violates
+    capstone 20). *)
+Theorem overlapping_count_mutant_accepts_an_unauthenticated_object :
+  NoDup overlapping_data /\ NoDup overlapping_retained /\ NoDup overlapping_metadata /\
+  incl overlapping_retained overlapping_data /\ incl overlapping_metadata overlapping_data /\
+  length overlapping_data = length overlapping_retained + length overlapping_metadata /\
+  canonical_byte_sum snd overlapping_data =
+    canonical_byte_sum snd overlapping_retained + canonical_byte_sum snd overlapping_metadata /\
+  In (4, 50) overlapping_data /\
+  ~ In (4, 50) (overlapping_retained ++ overlapping_metadata).
+Proof.
+  unfold overlapping_data, overlapping_retained, overlapping_metadata.
+  split; [repeat constructor; cbn; intuition discriminate|].
+  split; [repeat constructor; cbn; intuition discriminate|].
+  split; [repeat constructor; cbn; intuition discriminate|].
+  split; [intros object member; cbn in member |- *; intuition|].
+  split; [intros object member; cbn in member |- *; intuition|].
+  split; [reflexivity|].
+  split; [reflexivity|].
+  split; [cbn; intuition|].
+  cbn. intuition discriminate.
+Qed.
+
 End RetentionV2Format.
 
 Print Assumptions RetentionV2Format.retention_key_is_an_exact_48_byte_bijection.
@@ -1494,3 +1976,9 @@ Print Assumptions RetentionV2Format.anchor_only_checkpoint_mutant_is_not_referen
 Print Assumptions RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots.
 Print Assumptions RetentionV2Format.retention_format_binding_separates_representations_of_one_state.
 Print Assumptions RetentionV2Format.state_version_only_binding_mutant_resumes_across_formats.
+Print Assumptions RetentionV2Format.radix_count_success_unfolds_with_that_many_leaves.
+Print Assumptions RetentionV2Format.shape_free_count_mutant_counts_an_empty_node_below_the_root.
+Print Assumptions RetentionV2Format.memoized_radix_count_agrees_with_radix_count.
+Print Assumptions RetentionV2Format.digest_only_memo_mutant_accepts_a_misplaced_shared_leaf.
+Print Assumptions RetentionV2Format.count_and_inclusion_authenticate_the_disjoint_union.
+Print Assumptions RetentionV2Format.overlapping_count_mutant_accepts_an_unauthenticated_object.

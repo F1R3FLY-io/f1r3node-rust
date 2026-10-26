@@ -1,0 +1,82 @@
+@startuml retention-v2-cold-reader
+' ============================================================================
+' Cold admission of the appointed retention object under the dual reader
+' (task 7925): what rspace++/src/rspace/persistence/durable/admission.rs
+' (admit_physical_source) and rspace++/src/rspace/persistence/retention/
+' v2_reader.rs (admit_retention_history_v2) do after physical recovery.
+'   GREY   #616161  physical recovery, which classifies domain prefixes only
+'   BLUE   #1565C0  steps shared by V1 and V2 admission
+'   AMBER  #EF6C00  the unchanged V1 path
+'   GREEN  #2E7D32  the V2 path: count, enumerate, authenticate M
+'   RED    #C62828  refusals, all before any durable mutation
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFE0B2
+skinparam ActivityDiamondBorderColor #EF6C00
+skinparam NoteBorderColor #455A64
+skinparam PartitionBorderColor #455A64
+
+title <b>Cold admission of the appointed retention object</b>\nrecovery classifies domains, admission parses; the reader counts before it enumerates and authenticates M beside R
+
+start
+partition "Physical recovery" {
+  :Authenticate each checkpoint object's length and digest,
+  and classify its domain prefix under the reader capability
+  (a V1-only reader refuses RetA and RetR: UnknownObjectDomain); <<#E0E0E0>>
+  :Parse the checkpoint descriptor by its domain: Chkp1 under the
+  V1 rule; Chkp2 under the V2 rule, for a dual reader only
+  (anchor of 136 bytes; DATA minus R at least 2 objects and 186 bytes); <<#E0E0E0>>
+}
+partition "Cold admission" {
+  :Load the appointed retention object through the bounded store; <<#BBDEFB>>
+  switch (Domain of the appointed object?)
+  case (RetA, dual reader)
+    :Parse the anchor: current entry,
+    declared count n, historical root; <<#C8E6C9>>
+  case (any other domain)
+    :Parse the strict V1 manifest
+    (RetA under a V1-only reader: InvalidDomain); <<#FFE0B2>>
+  endswitch
+  if (n + 1 within max_retained_states?) then (yes)
+  else (no)
+    :Refuse the retained-states limit,
+    before any radix node is read; <<#FFCDD2>>
+    stop
+  endif
+  if (Current entry equals the catalog's state?) then (yes)
+  else (no)
+    :Refuse RetentionCurrentMismatch; <<#FFCDD2>>
+    stop
+  endif
+  if (Appointed format?) then (V2)
+    :Phase one: read each reachable radix node once, check
+    its shape at the key width still unread, and count leaf
+    occurrences with a memo keyed by (digest, width); <<#C8E6C9>>
+    if (Count equals n?) then (yes)
+    else (no)
+      :Refuse CountMismatch (or CountOverflow):
+      no entry has been enumerated; <<#FFCDD2>>
+      stop
+    endif
+    :Phase two: reserve exactly n entries and enumerate
+    them from the nodes already read (EntryAllocation
+    if the reservation fails); <<#C8E6C9>>
+    :Require strictly increasing entries, none equal
+    to the current state; <<#C8E6C9>>
+    :M is the anchor plus every node read, in digest order; <<#C8E6C9>>
+  else (V1)
+    :M is the manifest: one object of its own length; <<#FFE0B2>>
+  endif
+  :At a checkpoint terminal, require DATA minus R
+  to equal M in objects and in bytes; <<#BBDEFB>>
+  :Walk the current closure, then each historical state
+  (its generation below the current one), and compare
+  the retained union with the descriptor; <<#BBDEFB>>
+  :Report, with the metadata objects and bytes; <<#C8E6C9>>
+}
+stop
+@enduml

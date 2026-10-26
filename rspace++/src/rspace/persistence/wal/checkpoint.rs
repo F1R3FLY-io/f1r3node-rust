@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use super::codec::{
     ArraySink, AuthenticatedSink, GENERATION_CHECKPOINT_PREPARE_KIND_V1, LOG_PACK_VERSION_V1,
-    PREPARE_DOMAIN, require_limit, validate_object, write_reference,
+    PREPARE_DOMAIN, require_limit, validate_object_for, write_reference,
 };
 use super::error::LogPackFormatError;
 use super::types::{LogPackDecodeLimits, LogPackSequence};
@@ -26,6 +26,7 @@ use crate::rspace::persistence::durable::{
     AdmittedCheckpointSourceV1, DurableObjectCopyErrorV1, DurableObjectReadErrorV1,
 };
 use crate::rspace::persistence::physical::{PhysicalDigest, STORE_ID_LEN, StoreId};
+use crate::rspace::persistence::retention::v2_format::{RetentionFormat, RetentionReader};
 use crate::rspace::persistence::semantic::SemanticProfile;
 
 const CHECKPOINT_AUTH_HEADER_LEN: usize =
@@ -569,6 +570,16 @@ pub(crate) fn preflight_generation_checkpoint_prepare_v1(
     prefix: &[u8],
     limits: LogPackDecodeLimits,
 ) -> Result<GenerationCheckpointPreparePreflightV1, LogPackFormatError> {
+    preflight_generation_checkpoint_prepare_for(prefix, limits, RetentionReader::V1Only)
+}
+
+/// Preflight a checkpoint prepare header for a reader with the given
+/// retention capability. Only the embedded descriptor depends on the reader.
+pub(crate) fn preflight_generation_checkpoint_prepare_for(
+    prefix: &[u8],
+    limits: LogPackDecodeLimits,
+    reader: RetentionReader,
+) -> Result<GenerationCheckpointPreparePreflightV1, LogPackFormatError> {
     let actual = checked_len(prefix.len(), "checkpoint prepare header")?;
     if actual != GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 {
         return Err(LogPackFormatError::LengthMismatch {
@@ -618,7 +629,7 @@ pub(crate) fn preflight_generation_checkpoint_prepare_v1(
     );
     let descriptor_bytes = cursor.read_exact(GENERATION_CHECKPOINT_CANONICAL_LEN as usize)?;
     cursor.finish()?;
-    let descriptor = GenerationCheckpointDescriptorViewV1::parse(descriptor_bytes)
+    let descriptor = GenerationCheckpointDescriptorViewV1::parse_for(descriptor_bytes, reader)
         .map_err(LogPackFormatError::from)?;
     require_limit("objects", limits.max_objects, descriptor.data_objects())?;
     require_limit(
@@ -711,6 +722,14 @@ impl<'a> GenerationCheckpointPrepareRecordViewV1<'a> {
         bytes: &'a [u8],
         limits: LogPackDecodeLimits,
     ) -> Result<Self, LogPackFormatError> {
+        Self::parse_for(bytes, limits, RetentionReader::V1Only)
+    }
+
+    pub(crate) fn parse_for(
+        bytes: &'a [u8],
+        limits: LogPackDecodeLimits,
+        reader: RetentionReader,
+    ) -> Result<Self, LogPackFormatError> {
         if bytes.len() <
             (GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 + CHECKPOINT_TRAILER_LEN) as usize
         {
@@ -722,9 +741,10 @@ impl<'a> GenerationCheckpointPrepareRecordViewV1<'a> {
             }
             .into());
         }
-        let preflight = preflight_generation_checkpoint_prepare_v1(
+        let preflight = preflight_generation_checkpoint_prepare_for(
             &bytes[..GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 as usize],
             limits,
+            reader,
         )?;
         let actual = checked_len(bytes.len(), "checkpoint prepare record")?;
         if actual != preflight.record_len() {
@@ -759,6 +779,7 @@ impl<'a> GenerationCheckpointPrepareRecordViewV1<'a> {
         );
         let state_manifest = descriptor.state().manifest();
         let retention_manifest = descriptor.retention_manifest();
+        let (retention_role, retention_kind) = designated_retention_object(descriptor.format());
         let mut saw_state_manifest = false;
         let mut saw_retention_manifest = false;
         for _ in 0..descriptor.data_objects() {
@@ -777,7 +798,7 @@ impl<'a> GenerationCheckpointPrepareRecordViewV1<'a> {
                     value: reference.encoded_len(),
                 }
             })?;
-            let kind = validate_object(reference, cursor.read_exact(length)?)?;
+            let kind = validate_object_for(reference, cursor.read_exact(length)?, reader)?;
             if reference == state_manifest {
                 require_designated_kind(
                     "state manifest",
@@ -788,12 +809,7 @@ impl<'a> GenerationCheckpointPrepareRecordViewV1<'a> {
                 saw_state_manifest = true;
             }
             if reference == retention_manifest {
-                require_designated_kind(
-                    "retention manifest",
-                    reference,
-                    kind,
-                    CanonicalObjectKind::RetentionManifest,
-                )?;
+                require_designated_kind(retention_role, reference, kind, retention_kind)?;
                 saw_retention_manifest = true;
             }
         }
@@ -806,7 +822,7 @@ impl<'a> GenerationCheckpointPrepareRecordViewV1<'a> {
         }
         if !saw_retention_manifest {
             return Err(LogPackFormatError::CheckpointDesignatedObjectMissing {
-                role: "retention manifest",
+                role: retention_role,
                 reference: retention_manifest,
             });
         }
@@ -838,6 +854,17 @@ impl<'a> GenerationCheckpointPrepareRecordViewV1<'a> {
     pub(crate) const fn digest(self) -> PhysicalDigest { self.digest }
 
     pub(crate) const fn crc32c(self) -> u32 { self.crc32c }
+}
+
+/// The role name and object kind a checkpoint appoints for its retention
+/// metadata: the V1 manifest, or the V2 anchor.
+pub(crate) const fn designated_retention_object(
+    format: RetentionFormat,
+) -> (&'static str, CanonicalObjectKind) {
+    match format {
+        RetentionFormat::V1 => ("retention manifest", CanonicalObjectKind::RetentionManifest),
+        RetentionFormat::V2 => ("retention anchor", CanonicalObjectKind::RetentionAnchor),
+    }
 }
 
 fn require_designated_kind(

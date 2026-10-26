@@ -12,6 +12,10 @@ use super::manifest::{
     ACCELERATOR_MANIFEST_DOMAIN, AcceleratorManifestView, SEMANTIC_MANIFEST_DOMAIN,
     SemanticStateManifestView,
 };
+use super::retention::v2_format::{
+    RETENTION_ANCHOR_DOMAIN, RETENTION_RADIX_DOMAIN, RetentionFormat, RetentionReader,
+    empty_retention_radix_ref,
+};
 use super::retention::{RETENTION_MANIFEST_DOMAIN, RetentionManifestView};
 
 pub(crate) const DAG_NODE_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Node\0\0";
@@ -463,7 +467,15 @@ pub struct CanonicalDagNodeView<'a> {
 
 impl<'a> CanonicalDagNodeView<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, CanonicalFormatError> {
-        let body = parse_envelope(bytes, DAG_NODE_DOMAIN, "RSpace DAG node")?;
+        Self::parse_in_domain(bytes, DAG_NODE_DOMAIN, "RSpace DAG node")
+    }
+
+    pub(crate) fn parse_in_domain(
+        bytes: &'a [u8],
+        domain: &'static [u8; OBJECT_DOMAIN_LEN],
+        name: &'static str,
+    ) -> Result<Self, CanonicalFormatError> {
+        let body = parse_envelope(bytes, domain, name)?;
         let mut cursor = ReadCursor::new(body);
         let prefix_len = cursor.read_len("node prefix")?;
         let prefix = cursor.read_exact(prefix_len)?;
@@ -744,6 +756,8 @@ pub enum CanonicalObjectKind {
     SemanticManifest,
     AcceleratorManifest,
     RetentionManifest,
+    RetentionAnchor,
+    RetentionRadixNode,
 }
 
 impl CanonicalObjectKind {
@@ -754,6 +768,30 @@ impl CanonicalObjectKind {
             Self::SemanticManifest => "semantic-manifest",
             Self::AcceleratorManifest => "accelerator-manifest",
             Self::RetentionManifest => "retention-manifest",
+            Self::RetentionAnchor => "retention-anchor",
+            Self::RetentionRadixNode => "retention-radix-node",
+        }
+    }
+
+    /// Classify the domain prefix for a reader with the given retention
+    /// capability. A V1-only reader is exactly [`Self::from_domain_prefix`];
+    /// a dual reader additionally recognizes the V2 metadata domains, so no
+    /// reader ever retries an unknown domain under another parser.
+    pub(crate) fn from_domain_prefix_for(
+        bytes: &[u8],
+        reader: RetentionReader,
+    ) -> Result<Self, CanonicalFormatError> {
+        match (Self::from_domain_prefix(bytes), reader.admits(RetentionFormat::V2)) {
+            (Err(CanonicalFormatError::UnknownObjectDomain), true) => {
+                match bytes.get(..OBJECT_DOMAIN_LEN) {
+                    Some(domain) if domain == RETENTION_ANCHOR_DOMAIN => Ok(Self::RetentionAnchor),
+                    Some(domain) if domain == RETENTION_RADIX_DOMAIN => {
+                        Ok(Self::RetentionRadixNode)
+                    }
+                    _ => Err(CanonicalFormatError::UnknownObjectDomain),
+                }
+            }
+            (classified, _) => classified,
         }
     }
 
@@ -817,6 +855,7 @@ enum StreamReferencePurpose {
     AcceleratorArtifact,
     RetentionCurrent,
     RetentionHistorical,
+    AnchorRoot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -862,6 +901,9 @@ enum CanonicalObjectStreamStateV1 {
     RetentionHistoricalBytes(ObjectRefV1),
     RetentionFinish,
 
+    AnchorHistoricalCount,
+    AnchorFinish(ObjectRefV1),
+
     ReferenceDigest(StreamReferencePurpose),
     ReferenceLen(StreamReferencePurpose, ObjectDigest),
     Complete(CanonicalObjectKind),
@@ -879,6 +921,8 @@ pub(crate) struct CanonicalObjectStreamValidatorV1 {
     total_len: usize,
     consumed: usize,
     body_len: usize,
+    reader: RetentionReader,
+    body_kind: CanonicalObjectKind,
     state: CanonicalObjectStreamStateV1,
     field: [u8; OBJECT_REF_LEN],
     field_len: usize,
@@ -904,10 +948,16 @@ pub(crate) struct CanonicalObjectStreamValidatorV1 {
 
 impl CanonicalObjectStreamValidatorV1 {
     pub(crate) fn new(total_len: usize) -> Self {
+        Self::new_for(total_len, RetentionReader::V1Only)
+    }
+
+    pub(crate) fn new_for(total_len: usize, reader: RetentionReader) -> Self {
         Self {
             total_len,
             consumed: 0,
             body_len: 0,
+            reader,
+            body_kind: CanonicalObjectKind::DagNode,
             state: CanonicalObjectStreamStateV1::ObjectDomain,
             field: [0; OBJECT_REF_LEN],
             field_len: 0,
@@ -1114,10 +1164,17 @@ impl CanonicalObjectStreamValidatorV1 {
     }
 
     fn require_body_aggregate(&self, width: usize) -> Result<(), CanonicalFormatError> {
+        let offset = self.body_offset();
+        if offset.checked_add(width).is_none() {
+            return Err(CanonicalFormatError::LengthOutOfRange {
+                field: "cursor extent",
+                value: u64::MAX,
+            });
+        }
         let available = self.body_remaining();
         if available < width {
             return Err(CanonicalFormatError::Truncated {
-                offset: self.body_offset(),
+                offset,
                 needed: width,
                 available,
             });
@@ -1162,6 +1219,7 @@ impl CanonicalObjectStreamValidatorV1 {
             State::RetentionHistoricalCount |
             State::RetentionHistoricalGeneration |
             State::RetentionHistoricalBytes(_) |
+            State::AnchorHistoricalCount |
             State::ReferenceLen(_, _) => 8,
             State::DagEndpointTag |
             State::DagBranchTag |
@@ -1176,6 +1234,7 @@ impl CanonicalObjectStreamValidatorV1 {
             State::SemanticFinish |
             State::AcceleratorFinish |
             State::RetentionFinish |
+            State::AnchorFinish(_) |
             State::Complete(_) => return None,
         })
     }
@@ -1188,7 +1247,8 @@ impl CanonicalObjectStreamValidatorV1 {
         use CanonicalObjectStreamStateV1 as State;
         match state {
             State::ObjectDomain => {
-                let kind = CanonicalObjectKind::from_domain_prefix(&self.field[..width])?;
+                let kind =
+                    CanonicalObjectKind::from_domain_prefix_for(&self.field[..width], self.reader)?;
                 self.state = State::EnvelopeVersion(kind);
             }
             State::EnvelopeVersion(kind) => {
@@ -1209,6 +1269,15 @@ impl CanonicalObjectStreamValidatorV1 {
                         value: body_len_u64,
                     }
                 })?;
+                if (OBJECT_ENVELOPE_HEADER_LEN as usize)
+                    .checked_add(body_len)
+                    .is_none()
+                {
+                    return Err(CanonicalFormatError::LengthOutOfRange {
+                        field: "cursor extent",
+                        value: u64::MAX,
+                    });
+                }
                 let available = self.total_len - OBJECT_ENVELOPE_HEADER_LEN as usize;
                 if available < body_len {
                     return Err(CanonicalFormatError::Truncated {
@@ -1224,14 +1293,18 @@ impl CanonicalObjectStreamValidatorV1 {
                     });
                 }
                 self.body_len = body_len;
+                self.body_kind = kind;
                 self.state = match kind {
-                    CanonicalObjectKind::DagNode => State::DagPrefixLen,
+                    CanonicalObjectKind::DagNode | CanonicalObjectKind::RetentionRadixNode => {
+                        State::DagPrefixLen
+                    }
                     CanonicalObjectKind::Blob => State::BlobPayloadDomain,
                     CanonicalObjectKind::SemanticManifest => State::SemanticSchemaEpoch,
                     CanonicalObjectKind::AcceleratorManifest => {
                         State::ReferenceDigest(StreamReferencePurpose::AcceleratorSemantic)
                     }
-                    CanonicalObjectKind::RetentionManifest => State::RetentionCurrentGeneration,
+                    CanonicalObjectKind::RetentionManifest |
+                    CanonicalObjectKind::RetentionAnchor => State::RetentionCurrentGeneration,
                 };
             }
             State::DagPrefixLen => {
@@ -1423,7 +1496,14 @@ impl CanonicalObjectStreamValidatorV1 {
                 let canonical_bytes = self.field_u64();
                 Self::require_retention_bytes(self.pending_u64, reference, canonical_bytes)?;
                 self.retention_current = Some((self.pending_u64, reference));
-                self.state = State::RetentionHistoricalCount;
+                self.state = match self.body_kind {
+                    CanonicalObjectKind::RetentionAnchor => State::AnchorHistoricalCount,
+                    _ => State::RetentionHistoricalCount,
+                };
+            }
+            State::AnchorHistoricalCount => {
+                self.pending_u64 = self.field_u64();
+                self.state = State::ReferenceDigest(StreamReferencePurpose::AnchorRoot);
             }
             State::RetentionHistoricalCount => {
                 let value = self.field_u64();
@@ -1489,6 +1569,7 @@ impl CanonicalObjectStreamValidatorV1 {
             State::SemanticFinish |
             State::AcceleratorFinish |
             State::RetentionFinish |
+            State::AnchorFinish(_) |
             State::Complete(_) => unreachable!("non-field state reached fixed-field completion"),
         }
         Ok(())
@@ -1542,6 +1623,7 @@ impl CanonicalObjectStreamValidatorV1 {
             StreamReferencePurpose::RetentionHistorical => {
                 State::RetentionHistoricalBytes(reference)
             }
+            StreamReferencePurpose::AnchorRoot => State::AnchorFinish(reference),
         };
         Ok(())
     }
@@ -1567,7 +1649,7 @@ impl CanonicalObjectStreamValidatorV1 {
                     if self.dag_endpoint_absent && self.dag_child_count == 1 {
                         return Err(CanonicalFormatError::CompressibleUnaryNode);
                     }
-                    self.complete(CanonicalObjectKind::DagNode)?;
+                    self.complete(self.body_kind)?;
                 }
                 State::BlobFinish => {
                     self.require_body_finished()?;
@@ -1584,6 +1666,14 @@ impl CanonicalObjectStreamValidatorV1 {
                 State::RetentionFinish => {
                     self.require_body_finished()?;
                     self.complete(CanonicalObjectKind::RetentionManifest)?;
+                }
+                State::AnchorFinish(root) => {
+                    self.require_body_finished()?;
+                    let count = self.pending_u64;
+                    if (count == 0) != (root == empty_retention_radix_ref()) {
+                        return Err(CanonicalFormatError::RetentionHistoryRootMismatch { count });
+                    }
+                    self.complete(CanonicalObjectKind::RetentionAnchor)?;
                 }
                 _ => break,
             }
@@ -1652,6 +1742,8 @@ impl CanonicalObjectStreamValidatorV1 {
             CanonicalObjectKind::SemanticManifest => "RSpace semantic manifest",
             CanonicalObjectKind::AcceleratorManifest => "RSpace accelerator manifest",
             CanonicalObjectKind::RetentionManifest => "RSpace retention manifest",
+            CanonicalObjectKind::RetentionAnchor => "RSpace retention anchor",
+            CanonicalObjectKind::RetentionRadixNode => "RSpace retention radix node",
         }
     }
 
@@ -1693,6 +1785,9 @@ impl<'a> CanonicalObjectView<'a> {
             }
             CanonicalObjectKind::RetentionManifest => {
                 Ok(Self::RetentionManifest(RetentionManifestView::parse(bytes)?))
+            }
+            CanonicalObjectKind::RetentionAnchor | CanonicalObjectKind::RetentionRadixNode => {
+                Err(CanonicalFormatError::UnknownObjectDomain)
             }
         }
     }

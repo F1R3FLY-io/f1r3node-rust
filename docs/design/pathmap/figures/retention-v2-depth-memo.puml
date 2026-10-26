@@ -1,0 +1,55 @@
+@startuml retention-v2-depth-memo
+' ============================================================================
+' Why the V2 reader memoizes counts on (digest, remaining key width) and not
+' on the digest alone (task 7925): the store misplaced_shared_leaf_store of
+' formal/rocq/stack_safe_pda/theories/RetentionV2Format.v (theorem 19), whose
+' leaf node 2 is reachable at two different widths.
+'   BLUE   #1565C0  inner radix nodes
+'   GREEN  #2E7D32  a leaf reached where its prefix fills the remaining width
+'   RED    #C62828  the same leaf reached where its prefix does not fit
+'   AMBER  #EF6C00  what each memo decides
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ObjectBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>Why the count memo is keyed by (digest, width)</b>\none leaf object reached at two widths: it fits at one and not at the other
+
+object "root (node 1)" as root #BBDEFB {
+  inner node, empty prefix
+  reached at width 48
+}
+object "node 3" as inner #BBDEFB {
+  inner node, empty prefix
+  reached at width 47
+}
+object "node 2" as shared #C8E6C9 {
+  leaf, 47-byte prefix
+  at width 47: fits, counts 1
+  at width 46: does not fit
+}
+object "node 4" as last #C8E6C9 {
+  leaf, 46-byte prefix
+  reached at width 46: fits
+}
+
+root --> shared : <color:#2E7D32>edge 0, width 47</color>
+root --> inner : edge 1, width 47
+inner --> shared : <color:#C62828>edge 0, width 46</color>
+inner --> last : edge 1, width 46
+
+note right of inner #FFF3E0
+  <b>Digest-only memo</b> (the mutant of theorem 19):
+  node 2 was counted 1 at width 47, so its digest
+  hits the memo at width 46 and the shape is never
+  checked again. Total 1 + (1 + 1) = 3: accepted.
+  ----
+  <b>(digest, width) memo</b> (the reader, theorem 18):
+  (node 2, 46) is a new key, so the shape check runs
+  and refuses EndpointDepth with remaining 46 and
+  prefix 47. Node 4 is never read.
+end note
+@enduml

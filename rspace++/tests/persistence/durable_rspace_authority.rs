@@ -8,15 +8,18 @@ use tokio::sync::RwLock;
 use super::checkpoint_wal::fixture_for_profile;
 use super::durable_publication::install_checkpoint_image;
 use super::durable_recovery::{checkpoint_image_for_profile, limits};
+use super::retention_v2_format_properties::migrate_checkpoint_source_to_v2;
 use super::support::{PersistenceTrialDir, trial_scratch};
 use crate::rspace::hot_store::{DurableHotStoreBootstrapLimits, HotStore, HotStoreInstances};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::durable::{
     DurableAdmissionLimitsV1, DurableDirectoryV1, DurableRSpaceAuthorityV1,
-    DurableRSpacePublicationLimitsV1, GenerationCheckpointPublicationHookPointV1,
+    DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
+    DurableTransactionPreparationError, GenerationCheckpointPublicationHookPointV1,
     JournalPublicationPhaseV1, arm_generation_checkpoint_publication_failpoint,
     arm_generation_checkpoint_publication_hook, recover_read_authority,
 };
+use crate::rspace::persistence::retention::v2_format::RetentionFormat;
 use crate::rspace::persistence::{
     DagTransactionLimits, GenerationLeaseKeyV1, GenerationLeaseRegistryV1, LogPackDecodeLimits,
     RSpaceSemanticProfile, SemanticProfile, StateVersionV1,
@@ -901,6 +904,67 @@ fn assert_journals_unchanged(hot: &Store, before: &crate::rspace::hot_store::Pen
             .iter()
             .eq(after.continuation_source_bytes.as_ref().unwrap().iter())
     );
+}
+
+/// A journal owner over an admitted V2 checkpoint refuses its checkpoint when
+/// it binds the successor, before any durable mutation, and stays ready with
+/// its journals and operation gate intact.
+pub(super) fn assert_v2_owner_checkpoint_refuses_before_durable_mutation() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let scratch = trial_scratch("journal-owner-v2-");
+    let source = migrate_checkpoint_source_to_v2(&fixture_for_profile(Profile::ID));
+    install_checkpoint_image(scratch.path(), &checkpoint_image_for_profile::<Profile>(source));
+    let view = recover_read_authority::<Profile>(
+        scratch.path(),
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    )
+    .expect("the dual reader adopts a V2 checkpoint");
+    let hot: Store = Arc::new(
+        HotStoreInstances::create_from_durable(&view, DurableHotStoreBootstrapLimits::default())
+            .expect("a V2 checkpoint bootstraps the hot store"),
+    );
+    let gate = Arc::new(RwLock::new(()));
+    let mut owner = view
+        .into_rspace_authority(Arc::clone(&hot), Arc::clone(&gate))
+        .unwrap_or_else(|failure| panic!("{:?}", failure.1));
+    let old = owner.state().expect("a fresh owner is ready");
+    populate(&hot);
+    let files = store_files(scratch.path());
+    let before = hot
+        .pending_deltas()
+        .expect("the populated journals are readable");
+    let result = {
+        let mut checkpoint = std::pin::pin!(owner.checkpoint(publication_limits()));
+        match checkpoint
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("an uncontended owner checkpoint completes in one poll"),
+        }
+    };
+    assert!(
+        matches!(
+            result,
+            Err(DurableRSpaceTransactionError::Preparation(
+                DurableTransactionPreparationError::RetentionFormatNotWritable(RetentionFormat::V2)
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        owner
+            .state()
+            .expect("a refused successor leaves the owner ready"),
+        old
+    );
+    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(store_files(scratch.path()), files);
+    assert_journals_unchanged(&hot, &before);
+    assert!(gate.try_read().is_ok(), "the refused checkpoint released the operation gate");
 }
 
 #[test]

@@ -1909,12 +1909,12 @@ identity. This section freezes the matrix:
 | Situation | V1-only reader | Dual reader | Evidence | Remaining work |
 |---|---|---|---|---|
 | V1 store | adopts | adopts | `AdoptionIsNewestPublished` | none |
-| V2 store | refuses with `UnknownObjectDomain` or `InvalidDomain`, terminally | adopts after unfolding the history and checking the count | `NeverOldReaderRefusesV2`, `NeverDualReaderAdoptsV2`; RV-09 | the reader, task 7925 |
-| unsupported appointed content | refuses; never falls back | refuses unknown domains; never falls back | `NoReaderAdoptsUnsupportedContent`; RV-13 | the reader, task 7925 |
+| V2 store | refuses with `UnknownObjectDomain` or `InvalidDomain`, terminally | adopts after unfolding the history and checking the count | `NeverOldReaderRefusesV2`, `NeverDualReaderAdoptsV2`; RV-09, RV-27 | none for reading; the writer, task 7926 |
+| unsupported appointed content | refuses; never falls back | refuses unknown domains; never falls back | `NoReaderAdoptsUnsupportedContent`; RV-13, RV-20, RV-27 | none |
 | a V1 slot beside a V2 slot | selects the newest slot | selects the same slot | `ReadersSelectTheSameSlot`; RV-11, RV-12 | none |
 | a torn inactive slot | adopts the previous authority | adopts the previous authority | `NeverAdoptsBehindTornSuccessor`; RV-19 | none |
 | migration | not applicable | migrates once, at the first V2 publication; no export to V1 | theorem 13; RV-15 | the writer, task 7926 |
-| cold recovery | V1 admission, unchanged | charges the reads of $`M`$ and keeps rule R8 | J-066; theorems 10 to 12 | the reader, task 7925 |
+| cold recovery | V1 admission, unchanged | charges the reads of $`M`$ and keeps rule R8 | J-066; theorems 10 to 12 and 16 to 21; RV-22 to RV-26 | none |
 | interrupted transfer | resumes only within V1 | resumes only within V2 | theorems 14 and 15; RV-16 | tasks 5690 and 7938 |
 | consensus identity | the three semantic roots | the same three roots; retention metadata never enters identity | theorem 13; RV-17 | task 5691 |
 
@@ -2062,6 +2062,438 @@ sources:
 | `rspace++/tests/persistence/property_support.rs` | `baa2c0415898412559e80bfe2d83df297269f54e8e044ea0522fe0844236862e` |
 | `rspace++/tests/persistence/mod.rs` | `b11541ecfd8fc4992678a1bc70ec39348b3b28c53dc0d936b9f09f1a9bf784f0` |
 
+### Shared retention V2 cold reader (2026-10-26)
+
+Task 7925 implements the reader that the format section above froze. Cold
+recovery and cold admission now read both retention versions under an explicit
+reader capability, and every V1 store is read exactly as before. A dual reader
+adopts an appointed V2 anchor only after it has authenticated the complete
+metadata closure $`M`$ separately from the retained semantic union $`R`$,
+applied the V1 rules of strict history order and current exclusion to the
+decoded entries, and charged every metadata read against the existing limits.
+Unsupported or corrupt appointed content is refused before adoption, and a
+V1-only reader refuses V2 content as the compatibility matrix above requires.
+This is the first production code that reads V2. Nothing writes it: the writer
+is task 7926, and its first emission changes persisted bytes, so it stops for an
+explicit confirmation. Until then a source admitted from V2 content refuses
+every successor before any durable mutation, and no persisted byte changes.
+
+Six artifacts implement the task:
+
+- six new closed capstones, numbered 16 to 21, with six helper lemmas, in
+  `formal/rocq/stack_safe_pda/theories/RetentionV2Format.v`;
+- the new module `rspace++/src/rspace/persistence/retention/v2_reader.rs`, which
+  dispatches the appointed retention object, reads a radix history in two
+  phases and builds the metadata inventory, and the reader capability
+  `RetentionReader` and the metadata minimum in `retention/v2_format.rs`;
+- the capability-aware object classifier and stream validator in
+  `rspace++/src/rspace/persistence/object.rs`, with a refinement fix to the
+  stream validator;
+- the versioned checkpoint descriptor in `rspace++/src/rspace/persistence/checkpoint.rs`
+  and the capability-parameterized record parsers in
+  `rspace++/src/rspace/persistence/wal/{checkpoint,checkpoint_commit,codec,mod}.rs`;
+- the directory's capability, its threading through recovery, V2 admission and
+  the successor refusal in
+  `rspace++/src/rspace/persistence/durable/{io,startup,recovery,admission}.rs`;
+- the properties `RV-20` to `RV-29` in
+  `rspace++/tests/persistence/retention_v2_format_properties.rs`,
+  `checkpoint_wal.rs` and `durable_publication.rs`, an owner-checkpoint helper in
+  `durable_rspace_authority.rs`, and an overflow regression test in
+  `canonical_object_streaming_properties.rs`.
+
+![Cold admission of the appointed retention object under the dual reader. Physical recovery, in grey, authenticates each checkpoint object's length and digest, classifies its domain prefix under the reader capability, and parses the checkpoint descriptor by its domain. Cold admission, in blue, loads the appointed object; a RetA domain under the dual reader parses as an anchor, in green, and every other domain as the strict V1 manifest, in amber. The retained-states limit and the current-entry check refuse, in red, before any radix node is read. On the V2 path, phase one reads each reachable radix node once and counts leaf occurrences with a memo keyed by digest and width; a count that differs from the anchor's refuses before any entry is enumerated. Phase two reserves exactly that many entries and enumerates them, the history rules run, and the metadata closure is the anchor plus the nodes read. Both paths then compare DATA minus R with the metadata, walk the closures and report](figures/retention-v2-cold-reader.svg)
+
+**Vocabulary.** The terms of the format section above keep their meaning; these
+are added:
+
+- A *reader capability* is `RetentionReader::V1Only` or `RetentionReader::Dual`.
+  `RetentionReader::admits(format)` holds for V1 under both capabilities and for
+  V2 under the dual one only (`retention/v2_format.rs:44-46`).
+- The *declared count* $`n`$ is the anchor's historical count. A node
+  *occurrence* is a node together with the path of edges that reaches it from
+  the root, and its *width* $`\rho`$ is the number of key bytes still unread
+  where it is reached: $`\rho = 48`$ at the root, and a child of an inner node
+  with prefix $`p`$ reached at width $`\rho`$ is reached at width
+  $`\rho - \lvert p \rvert - 1`$, because the edge byte is one more key byte.
+- *Physical recovery* is the bounded scan of the live packs that verifies or
+  rebuilds the derived object index. *Cold admission* (`admit_physical_source`)
+  then parses and checks the selected state completely before anything is
+  adopted.
+- $`\mathrm{DATA}`$ is the object inventory a checkpoint descriptor declares,
+  and $`R_{\mathrm{decl}}`$ is the retained union it declares; $`R`$ is the
+  retained union that admission computes from the closures of the retained
+  states.
+
+**Reader capability and dispatch.** `DurableDirectoryV1::open` gives every
+directory the dual capability (`durable/io.rs:838`). A test build can downgrade
+a directory with `with_retention_reader_for_test` (`durable/io.rs:851`), which
+is how one directory image is read by both readers. Recovery's pack-provider
+trait, `CatalogPackProviderV1`, defaults to V1-only (`durable/recovery.rs:189`),
+and the directory's provider forwards the directory's capability
+(`durable/startup.rs:328`). Every reader dispatches on the domain alone, and
+none retries one format after the other refuses:
+
+- `CanonicalObjectKind::from_domain_prefix_for` (`object.rs:780-798`) runs the
+  V1 classification first. Only an `UnknownObjectDomain` under the dual
+  capability is examined again, and only the domains `RSpaceDAG.RetA` and
+  `RSpaceDAG.RetR` become the new kinds `RetentionAnchor` and
+  `RetentionRadixNode`. The strict `CanonicalObjectView::parse` refuses both new
+  kinds with `UnknownObjectDomain`, so every caller that names no capability
+  keeps the V1 behavior.
+- `GenerationCheckpointDescriptorV1::parse_for` (`checkpoint.rs:627-645`) parses
+  the domain `RSpaceDAG.Chkp2` under the V2 inventory rule when the capability
+  admits V2, and passes every other descriptor to the strict V1 `parse`.
+- `AppointedRetention::parse` (`retention/v2_reader.rs:39-51`) parses a
+  `RSpaceDAG.RetA` object as an anchor under the dual capability, and every
+  other object as a V1 manifest, whose parser refuses any other domain with
+  `InvalidDomain`.
+
+**Physical and admission layers.** Recovery must stay bounded and cheap, so it
+checks only what selection and index binding need; complete parsing belongs to
+admission. The checks run in this order:
+
+| Check | Layer and code | V1-only reader on V2 content | Dual reader |
+|---|---|---|---|
+| the checkpoint descriptor in the prepare header and the commit record | recovery: `preflight_generation_checkpoint_prepare_for`, `GenerationCheckpointCommitViewV1::parse_for` | `InvalidDomain` at the descriptor | the V2 rule: `RetentionAnchorLength`, `RetentionMetadataBelowMinimum` |
+| each checkpoint object's length, digest and domain prefix | recovery: `stream_generation_checkpoint_prepare` | `UnknownObjectDomain` | anchors and radix nodes classified; any other unknown domain refused `UnknownObjectDomain` |
+| the kind of the designated retention object | recovery: `designated_retention_object(format)` | not reached | an anchor for a V2 descriptor; a 136-byte DAG node in its place is refused `CheckpointDesignatedObjectKind` |
+| each object of an incremental mutation, streamed | recovery: `scan_one_incremental_object_primary` with `CanonicalObjectStreamValidatorV1::new_for` | `UnknownObjectDomain` | anchors and radix nodes validated structurally |
+| the anchor's envelope, version and body | admission: `AppointedRetention::parse` | not reached; the V1 manifest parser would refuse `InvalidDomain` | `UnsupportedVersion` for an anchor of version 2; `RetentionHistoryRootMismatch` |
+| radix nodes, shapes, count and history rules | admission: `admit_retention_history_v2` | not reached | the typed refusals of the reader below |
+| the metadata closure against $`\mathrm{DATA}`$, the generation rule, closures and the union | admission: `admit_physical_source` | not reached | the inventory refusals below |
+
+**The versioned descriptor.** A V2 descriptor keeps the 216-byte V1 layout
+under `RSpaceDAG.Chkp2\0`. Its rule, `require_v2_metadata`
+(`checkpoint.rs:335-358`), refuses `RetentionAnchorLength` unless the appointed
+retention reference has the anchor's 136 bytes, and
+`RetentionMetadataBelowMinimum` unless
+
+```math
+\mathrm{DATA}_{\mathrm{objects}} - \lvert R_{\mathrm{decl}} \rvert \;\ge\; 2
+\quad\text{and}\quad
+\mathrm{DATA}_{\mathrm{bytes}} - \mathrm{bytes}(R_{\mathrm{decl}}) \;\ge\; 186,
+```
+
+with both subtractions checked, so that a $`\mathrm{DATA}`$ smaller than the
+declared union is refused rather than wrapped. The constants are
+`RETENTION_METADATA_MIN_OBJECTS` and `RETENTION_METADATA_MIN_CANONICAL_BYTES`
+(`retention/v2_format.rs:18-20`): the anchor and the radix root. The codec
+cannot compute $`M`$ exactly, because $`M`$ depends on the bytes of the radix
+nodes, which the codec never reads; cold admission computes $`M`$ and compares
+it exactly. Writing a V2 descriptor uses the V2 domain, but only the test-only
+constructor `from_test_ordered_v2` builds a V2 inventory, because no production
+code writes V2.
+
+**The two-phase radix reader, in literate form.** `admit_retention_history_v2`
+(`retention/v2_reader.rs:263-295`) authenticates a history against its anchor.
+Every read goes through the bounded admission store, so every read is charged.
+
+1. ⟨Empty history⟩ If $`n = 0`$, the anchor parser has already required the
+   historical root to be the 50-byte empty radix node. Load the root exactly,
+   refusing a missing object, a wrong length or a wrong digest. The entries are
+   empty, and $`M`$ is the anchor and the root. Go to step 7.
+2. ⟨Open an occurrence⟩ `open_count_frame` (`:383-428`) receives a reference
+   $`r`$ and a width $`\rho`$:
+   1. If a node with the digest of $`r`$ was already read under another
+      reference, which can only differ in its length, refuse
+      `ObjectLengthMismatch`. This check runs before the memo, so a digest
+      reached under two lengths is refused whatever was counted for it.
+   2. If the memo holds a count for the pair (digest of $`r`$, $`\rho`$), return
+      it.
+   3. If the node has not been read, read it with `read_radix_node`
+      (`:499-552`): load it exactly through the store (`MissingObject`,
+      `ObjectLengthMismatch`, `DigestMismatch`, or the store's read limit),
+      refuse `NotRadixDomain` unless its domain is `RSpaceDAG.RetR`, parse the
+      body with `CanonicalDagNodeView::parse_in_domain` (`Body`), map an absent
+      endpoint to an inner node and a multiplicity to a leaf with its claim
+      (`EndpointKind` for any other endpoint), and refuse `EndpointDepth` if its
+      prefix is longer than $`\rho`$. The node is kept, keyed by its digest.
+   4. Decide the shape at $`\rho`$. A childless leaf whose prefix has exactly
+      $`\rho`$ bytes counts 1, which is memoized. A childless inner node is
+      refused `EmptyBelowRoot`: the anchor admits the empty node only as the
+      root of an empty history. An inner node with children and a prefix
+      shorter than $`\rho`$ opens a frame whose children are reached at width
+      $`\rho - \lvert p \rvert - 1`$. Every other combination is refused
+      `EndpointDepth`.
+3. ⟨Count⟩ `count_radix_history` (`:324-381`) keeps the open frames on an
+   explicit stack, preallocated for 48 frames. It opens the top frame's next
+   child at the frame's child width; a child that is counted at once is added to
+   the frame's total with a checked sum (`CountOverflow`). A frame whose
+   children are exhausted is popped, memoized at its pair and added to its
+   parent. The root's total is the count.
+4. ⟨Compare⟩ Refuse `CountMismatch` with the declared and counted values unless
+   the count equals $`n`$. At this point no entry has been decoded and nothing
+   proportional to $`n`$ has been allocated.
+5. ⟨Enumerate⟩ `enumerate_radix_history` (`:430-466`) reserves exactly $`n`$
+   entries with `try_reserve_exact`, refusing `EntryAllocation` if the
+   reservation fails or $`n`$ does not fit a `usize`. It walks the nodes already
+   read, depth first in edge order, with one 48-byte key buffer and an explicit
+   stack. Entering a node copies its prefix into the buffer. A leaf decodes the
+   buffer as a `RetentionKeyV2` (`LeafKey`) and forms the retained entry with its
+   claim (`LeafClaim` if the claim is below the encoded length). An inner node
+   pushes a frame, and each child first writes its edge byte. This phase reads
+   no object.
+6. ⟨History rules⟩ `validate_historical`, the function the V1 manifest parser
+   applies, refuses `RetainedStatesNotStrict` unless the entries increase
+   strictly in entry order and `RetentionContainsCurrent` if one of them is the
+   current state.
+7. ⟨Metadata⟩ `metadata_inventory` (`:298-322`) merges the anchor into the
+   digest-ordered references of the nodes read, with a checked byte sum. This is
+   $`M`$.
+
+Every edge strictly lowers the width, so the pairs of digest and width form an
+acyclic graph even when the stored objects reference themselves, a frame can
+never reach its own pair again, and at most 48 frames are ever open. Phase two
+reaches only pairs that phase one checked, because it starts at the root at
+width 48 and follows the same edges.
+
+**Why the reader counts before it enumerates, and why the memo has the width.**
+A history of $`n`$ entries has at least $`n`$ leaf occurrences, but sharing lets
+far fewer objects denote them. Forty-eight inner nodes, each with two children
+that are the same next node, above a single leaf, 49 objects in all, denote
+$`2^{48}`$ distinct keys. A reader that
+enumerated first would do work proportional to $`2^{48}`$ before it could compare
+with the anchor. The count reads each of the 49 objects once and compares.
+Theorem 16 shows that a successful shape-checked count is the length of a
+successful enumeration, so the count authorizes exactly $`n`$ enumeration steps.
+Theorem 17 shows that a count without the shape checks would authorize an
+enumeration that fails: it counts a history with an empty node below the root as
+one entry. The memo follows Michie's memo functions: it remembers results so a
+shared subtree is counted once (Michie, 1968). A node's shape depends on the
+width at which it is reached, so a memo keyed by the digest alone would reuse a
+count from one width at another and skip the shape check there. Theorem 19 is
+that counterexample, drawn below, and theorem 18 proves that the count memoized
+on digest and width equals the count without a memo, for every memo whose entries
+are correct.
+
+![Why the count memo is keyed by digest and width, on the store of theorem 19. The root, an inner node with an empty prefix reached at width 48, has two children: node 2 on edge 0 and node 3 on edge 1, both reached at width 47. Node 2 is a leaf with a 47-byte prefix, which fits at width 47 and counts 1. Node 3 is an inner node with an empty prefix whose children are reached at width 46: node 2 again on edge 0, in red, where its 47-byte prefix does not fit, and node 4, a leaf with a 46-byte prefix, on edge 1. A memo keyed by the digest alone reuses node 2's count and accepts three entries. The reader's memo keyed by digest and width sees a new key at width 46, runs the shape check and refuses EndpointDepth with remaining width 46 and prefix 47, without reading node 4](figures/retention-v2-depth-memo.svg)
+
+The cost follows from the structure. Let $`N`$ be the number of distinct radix
+objects reachable from the root and $`E`$ the number of child references among
+them. Phase one reads each object once and opens each pair of object and width
+at most once, and an object has at most 49 widths, so it does
+$`O(49\,(N + E))`$ work and keeps the $`N`$ parsed nodes and at most 48 frames.
+Phase two does $`O(48\,n)`$ work, since every key has 48 bytes and every inner
+occurrence has at least two children, and holds the $`n`$ entries. Cold
+admission checks $`n + 1`$ against `max_retained_states` before phase one runs,
+so phase two is bounded by that limit, and phase one by the object-read limits.
+
+**Admission order.** `admit_physical_source` (`durable/admission.rs:1684-1756`)
+runs these steps for both formats:
+
+1. Load the appointed retention object exactly through the bounded store.
+2. Parse it with `AppointedRetention::parse` under the directory's capability.
+3. Refuse the retained-states limit unless $`n + 1`$, computed with a checked
+   addition, is within `max_retained_states`. For V2 this runs before any radix
+   node is read.
+4. Refuse `RetentionCurrentMismatch` unless the current entry names the
+   catalog's state.
+5. For V2, run `admit_retention_history_v2`. Its store refusals surface as
+   `ObjectStore`, its canonical refusals as `Canonical` and its radix refusals as
+   `RetentionRadix` (`durable/admission.rs:588-596`).
+6. Fix the metadata counts: one object of $`\ell_{\mathrm{ret}}`$ bytes for V1,
+   $`\lvert M \rvert`$ objects of $`\mathrm{bytes}(M)`$ bytes for V2.
+7. At a checkpoint terminal, refuse `CheckpointRetentionMetadataObjects` or
+   `CheckpointRetentionMetadataBytes` unless
+   $`\mathrm{DATA} - R_{\mathrm{decl}}`$ equals the metadata counts. V1 is
+   unchanged by this step, because its descriptor rule already makes the
+   difference one object of $`\ell_{\mathrm{ret}}`$ bytes.
+8. Then, unchanged: the current closure; each historical state in order, with
+   the generation rule R8 (`NonHistoricalState`), its own closure and its byte
+   claim; the retained-union comparisons `CheckpointRetainedUnionObjects` and
+   `RetainedUnion`; and the semantics of the current state.
+
+The report gains `retention_metadata_objects` and
+`retention_metadata_canonical_bytes`, and the admitted source keeps an
+`AdmittedRetention`: nothing more for V1, the anchor and $`M`$ for V2.
+
+**The metadata closure is authenticated separately from the retained union.**
+Admission must show that every object of $`\mathrm{DATA}`$ is accounted for.
+Theorem 20 reduces that to checks admission can make one object or one count at
+a time: if $`\mathrm{DATA}`$, $`R`$ and $`M`$ are each free of duplicates,
+$`R`$ and $`M`$ are disjoint and both included in $`\mathrm{DATA}`$, and
+
+```math
+\lvert \mathrm{DATA} \rvert \;=\; \lvert R \rvert + \lvert M \rvert ,
+```
+
+then $`\mathrm{DATA}`$ is a permutation of $`R`$ followed by $`M`$, and its bytes
+are the sum of theirs. Production realizes each premise:
+
+- *Inclusion.* A checkpoint commit makes its own pack the first live pack
+  (`wal/checkpoint_commit.rs:282-286`), and at a checkpoint terminal that pack
+  holds the terminal commit, so the admission store serves exactly
+  $`\mathrm{DATA}`$. Every object of $`R`$ and of $`M`$ is loaded and
+  authenticated by digest through that store.
+- *Disjointness.* The closure walk parses only the semantic object kinds and
+  refuses a metadata object with `UnknownObjectDomain`, while the radix reader
+  refuses any child outside `RSpaceDAG.RetR` with `NotRadixDomain` and reads the
+  anchor only as the appointed object. The domains are distinct (theorem 5), so
+  no object is in both sets, and under collision-checked storage no two objects
+  share a digest across them (theorem 6).
+- *No duplicates.* $`R`$ is the closure ledger and $`M`$ the node map, both keyed
+  by digest.
+- *Counts.* Step 7 gives
+  $`\lvert \mathrm{DATA} \rvert - \lvert R_{\mathrm{decl}} \rvert = \lvert M \rvert`$,
+  and the retained-union comparison gives
+  $`\lvert R_{\mathrm{decl}} \rvert = \lvert R \rvert`$; the bytes follow the
+  same way.
+
+Theorem 21 shows that disjointness cannot be dropped. With $`R = \{1, 2\}`$,
+$`M = \{2, 3\}`$ and $`\mathrm{DATA} = \{1, 2, 3, 4\}`$, every inclusion, count
+and byte check passes, yet object 4 is in neither set. `RV-24` builds the same
+situation from real objects: the empty semantic node and the empty radix node
+both have 50 bytes, so a metadata set that took the empty semantic node from
+$`R`$ in place of the empty radix node would match every count, while the empty
+radix node in $`\mathrm{DATA}`$ would be authenticated by nothing.
+
+**Read accounting and resource bounds.** V1 admission reads the manifest once,
+$`\ell_{\mathrm{ret}} = 96 + 56n`$ bytes. V2 admission reads $`M`$, each object
+once, so relative to a V1 twin of the same source
+
+```math
+\mathrm{reads}_{V2} \;=\; \mathrm{reads}_{V1} - 1 + \lvert M \rvert,
+\qquad
+\mathrm{bytes}_{V2} \;=\; \mathrm{bytes}_{V1} - \ell_{\mathrm{ret}} + \mathrm{bytes}(M).
+```
+
+No limit was added: the 35 boundaries of the resource matrix are unchanged, and
+the metadata reads are charged against the existing object-read and
+object-read-byte limits. A limit one below the metadata demand refuses inside the
+radix reader; an exact one lets the reader finish, and the next read, the first
+of the current closure, is refused. One bound did change. A V1 manifest grows by
+56 bytes per entry, so the object-read byte limit bounded $`n`$ implicitly. A V2
+anchor has 136 bytes for every $`n`$, and sharing lets a few objects denote many
+entries, so `max_retained_states` is now the only bound on $`n`$, and admission
+checks it before the first radix read.
+
+**Successor refusal.** Every successor of an admitted source writes a V1
+manifest built from the admitted history, and only task 7926 can write V2. Four
+entry points therefore refuse a V2 source before any durable mutation:
+`seal_transaction` and `bind_durable_transaction` with
+`RetentionFormatNotWritable(V2)` (`durable/admission.rs:1499-1508`), and
+`checkpoint_descriptor` and `try_visit_checkpoint_references` with
+`SourceRetentionFormatNotWritable(V2)` (`durable/admission.rs:1126-1160`). The
+publishers and the owner checkpoint reach these first, so a V2 source yields
+`DefinitelyNotPublished`, an empty publication trace and an unchanged directory
+(`RV-28`).
+
+**A refinement fix in the stream validator.** `RV-20` compares the chunked
+stream validator with the contiguous parser, and one of its fixed candidates
+exposed a divergence that predates this task. Take an anchor retagged to the DAG
+node domain whose current generation is $`2^{64} - 1`$. The DAG node parser reads
+that generation, at body offset 0, as the prefix length. The contiguous cursor
+then refuses `LengthOutOfRange` for the field `cursor extent`, because the end of
+a prefix that starts at body offset 8 overflows (`ReadCursor::read_exact`,
+`canonical.rs:482-489`). The stream validator compared the length with the 96
+bytes left and refused `Truncated` instead. Both refuse, but the validator must
+report the contiguous parser's error. The fix adds the same overflow check to the
+validator's body-region check, `require_body_aggregate` (`object.rs:1166-1182`),
+and to its check of the envelope's body length (`object.rs:1272-1280`). The
+regression test `overflowing_declared_extents_refine_the_contiguous_oracle` sets
+five length fields to the smallest overflowing value and to one below it, and
+requires every chunking to report `LengthOutOfRange` and `Truncated`
+respectively. It failed before the
+fix. Only the error reported for already-refused input changes, so no admission
+outcome and no persisted byte changes. The Rocq model uses unbounded natural
+numbers, so this machine-level detail does not arise in it.
+
+**Theorems.** The module now proves twenty-one capstones without axioms, and
+passes independent kernel checking. The six new ones are:
+
+| # | Theorem (`RetentionV2Format.`…) | Statement |
+|---|---|---|
+| 16 | `radix_count_success_unfolds_with_that_many_leaves` | Whenever the shape-checked count of an occurrence returns $`c`$, the unfold of that occurrence succeeds with exactly $`c`$ leaves. |
+| 17 | `shape_free_count_mutant_counts_an_empty_node_below_the_root` | Negative control: on a store whose root has an empty inner child and a leaf child, the count and the unfold both refuse, while a count without the shape checks returns 1. |
+| 18 | `memoized_radix_count_agrees_with_radix_count` | For every memo whose entries are correct counts at their widths, and enough fuel, the count memoized on object and width agrees with the count without a memo: both refuse, or both return the same count and the extended memo stays correct. |
+| 19 | `digest_only_memo_mutant_accepts_a_misplaced_shared_leaf` | Negative control: on the store drawn above, the count and the memoized count refuse, while a memo keyed by the object alone returns 3. |
+| 20 | `count_and_inclusion_authenticate_the_disjoint_union` | If the data, the retained union and the metadata are each free of duplicates, the union and the metadata are disjoint and included in the data, and the data's length is the sum of theirs, then the data is a permutation of the union followed by the metadata, and its byte sum is the sum of theirs. |
+| 21 | `overlapping_count_mutant_accepts_an_unauthenticated_object` | Negative control: on data of four objects, a union of two and metadata of two that share one object, every premise of theorem 20 except disjointness holds, including the byte sums, yet one object of the data is in neither set. |
+
+**Executable bindings.** The production reader is compared with the test model
+of the format section, never with itself. The reference decoder and the
+shape-strict count of that model are the oracles; the count is memoized like the
+reader, and like the reader it refuses a digest reached under another length
+before it consults the memo. Generated properties run 256 cases, except the
+dual-reader, versioned-codec and totality properties, which run 64, and the
+union verdicts, which run 512.
+
+| ID | Required property and negative-control boundary | Test |
+|---|---|---|
+| RV-20 | `admits` holds exactly for V1 under both capabilities and V2 under the dual one. On fixed and generated candidates (valid objects of every kind, anchors, radix nodes, V1 and V2 descriptors, and their bit flips, truncations, extensions, version changes and retags to eleven domains), the classifier equals independent V1 and dual models; the strict and dual results agree off the two metadata domains; the stream validator under both capabilities and every chunking equals the contiguous parser; `validate_object_for` agrees for the declared and every foreign kind; `parse_for` equals the strict descriptor parse, except that a V2 descriptor parses under the dual capability, re-encodes to its bytes and meets the V2 minimum; and `AppointedRetention::parse` equals the models. | `dual_object_readers_extend_v1_readers_only_on_metadata_domains` |
+| RV-21 | V1 descriptors, prepare records and commit records parse identically under both capabilities. A descriptor retagged to the V2 domain over a V1 inventory is `InvalidDomain` for the strict and V1-only readers and `RetentionAnchorLength` for the dual reader; a V1-domain descriptor appointing a V2 inventory is `InventoryIncoherent` for every reader; the complete V2 descriptor is `InvalidDomain` for the strict and V1-only readers and parses under the dual reader. Inside records whose layout was not adjusted, the dual reader refuses the prepare record `LengthMismatch` and the commit record `CheckpointIndexTail`. The migrated minimum has $`\mathrm{DATA} = R + 2`$ objects and 186 more bytes; changing either by one accepts at and above the minimum and refuses below it, anchor lengths 135 and 137 are refused, version 2 is `UnsupportedVersion`, and a 136-byte DAG node in the anchor's place is `CheckpointDesignatedObjectKind`. On generated sources the prepare record lists exactly $`R \cup M`$ in digest order with the ordered digest, the commit's index tail and `verify_prepare`, and V2 data under the V1 domain, V1 data under the V2 domain and a V1-sized tail are refused. | `versioned_checkpoint_codec_accepts_v2_inventory_only_under_the_dual_reader` |
+| RV-22 | The production reader refines the reference decoder. An empty node below the root is refused by both, while the count without shape checks returns 1; an enumeration with reversed edge order is refused `RetainedStatesNotStrict`, and a history that contains the current state `RetentionContainsCurrent`. Each of 20 radix defects at every occurrence in five histories, and 256 generated images, is refused by both with the same class, and whenever the shape-strict count succeeds the unfold yields that many leaves unless a leaf key or claim is invalid. | `production_radix_admission_refines_the_reference_decoder` |
+| RV-23 | The misplaced shared leaf is refused `EndpointDepth` with remaining width 46 and prefix 47 after reading the root, node 2 and node 3 once each and never node 4, while the digest-only memo returns 3. A two-way shared graph of 48 levels (49 objects) declared $`2^{48} - 1`$ is refused `CountMismatch`, a four-way one of 32 levels `CountOverflow` after 33 reads, and a 256-way one of 7 levels declared $`2^{56}`$ `EntryAllocation` after 8 reads; each reads every object once. A comb of 48 inner nodes and 49 leaves is admitted on a 256 KiB stack with $`\lvert M \rvert = 98`$. On generated images every object is read exactly once, the reads equal $`\lvert M \rvert - 1`$, and the digest-only count equals the depth-keyed count on valid images. | `radix_memo_is_keyed_by_depth_and_shared_graphs_cannot_force_enumeration` |
+| RV-24 | For historical counts 0 to 8, $`M`$ is exactly $`\mathrm{DATA}`$ outside $`R`$, their merge is $`\mathrm{DATA}`$ with the descriptor's ordered digest, the counts and report fields match, $`R`$ holds only semantic objects and $`M`$ only metadata objects. A verdict function agrees with theorem 20 on all 4096 choices of a size of 1 or 2 and a membership in $`R`$, $`M`$ and $`\mathrm{DATA}`$ for three objects, and on generated cases, the overlapping rule of theorem 21 is unsound on them and on its witness, and the real-object twin of the witness is shown. An extra radix node in $`\mathrm{DATA}`$ is refused `CheckpointRetentionMetadataObjects` one above the computed count; a radix child naming a semantic object `NotRadixDomain`; a child reference with a longer length `ObjectLengthMismatch` and with a shorter one the materialization limit; one leaf shared under two lengths the cached `ObjectLengthMismatch`, also with three reads allowed, and the metadata read limit with two; a semantic node naming radix nodes `UnknownObjectDomain` in the closure. A V1 source whose retained union counts an unreachable anchor is refused `CheckpointRetainedUnionObjects` (3 declared, 2 computed) by the dual reader and `UnknownObjectDomain` in recovery by the V1-only reader. | `v2_admission_authenticates_metadata_separately_from_the_retained_union` |
+| RV-25 | On ten sources, V1 reports are identical under both capabilities, and each V2 twin has the V1 report's disposition, structure, semantics, retained states, aggregates and union, with the reads and bytes of the accounting equations above. A read or byte limit one below the metadata demand is refused in the reader, and at exactly the demand the refusal moves to the first closure read. `max_retained_states` admits at its exact value and refuses one below, before any radix read, even with one read allowed. No refusal changes the directory. V1 and V2 twins refuse alike a historical state whose generation is not below the current one, a current mismatch, a length alias in the closure and a history that contains the current state. | `v2_cold_admission_matches_v1_admission_and_charges_metadata_reads_exactly` |
+| RV-26 | On a migrated V2 source, the exact limits admit the same report. The six constructible durable, four positive checkpoint-WAL and eighteen admission boundaries each refuse one below their exact demand, the three zero-demand WAL axes stay at zero, and no refusal changes the directory. The four per-state structural boundaries are also exercised on the fixture whose historical state needs more than its current one. | `every_v2_cold_admission_resource_boundary_refuses_one_below_and_accepts_exactly` |
+| RV-27 | Migrated V2 directories with three history lengths are refused by the V1-only reader at the descriptor and adopted by the dual reader; a product history of ten retained states reads each shared node once. A torn inactive successor slot leaves both readers on the old slot, and an appointed staged V2 successor is refused by the V1-only reader and adopted by the dual one. An anchor of version 2 is refused `UnsupportedVersion` in admission, and an unknown `RSpaceDAG.RetX` object `UnknownObjectDomain` in recovery. Of the 20 radix defects as directory images, exactly the two length shifts and the forged digest are refused in recovery (`ObjectReference`), a current entry in the history `RetentionCurrentMismatch`, an envelope of version 2 `UnsupportedVersion` in the body, and every other defect with the unit reader's refusal. Two restarts give identical reports and authority. With the derived index removed, the V1-only reader refuses and writes nothing, while the dual reader rebuilds and verifies the index, then verifies it as existing, with equal bytes. | `v2_restart_fixtures_are_refused_by_old_readers_and_adopted_by_dual_readers` |
+| RV-28 | For an admitted V2 source, the writer's publication, the writer's compaction and the publication authority refuse with `SourceRetentionFormatNotWritable(V2)`, `DefinitelyNotPublished` and an empty trace; `seal_transaction` and `bind_durable_transaction` refuse `RetentionFormatNotWritable(V2)`; `checkpoint_descriptor` refuses, and the reference visitor refuses after no visit; the owner's checkpoint refuses before durable mutation. Admission afterwards is identical, and the directory is unchanged. | `v2_admitted_sources_refuse_every_successor_before_durable_mutation` |
+| RV-29 | On arbitrary bytes and on bit flips, truncations and extensions of valid objects, the dual classifier equals its model, the stream validator with arbitrary chunk widths equals the contiguous parser, `validate_object_for` equals its expected result, whatever the descriptor and anchor parsers accept re-encodes to the same bytes, and the radix node parser terminates without panicking. On arbitrary radix graphs, including a forged object that references itself, each object is read at most once and the reads never exceed the objects; admission succeeds only when the declared count is at most 4096 and the entries equal the reference decoder's, and `CountMismatch` reports the model's count. | `dual_retention_readers_are_total_on_arbitrary_bytes_and_graphs` |
+
+`model_property_manifest_is_unique_and_exhaustive` now checks 179 bindings,
+these ten among them. It requires each of the theory's twenty-one
+`Print Assumptions` capstones to be cited by an RV row of the derivation matrix,
+and the integrated runner now compiles the theory expecting twenty-one closed
+capstones.
+
+**Boundary.** The reader is complete for every byte image that a V2 writer
+could produce, and every V2 image in the tests is built by test-only
+constructors. These questions remain open:
+
+- The path-local writer that emits the first V2 publication is task 7926. Its
+  first emission changes persisted bytes and stops for an explicit
+  confirmation. Until it lands, a V2 source refuses every successor.
+- The trusted successor that replaces cold re-admission on ordinary commits is
+  task 7927, its comparison with cold admission after every step is task 7928,
+  and the scaling evidence is task 7929.
+- At a terminal that is not a checkpoint, no $`\mathrm{DATA}`$ is declared, so
+  step 7 has nothing to compare. A V2 source can have such a terminal only after
+  a V2 successor, which this task refuses; task 7926 must bind the metadata of
+  incremental terminals.
+- The TLA+ model of the format section abstracts bytes; `RV-27` binds its
+  refusal and adoption witnesses to directory images.
+- Reclaiming metadata objects that no catalog slot appoints remains the garbage
+  collector's contract (tasks 7943 to 7945).
+
+Cited works:
+
+- R. C. Merkle, "A digital signature based on a conventional encryption
+  function", *Advances in Cryptology — CRYPTO '87*, Lecture Notes in Computer
+  Science 293, 369–378, 1988,
+  [doi:10.1007/3-540-48184-2_32](https://doi.org/10.1007/3-540-48184-2_32), for
+  authenticating a tree through the digests of its nodes, as the reader does
+  with every radix node.
+- D. Michie, "'Memo' functions and machine learning", *Nature* 218(5136):19–22,
+  1968, [doi:10.1038/218019a0](https://doi.org/10.1038/218019a0), for
+  memoization.
+
+The cold-reader evidence in the verification record was taken at these sources:
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RetentionV2Format.v` | `437370608a13ba4cd21503d61e8b1d28dafa875fbc4d7c6bca14b98c114ff85b` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `cfd06e85a83898513280854e49b1fe1eab21072612c3705fd9acb6ef1ca7f183` |
+| `rspace++/src/rspace/persistence/retention/v2_reader.rs` | `2c29081694c53ed6cadb8e49f42b75d656ffca6446c8460fa9251feed7902864` |
+| `rspace++/src/rspace/persistence/retention/v2_format.rs` | `0e0d462a24e997860de604acb883521719530c98bf001f66c88c312336c8bc2a` |
+| `rspace++/src/rspace/persistence/retention.rs` | `e2948e80e00a69e7fe8ea0d476b204b8712ea96af09aadcacd3ed925049b73e7` |
+| `rspace++/src/rspace/persistence/object.rs` | `363be76fdee8d273222aaea3d9a5f4688ed7522758bbf91edb997f08e8d41391` |
+| `rspace++/src/rspace/persistence/checkpoint.rs` | `70ffc489897dcc860c1589c11b9940e6a2b5ab6fbd6fe435dff44daa18dc87c5` |
+| `rspace++/src/rspace/persistence/wal/checkpoint.rs` | `74196184fbb2da7684b7254a122b08180afe19459d6747a909323d70c47dc1b9` |
+| `rspace++/src/rspace/persistence/wal/checkpoint_commit.rs` | `6803994600eeb2d53f4ebb8c5cdc79279d090ed9e9bef2c1c74663be9f14ed0b` |
+| `rspace++/src/rspace/persistence/wal/codec.rs` | `f65e9d012e9cbac894e1688928cf06c48c97cd7e235266f08636f76e6964f81b` |
+| `rspace++/src/rspace/persistence/wal/mod.rs` | `3d79d479690a3769860c2e6e950fd25451c5a97118c0c35b0fbe5d665176dc35` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `eec8a71928fa53b4ad0e42214ef34a81f4bee590c4dd0fd9aca77aed19e13ddf` |
+| `rspace++/src/rspace/persistence/durable/io.rs` | `a6d90d91e03f3b16df0dce838a3f3ed4f4755fe02f9b53e0245b88465233a856` |
+| `rspace++/src/rspace/persistence/durable/recovery.rs` | `60c375acd1eeefd8f821bea60ffec84fa9b1eb51b0856541d01059c8423fcfb8` |
+| `rspace++/src/rspace/persistence/durable/startup.rs` | `ab6a9c12bebe2aa56ccae88a4139932370c128ffda7ff38ea9bbbd31c65655b0` |
+| `rspace++/tests/persistence/retention_v2_format_properties.rs` | `529bf1aa2439209f6cdeadb7c39bacb4696698d43a6185fa10c9f8d280c0eb1f` |
+| `rspace++/tests/persistence/checkpoint_wal.rs` | `82511408d3e29e4f792e0ba54d4be94235e23edfc1c638e095f4cfcac932b7cc` |
+| `rspace++/tests/persistence/durable_publication.rs` | `88b163a5ff91b5148395c9521344d650dd42516a12f3a24abab4794399f01f20` |
+| `rspace++/tests/persistence/durable_rspace_authority.rs` | `f5887d7a6ce94c6f97c70a850207aa21404fa679ee7823841bee4a521b998962` |
+| `rspace++/tests/persistence/canonical_object_streaming_properties.rs` | `5f5b1557b47e02a0889dfb33db29a56831d4baac2972c4586c64e07360d0fbad` |
+| `rspace++/tests/persistence/property_support.rs` | `9404ad361d979e386dd9323cac7e76c14ee1dc9b44c28a1d726bd93f3be87039` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -2125,21 +2557,31 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | RV-02 | `EXEC_ONLY` | `RetentionV2Format.retention_key_order_is_entry_order`, `RetentionV2Format.little_endian_key_mutant_inverts_generation_order` | D | Entry order is the V1 `(generation, ObjectRefV1)` order; agreement with the strictness check of the V1 manifest parser is executable. |
 | RV-03 | `EXEC_ONLY` | `RetentionV2Format.lossy_key_mutants_collapse_v1_aliases`, `RetentionV2Format.retention_key_is_an_exact_48_byte_bijection` | D | That the V1 manifest parser accepts each kind of alias pair is checked executably. |
 | RV-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Byte goldens are executable evidence; the theory models domains, widths and lengths, not digests. |
-| RV-05 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences` | P | The theory abstracts the DAG body; the body parser's canonical-shape refusals and the typed refusal of each rule are executable, and the production decoder is task 7925. |
-| RV-06 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences`, `RetentionV2Format.distinct_leaf_count_mutant_undercounts_shared_entries` | P | Sharing is generated over product histories; the memoized count is a test model that task 7925 refines. |
+| RV-05 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences` | P | The theory abstracts the DAG body; the body parser's canonical-shape refusals and the typed refusal of each rule are executable, and the production reader refines the reference decoder (RV-22). |
+| RV-06 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences`, `RetentionV2Format.distinct_leaf_count_mutant_undercounts_shared_entries` | P | Sharing is generated over product histories; the production reader memoizes the same pairs of digest and width (RV-23). |
 | RV-07 | `EXEC_ONLY` | `RetentionV2Format.domain_separation_excludes_cross_universe_digest_aliases`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | Closure completeness is checked on the test model's images; the stack bound is platform evidence. |
-| RV-08 | `EXEC_ONLY` | `RetentionV2Format.v2_checkpoint_inventory_is_retained_plus_metadata`, `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | The V2 descriptor rule is a frozen contract; the codec that accepts it is task 7925 and the builder that produces it is task 7926. |
+| RV-08 | `EXEC_ONLY` | `RetentionV2Format.v2_checkpoint_inventory_is_retained_plus_metadata`, `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | The codec checks the V2 rule's minimum (RV-21) and cold admission the exact metadata closure (RV-24); the builder that produces the inventory is task 7926. |
 | RV-09 | `NoReaderAdoptsUnsupportedContent` | `RetentionV2Format.retention_domains_are_pairwise_distinct` | P | The model's format check is realized by the domain refusal of every V1 object reader. |
 | RV-10 | `EXEC_ONLY` | `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.retention_domains_are_pairwise_distinct` | P | The V1 codec checks the domain before the inventory; both refusals and their order are exercised in descriptors, prepare records and commit records. |
 | RV-11 | `ReadersSelectTheSameSlot`, `RetentionV2TypeInvariant` | `EXEC_ONLY` | P | The model's envelope is the 336-byte slot outside the retention reference and the CRC. |
 | RV-12 | `AdoptionIsNewestPublished` | `EXEC_ONLY` | P | Each executable envelope change realizes the model's changed envelope, and the observed fallback is the negative control's stale adoption. |
-| RV-13 | `AdoptionIsNewestPublished`, `NeverOldReaderRefusesV2`, `CrashRecoverySelectsOnlyValidAuthority` | `EXEC_ONLY` | P | Terminal refusal is the existing no-fallback recovery; the refusal of a real V2 publication by an old reader is a fixture of task 7925. |
+| RV-13 | `AdoptionIsNewestPublished`, `NeverOldReaderRefusesV2`, `CrashRecoverySelectsOnlyValidAuthority` | `EXEC_ONLY` | P | Terminal refusal is the existing no-fallback recovery; old readers refuse real V2 directory images in RV-27. |
 | RV-14 | `EXEC_ONLY` | `RetentionV2Format.retention_domains_are_pairwise_distinct`, `RetentionV2Format.domain_separation_excludes_cross_universe_digest_aliases`, `RetentionV2Format.shared_node_domain_mutant_aliases_empty_metadata_and_semantic_roots` | D | Collision checking is the duplicate-digest refusal of the production inventory builder. |
 | RV-15 | `NeverDualReaderAdoptsV2` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots` | P | The migration runs on the test model's radix builder; the production migration is task 7926. |
 | RV-16 | `EXEC_ONLY` | `RetentionV2Format.retention_format_binding_separates_representations_of_one_state`, `RetentionV2Format.state_version_only_binding_mutant_resumes_across_formats` | P | The binding is a contract; its realization in the transfer protocol is tasks 5690 and 7938. |
 | RV-17 | `EXEC_ONLY` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots` | P | Root preservation is checked on parsed semantic manifests; consensus identity remains the contract of task 5691. |
 | RV-18 | `EXEC_ONLY` | `EXEC_ONLY` | E | Totality is executable evidence over arbitrary and perturbed bytes. |
 | RV-19 | `NeverAdoptsBehindTornSuccessor` | `EXEC_ONLY` | D | The existing torn-slot test realizes the witness behavior at the byte level. |
+| RV-20 | `NoReaderAdoptsUnsupportedContent` | `RetentionV2Format.retention_domains_are_pairwise_distinct` | P | The model's format check is realized by domain dispatch in every reader; that the dual capability differs from the V1 readers only on the two metadata domains is executable. |
+| RV-21 | `EXEC_ONLY` | `RetentionV2Format.v2_checkpoint_inventory_is_retained_plus_metadata`, `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory` | P | The codec checks only the V2 minimum, because it never reads radix bytes; the exact metadata count is the admission check of RV-24. |
+| RV-22 | `EXEC_ONLY` | `RetentionV2Format.radix_count_success_unfolds_with_that_many_leaves`, `RetentionV2Format.shape_free_count_mutant_counts_an_empty_node_below_the_root`, `RetentionV2Format.radix_count_denotes_entry_occurrences` | P | The theory's count and unfold abstract the DAG body and the store; the production reader's agreement with the reference decoder, refusal class by refusal class, is executable. |
+| RV-23 | `EXEC_ONLY` | `RetentionV2Format.memoized_radix_count_agrees_with_radix_count`, `RetentionV2Format.digest_only_memo_mutant_accepts_a_misplaced_shared_leaf`, `RetentionV2Format.radix_count_success_unfolds_with_that_many_leaves` | P | The memo theorem holds for every memo whose entries are correct; read counts, the refusal of an impossible reservation and the stack bound are executable and platform evidence. |
+| RV-24 | `EXEC_ONLY` | `RetentionV2Format.count_and_inclusion_authenticate_the_disjoint_union`, `RetentionV2Format.overlapping_count_mutant_accepts_an_unauthenticated_object`, `RetentionV2Format.domain_separation_excludes_cross_universe_digest_aliases` | P | Inclusion is realized by the store pinned to the checkpoint pack, disjointness by the domain refusals of both walks, and distinctness by digest-keyed sets; the verdict function is checked exhaustively on three objects. |
+| RV-25 | `EXEC_ONLY` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots`, `RetentionV2Format.memoized_radix_count_agrees_with_radix_count` | P | Each V2 source is the migration of its V1 twin; equal reports, the read equations and the limit boundaries are executable. |
+| RV-26 | `EXEC_ONLY` | `EXEC_ONLY` | E | Resource boundaries are executable evidence; no limit was added. |
+| RV-27 | `AdoptionIsNewestPublished`, `NoReaderAdoptsUnsupportedContent`, `NeverOldReaderRefusesV2`, `NeverDualReaderAdoptsV2`, `NeverAdoptsBehindTornSuccessor` | `EXEC_ONLY` | P | Directory images realize the model's refusal and adoption witnesses; which layer refuses each corruption is executable. |
+| RV-28 | `EXEC_ONLY` | `EXEC_ONLY` | E | Successor refusal is an executable guard until the writer of task 7926 exists. |
+| RV-29 | `EXEC_ONLY` | `EXEC_ONLY` | E | Totality is executable evidence over arbitrary bytes and arbitrary graphs. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -2332,6 +2774,22 @@ existing tests bound as `RV-13` and `RV-19`, and this registry test. These
 results freeze the format and its compatibility contract; no production code
 writes or reads V2 yet. See engineering journal J-247 for caps, evidence hashes
 and the remaining obligations.
+
+The 2026-10-26 cold-reader extension adds `RV-20` through `RV-29`. The
+catalog/derivation/binding registry now contains **179** IDs: the 169 above and
+the ten reader rows. On an isolated export of the candidate tree,
+`RetentionV2Format.v` compiled with all **21** capstones closed under the global
+context, and the module passed independent kernel checking; the TLA+ model did
+not change. All 445 selected rspace++ library tests under
+`rspace::persistence` passed single-threaded in debug (20.79 s) and
+release (8.49 s), with the three unwind-child helpers ignored by
+design. They include the ten reader properties, the overflow regression test,
+the format, ledger, reachability, closure, semantic, admission and publication
+tests, and this registry test. Unlike the format extension, these results cover
+production code that reads V2: the dual dispatch, the versioned descriptor, the
+two-phase radix reader and the new cold-admission steps. No production code
+writes V2. See engineering journal J-248 for caps, evidence hashes and the
+remaining obligations.
 
 ## Caller-authority contract (2026-09-06)
 

@@ -195,6 +195,40 @@ fn all_five_canonical_object_stream_pdas_match_contiguous_oracles_for_generated_
     }
 }
 
+/// A declared extent past the address space is out of range in the
+/// contiguous cursor before it is truncated; one below that boundary it is
+/// truncated. Every chunked stream must report the same, for the envelope
+/// body and for each length-prefixed body region.
+#[test]
+fn overflowing_declared_extents_refine_the_contiguous_oracle() {
+    let objects = valid_objects();
+    // (object, length-field offset, region start in its cursor, unit width)
+    let fields = [(0, 24, 32, 1), (0, 32, 8, 1), (1, 56, 32, 1), (3, 80, 56, 48), (4, 88, 64, 56)];
+    for (object, at, start, width) in fields {
+        let overflowing = (usize::MAX - start) / width + 1;
+        for (declared, overflows) in [(overflowing, true), (overflowing - 1, false)] {
+            let mut bytes = objects[object].clone();
+            bytes[at..at + 8].copy_from_slice(
+                &u64::try_from(declared)
+                    .expect("usize fits u64")
+                    .to_le_bytes(),
+            );
+            match (oracle(&bytes), overflows) {
+                (
+                    Err(CanonicalFormatError::LengthOutOfRange {
+                        field: "cursor extent",
+                        value: u64::MAX,
+                    }),
+                    true,
+                ) |
+                (Err(CanonicalFormatError::Truncated { .. }), false) => {}
+                (other, _) => panic!("declared {declared} at byte {at}: {other:?}"),
+            }
+            assert_all_partitions(&bytes);
+        }
+    }
+}
+
 #[test]
 fn every_valid_object_prefix_has_the_exact_contiguous_error() {
     for bytes in valid_objects() {

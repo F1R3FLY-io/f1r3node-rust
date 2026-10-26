@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -5,10 +7,12 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use proptest::prelude::*;
+use proptest::test_runner::TestRunner;
 use shared::rust::test_scratch;
 
 use super::checkpoint_wal::{
     SyntheticCheckpointSource, fixture as checkpoint_source_fixture,
+    fixture_with_retained_union_cardinality, fixture_with_root,
     historically_larger_semantic_fixture as historically_larger_checkpoint_source_fixture,
     semantic_fixture as semantic_checkpoint_source_fixture,
 };
@@ -16,33 +20,54 @@ use super::durable_recovery::{
     CheckpointPackImage, catalog_image, checkpoint_image_from_source, limits,
     valid_checkpoint_image,
 };
-use super::support::{TestSemanticProfile, trial_scratch};
+use super::durable_rspace_authority::assert_v2_owner_checkpoint_refuses_before_durable_mutation;
+use super::property_support::independent_inventory_digest;
+use super::retention_v2_format_properties::{
+    RadixDefect, migrate_checkpoint_source_to_v2, radix_defect_sources, v1_manifest_entries,
+    v1_source_with_manifest, v2_source_from_objects, v2_source_with_history,
+    v2_source_with_radix_child,
+};
+use super::support::{PersistenceTrialDir, TestSemanticProfile, trial_scratch};
 use super::transaction_sealing::data_batch;
 use crate::rspace::persistence::checkpoint::{
-    CheckpointObjectInventoryV1, GenerationCheckpointDescriptorV1, OrderedObjectInventoryBuilderV1,
+    CheckpointObjectInventoryV1, CheckpointReferenceVisitErrorV1, GENERATION_CHECKPOINT_DOMAIN,
+    GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1, OrderedObjectInventoryBuilderV1,
 };
 use crate::rspace::persistence::closure::RetainedUnionClosureReportV1;
 use crate::rspace::persistence::durable::{
     DurableAdmissionErrorV1, DurableAdmissionLimitKindV1, DurableAdmissionLimitsV1,
     DurableAdmissionReportV1, DurableDirectoryV1, DurableIoError, DurableIoFailpointV1,
-    DurableStartupErrorV1, GenerationCheckpointPublicationErrorV1,
-    GenerationCheckpointPublicationHookPointV1, GenerationCheckpointPublicationOutcomeV1,
-    IndexBindingDispositionV1, InventoryMismatchKindV1, PreparedGenerationCheckpointIndexV1,
-    SemanticallyAdmittedDurableWriterV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
+    DurableStartupErrorV1, DurableTransactionPreparationError,
+    GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationHookPointV1,
+    GenerationCheckpointPublicationOutcomeV1, IndexBindingDispositionV1, InventoryMismatchKindV1,
+    PreparedGenerationCheckpointIndexV1, RecoveryError, SemanticallyAdmittedDurableWriterV1,
+    arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
     arm_generation_checkpoint_publication_failpoint, arm_generation_checkpoint_publication_hook,
     index_file_name, pack_file_name, start_generation_checkpoint_publication_trace,
     take_generation_checkpoint_publication_trace,
+};
+use crate::rspace::persistence::retention::v2_format::{
+    EMPTY_RETENTION_RADIX_NODE, RETENTION_ANCHOR_CANONICAL_LEN, RETENTION_ANCHOR_DOMAIN,
+    RETENTION_RADIX_DOMAIN, RetentionAnchorV2, RetentionFormat, RetentionReader,
+    empty_retention_radix_ref,
+};
+use crate::rspace::persistence::retention::v2_reader::{
+    RetentionRadixErrorV2, RetentionRadixRefusalV2,
 };
 use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
     PreparedGenerationCheckpointV1,
 };
 use crate::rspace::persistence::{
-    CATALOG_IMAGE_LEN, CanonicalBlob, CanonicalBlobKind, CanonicalEncode, CatalogAuthorityTokenV1,
-    CatalogPackStateV1, CatalogSlotV1, DurableLimitConfig, DurableLimitError, DurableLimitKind,
-    DurableLimits, IndexGenerationV1, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
-    ObjectDigest, ObjectIndexHeaderV1, ObjectRefV1, PACK_HEADER_LEN_V1, PackHeaderV1, PackId,
-    PackTerminalIdentityV1, SemanticValidationLimits, StructuralValidationLimits,
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CanonicalBlob, CanonicalBlobKind, CanonicalDagNode,
+    CanonicalEncode, CanonicalFormatError, CanonicalObjectView, CatalogAuthorityTokenV1,
+    CatalogPackStateV1, CatalogSlotV1, ClosureError, DagChild, DagTransactionLimits,
+    DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits,
+    DurableObjectReadErrorV1, EndpointValue, IndexGenerationV1, LogPackAddress,
+    LogPackDecodeLimits, LogPackFormatError, MutationBatchViewV1, ObjectDigest,
+    ObjectIndexHeaderV1, ObjectRefV1, OpenDagTransaction, PACK_HEADER_LEN_V1, PackHeaderV1, PackId,
+    PackTerminalIdentityV1, RetainedStateV1, RetentionManifestV1, SemanticValidationLimits,
+    StateVersionV1, StructuralValidationLimits,
 };
 
 const FORMAL_PUBLICATION_PHASE_ORDER: [GenerationCheckpointPublicationHookPointV1; 18] = [
@@ -117,8 +142,15 @@ fn source_with_declared_current_objects(declared: u64) -> SyntheticCheckpointSou
 }
 
 fn source_with_unreachable_retained_object() -> SyntheticCheckpointSource {
+    source_with_unreachable_retained(encoded_blob(
+        b"authenticated but unreachable checkpoint object",
+    ))
+}
+
+/// A V1 checkpoint whose declared retained union counts `extra`, which no
+/// retained state reaches.
+fn source_with_unreachable_retained(extra: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource {
     let mut source = checkpoint_source_fixture();
-    let extra = encoded_blob(b"authenticated but unreachable checkpoint object");
     let extra_len = extra.0.encoded_len();
     source.push_object(extra);
     source.sort_objects_by_digest();
@@ -2372,6 +2404,30 @@ impl AdmissionBoundary {
             Self::SemanticWorklist => DurableAdmissionLimitKindV1::SemanticWorklist,
         }
     }
+
+    /// The resource name cold admission reports when this axis refuses.
+    const fn runtime_name(self) -> &'static str {
+        match self {
+            Self::PerStateDistinctObjects => "distinct objects",
+            Self::PerStateCanonicalBytes => "canonical bytes",
+            Self::PerStateReferences => "object references",
+            Self::PerStateWorklist => "closure worklist",
+            Self::RetainedStates => "retained states",
+            Self::UnionObjects => "retained union objects",
+            Self::UnionCanonicalBytes => "retained union canonical bytes",
+            Self::AggregateRootVisits => "aggregate retained-root visits",
+            Self::AggregateReferences => "aggregate retained references",
+            Self::ObjectReads => "object reads",
+            Self::ObjectReadBytes => "object-read bytes",
+            Self::LogicalNodes => "logical nodes",
+            Self::Endpoints => "semantic endpoints",
+            Self::LogicalPathBytes => "logical path bytes",
+            Self::PayloadBytes => "continuation source payload bytes",
+            Self::JoinLookups => "join lookups",
+            Self::JoinLookupSteps => "join lookup steps",
+            Self::SemanticWorklist => "semantic worklist",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2432,9 +2488,26 @@ impl ExactCheckpointPublicationLimits {
         expected: &ExpectedSuccessor,
         report: DurableAdmissionReportV1,
     ) -> Self {
+        Self::exact(
+            source,
+            expected.pack.len() as u64,
+            expected.index.len() as u64,
+            expected.pack.len() as u64,
+            report,
+        )
+    }
+
+    /// The exact limits for scanning one checkpoint pack of `pack_bytes`
+    /// whose index is `index_bytes` long, reading `physical_read_bytes`, and
+    /// admitting `source` with the demand recorded in `report`.
+    fn exact(
+        source: &SyntheticCheckpointSource,
+        pack_bytes: u64,
+        index_bytes: u64,
+        physical_read_bytes: u64,
+        report: DurableAdmissionReportV1,
+    ) -> Self {
         let inventory = source.descriptor.inventory();
-        let pack_bytes = expected.pack.len() as u64;
-        let index_bytes = expected.index.len() as u64;
         let objects = inventory.data_objects();
         let object_bytes = inventory.data_canonical_bytes().get();
         let single_object_bytes = source
@@ -2454,7 +2527,7 @@ impl ExactCheckpointPublicationLimits {
                 max_transactions: 1,
                 max_object_records: objects,
                 max_total_scan_bytes: pack_bytes,
-                max_total_physical_read_bytes: pack_bytes,
+                max_total_physical_read_bytes: physical_read_bytes,
                 max_index_bytes: index_bytes,
                 max_index_records: objects,
                 max_full_byte_comparison_bytes: 1,
@@ -3400,4 +3473,1368 @@ fn published_but_semantic_admission_failure_is_typed_and_restartable() {
 
     let reopened = admit(scratch.path());
     assert_eq!(reopened.authority().image(), &expected.catalog);
+}
+
+/// Cold admission's refusal, classified by the layer that refused it.
+#[derive(Debug, PartialEq, Eq)]
+enum ColdRefusal {
+    DurableLimit(DurableLimitError),
+    Wal(LogPackFormatError),
+    Canonical(CanonicalFormatError),
+    ClosureFormat(CanonicalFormatError),
+    MetadataReadLimit {
+        resource: &'static str,
+        limit: u64,
+        attempted: u64,
+    },
+    ClosureReadLimit {
+        resource: &'static str,
+        limit: u64,
+        attempted: u64,
+    },
+    Materialization {
+        digest: ObjectDigest,
+        limit: u64,
+        attempted: u64,
+    },
+    Radix(RetentionRadixRefusalV2),
+    CurrentMismatch {
+        catalog: StateVersionV1,
+        manifest: StateVersionV1,
+    },
+    NonHistorical {
+        current_generation: u64,
+        retained_generation: u64,
+    },
+    Inventory {
+        kind: InventoryMismatchKindV1,
+        declared: u64,
+        computed: u64,
+    },
+    Unclassified(String),
+}
+
+fn cold_refusal(error: DurableAdmissionErrorV1) -> ColdRefusal {
+    match error {
+        DurableAdmissionErrorV1::Startup(
+            DurableStartupErrorV1::Recovery(RecoveryError::Limit(error)) |
+            DurableStartupErrorV1::Limit(error),
+        ) => ColdRefusal::DurableLimit(error),
+        DurableAdmissionErrorV1::Startup(DurableStartupErrorV1::Recovery(RecoveryError::Wal(
+            error,
+        ))) => ColdRefusal::Wal(error),
+        DurableAdmissionErrorV1::Canonical(error) => ColdRefusal::Canonical(error),
+        DurableAdmissionErrorV1::Closure(ClosureError::Format(error)) => {
+            ColdRefusal::ClosureFormat(error)
+        }
+        DurableAdmissionErrorV1::Closure(ClosureError::Store(
+            DurableObjectReadErrorV1::AdmissionReadLimit {
+                resource,
+                limit,
+                attempted,
+            },
+        )) => ColdRefusal::ClosureReadLimit {
+            resource,
+            limit,
+            attempted,
+        },
+        DurableAdmissionErrorV1::ObjectStore(DurableObjectReadErrorV1::AdmissionReadLimit {
+            resource,
+            limit,
+            attempted,
+        }) => ColdRefusal::MetadataReadLimit {
+            resource,
+            limit,
+            attempted,
+        },
+        DurableAdmissionErrorV1::ObjectStore(DurableObjectReadErrorV1::MaterializationLimit {
+            digest,
+            limit,
+            attempted,
+        }) => ColdRefusal::Materialization {
+            digest,
+            limit,
+            attempted,
+        },
+        DurableAdmissionErrorV1::RetentionRadix(refusal) => ColdRefusal::Radix(refusal),
+        DurableAdmissionErrorV1::RetentionCurrentMismatch { catalog, manifest } => {
+            ColdRefusal::CurrentMismatch { catalog, manifest }
+        }
+        DurableAdmissionErrorV1::NonHistoricalState {
+            current_generation,
+            retained_generation,
+        } => ColdRefusal::NonHistorical {
+            current_generation,
+            retained_generation,
+        },
+        DurableAdmissionErrorV1::InventoryMismatch {
+            kind,
+            declared,
+            computed,
+        } => ColdRefusal::Inventory {
+            kind,
+            declared,
+            computed,
+        },
+        error => ColdRefusal::Unclassified(format!("{error:?}")),
+    }
+}
+
+type AdmittedWriter = SemanticallyAdmittedDurableWriterV1<TestSemanticProfile>;
+
+fn object(bytes: Vec<u8>) -> (ObjectRefV1, Vec<u8>) {
+    let reference = ObjectRefV1::new(ObjectDigest::of_canonical_bytes(&bytes), bytes.len() as u64)
+        .expect("a test object carries its envelope");
+    (reference, bytes)
+}
+
+fn installed(
+    prefix: &str,
+    source: &SyntheticCheckpointSource,
+) -> (PersistenceTrialDir, CheckpointPackImage) {
+    let scratch = trial_scratch(prefix);
+    let image = checkpoint_image_from_source(source.clone());
+    install_checkpoint_image(scratch.path(), &image);
+    (scratch, image)
+}
+
+fn admit_with(
+    root: &Path,
+    reader: RetentionReader,
+    recovery: DurableLimits,
+    wal: LogPackDecodeLimits,
+    admission: DurableAdmissionLimitsV1,
+) -> Result<AdmittedWriter, ColdRefusal> {
+    DurableDirectoryV1::open(root)
+        .expect("open the durable trial directory")
+        .with_retention_reader_for_test(reader)
+        .recover_and_admit_v1::<TestSemanticProfile>(recovery, wal, admission)
+        .map_err(cold_refusal)
+}
+
+fn admit_unbounded(root: &Path, reader: RetentionReader) -> Result<AdmittedWriter, ColdRefusal> {
+    admit_with(
+        root,
+        reader,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    )
+}
+
+#[track_caller]
+fn admitted(root: &Path, reader: RetentionReader) -> AdmittedWriter {
+    match admit_unbounded(root, reader) {
+        Ok(writer) => writer,
+        Err(refusal) => {
+            panic!("the {reader:?} reader refused an admissible checkpoint: {refusal:?}")
+        }
+    }
+}
+
+#[track_caller]
+fn refused(root: &Path, reader: RetentionReader) -> ColdRefusal {
+    match admit_unbounded(root, reader) {
+        Ok(_) => panic!("the {reader:?} reader adopted an inadmissible checkpoint"),
+        Err(refusal) => refusal,
+    }
+}
+
+/// Dual-reader admission with every limit unbounded but the configured
+/// admission axes.
+fn admit_bounded(
+    root: &Path,
+    configure: impl FnOnce(&mut DurableAdmissionLimitsV1),
+) -> Result<AdmittedWriter, ColdRefusal> {
+    let mut admission = DurableAdmissionLimitsV1::UNBOUNDED;
+    configure(&mut admission);
+    admit_with(root, RetentionReader::Dual, limits(), LogPackDecodeLimits::UNBOUNDED, admission)
+}
+
+#[track_caller]
+fn refused_bounded(
+    root: &Path,
+    configure: impl FnOnce(&mut DurableAdmissionLimitsV1),
+) -> ColdRefusal {
+    match admit_bounded(root, configure) {
+        Ok(_) => panic!("bounded admission adopted a checkpoint beyond its limits"),
+        Err(refusal) => refusal,
+    }
+}
+
+/// Every durable file but the advisory writer lock that admission takes.
+fn directory_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    fs::read_dir(root)
+        .expect("list the durable trial directory")
+        .map(|entry| entry.expect("read a durable directory entry"))
+        .filter_map(|entry| {
+            let name = entry
+                .file_name()
+                .into_string()
+                .expect("durable file names are UTF-8");
+            match name.as_str() {
+                "writer.lock.v1" => None,
+                _ => Some((name, fs::read(entry.path()).expect("read a durable file"))),
+            }
+        })
+        .collect()
+}
+
+/// A strict V1 reader refuses a V2 checkpoint at its descriptor domain,
+/// before any object is read.
+fn v1_reader_refusal() -> ColdRefusal {
+    ColdRefusal::Wal(LogPackFormatError::Checkpoint(GenerationCheckpointErrorV1::Canonical(
+        CanonicalFormatError::InvalidDomain {
+            expected: GENERATION_CHECKPOINT_DOMAIN,
+        },
+    )))
+}
+
+/// The retained union of a V1 source: its DATA without the manifest.
+fn retained_references(v1: &SyntheticCheckpointSource) -> Vec<ObjectRefV1> {
+    let manifest = v1.descriptor.retention_manifest();
+    v1.objects
+        .iter()
+        .map(|(reference, _)| *reference)
+        .filter(|reference| *reference != manifest)
+        .collect()
+}
+
+fn total_canonical_bytes(references: &[ObjectRefV1]) -> u64 {
+    references
+        .iter()
+        .map(|reference| reference.encoded_len())
+        .sum()
+}
+
+/// The report, appointed anchor, and authenticated metadata closure (digest
+/// order, canonical bytes) of an admitted V2 checkpoint.
+fn admitted_metadata(
+    writer: AdmittedWriter,
+) -> (DurableAdmissionReportV1, RetentionAnchorV2, Vec<ObjectRefV1>, u64) {
+    let report = writer.report();
+    let (_lease, source) = writer.into_parts();
+    let admitted = source
+        .retention_metadata_v2()
+        .expect("a V2 checkpoint admits its metadata closure");
+    (
+        report,
+        admitted.anchor(),
+        admitted.metadata().objects().to_vec(),
+        admitted.metadata().canonical_bytes(),
+    )
+}
+
+/// The anchor and radix objects of `v2`: its DATA outside the retained union
+/// of the V1 source it was migrated from.
+fn metadata_objects(
+    v1: &SyntheticCheckpointSource,
+    v2: &SyntheticCheckpointSource,
+) -> ((ObjectRefV1, Vec<u8>), Vec<(ObjectRefV1, Vec<u8>)>) {
+    let retained = retained_references(v1).into_iter().collect::<BTreeSet<_>>();
+    let anchor_reference = v2.descriptor.retention_manifest();
+    let mut anchor = None;
+    let mut radix = Vec::with_capacity(v2.objects.len() - retained.len());
+    for (reference, bytes) in &v2.objects {
+        match (*reference == anchor_reference, retained.contains(reference)) {
+            (true, _) => anchor = Some((*reference, bytes.clone())),
+            (false, false) => radix.push((*reference, bytes.clone())),
+            (false, true) => {}
+        }
+    }
+    (anchor.expect("a V2 source carries its anchor"), radix)
+}
+
+/// The refusal cold admission reports when `boundary` is one below its
+/// demand.
+fn cold_boundary_refusal(
+    boundary: CheckpointResourceBoundary,
+    limit: u64,
+    attempted: u64,
+) -> ColdRefusal {
+    match boundary {
+        CheckpointResourceBoundary::Durable(resource) => {
+            ColdRefusal::DurableLimit(DurableLimitError::Exceeded {
+                resource,
+                limit,
+                attempted,
+            })
+        }
+        CheckpointResourceBoundary::Wal(resource) => {
+            ColdRefusal::Wal(LogPackFormatError::ResourceLimit {
+                resource: resource.resource_name(),
+                limit,
+                attempted,
+            })
+        }
+        CheckpointResourceBoundary::Admission(resource) => {
+            let format = CanonicalFormatError::ResourceLimit {
+                resource: resource.runtime_name(),
+                limit,
+                attempted,
+            };
+            match resource {
+                AdmissionBoundary::RetainedStates |
+                AdmissionBoundary::AggregateRootVisits |
+                AdmissionBoundary::AggregateReferences => ColdRefusal::Canonical(format),
+                AdmissionBoundary::ObjectReads | AdmissionBoundary::ObjectReadBytes => {
+                    ColdRefusal::ClosureReadLimit {
+                        resource: resource.runtime_name(),
+                        limit,
+                        attempted,
+                    }
+                }
+                AdmissionBoundary::PerStateDistinctObjects |
+                AdmissionBoundary::PerStateCanonicalBytes |
+                AdmissionBoundary::PerStateReferences |
+                AdmissionBoundary::PerStateWorklist |
+                AdmissionBoundary::UnionObjects |
+                AdmissionBoundary::UnionCanonicalBytes |
+                AdmissionBoundary::LogicalNodes |
+                AdmissionBoundary::Endpoints |
+                AdmissionBoundary::LogicalPathBytes |
+                AdmissionBoundary::PayloadBytes |
+                AdmissionBoundary::JoinLookups |
+                AdmissionBoundary::JoinLookupSteps |
+                AdmissionBoundary::SemanticWorklist => ColdRefusal::ClosureFormat(format),
+            }
+        }
+    }
+}
+
+fn runner(cases: u32) -> TestRunner {
+    TestRunner::new(ProptestConfig {
+        cases,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    })
+}
+
+/// The verdicts of the C20/C21 inventory model on objects given as a size
+/// and a membership mask over the retained union R (bit 0), the metadata
+/// closure M (bit 1), and DATA (bit 2).
+struct UnionVerdict {
+    accepted: bool,
+    mutant_accepted: bool,
+    disjoint: bool,
+    exact_union: bool,
+    unauthenticated: bool,
+}
+
+fn union_verdict(objects: &[(u64, u8)]) -> UnionVerdict {
+    let members = |bit: u8| {
+        objects
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, mask))| mask & bit != 0)
+            .map(|(index, (size, _))| (index, *size))
+            .collect::<Vec<_>>()
+    };
+    let (retained, metadata, data) = (members(1), members(2), members(4));
+    let bytes = |set: &[(usize, u64)]| set.iter().map(|(_, size)| size).sum::<u64>();
+    let in_data = |set: &[(usize, u64)]| set.iter().all(|(index, _)| objects[*index].1 & 4 != 0);
+    let disjoint = objects.iter().all(|(_, mask)| mask & 3 != 3);
+    let counted = data.len() == retained.len() + metadata.len() &&
+        bytes(&data) == bytes(&retained) + bytes(&metadata);
+    let mutant_accepted = in_data(&retained) && in_data(&metadata) && counted;
+    let mut union = retained
+        .iter()
+        .chain(&metadata)
+        .map(|(index, _)| *index)
+        .collect::<Vec<_>>();
+    union.sort_unstable();
+    let data_indexes = data.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+    UnionVerdict {
+        accepted: disjoint && mutant_accepted,
+        mutant_accepted,
+        disjoint,
+        exact_union: union == data_indexes,
+        unauthenticated: objects.iter().any(|(_, mask)| *mask == 4),
+    }
+}
+
+/// Executable refinement of RV-24 and of the RetentionV2Format capstones
+/// `count_and_inclusion_authenticate_the_disjoint_union` (C20) and
+/// `overlapping_count_mutant_accepts_an_unauthenticated_object` (C21).
+#[test]
+fn v2_admission_authenticates_metadata_separately_from_the_retained_union() {
+    for historical in 0..=8_usize {
+        let v1 = fixture_with_retained_union_cardinality(historical + 2);
+        let v2 = migrate_checkpoint_source_to_v2(&v1);
+        let (scratch, _) = installed("v2-metadata-union-", &v2);
+        let (report, anchor, metadata, metadata_bytes) =
+            admitted_metadata(admitted(scratch.path(), RetentionReader::Dual));
+        let retained = retained_references(&v1);
+        let retained_set = retained.iter().copied().collect::<BTreeSet<_>>();
+        let data = v2
+            .objects
+            .iter()
+            .map(|(reference, _)| *reference)
+            .collect::<Vec<_>>();
+        let outside_retained = data
+            .iter()
+            .copied()
+            .filter(|reference| !retained_set.contains(reference))
+            .collect::<Vec<_>>();
+        assert_eq!(metadata, outside_retained, "the metadata closure is DATA outside R");
+        let mut merged = Vec::with_capacity(retained.len() + metadata.len());
+        merged.extend_from_slice(&retained);
+        merged.extend_from_slice(&metadata);
+        merged.sort_unstable();
+        assert_eq!(merged, data, "DATA is the disjoint union of R and the metadata closure");
+        let inventory = v2.descriptor.inventory();
+        assert_eq!(independent_inventory_digest(&merged), inventory.ordered_digest());
+        assert_eq!(inventory.retained_union_objects(), retained.len() as u64);
+        assert_eq!(
+            inventory.retained_union_canonical_bytes().get(),
+            total_canonical_bytes(&retained)
+        );
+        assert_eq!(
+            inventory.data_objects(),
+            inventory.retained_union_objects() + metadata.len() as u64
+        );
+        assert_eq!(
+            inventory.data_canonical_bytes().get(),
+            inventory.retained_union_canonical_bytes().get() + metadata_bytes
+        );
+        assert_eq!(metadata_bytes, total_canonical_bytes(&metadata));
+        assert_eq!(report.retention_metadata_objects, metadata.len() as u64);
+        assert_eq!(report.retention_metadata_canonical_bytes, metadata_bytes);
+        assert_eq!(report.retention_manifest_canonical_bytes, RETENTION_ANCHOR_CANONICAL_LEN);
+        assert_eq!(report.retained_union, RetainedUnionClosureReportV1 {
+            distinct_objects: retained.len() as u64,
+            canonical_bytes: total_canonical_bytes(&retained),
+        });
+        assert_eq!(report.retained_states, historical as u64 + 1);
+        assert_eq!(anchor.historical_count(), historical as u64);
+        assert_eq!(anchor.object_ref(), v2.descriptor.retention_manifest());
+        for (reference, bytes) in &v2.objects {
+            match retained_set.contains(reference) {
+                true => assert!(
+                    CanonicalObjectView::parse(bytes).is_ok(),
+                    "R holds only semantic objects"
+                ),
+                false => {
+                    assert!(
+                        bytes.starts_with(RETENTION_ANCHOR_DOMAIN) ||
+                            bytes.starts_with(RETENTION_RADIX_DOMAIN)
+                    );
+                    assert_eq!(
+                        CanonicalObjectView::parse(bytes).err(),
+                        Some(CanonicalFormatError::UnknownObjectDomain),
+                        "semantic readers refuse every metadata object"
+                    );
+                }
+            }
+        }
+    }
+
+    let mut accepted = 0_u32;
+    let mut overlapping = 0_u32;
+    for code in 0..1_u32 << 12 {
+        let objects: [(u64, u8); 3] = std::array::from_fn(|slot| {
+            let digit = (code >> (4 * slot)) & 0xf;
+            (u64::from(digit >> 3) + 1, u8::try_from(digit & 7).expect("a three-bit mask"))
+        });
+        let verdict = union_verdict(&objects);
+        assert_eq!(verdict.accepted, verdict.exact_union, "C20 on {objects:?}");
+        assert!(
+            !verdict.mutant_accepted || verdict.disjoint || verdict.unauthenticated,
+            "C21 on {objects:?}"
+        );
+        accepted += u32::from(verdict.accepted && objects.iter().any(|(_, mask)| mask & 4 != 0));
+        overlapping += u32::from(verdict.mutant_accepted && !verdict.disjoint);
+    }
+    assert!(accepted > 0, "the exhaustive universe accepts a nonempty DATA");
+    assert!(overlapping > 0, "the exhaustive universe witnesses C21");
+    let witness = union_verdict(&[(50, 0b101), (50, 0b111), (136, 0b110), (50, 0b100)]);
+    assert!(witness.mutant_accepted && !witness.disjoint && witness.unauthenticated);
+    assert!(!witness.accepted, "disjointness refuses the C21 witness");
+    runner(512)
+        .run(&prop::collection::vec((1_u64..=4, 0_u8..8), 0..=12), |objects| {
+            let verdict = union_verdict(&objects);
+            prop_assert_eq!(verdict.accepted, verdict.exact_union);
+            prop_assert!(!verdict.mutant_accepted || verdict.disjoint || verdict.unauthenticated);
+            Ok(())
+        })
+        .expect("the disjoint-union rule is exact and the overlap mutant is unsound");
+
+    let v1 = checkpoint_source_fixture();
+    let v2 = migrate_checkpoint_source_to_v2(&v1);
+    let (scratch, _) = installed("v2-metadata-union-twin-", &v2);
+    let (_, anchor, metadata, metadata_bytes) =
+        admitted_metadata(admitted(scratch.path(), RetentionReader::Dual));
+    let mut minimum = vec![anchor.object_ref(), empty_retention_radix_ref()];
+    minimum.sort_unstable();
+    assert_eq!(metadata, minimum);
+    assert_eq!(
+        metadata_bytes,
+        RETENTION_ANCHOR_CANONICAL_LEN + EMPTY_RETENTION_RADIX_NODE.len() as u64
+    );
+    let retained = retained_references(&v1);
+    let semantic_empty = object(
+        CanonicalDagNode::empty()
+            .try_canonical_bytes()
+            .expect("the empty DAG node encodes"),
+    )
+    .0;
+    assert!(retained.contains(&semantic_empty));
+    let mut impostor = vec![anchor.object_ref(), semantic_empty];
+    impostor.sort_unstable();
+    assert_eq!(impostor.len(), metadata.len(), "the overlapping impostor matches the count");
+    assert_eq!(total_canonical_bytes(&impostor), metadata_bytes, "and the canonical bytes");
+    let data = v2
+        .objects
+        .iter()
+        .map(|(reference, _)| *reference)
+        .collect::<Vec<_>>();
+    assert!(impostor.iter().all(|reference| data.contains(reference)));
+    let unauthenticated = data
+        .iter()
+        .copied()
+        .filter(|reference| !retained.contains(reference) && !impostor.contains(reference))
+        .collect::<Vec<_>>();
+    assert_eq!(unauthenticated, [empty_retention_radix_ref()]);
+    assert!(
+        metadata
+            .iter()
+            .all(|reference| !retained.contains(reference))
+    );
+
+    let v1 = fixture_with_retained_union_cardinality(4);
+    let v2 = migrate_checkpoint_source_to_v2(&v1);
+    let (anchor_object, mut radix_objects) = metadata_objects(&v1, &v2);
+    let metadata_count = 1 + radix_objects.len() as u64;
+    radix_objects.push((empty_retention_radix_ref(), EMPTY_RETENTION_RADIX_NODE.to_vec()));
+    let padded = v2_source_from_objects(&v1, anchor_object, radix_objects);
+    let (scratch, _) = installed("v2-metadata-padding-", &padded);
+    assert_eq!(refused(scratch.path(), RetentionReader::Dual), ColdRefusal::Inventory {
+        kind: InventoryMismatchKindV1::CheckpointRetentionMetadataObjects,
+        declared: metadata_count + 1,
+        computed: metadata_count,
+    });
+
+    let (current, historical) = v1_manifest_entries(&v1);
+    let (foreign_child, _) =
+        v2_source_with_radix_child(&v1, current, &historical, &[1], |_| semantic_empty);
+    let (scratch, _) = installed("v2-radix-semantic-child-", &foreign_child);
+    assert_eq!(
+        refused(scratch.path(), RetentionReader::Dual),
+        ColdRefusal::Radix(RetentionRadixRefusalV2::NotRadixDomain {
+            object: semantic_empty.digest(),
+        })
+    );
+    for longer in [false, true] {
+        let (impostor, original) =
+            v2_source_with_radix_child(&v1, current, &historical, &[1], |child| {
+                let length = match longer {
+                    true => child.encoded_len() + 1,
+                    false => child.encoded_len() - 1,
+                };
+                ObjectRefV1::new(child.digest(), length)
+                    .expect("a shifted radix length still covers its envelope")
+            });
+        let (scratch, _) = installed("v2-radix-length-impostor-", &impostor);
+        let expected = match longer {
+            true => ColdRefusal::Canonical(CanonicalFormatError::ObjectLengthMismatch {
+                expected: original.encoded_len() + 1,
+                actual: original.encoded_len(),
+            }),
+            false => ColdRefusal::Materialization {
+                digest: original.digest(),
+                limit: original.encoded_len() - 1,
+                attempted: original.encoded_len(),
+            },
+        };
+        assert_eq!(refused(scratch.path(), RetentionReader::Dual), expected);
+    }
+
+    let v1 = fixture_with_retained_union_cardinality(3);
+    let (current, historical) = v1_manifest_entries(&v1);
+    let [entry] = historical[..] else {
+        panic!("a three-object retained union retains one historical state")
+    };
+    let alias = RetainedStateV1::new(
+        StateVersionV1::new(entry.state().generation() + 1, entry.state().manifest()),
+        entry.canonical_bytes(),
+    )
+    .expect("an alias keeps its claim");
+    let (shared, leaf) = v2_source_with_radix_child(&v1, current, &[entry, alias], &[1], |leaf| {
+        ObjectRefV1::new(leaf.digest(), leaf.encoded_len() + 1)
+            .expect("a longer radix length covers its envelope")
+    });
+    let (scratch, _) = installed("v2-radix-cached-length-", &shared);
+    let mismatch = ColdRefusal::Canonical(CanonicalFormatError::ObjectLengthMismatch {
+        expected: leaf.encoded_len() + 1,
+        actual: leaf.encoded_len(),
+    });
+    assert_eq!(refused(scratch.path(), RetentionReader::Dual), mismatch);
+    assert_eq!(refused_bounded(scratch.path(), |limits| limits.max_object_reads = 3), mismatch);
+    assert_eq!(
+        refused_bounded(scratch.path(), |limits| limits.max_object_reads = 2),
+        ColdRefusal::MetadataReadLimit {
+            resource: "object reads",
+            limit: 2,
+            attempted: 3,
+        }
+    );
+
+    let radix = empty_retention_radix_ref();
+    let crossing = CanonicalDagNode::new(Vec::<u8>::new(), EndpointValue::Absent, vec![
+        DagChild {
+            edge: 0,
+            target: radix,
+        },
+        DagChild {
+            edge: 1,
+            target: radix,
+        },
+    ])
+    .expect("two ordered children form a canonical branch");
+    let crossing = migrate_checkpoint_source_to_v2(&fixture_with_root(object(
+        crossing
+            .try_canonical_bytes()
+            .expect("the crossing branch encodes"),
+    )));
+    let (scratch, _) = installed("v2-semantic-radix-child-", &crossing);
+    assert_eq!(
+        refused(scratch.path(), RetentionReader::Dual),
+        ColdRefusal::ClosureFormat(CanonicalFormatError::UnknownObjectDomain)
+    );
+
+    let v1 = checkpoint_source_fixture();
+    let current = RetainedStateV1::new(
+        v1.descriptor.state(),
+        v1.descriptor.current_state_canonical_bytes().get(),
+    )
+    .expect("the current state covers its manifest");
+    let stray = RetentionAnchorV2::new(current, 0, empty_retention_radix_ref())
+        .expect("an empty history appoints the empty radix node");
+    let stray = source_with_unreachable_retained(object(
+        stray
+            .try_canonical_bytes()
+            .expect("the stray anchor encodes"),
+    ));
+    let (scratch, _) = installed("v1-stray-anchor-", &stray);
+    assert_eq!(refused(scratch.path(), RetentionReader::Dual), ColdRefusal::Inventory {
+        kind: InventoryMismatchKindV1::CheckpointRetainedUnionObjects,
+        declared: 3,
+        computed: 2,
+    });
+    assert_eq!(
+        refused(scratch.path(), RetentionReader::V1Only),
+        ColdRefusal::Wal(LogPackFormatError::Canonical(CanonicalFormatError::UnknownObjectDomain))
+    );
+}
+
+/// Executable refinement of RV-25: a V2 checkpoint admits exactly the state,
+/// semantics, and retained union of its V1 twin, charges exactly its metadata
+/// reads, and refuses each shared history defect for the same reason.
+#[test]
+fn v2_cold_admission_matches_v1_admission_and_charges_metadata_reads_exactly() {
+    let mut sources = Vec::with_capacity(10);
+    sources.push(checkpoint_source_fixture());
+    sources.push(semantic_checkpoint_source_fixture());
+    sources.push(historically_larger_checkpoint_source_fixture().0);
+    sources.extend((2..=8).map(fixture_with_retained_union_cardinality));
+    for v1 in &sources {
+        let manifest_len = v1.descriptor.retention_manifest().encoded_len();
+        let (v1_scratch, _) = installed("v2-twin-v1-", v1);
+        let twin = admitted(v1_scratch.path(), RetentionReader::Dual).report();
+        assert_eq!(
+            admitted(v1_scratch.path(), RetentionReader::V1Only).report(),
+            twin,
+            "both readers admit a V1 checkpoint identically"
+        );
+        let v2 = migrate_checkpoint_source_to_v2(v1);
+        let (v2_scratch, _) = installed("v2-twin-v2-", &v2);
+        let (report, _, metadata, metadata_bytes) =
+            admitted_metadata(admitted(v2_scratch.path(), RetentionReader::Dual));
+        assert_eq!(report.startup_disposition, twin.startup_disposition);
+        assert_eq!(report.current_structural, twin.current_structural);
+        assert_eq!(report.current_semantics, twin.current_semantics);
+        assert_eq!(report.retained_states, twin.retained_states);
+        assert_eq!(report.aggregate_root_visits, twin.aggregate_root_visits);
+        assert_eq!(report.aggregate_references, twin.aggregate_references);
+        assert_eq!(report.retained_union, twin.retained_union);
+        assert_eq!(
+            (
+                twin.retention_metadata_objects,
+                twin.retention_metadata_canonical_bytes,
+                twin.retention_manifest_canonical_bytes,
+            ),
+            (1, manifest_len, manifest_len)
+        );
+        assert_eq!(
+            (
+                report.retention_metadata_objects,
+                report.retention_metadata_canonical_bytes,
+                report.retention_manifest_canonical_bytes,
+            ),
+            (metadata.len() as u64, metadata_bytes, RETENTION_ANCHOR_CANONICAL_LEN)
+        );
+        assert_eq!(report.object_reads, twin.object_reads - 1 + metadata.len() as u64);
+        assert_eq!(
+            report.object_read_bytes,
+            twin.object_read_bytes - manifest_len + metadata_bytes
+        );
+    }
+
+    let v2 = migrate_checkpoint_source_to_v2(&fixture_with_retained_union_cardinality(5));
+    let (scratch, _) = installed("v2-metadata-reads-", &v2);
+    let snapshot = directory_snapshot(scratch.path());
+    let (report, _, metadata, metadata_bytes) =
+        admitted_metadata(admitted(scratch.path(), RetentionReader::Dual));
+    let reads = metadata.len() as u64;
+    let historical = report.retained_states - 1;
+    assert_eq!(historical, 3);
+    let first_closure_read = v2.descriptor.state().manifest().encoded_len();
+    assert_eq!(
+        refused_bounded(scratch.path(), |limits| limits.max_object_reads = reads - 1),
+        ColdRefusal::MetadataReadLimit {
+            resource: "object reads",
+            limit: reads - 1,
+            attempted: reads,
+        }
+    );
+    assert_eq!(
+        refused_bounded(scratch.path(), |limits| limits.max_object_reads = reads),
+        ColdRefusal::ClosureReadLimit {
+            resource: "object reads",
+            limit: reads,
+            attempted: reads + 1,
+        }
+    );
+    assert_eq!(
+        refused_bounded(scratch.path(), |limits| limits.max_object_read_bytes = metadata_bytes - 1),
+        ColdRefusal::MetadataReadLimit {
+            resource: "object-read bytes",
+            limit: metadata_bytes - 1,
+            attempted: metadata_bytes,
+        }
+    );
+    assert_eq!(
+        refused_bounded(scratch.path(), |limits| limits.max_object_read_bytes = metadata_bytes),
+        ColdRefusal::ClosureReadLimit {
+            resource: "object-read bytes",
+            limit: metadata_bytes,
+            attempted: metadata_bytes + first_closure_read,
+        }
+    );
+    match admit_bounded(scratch.path(), |limits| limits.max_retained_states = historical + 1) {
+        Ok(writer) => assert_eq!(writer.report(), report),
+        Err(refusal) => panic!("the exact retained-state limit refused: {refusal:?}"),
+    }
+    assert_eq!(
+        refused_bounded(scratch.path(), |limits| {
+            limits.max_retained_states = historical;
+            limits.max_object_reads = 1;
+        }),
+        ColdRefusal::Canonical(CanonicalFormatError::ResourceLimit {
+            resource: "retained states",
+            limit: historical,
+            attempted: historical + 1,
+        }),
+        "the declared count refuses before any radix node is read"
+    );
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+
+    let v1 = fixture_with_retained_union_cardinality(4);
+    let (current, historical) = v1_manifest_entries(&v1);
+    let [first, second] = historical[..] else {
+        panic!("a four-object retained union retains two historical states")
+    };
+    let generation = current.state().generation();
+    let later = RetainedStateV1::new(
+        StateVersionV1::new(generation + 1, first.state().manifest()),
+        first.canonical_bytes(),
+    )
+    .expect("a later entry keeps its claim");
+    let current_later = RetainedStateV1::new(
+        StateVersionV1::new(generation + 1, current.state().manifest()),
+        current.canonical_bytes(),
+    )
+    .expect("a later current state keeps its claim");
+    let manifest = first.state().manifest();
+    let longer_alias = RetainedStateV1::new(
+        StateVersionV1::new(
+            first.state().generation(),
+            ObjectRefV1::new(manifest.digest(), manifest.encoded_len() + 1)
+                .expect("a longer manifest length covers its envelope"),
+        ),
+        first.canonical_bytes() + 1,
+    )
+    .expect("a longer alias claims its longer manifest");
+    let twins = [
+        (current, vec![first, second, later], ColdRefusal::NonHistorical {
+            current_generation: generation,
+            retained_generation: generation + 1,
+        }),
+        (current_later, vec![first, second], ColdRefusal::CurrentMismatch {
+            catalog: v1.descriptor.state(),
+            manifest: current_later.state(),
+        }),
+        (
+            current,
+            vec![first, longer_alias],
+            ColdRefusal::ClosureFormat(CanonicalFormatError::ObjectLengthMismatch {
+                expected: manifest.encoded_len(),
+                actual: manifest.encoded_len() + 1,
+            }),
+        ),
+    ];
+    for (twin_current, twin_history, expected) in twins {
+        let manifest_bytes = RetentionManifestV1::new(twin_current, twin_history.clone())
+            .expect("the V1 twin manifest is well formed")
+            .try_canonical_bytes()
+            .expect("the V1 twin manifest encodes");
+        let formats = [
+            ("V1", v1_source_with_manifest(&v1, manifest_bytes)),
+            ("V2", v2_source_with_history(&v1, twin_current, &twin_history)),
+        ];
+        for (format, source) in formats {
+            let (scratch, _) = installed("v2-parity-twin-", &source);
+            assert_eq!(refused(scratch.path(), RetentionReader::Dual), expected, "{format} twin");
+        }
+    }
+
+    // A V1 manifest that lists its current state cannot be encoded, so its
+    // twin patches entry 0 with the current entry. Physical recovery
+    // classifies only domain prefixes, so both formats reach admission, which
+    // parses the appointed manifest or decodes the radix history and applies
+    // the same rule.
+    let mut manifest_bytes = RetentionManifestV1::new(current, vec![first])
+        .expect("the V1 base manifest is well formed")
+        .try_canonical_bytes()
+        .expect("the V1 base manifest encodes");
+    manifest_bytes.copy_within(32..88, 96);
+    let (scratch, _) =
+        installed("v2-parity-current-v1-", &v1_source_with_manifest(&v1, manifest_bytes));
+    assert_eq!(
+        refused(scratch.path(), RetentionReader::Dual),
+        ColdRefusal::Canonical(CanonicalFormatError::RetentionContainsCurrent)
+    );
+    let (scratch, _) =
+        installed("v2-parity-current-v2-", &v2_source_with_history(&v1, current, &[current]));
+    assert_eq!(
+        refused(scratch.path(), RetentionReader::Dual),
+        ColdRefusal::Canonical(CanonicalFormatError::RetentionContainsCurrent)
+    );
+}
+
+/// Executable refinement of RV-26: every cold-admission resource boundary of
+/// a V2 checkpoint refuses one below its exact demand without durable
+/// mutation, and the exact limits admit the same report.
+#[test]
+fn every_v2_cold_admission_resource_boundary_refuses_one_below_and_accepts_exactly() {
+    let v2 = migrate_checkpoint_source_to_v2(&semantic_checkpoint_source_fixture());
+    let (scratch, image) = installed("v2-cold-resource-", &v2);
+    let report = admitted(scratch.path(), RetentionReader::Dual).report();
+    let snapshot = directory_snapshot(scratch.path());
+    let exact = ExactCheckpointPublicationLimits::exact(
+        &v2,
+        image.pack.len() as u64,
+        image.canonical_index.len() as u64,
+        report.startup_work.wal_bytes_read(),
+        report,
+    );
+    let (durable, wal, admission) = exact.build();
+    match admit_with(scratch.path(), RetentionReader::Dual, durable, wal, admission) {
+        Ok(writer) => assert_eq!(writer.report(), report),
+        Err(refusal) => panic!("the exact cold limits refused: {refusal:?}"),
+    }
+
+    let mut durable_below = 0;
+    let mut wal_below = 0;
+    let mut admission_below = 0;
+    let mut wal_zero = 0;
+    for boundary in CHECKPOINT_RESOURCE_BOUNDARIES {
+        let required = exact.requirement(boundary);
+        let minimum = ExactCheckpointPublicationLimits::minimum(boundary);
+        if required <= minimum {
+            if matches!(boundary, CheckpointResourceBoundary::Wal(_)) && required == 0 {
+                wal_zero += 1;
+            }
+            continue;
+        }
+        match boundary {
+            CheckpointResourceBoundary::Durable(_) => durable_below += 1,
+            CheckpointResourceBoundary::Wal(_) => wal_below += 1,
+            CheckpointResourceBoundary::Admission(_) => admission_below += 1,
+        }
+        let mut insufficient = exact;
+        insufficient.set(boundary, required - 1);
+        let (durable, wal, admission) = insufficient.build();
+        let refusal =
+            match admit_with(scratch.path(), RetentionReader::Dual, durable, wal, admission) {
+                Ok(_) => panic!("{boundary:?} admitted one below its demand {required}"),
+                Err(refusal) => refusal,
+            };
+        assert_eq!(
+            refusal,
+            cold_boundary_refusal(boundary, required - 1, required),
+            "{boundary:?}"
+        );
+        assert_eq!(directory_snapshot(scratch.path()), snapshot, "{boundary:?}");
+    }
+    assert_eq!(durable_below, 6, "all six constructible durable lower boundaries ran");
+    assert_eq!(wal_below, 4, "all four positive checkpoint-WAL lower boundaries ran");
+    assert_eq!(admission_below, 18, "all eighteen admission lower boundaries ran");
+    assert_eq!(wal_zero, 3, "all three zero-demand checkpoint-WAL axes stayed at zero");
+
+    let (historical_source, requirement) = historically_larger_checkpoint_source_fixture();
+    let historical_v2 = migrate_checkpoint_source_to_v2(&historical_source);
+    let (scratch, _) = installed("v2-cold-resource-historical-", &historical_v2);
+    let current = admitted(scratch.path(), RetentionReader::Dual)
+        .report()
+        .current_structural;
+    let snapshot = directory_snapshot(scratch.path());
+    for boundary in [
+        AdmissionBoundary::PerStateDistinctObjects,
+        AdmissionBoundary::PerStateCanonicalBytes,
+        AdmissionBoundary::PerStateReferences,
+        AdmissionBoundary::PerStateWorklist,
+    ] {
+        let (required, current_required) = match boundary {
+            AdmissionBoundary::PerStateDistinctObjects => {
+                (requirement.distinct_objects, current.distinct_objects)
+            }
+            AdmissionBoundary::PerStateCanonicalBytes => {
+                (requirement.canonical_bytes, current.canonical_bytes)
+            }
+            AdmissionBoundary::PerStateReferences => (requirement.references, current.references),
+            AdmissionBoundary::PerStateWorklist => {
+                (requirement.maximum_worklist, current.maximum_worklist)
+            }
+            _ => unreachable!("the table contains only per-state structural fields"),
+        };
+        assert!(
+            required > current_required,
+            "the historical fixture must distinguish {boundary:?} from current-only demand",
+        );
+        let refusal = refused_bounded(scratch.path(), |limits| match boundary {
+            AdmissionBoundary::PerStateDistinctObjects => {
+                limits.per_state_structural.max_distinct_objects = required - 1;
+            }
+            AdmissionBoundary::PerStateCanonicalBytes => {
+                limits.per_state_structural.max_canonical_bytes = required - 1;
+            }
+            AdmissionBoundary::PerStateReferences => {
+                limits.per_state_structural.max_references = required - 1;
+            }
+            AdmissionBoundary::PerStateWorklist => {
+                limits.per_state_structural.max_worklist = required - 1;
+            }
+            _ => unreachable!("the table contains only per-state structural fields"),
+        });
+        assert_eq!(
+            refusal,
+            cold_boundary_refusal(
+                CheckpointResourceBoundary::Admission(boundary),
+                required - 1,
+                required
+            ),
+            "historical maximum {boundary:?}"
+        );
+        assert_eq!(directory_snapshot(scratch.path()), snapshot);
+    }
+}
+
+/// A V1 genesis store with the V2 checkpoint successor of `v2` written beside
+/// it but not yet appointed: the old catalog image and slot, and the
+/// expected successor.
+fn staged_v2_successor(
+    prefix: &str,
+    v2: &SyntheticCheckpointSource,
+) -> (PersistenceTrialDir, [u8; CATALOG_IMAGE_LEN], CatalogSlotV1, ExpectedSuccessor) {
+    let (scratch, _) = installed(prefix, &checkpoint_source_fixture());
+    let writer = admitted(scratch.path(), RetentionReader::Dual);
+    let old_image = *writer.authority().image();
+    let old_slot = writer.authority().slot();
+    let expected = expected_successor_from_source(writer.authority(), v2);
+    drop(writer);
+    write_owner_only(
+        &scratch.path().join(pack_file_name(
+            PackId::GENESIS
+                .successor()
+                .expect("the genesis pack has a successor"),
+        )),
+        &expected.pack,
+    );
+    write_owner_only(
+        &scratch.path().join(index_file_name(
+            IndexGenerationV1::FIRST
+                .successor()
+                .expect("the first index generation has a successor"),
+        )),
+        &expected.index,
+    );
+    (scratch, old_image, old_slot, expected)
+}
+
+/// Executable refinement of RV-27: strict V1 readers refuse every V2 restart
+/// fixture before adoption and without durable mutation, while dual readers
+/// adopt the valid ones and refuse each corruption for its reason.
+#[test]
+fn v2_restart_fixtures_are_refused_by_old_readers_and_adopted_by_dual_readers() {
+    for (cardinality, retained_states) in [(2, 1), (3, 2), (8, 7)] {
+        let v1 = fixture_with_retained_union_cardinality(cardinality);
+        let v2 = migrate_checkpoint_source_to_v2(&v1);
+        let (scratch, _) = installed("v2-restart-migrated-", &v2);
+        let snapshot = directory_snapshot(scratch.path());
+        assert_eq!(refused(scratch.path(), RetentionReader::V1Only), v1_reader_refusal());
+        assert_eq!(directory_snapshot(scratch.path()), snapshot);
+        let (report, _, metadata, metadata_bytes) =
+            admitted_metadata(admitted(scratch.path(), RetentionReader::Dual));
+        assert_eq!(report.retained_states, retained_states);
+        let (_, radix) = metadata_objects(&v1, &v2);
+        assert_eq!(metadata.len(), radix.len() + 1);
+        if retained_states == 1 {
+            assert_eq!(
+                (report.retention_metadata_objects, metadata_bytes),
+                (2, RETENTION_ANCHOR_CANONICAL_LEN + EMPTY_RETENTION_RADIX_NODE.len() as u64)
+            );
+        }
+    }
+
+    let v1 = fixture_with_retained_union_cardinality(5);
+    let (current, historical) = v1_manifest_entries(&v1);
+    let mut product = Vec::with_capacity(3 * historical.len());
+    for generation in 1..=3 {
+        for entry in &historical {
+            product.push(
+                RetainedStateV1::new(
+                    StateVersionV1::new(generation, entry.state().manifest()),
+                    entry.canonical_bytes(),
+                )
+                .expect("a product entry keeps its claim"),
+            );
+        }
+    }
+    product.sort_unstable_by_key(|entry| (entry.state().generation(), entry.state().manifest()));
+    let manifest_bytes = RetentionManifestV1::new(current, product.clone())
+        .expect("the product history is strictly ordered")
+        .try_canonical_bytes()
+        .expect("the product manifest encodes");
+    let (v1_scratch, _) =
+        installed("v2-restart-product-v1-", &v1_source_with_manifest(&v1, manifest_bytes));
+    let twin = admitted(v1_scratch.path(), RetentionReader::V1Only).report();
+    assert_eq!(admitted(v1_scratch.path(), RetentionReader::Dual).report(), twin);
+    let (scratch, _) =
+        installed("v2-restart-product-", &v2_source_with_history(&v1, current, &product));
+    assert_eq!(refused(scratch.path(), RetentionReader::V1Only), v1_reader_refusal());
+    let (report, _, metadata, metadata_bytes) =
+        admitted_metadata(admitted(scratch.path(), RetentionReader::Dual));
+    assert_eq!(report.retained_states, 10);
+    assert_eq!(report.retained_union, twin.retained_union);
+    assert_eq!(report.aggregate_root_visits, twin.aggregate_root_visits);
+    assert_eq!(report.aggregate_references, twin.aggregate_references);
+    assert_eq!(
+        report.object_reads,
+        twin.object_reads - 1 + metadata.len() as u64,
+        "shared radix nodes are read once"
+    );
+    assert_eq!(
+        report.object_read_bytes,
+        twin.object_read_bytes - twin.retention_manifest_canonical_bytes + metadata_bytes
+    );
+
+    let v2 = migrate_checkpoint_source_to_v2(&checkpoint_source_fixture());
+    let (scratch, old_image, old_slot, expected) = staged_v2_successor("v2-restart-torn-", &v2);
+    let differing = (0..2_usize)
+        .filter(|slot| {
+            let extent = slot * CATALOG_SLOT_LEN..(slot + 1) * CATALOG_SLOT_LEN;
+            old_image[extent.clone()] != expected.catalog[extent]
+        })
+        .collect::<Vec<_>>();
+    let [inactive] = differing[..] else {
+        panic!("a successor rewrites exactly the inactive slot: {differing:?}")
+    };
+    let start = inactive * CATALOG_SLOT_LEN;
+    let mut torn = old_image;
+    torn[start..start + CATALOG_SLOT_LEN / 2]
+        .copy_from_slice(&expected.catalog[start..start + CATALOG_SLOT_LEN / 2]);
+    assert_ne!(torn, old_image);
+    rewrite_and_sync(&scratch.path().join("catalog.v1"), &torn);
+    for reader in [RetentionReader::V1Only, RetentionReader::Dual] {
+        assert_eq!(admitted(scratch.path(), reader).authority().slot(), old_slot, "{reader:?}");
+    }
+
+    let (scratch, _, _, expected) = staged_v2_successor("v2-restart-successor-", &v2);
+    rewrite_and_sync(&scratch.path().join("catalog.v1"), &expected.catalog);
+    let snapshot = directory_snapshot(scratch.path());
+    assert_eq!(refused(scratch.path(), RetentionReader::V1Only), v1_reader_refusal());
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+    assert_eq!(
+        admitted(scratch.path(), RetentionReader::Dual)
+            .authority()
+            .slot(),
+        expected.slot
+    );
+
+    let v1 = checkpoint_source_fixture();
+    let ((anchor_reference, anchor_bytes), radix) = metadata_objects(&v1, &v2);
+    let mut versioned = anchor_bytes.clone();
+    versioned[16..24].copy_from_slice(&2_u64.to_le_bytes());
+    let mut unknown = Vec::with_capacity(40);
+    unknown.extend_from_slice(b"RSpaceDAG.RetX\0\0");
+    unknown.extend_from_slice(&1_u64.to_le_bytes());
+    unknown.extend_from_slice(&8_u64.to_le_bytes());
+    unknown.extend_from_slice(&[0x5a; 8]);
+    let mut with_unknown = radix.clone();
+    with_unknown.push(object(unknown));
+    // Physical recovery classifies the versioned anchor by its domain prefix
+    // alone, so admission refuses its version when it parses the appointed
+    // anchor; an unknown domain is refused physically.
+    let corruptions = [
+        (
+            v2_source_from_objects(&v1, object(versioned), radix),
+            ColdRefusal::Canonical(CanonicalFormatError::UnsupportedVersion {
+                domain: "RSpace retention anchor",
+                version: 2,
+            }),
+        ),
+        (
+            v2_source_from_objects(&v1, (anchor_reference, anchor_bytes), with_unknown),
+            ColdRefusal::Wal(LogPackFormatError::Canonical(
+                CanonicalFormatError::UnknownObjectDomain,
+            )),
+        ),
+    ];
+    for (source, expected) in corruptions {
+        let (scratch, _) = installed("v2-restart-corrupt-", &source);
+        let snapshot = directory_snapshot(scratch.path());
+        assert_eq!(refused(scratch.path(), RetentionReader::Dual), expected);
+        assert_eq!(refused(scratch.path(), RetentionReader::V1Only), v1_reader_refusal());
+        assert_eq!(directory_snapshot(scratch.path()), snapshot);
+    }
+
+    // Physical recovery authenticates every stored object's digest and
+    // classifies its domain prefix; complete parsing is admission's. So only
+    // a defect that stores forged bytes under the original digest is refused
+    // physically; every other defect reaches the radix reader, except a moved
+    // current state, which the catalog comparison refuses first.
+    let mut physical = BTreeSet::new();
+    for (defect, source, unit) in radix_defect_sources(&fixture_with_retained_union_cardinality(6))
+    {
+        let forged = source.objects.iter().find_map(|(reference, bytes)| {
+            let actual =
+                ObjectRefV1::new(ObjectDigest::of_canonical_bytes(bytes), reference.encoded_len())
+                    .expect("a stored object keeps its envelope");
+            (actual != *reference).then_some(LogPackFormatError::ObjectReference {
+                declared: *reference,
+                actual,
+            })
+        });
+        let expected = match (forged, defect) {
+            (Some(error), _) => {
+                physical.insert(defect);
+                ColdRefusal::Wal(error)
+            }
+            (None, RadixDefect::CurrentInHistory) => {
+                let anchor = source.descriptor.retention_manifest();
+                let (_, bytes) = source
+                    .objects
+                    .iter()
+                    .find(|(reference, _)| *reference == anchor)
+                    .expect("a V2 source carries its anchor");
+                ColdRefusal::CurrentMismatch {
+                    catalog: source.descriptor.state(),
+                    manifest: RetentionAnchorV2::parse(bytes)
+                        .expect("the moved anchor parses")
+                        .current()
+                        .state(),
+                }
+            }
+            (None, _) => match unit {
+                RetentionRadixErrorV2::Refusal(refusal) => ColdRefusal::Radix(refusal),
+                RetentionRadixErrorV2::Canonical(error) => ColdRefusal::Canonical(error),
+                RetentionRadixErrorV2::Store(error) => {
+                    panic!("the unit reader's store refused {defect:?}: {error:?}")
+                }
+            },
+        };
+        if let RadixDefect::EnvelopeVersion2 = defect {
+            assert_eq!(
+                expected,
+                ColdRefusal::Radix(RetentionRadixRefusalV2::Body(
+                    CanonicalFormatError::UnsupportedVersion {
+                        domain: "RSpace retention radix node",
+                        version: 2,
+                    }
+                ))
+            );
+        }
+        let (scratch, _) = installed("v2-restart-radix-defect-", &source);
+        let snapshot = directory_snapshot(scratch.path());
+        assert_eq!(refused(scratch.path(), RetentionReader::Dual), expected, "{defect:?}");
+        assert_eq!(refused(scratch.path(), RetentionReader::V1Only), v1_reader_refusal());
+        assert_eq!(directory_snapshot(scratch.path()), snapshot, "{defect:?}");
+    }
+    assert_eq!(
+        physical,
+        BTreeSet::from([
+            RadixDefect::LengthShift { longer: false },
+            RadixDefect::LengthShift { longer: true },
+            RadixDefect::ForgeDigest,
+        ])
+    );
+
+    let (scratch, image) = installed("v2-restart-", &v2);
+    let snapshot = directory_snapshot(scratch.path());
+    let first = admitted(scratch.path(), RetentionReader::Dual);
+    let (report, authority) = (first.report(), first.authority().clone());
+    drop(first);
+    let again = admitted(scratch.path(), RetentionReader::Dual);
+    assert_eq!((again.report(), again.authority()), (report, &authority));
+    drop(again);
+    assert_eq!(refused(scratch.path(), RetentionReader::V1Only), v1_reader_refusal());
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+    let index_path = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST));
+    fs::remove_file(&index_path).expect("remove the derived index");
+    let without_index = directory_snapshot(scratch.path());
+    assert_eq!(refused(scratch.path(), RetentionReader::V1Only), v1_reader_refusal());
+    assert_eq!(
+        directory_snapshot(scratch.path()),
+        without_index,
+        "a refused rebuild writes nothing"
+    );
+    assert_eq!(
+        admitted(scratch.path(), RetentionReader::Dual)
+            .report()
+            .startup_disposition,
+        IndexBindingDispositionV1::RebuiltAndVerified
+    );
+    assert_eq!(fs::read(&index_path).expect("read the rebuilt index"), image.canonical_index);
+    assert_eq!(
+        admitted(scratch.path(), RetentionReader::Dual)
+            .report()
+            .startup_disposition,
+        IndexBindingDispositionV1::VerifiedExisting
+    );
+}
+
+type CheckpointPublisher =
+    fn(AdmittedWriter) -> Result<AdmittedWriter, GenerationCheckpointPublicationErrorV1>;
+
+/// Executable refinement of RV-28: until the V2 writer exists, every
+/// successor path of an admitted V2 source refuses before durable mutation.
+#[test]
+fn v2_admitted_sources_refuse_every_successor_before_durable_mutation() {
+    let v2 = migrate_checkpoint_source_to_v2(&checkpoint_source_fixture());
+    let (scratch, _) = installed("v2-successor-refusal-", &v2);
+    write_owner_only(
+        &scratch.path().join(pack_file_name(
+            PackId::GENESIS
+                .successor()
+                .expect("the genesis pack has a successor"),
+        )),
+        &[0x53; 23],
+    );
+    write_owner_only(
+        &scratch.path().join(index_file_name(
+            IndexGenerationV1::FIRST
+                .successor()
+                .expect("the first index generation has a successor"),
+        )),
+        &[0x64; 29],
+    );
+    let snapshot = directory_snapshot(scratch.path());
+    let baseline = admitted(scratch.path(), RetentionReader::Dual);
+    let (report, authority) = (baseline.report(), baseline.authority().clone());
+    drop(baseline);
+
+    let not_writable =
+        GenerationCheckpointErrorV1::SourceRetentionFormatNotWritable(RetentionFormat::V2);
+    let publishers: [(&str, CheckpointPublisher); 3] = [
+        ("writer publication", |writer| {
+            writer.publish_generation_checkpoint_v1(
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+        }),
+        ("writer compaction", |writer| {
+            writer.compact_generation_v1(
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+        }),
+        ("publication authority", |writer| {
+            writer
+                .into_checkpoint_publication()
+                .publish_generation_checkpoint_v1(
+                    limits(),
+                    LogPackDecodeLimits::UNBOUNDED,
+                    DurableAdmissionLimitsV1::UNBOUNDED,
+                )
+        }),
+    ];
+    for (name, publisher) in publishers {
+        let writer = admitted(scratch.path(), RetentionReader::Dual);
+        start_generation_checkpoint_publication_trace();
+        let error = publication_error(publisher(writer));
+        let trace = take_generation_checkpoint_publication_trace();
+        assert!(
+            matches!(
+                &error,
+                GenerationCheckpointPublicationErrorV1::LogPack(format)
+                    if **format == LogPackFormatError::Checkpoint(not_writable.clone())
+            ),
+            "{name}: {error:?}"
+        );
+        assert_eq!(
+            error.publication_outcome(),
+            GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished,
+            "{name}"
+        );
+        assert!(trace.is_empty(), "{name} reached a publication phase: {trace:?}");
+        assert_eq!(directory_snapshot(scratch.path()), snapshot, "{name}");
+    }
+
+    let writer = admitted(scratch.path(), RetentionReader::Dual);
+    let mutation = data_batch(writer.authority().slot().state(), "v2-successor");
+    assert!(matches!(
+        writer.seal_transaction(
+            MutationBatchViewV1::parse(&mutation).expect("the successor mutation parses"),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        ),
+        Err(DurableTransactionPreparationError::RetentionFormatNotWritable(RetentionFormat::V2))
+    ));
+    let (lease, source) = writer.into_parts();
+    let sealed = source
+        .open_transaction(
+            MutationBatchViewV1::parse(&mutation).expect("the successor mutation parses"),
+            DagTransactionLimits::UNBOUNDED,
+        )
+        .and_then(OpenDagTransaction::seal)
+        .expect("a V2 source seals an in-memory transaction");
+    assert!(matches!(
+        source.bind_durable_transaction(&lease, sealed, DurableAdmissionLimitsV1::UNBOUNDED),
+        Err(DurableTransactionPreparationError::RetentionFormatNotWritable(RetentionFormat::V2))
+    ));
+    assert_eq!(source.checkpoint_descriptor().err(), Some(not_writable.clone()));
+    let mut visits = 0_u64;
+    let visited = source.try_visit_checkpoint_references(|_| {
+        visits += 1;
+        Ok::<(), Infallible>(())
+    });
+    assert!(matches!(
+        visited,
+        Err(CheckpointReferenceVisitErrorV1::Checkpoint(ref error)) if *error == not_writable
+    ));
+    assert_eq!(visits, 0, "a V2 source visits no checkpoint reference");
+    drop((lease, source));
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+
+    assert_v2_owner_checkpoint_refuses_before_durable_mutation();
+
+    let readmitted = admitted(scratch.path(), RetentionReader::Dual);
+    assert_eq!((readmitted.report(), readmitted.authority()), (report, &authority));
+    drop(readmitted);
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
 }

@@ -859,7 +859,7 @@ rocq_check_modules "credited cold construction of the per-domain closure ledgers
   StackSafePDA.GenerationCheckpointPublication StackSafePDA.IncrementalLedgerTrial \
   StackSafePDA.IncrementalDomainComposition StackSafePDA.CreditedClosureLedger
 rocq_reject_placeholders theories/RetentionV2Format.v
-rocq_compile_with_closed_count theories/RetentionV2Format.v 15 \
+rocq_compile_with_closed_count theories/RetentionV2Format.v 21 \
   "shared retention V2 format and V1 migration"
 rocq_check_modules "shared retention V2 format and V1 migration" \
   StackSafePDA.ChannelImage StackSafePDA.GenerationCheckpointPublication \

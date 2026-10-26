@@ -19,6 +19,11 @@ use super::canonical::{
 use super::closure::{RetainedUnionClosureReportV1, StructuralClosureLedgerV1};
 use super::manifest::{SEMANTIC_PROFILE_ID_LEN, SemanticProfileId};
 use super::mutation::StateVersionV1;
+use super::retention::v2_format::{
+    GENERATION_CHECKPOINT_V2_DOMAIN, RETENTION_ANCHOR_CANONICAL_LEN,
+    RETENTION_METADATA_MIN_CANONICAL_BYTES, RETENTION_METADATA_MIN_OBJECTS, RetentionFormat,
+    RetentionReader,
+};
 
 pub(crate) const GENERATION_CHECKPOINT_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Chkpt\0";
 const ORDERED_INVENTORY_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceInv.RefV1\0";
@@ -182,6 +187,7 @@ pub(crate) struct CheckpointObjectInventoryV1 {
     data_objects: u64,
     data_canonical_bytes: CheckpointInlineCanonicalBytesV1,
     ordered_digest: OrderedObjectInventoryDigestV1,
+    format: RetentionFormat,
 }
 
 impl CheckpointObjectInventoryV1 {
@@ -248,6 +254,7 @@ impl CheckpointObjectInventoryV1 {
             data_objects,
             data_canonical_bytes: CheckpointInlineCanonicalBytesV1::new(data_canonical_bytes),
             ordered_digest: ordered.digest(),
+            format: RetentionFormat::V1,
         })
     }
 
@@ -258,6 +265,48 @@ impl CheckpointObjectInventoryV1 {
         ordered: OrderedObjectInventoryV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
         Self::from_ordered(report, retention_manifest, ordered)
+    }
+
+    /// Test-only V2 inventory: DATA is the retained union plus the metadata
+    /// closure. Production V2 emission belongs to task 7926.
+    #[cfg(test)]
+    pub(crate) fn from_test_ordered_v2(
+        report: RetainedUnionClosureReportV1,
+        metadata_objects: u64,
+        metadata_canonical_bytes: u64,
+        ordered: OrderedObjectInventoryV1,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        if report.distinct_objects == 0 {
+            return Err(GenerationCheckpointErrorV1::EmptyRetainedUnion);
+        }
+        let data_objects = report
+            .distinct_objects
+            .checked_add(metadata_objects)
+            .ok_or(GenerationCheckpointErrorV1::CounterOverflow("checkpoint DATA objects"))?;
+        let data_canonical_bytes = report
+            .canonical_bytes
+            .checked_add(metadata_canonical_bytes)
+            .ok_or(GenerationCheckpointErrorV1::CounterOverflow(
+                "checkpoint DATA canonical bytes",
+            ))?;
+        if ordered.objects() != data_objects || ordered.canonical_bytes() != data_canonical_bytes {
+            return Err(GenerationCheckpointErrorV1::InventoryIncoherent {
+                expected_objects: data_objects,
+                actual_objects: ordered.objects(),
+                expected_bytes: data_canonical_bytes,
+                actual_bytes: ordered.canonical_bytes(),
+            });
+        }
+        Ok(Self {
+            retained_union_objects: report.distinct_objects,
+            retained_union_canonical_bytes: RetainedUnionCanonicalBytesV1::new(
+                report.canonical_bytes,
+            ),
+            data_objects,
+            data_canonical_bytes: CheckpointInlineCanonicalBytesV1::new(data_canonical_bytes),
+            ordered_digest: ordered.digest(),
+            format: RetentionFormat::V2,
+        })
     }
 
     pub(crate) const fn retained_union_objects(self) -> u64 { self.retained_union_objects }
@@ -274,6 +323,40 @@ impl CheckpointObjectInventoryV1 {
 
     pub(crate) const fn ordered_digest(self) -> OrderedObjectInventoryDigestV1 {
         self.ordered_digest
+    }
+
+    pub(crate) const fn format(self) -> RetentionFormat { self.format }
+}
+
+/// The V2 inventory rule: the appointed retention object is a 136-byte anchor
+/// and DATA minus the retained union holds at least the anchor and the radix
+/// root. The exact metadata closure is authenticated by cold admission, the
+/// only place it is computed.
+fn require_v2_metadata(
+    retention_anchor: ObjectRefV1,
+    retained_objects: u64,
+    retained_bytes: u64,
+    data_objects: u64,
+    data_bytes: u64,
+) -> Result<(), GenerationCheckpointErrorV1> {
+    if retention_anchor.encoded_len() != RETENTION_ANCHOR_CANONICAL_LEN {
+        return Err(GenerationCheckpointErrorV1::RetentionAnchorLength {
+            actual: retention_anchor.encoded_len(),
+        });
+    }
+    match (data_objects.checked_sub(retained_objects), data_bytes.checked_sub(retained_bytes)) {
+        (Some(objects), Some(bytes))
+            if objects >= RETENTION_METADATA_MIN_OBJECTS &&
+                bytes >= RETENTION_METADATA_MIN_CANONICAL_BYTES =>
+        {
+            Ok(())
+        }
+        _ => Err(GenerationCheckpointErrorV1::RetentionMetadataBelowMinimum {
+            data_objects,
+            retained_objects,
+            data_bytes,
+            retained_bytes,
+        }),
     }
 }
 
@@ -378,6 +461,15 @@ impl GenerationCheckpointDescriptorV1 {
         current_state_canonical_bytes: u64,
         inventory: CheckpointObjectInventoryV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
+        if let RetentionFormat::V2 = inventory.format() {
+            require_v2_metadata(
+                retention_manifest,
+                inventory.retained_union_objects(),
+                inventory.retained_union_canonical_bytes().get(),
+                inventory.data_objects(),
+                inventory.data_canonical_bytes().get(),
+            )?;
+        }
         if current_state_objects == 0 {
             return Err(GenerationCheckpointErrorV1::CurrentObjectsBelowManifest {
                 actual: current_state_objects,
@@ -461,6 +553,7 @@ impl GenerationCheckpointDescriptorV1 {
             data_objects: self.inventory.data_objects,
             data_canonical_bytes: self.inventory.data_canonical_bytes,
             ordered_digest: self.inventory.ordered_digest,
+            format: self.inventory.format,
         }
     }
 
@@ -477,6 +570,7 @@ impl GenerationCheckpointDescriptorV1 {
                 data_objects: view.data_objects,
                 data_canonical_bytes: view.data_canonical_bytes,
                 ordered_digest: view.ordered_digest,
+                format: view.format,
             },
         }
     }
@@ -486,7 +580,11 @@ impl CanonicalEncode for GenerationCheckpointDescriptorV1 {
     fn canonical_len(&self) -> u64 { GENERATION_CHECKPOINT_CANONICAL_LEN }
 
     fn write_canonical<S: CanonicalSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        write_envelope_header(sink, GENERATION_CHECKPOINT_DOMAIN, CHECKPOINT_BODY_LEN)?;
+        let domain = match self.inventory.format {
+            RetentionFormat::V1 => GENERATION_CHECKPOINT_DOMAIN,
+            RetentionFormat::V2 => GENERATION_CHECKPOINT_V2_DOMAIN,
+        };
+        write_envelope_header(sink, domain, CHECKPOINT_BODY_LEN)?;
         sink.write_all(self.profile_id.as_bytes())?;
         write_u64(sink, self.state.generation())?;
         self.state.manifest().write(sink)?;
@@ -513,12 +611,43 @@ pub(crate) struct GenerationCheckpointDescriptorViewV1 {
     data_objects: u64,
     data_canonical_bytes: CheckpointInlineCanonicalBytesV1,
     ordered_digest: OrderedObjectInventoryDigestV1,
+    format: RetentionFormat,
 }
 
 impl GenerationCheckpointDescriptorViewV1 {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, GenerationCheckpointErrorV1> {
         let body =
             parse_envelope(bytes, GENERATION_CHECKPOINT_DOMAIN, "RSpace generation checkpoint")?;
+        Self::parse_body(body, RetentionFormat::V1)
+    }
+
+    /// Parse a descriptor for a reader with the given retention capability.
+    /// A V1-only reader is exactly [`Self::parse`]; a dual reader parses the
+    /// V2 domain under the V2 inventory rule and every other domain strictly.
+    pub(crate) fn parse_for(
+        bytes: &[u8],
+        reader: RetentionReader,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        match bytes.get(..OBJECT_DOMAIN_LEN) {
+            Some(domain)
+                if domain == GENERATION_CHECKPOINT_V2_DOMAIN &&
+                    reader.admits(RetentionFormat::V2) =>
+            {
+                let body = parse_envelope(
+                    bytes,
+                    GENERATION_CHECKPOINT_V2_DOMAIN,
+                    "RSpace generation checkpoint V2",
+                )?;
+                Self::parse_body(body, RetentionFormat::V2)
+            }
+            _ => Self::parse(bytes),
+        }
+    }
+
+    fn parse_body(
+        body: &[u8],
+        format: RetentionFormat,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
         let mut cursor = ReadCursor::new(body);
         let profile_id = SemanticProfileId::from_array(
             cursor
@@ -538,21 +667,32 @@ impl GenerationCheckpointDescriptorViewV1 {
             OrderedObjectInventoryDigestV1::from_array(*cursor.read_digest()?.as_array());
         cursor.finish()?;
 
-        let expected_objects = retained_union_objects
-            .checked_add(1)
-            .ok_or(GenerationCheckpointErrorV1::CounterOverflow("checkpoint DATA objects"))?;
-        let expected_bytes = checked_sum(
-            retained_union_canonical_bytes,
-            retention_manifest.encoded_len(),
-            "checkpoint DATA canonical bytes",
-        )?;
-        if data_objects != expected_objects || data_canonical_bytes != expected_bytes {
-            return Err(GenerationCheckpointErrorV1::InventoryIncoherent {
-                expected_objects,
-                actual_objects: data_objects,
-                expected_bytes,
-                actual_bytes: data_canonical_bytes,
-            });
+        match format {
+            RetentionFormat::V1 => {
+                let expected_objects = retained_union_objects.checked_add(1).ok_or(
+                    GenerationCheckpointErrorV1::CounterOverflow("checkpoint DATA objects"),
+                )?;
+                let expected_bytes = checked_sum(
+                    retained_union_canonical_bytes,
+                    retention_manifest.encoded_len(),
+                    "checkpoint DATA canonical bytes",
+                )?;
+                if data_objects != expected_objects || data_canonical_bytes != expected_bytes {
+                    return Err(GenerationCheckpointErrorV1::InventoryIncoherent {
+                        expected_objects,
+                        actual_objects: data_objects,
+                        expected_bytes,
+                        actual_bytes: data_canonical_bytes,
+                    });
+                }
+            }
+            RetentionFormat::V2 => require_v2_metadata(
+                retention_manifest,
+                retained_union_objects,
+                retained_union_canonical_bytes,
+                data_objects,
+                data_canonical_bytes,
+            )?,
         }
         if current_state_objects == 0 {
             return Err(GenerationCheckpointErrorV1::CurrentObjectsBelowManifest {
@@ -595,6 +735,7 @@ impl GenerationCheckpointDescriptorViewV1 {
             data_objects,
             data_canonical_bytes: CheckpointInlineCanonicalBytesV1::new(data_canonical_bytes),
             ordered_digest,
+            format,
         })
     }
 
@@ -625,6 +766,8 @@ impl GenerationCheckpointDescriptorViewV1 {
     pub(crate) const fn ordered_digest(self) -> OrderedObjectInventoryDigestV1 {
         self.ordered_digest
     }
+
+    pub(crate) const fn format(self) -> RetentionFormat { self.format }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -662,6 +805,16 @@ pub enum GenerationCheckpointErrorV1 {
         actual: u64,
     },
     EmptyRetainedUnion,
+    RetentionAnchorLength {
+        actual: u64,
+    },
+    RetentionMetadataBelowMinimum {
+        data_objects: u64,
+        retained_objects: u64,
+        data_bytes: u64,
+        retained_bytes: u64,
+    },
+    SourceRetentionFormatNotWritable(RetentionFormat),
 }
 
 impl Display for GenerationCheckpointErrorV1 {
@@ -714,6 +867,28 @@ impl Display for GenerationCheckpointErrorV1 {
             Self::EmptyRetainedUnion => {
                 formatter.write_str("checkpoint retained closure cannot be empty")
             }
+            Self::RetentionAnchorLength { actual } => write!(
+                formatter,
+                "V2 checkpoint appoints a {actual}-byte retention object instead of the \
+                 {RETENTION_ANCHOR_CANONICAL_LEN}-byte retention anchor"
+            ),
+            Self::RetentionMetadataBelowMinimum {
+                data_objects,
+                retained_objects,
+                data_bytes,
+                retained_bytes,
+            } => write!(
+                formatter,
+                "V2 checkpoint DATA {data_objects} objects/{data_bytes} bytes leaves less than \
+                 the {RETENTION_METADATA_MIN_OBJECTS}-object/\
+                 {RETENTION_METADATA_MIN_CANONICAL_BYTES}-byte metadata minimum beside the \
+                 {retained_objects}-object/{retained_bytes}-byte retained union"
+            ),
+            Self::SourceRetentionFormatNotWritable(format) => write!(
+                formatter,
+                "an admitted {format:?} retention source cannot derive a checkpoint before task \
+                 7926 adds the V2 writer"
+            ),
         }
     }
 }

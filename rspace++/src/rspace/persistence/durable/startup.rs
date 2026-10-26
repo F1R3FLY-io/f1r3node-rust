@@ -20,6 +20,7 @@ use super::{
     DurableLimitKind, DurableLimits, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexFormatError,
     IndexGenerationV1, ObjectIndexHeaderV1, ObjectIndexRecordV1,
 };
+use crate::rspace::persistence::retention::v2_format::RetentionReader;
 use crate::rspace::persistence::wal::TerminalCommitViewV1;
 use crate::rspace::persistence::{
     CatalogAuthorityTokenV1, LogPackAddress, LogPackDecodeLimits, PackId, PackTerminalIdentityV1,
@@ -323,6 +324,8 @@ impl CatalogPackProviderV1 for DirectoryPackProviderV1<'_> {
     fn open_pack(&mut self, pack_id: PackId) -> Result<Self::Reader, Self::Error> {
         self.0.open_pack(pack_id)
     }
+
+    fn retention_reader(&self) -> RetentionReader { self.0.retention_reader() }
 }
 
 enum PhysicalIndexProbeV1 {

@@ -19,12 +19,13 @@ pub(crate) use checkpoint::{
     GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1, GenerationCheckpointLayoutVisitErrorV1,
     GenerationCheckpointObjectLayoutV1, GenerationCheckpointPrepareIdentityV1,
     GenerationCheckpointPreparePreflightV1, GenerationCheckpointPrepareWriteErrorV1,
-    GenerationCheckpointSourceV1, PreparedGenerationCheckpointV1,
-    preflight_generation_checkpoint_prepare_v1,
+    GenerationCheckpointSourceV1, PreparedGenerationCheckpointV1, designated_retention_object,
+    preflight_generation_checkpoint_prepare_for,
 };
 #[cfg(test)]
 pub(crate) use checkpoint::{
     GenerationCheckpointPrepareRecordViewV1, GenerationCheckpointSourceCopyErrorV1,
+    preflight_generation_checkpoint_prepare_v1,
 };
 pub(crate) use checkpoint_commit::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
@@ -42,7 +43,9 @@ pub(crate) use codec::{
     PreparedObjectLayoutV1, validate_streamed_mutation_receipt_v1,
 };
 #[cfg(test)]
-pub(crate) use codec::{TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1};
+pub(crate) use codec::{
+    TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1, validate_object_for,
+};
 pub use disposition::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectDispositionV1,
     LogPackObjectPlanError, LogPackObjectPlanV1,

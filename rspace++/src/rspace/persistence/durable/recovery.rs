@@ -24,11 +24,13 @@ use crate::rspace::persistence::mutation::{
 };
 use crate::rspace::persistence::object::CanonicalObjectStreamValidatorV1;
 use crate::rspace::persistence::physical::PHYSICAL_DIGEST_LEN;
+use crate::rspace::persistence::retention::v2_format::RetentionReader;
 use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1,
     GenerationCheckpointCommitViewV1, GenerationCheckpointPrepareIdentityV1,
     GenerationCheckpointPreparePreflightV1, PrepareRecordPreflightV1, TerminalCommitViewV1,
-    preflight_generation_checkpoint_prepare_v1, validate_streamed_mutation_receipt_v1,
+    designated_retention_object, preflight_generation_checkpoint_prepare_for,
+    validate_streamed_mutation_receipt_v1,
 };
 use crate::rspace::persistence::{
     CATALOG_IMAGE_LEN, COMMIT_DISCRIMINATOR_LEN_V1, CanonicalObjectKind, CatalogAuthorityTokenV1,
@@ -181,6 +183,10 @@ pub(crate) trait CatalogPackProviderV1 {
     type Error;
 
     fn open_pack(&mut self, pack_id: PackId) -> Result<Self::Reader, Self::Error>;
+
+    /// The retention formats recovery accepts from this provider's packs.
+    /// A provider that does not opt in stays a strict V1 reader.
+    fn retention_reader(&self) -> RetentionReader { RetentionReader::V1Only }
 }
 
 pub(crate) struct ScannedPackChainV1<I = CommittedObjectIndexV1> {
@@ -790,6 +796,7 @@ fn canonical_truncation(
 }
 
 struct IncrementalPrimaryStateV1<E> {
+    retention_reader: RetentionReader,
     cursor: u64,
     crc: Crc32c,
     hasher: Blake2b<U32>,
@@ -1006,7 +1013,8 @@ where
                 .cursor
                 .checked_sub(prepare_offset)
                 .ok_or(RecoveryError::Arithmetic("relative canonical object offset"))?;
-            let mut validator = CanonicalObjectStreamValidatorV1::new(object_len);
+            let mut validator =
+                CanonicalObjectStreamValidatorV1::new_for(object_len, state.retention_reader);
             let body_end = state
                 .cursor
                 .checked_add(reference.encoded_len())
@@ -1266,6 +1274,7 @@ fn scan_incremental_prepare_primary_phased<R, S>(
     generation_start: bool,
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
+    retention_reader: RetentionReader,
     index_sink: &S,
     current_index_records: u64,
     current_index_tail: u64,
@@ -1291,6 +1300,7 @@ where
     let mut hasher = Blake2b::<U32>::new();
     hasher.update(prefix);
     let mut state = Box::new(IncrementalPrimaryStateV1 {
+        retention_reader,
         cursor: mutation_offset,
         crc,
         hasher,
@@ -1788,6 +1798,7 @@ fn stream_generation_checkpoint_prepare<R, S>(
     preflight: GenerationCheckpointPreparePreflightV1,
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
+    retention_reader: RetentionReader,
     object_records: &mut u64,
     index_records: &mut u64,
     expected_index_tail: &mut u64,
@@ -1823,6 +1834,7 @@ where
     );
     let state_manifest = descriptor.state().manifest();
     let retention_manifest = descriptor.retention_manifest();
+    let (retention_role, retention_kind) = designated_retention_object(descriptor.format());
     let mut saw_state_manifest = false;
     let mut saw_retention_manifest = false;
     let mut cursor = prepare_offset
@@ -1921,8 +1933,11 @@ where
             }));
         }
         let captured_domain_len = reference.encoded_len().min(OBJECT_DOMAIN_LEN as u64) as usize;
-        let kind = CanonicalObjectKind::from_domain_prefix(&domain[..captured_domain_len])
-            .map_err(LogPackFormatError::from)?;
+        let kind = CanonicalObjectKind::from_domain_prefix_for(
+            &domain[..captured_domain_len],
+            retention_reader,
+        )
+        .map_err(LogPackFormatError::from)?;
         if reference == state_manifest {
             require_checkpoint_kind(
                 "state manifest",
@@ -1933,12 +1948,7 @@ where
             saw_state_manifest = true;
         }
         if reference == retention_manifest {
-            require_checkpoint_kind(
-                "retention manifest",
-                reference,
-                kind,
-                CanonicalObjectKind::RetentionManifest,
-            )?;
+            require_checkpoint_kind(retention_role, reference, kind, retention_kind)?;
             saw_retention_manifest = true;
         }
 
@@ -2000,7 +2010,7 @@ where
     }
     if !saw_retention_manifest {
         return Err(RecoveryError::Wal(LogPackFormatError::CheckpointDesignatedObjectMissing {
-            role: "retention manifest",
+            role: retention_role,
             reference: retention_manifest,
         }));
     }
@@ -2290,6 +2300,7 @@ fn scan_incremental_record_v1<R, S>(
     generation_start: bool,
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
+    retention_reader: RetentionReader,
     index_sink: &S,
     index_records: u64,
     expected_index_tail: u64,
@@ -2375,6 +2386,7 @@ where
         generation_start,
         limits,
         wal_limits,
+        retention_reader,
         index_sink,
         index_records,
         expected_index_tail,
@@ -2429,6 +2441,7 @@ fn scan_generation_checkpoint_record_v1<R, S>(
     previous_commit: PhysicalDigest,
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
+    retention_reader: RetentionReader,
     scratch: &mut Option<Vec<u8>>,
     accounting: &mut RecoveryReadAccountingV1,
     index_sink: &mut S,
@@ -2465,7 +2478,8 @@ where
         accounting,
         RecoveryReadClassV1::PrimaryAuthenticated,
     )?;
-    let preflight = preflight_generation_checkpoint_prepare_v1(&prefix, wal_limits)?;
+    let preflight =
+        preflight_generation_checkpoint_prepare_for(&prefix, wal_limits, retention_reader)?;
     if preflight.sequence() != expected_sequence {
         return Err(RecoveryError::Sequence {
             expected: expected_sequence,
@@ -2522,7 +2536,8 @@ where
         accounting,
         RecoveryReadClassV1::PrimaryAuthenticated,
     )?;
-    let checkpoint_commit = GenerationCheckpointCommitViewV1::parse(&raw_commit)?;
+    let checkpoint_commit =
+        GenerationCheckpointCommitViewV1::parse_for(&raw_commit, retention_reader)?;
     if checkpoint_commit.sequence() != expected_sequence {
         return Err(RecoveryError::Sequence {
             expected: expected_sequence,
@@ -2605,6 +2620,7 @@ where
         preflight,
         limits,
         wal_limits,
+        retention_reader,
         object_records,
         index_records,
         expected_index_tail,
@@ -2649,6 +2665,7 @@ fn scan_commit_bound_record_v1<R, S>(
     previous_commit: PhysicalDigest,
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
+    retention_reader: RetentionReader,
     scratch: &mut Option<Vec<u8>>,
     accounting: &mut RecoveryReadAccountingV1,
     index_sink: &mut S,
@@ -2703,6 +2720,7 @@ where
             generation_start,
             limits,
             wal_limits,
+            retention_reader,
             &*index_sink,
             *index_records,
             *expected_index_tail,
@@ -2726,6 +2744,7 @@ where
             previous_commit,
             limits,
             wal_limits,
+            retention_reader,
             scratch,
             accounting,
             index_sink,
@@ -2768,6 +2787,7 @@ where
     let expected_store = catalog.store_id();
     let expected_profile = catalog.profile_id();
     let index_generation = pack_state.index_generation();
+    let retention_reader = provider.retention_reader();
     let mut transactions = 0u64;
     let mut checkpoints = 0u64;
     let mut object_records = 0u64;
@@ -2846,6 +2866,7 @@ where
                 previous_commit,
                 limits,
                 wal_limits,
+                retention_reader,
                 &mut checkpoint_scratch,
                 &mut accounting,
                 &mut index_sink,

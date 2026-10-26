@@ -19353,6 +19353,226 @@ D. R. Morrison, "PATRICIA—Practical Algorithm To Retrieve Information Coded in
 Alphanumeric", *Journal of the ACM* 15(4):514–534, 1968,
 [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481).
 
+### J-248 — 2026-10-26: bounded dual-version cold reader for shared retention V2 (task 7925)
+
+**DERIVED.** This entry follows J-247, which froze the shared retention V2
+format and left its reader open, and J-066, which required a V2 reader to charge
+the reads of its metadata closure rather than inherit V1's single
+retention-manifest read. Task 7925 asks for dual-version, bounded cold recovery
+and admission of shared retention metadata and of an explicitly versioned
+checkpoint inventory, while keeping independent strict V1 reader fixtures. It
+asks to authenticate the complete metadata closure separately from the retained
+semantic union, from strict history and current order, and from aliases; to
+refuse unsupported or corrupt appointed versions before adoption; and to test
+exact and one-below resource limits, malformed graphs and versions, digest
+collisions and restart fixtures. Nothing may emit V2 before this reader exists.
+
+The theory `formal/rocq/stack_safe_pda/theories/RetentionV2Format.v` gains six
+capstones, numbered 16 to 21, and six helper lemmas, all closed under the global
+context. The production reader is the new module
+`rspace++/src/rspace/persistence/retention/v2_reader.rs`, wired through twelve
+existing persistence modules. These design decisions are what a reconstruction
+must preserve:
+
+1. A capability, never a fallback. Each directory carries a reader capability,
+   `RetentionReader::V1Only` or `RetentionReader::Dual`, and
+   `DurableDirectoryV1::open` gives it the dual one. Every reader dispatches on
+   the domain alone: the object classifier, the checkpoint descriptor parser and
+   the parser of the appointed retention object each extend the strict V1
+   reader only on the V2 domains, and none retries another format after a
+   refusal. A V1-only reader is exactly the previous reader, which is what keeps
+   the strict V1 fixtures independent: a test build downgrades a directory with
+   `with_retention_reader_for_test` and reads the same image with both readers.
+2. Layering. Physical recovery stays bounded. It authenticates each checkpoint
+   object's length and digest, classifies its domain prefix, checks the
+   descriptor's V2 minimum and requires the designated retention object to be an
+   anchor. It does not parse anchors or radix nodes. Complete parsing, namely the
+   anchor's version and body, the radix bodies and shapes, the count and the
+   history rules, belongs to cold admission, as the V1 manifest's parsing already
+   did.
+3. The versioned descriptor checks only what its bytes determine: the 136-byte
+   anchor and a metadata minimum of 2 objects and 186 bytes beside the declared
+   retained union. The exact metadata closure $`M`$ depends on radix bytes, so
+   cold admission computes it and requires
+   $`\mathrm{DATA} - R_{\mathrm{decl}}`$ to equal it in objects and in bytes.
+4. Count before enumerating. Phase one reads each reachable radix node once and
+   counts leaf occurrences; phase two runs only when the count equals the
+   anchor's, reserves exactly $`n`$ entries and enumerates them from the nodes
+   already read. Theorem 16 makes a successful count an exact authorization of
+   the enumeration, and theorem 17 refutes a count without the shape checks.
+5. The memo is keyed by digest and remaining key width (theorem 18), because a
+   shared node's shape depends on where it is reached (theorem 19). A digest
+   reached under two lengths is refused before the memo is consulted.
+6. The metadata closure is authenticated separately from the retained union, by
+   inclusion through the store pinned to the checkpoint pack, disjointness
+   through the domain refusals of both walks, distinct digests, and one count per
+   set (theorem 20). Theorem 21 shows that disjointness cannot be dropped.
+7. The V1 history rules apply unchanged: `validate_historical`, the same function
+   the V1 manifest parser runs, refuses non-strict order and a current entry
+   after enumeration, and the generation rule R8 stays in the admission loop.
+8. No new limit. Metadata reads are charged against the existing object-read and
+   object-read-byte limits. `max_retained_states` bounds $`n`$ before any radix
+   read, replacing the implicit bound that the size of a V1 manifest imposed.
+9. A source admitted from V2 content refuses every successor before any durable
+   mutation, until the writer of task 7926 exists. Writing a V1 successor from a
+   V2 history would be the export from V2 to V1 that J-247 excludes.
+10. No persisted or consensus-visible byte changes, and V1 stores are read
+    exactly as before. The `expect(dead_code)` on the format module was removed,
+    because the reader now uses it; the persistence module keeps its own
+    expectation until task 7931 wires the durable owner. No PathMap, MORK,
+    rholang-rs or Casper source changes.
+
+The task's requirements map onto the work as follows:
+
+| Requirement | Where it is met |
+|---|---|
+| dual-version bounded cold recovery and admission of shared retention metadata | the capability, the dispatch, the layers and the two-phase reader; `RV-20`, `RV-22`, `RV-23`, `RV-25` |
+| explicitly versioned checkpoint inventory | `RSpaceDAG.Chkp2` under the V2 rule; `RV-21` |
+| independent strict V1 reader fixtures | V1-only directories over the same images; `RV-20`, `RV-21`, `RV-25`, `RV-27` |
+| metadata closure authenticated separately from the retained union | admission step 7; theorems 20 and 21; `RV-24` |
+| strict history and current order; aliases | `validate_historical` and rule R8; the cached-reference check; `RV-22`, `RV-24`, `RV-25` |
+| unsupported or corrupt appointed versions refused before adoption | anchor and envelope versions, unknown domains, radix defects; `RV-27`, `RV-29` |
+| exact and one-below resource limits | `RV-25`, `RV-26` |
+| malformed graphs and versions | `RV-22`, `RV-23`, `RV-27`, `RV-29` |
+| digest collisions | length aliases and forged digests; `RV-24`, `RV-27`, `RV-29` |
+| restart fixtures | `RV-27` |
+| no hot emission before this gate | no production writer; the successor refusal, `RV-28` |
+
+The capability and dispatch, the table of physical and admission layers, the
+versioned descriptor rule, the literate two-phase reader with its cost, the
+admission order, the authentication of $`M`$ beside $`R`$, the read equations,
+the successor refusal, the theorem table and the `RV-20`–`RV-29` bindings are in
+the
+[generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#shared-retention-v2-cold-reader-2026-10-26),
+with a flow figure of cold admission (`figures/retention-v2-cold-reader.svg`)
+and a figure of theorem 19's counterexample (`figures/retention-v2-depth-memo.svg`).
+
+**DEPARTURES FROM THE DESIGN.** Five choices differ from the design recorded
+before the theory:
+
+1. J-247's reference decoder unfolds the history and then checks the count, and
+   the plan expected the production reader to follow it. The reader counts
+   first and enumerates only after the count matches, because a shared graph of
+   49 objects denotes $`2^{48}`$ keys. The reference decoder remains the oracle.
+2. J-247 described the memoized count on digest and width as a test model. The
+   reader keys its memo the same way and adds the check of a cached reference
+   before the memo; the test model was corrected to match (below).
+3. The plan expected physical recovery to validate V2 objects. Recovery
+   classifies their domains and authenticates their digests, and complete parsing
+   is admission's, which is the existing V1 layering.
+4. The plan left open whether the reader needs a limit of its own. It does not;
+   the 35 boundaries of the resource matrix are unchanged.
+5. The plan had successors of a V2 source write a V1 manifest from the admitted
+   history. They refuse instead (decision 9).
+
+**EXECUTABLE REFINEMENT.** The production change has six parts:
+
+- `retention/v2_reader.rs` (new): `AppointedRetention`, the refusals
+  `RetentionRadixRefusalV2`, the two-phase reader `admit_retention_history_v2`,
+  and the metadata inventory and admitted-retention types;
+- `retention/v2_format.rs`: `RetentionFormat`, `RetentionReader` with `admits`,
+  and the constants `RETENTION_METADATA_MIN_OBJECTS` and
+  `RETENTION_METADATA_MIN_CANONICAL_BYTES`;
+- `object.rs`: the classifier `from_domain_prefix_for`, the new object kinds,
+  the stream validator's capability (`new_for`) and its V2 states, and the
+  overflow fix described below;
+- `checkpoint.rs` and the `wal` modules: `parse_for`, `require_v2_metadata`,
+  `designated_retention_object`, the capability-parameterized prepare preflight
+  and commit parse, `validate_object_for`, and the test-only constructor
+  `from_test_ordered_v2`;
+- `durable/io.rs`, `startup.rs` and `recovery.rs`: the directory's capability, its
+  forwarding by the pack provider, and its threading through the scans, the
+  stream validator and the checkpoint stream's classifier;
+- `durable/admission.rs`: the admission steps, the report fields
+  `retention_metadata_objects` and `retention_metadata_canonical_bytes`, the
+  source's `AdmittedRetention`, and the four successor refusals.
+
+Ten tests bind `RV-20` to `RV-29`: four in `retention_v2_format_properties.rs`,
+one in `checkpoint_wal.rs` and five in `durable_publication.rs`, with the
+owner-checkpoint helper `assert_v2_owner_checkpoint_refuses_before_durable_mutation`
+in `durable_rspace_authority.rs`. `property_support.rs` binds the ten rows, and
+the registry now holds 179 IDs, up from 169. The runner compiles the theory with
+`rocq_compile_with_closed_count … 21`. Several test helpers became visible to the
+sibling test modules that build V2 sources, among them `RadixDefect` and the
+migration helper `migrate_checkpoint_source_to_v2`. Development found and fixed
+these, each recorded with its evidence:
+
+- *A divergence in the stream validator, predating this task.* One of `RV-20`'s
+  fixed candidates is an anchor retagged to the DAG node domain whose current
+  generation is $`2^{64} - 1`$. The DAG node parser reads that generation, at
+  body offset 0, as the prefix length. The contiguous cursor refuses
+  `LengthOutOfRange` for `cursor extent`, because the prefix region, which
+  starts at body offset 8, would end past the address space; the V1-only stream
+  validator refused `Truncated { offset: 8, needed: 2^64 - 1, available: 96 }`.
+  The hypothesis was that the validator lacked the cursor's overflow check, in
+  its body-region check and, by the same reasoning, in its envelope body length.
+  The new test `overflowing_declared_extents_refine_the_contiguous_oracle`
+  failed before the fix, as predicted, and passes after it: five length fields,
+  the DAG envelope and prefix, the blob payload and the 48- and 56-byte entry
+  lists, are each set to the smallest overflowing value and to one below it, and
+  every chunking reports the contiguous parser's error. Only the error reported
+  for refused input changes. The Rocq model uses unbounded natural numbers and
+  is unaffected.
+- *The test model's memo.* `RV-22` first disagreed with production on an alias
+  pair, a digest reached under two lengths: the model's shape-strict count found
+  the digest in its memo and counted it, while production refuses
+  `ObjectLengthMismatch` before the memo. The model now checks the reference
+  first, mirroring production; production was right.
+- *Three expectations at the wrong layer.* An anchor of version 2 is refused in
+  admission (`UnsupportedVersion` for the anchor), not in recovery; a V1 history
+  that contains the current state is refused when the V1 manifest is parsed, in
+  admission; and of the radix defects written into directory images, only the
+  two length shifts and the forged digest are refused in recovery, because
+  recovery authenticates digests and lengths and parses nothing more. The
+  expectations were corrected to these layers; the code was right.
+- *The migration helper.* Its first draft read the V1 manifest's historical
+  entries as values, but the iterator yields results. It now decodes them and
+  builds every V2 source through one constructor, which also requires distinct
+  keys.
+
+Four test-design choices matter for reproducing the evidence. The directory
+snapshot omits `writer.lock.v1`, the advisory lock that admission itself takes,
+so that "unchanged directory" compares durable state only. The classifier of
+cold refusals merges a durable limit refused by recovery with one refused by
+startup, because the same durable limit can be reached in either stage and the
+properties concern the limit, not the stage. The owner's refusal is observed through the admitted source, whose
+`seal_transaction` and `bind_durable_transaction` the owner's checkpoint calls.
+`RV-24` sweeps historical counts 0 to 8, and checks the verdict of theorems 20
+and 21 exhaustively on three objects: each object is one 4-bit digit, one bit
+for a size of 1 or 2 and three for membership in the retained union, the
+metadata and the data, so 4096 cases. One pre-existing warning, an unused
+`ImmutableObjectStore` import in `object_store_collision.rs`, was left alone.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `a3deb23e` exported to
+`target/scratch/idx`. That tree is HEAD `d5cb1ed8` plus this change, with this
+journal entry and the catalog's verification-record paragraph and pinned-source
+table still holding placeholders. It ran one heavy job at a time, each in a
+headless user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| Rocq dependency closure, retention-format closed capstones, placeholder scan, `coqchk` | 16 GiB | the dependencies compiled; retention format 21 of 21 closed; no placeholder; kernel check passed | `target/perf/logs/phase0/7925-rocq-20261026T161649Z.log` | `fb2927b7d0d914b50fa19b4f4bdd1f0a1863f362bc70024bae420c958b408205` |
+| the 445 selected rspace++ library tests under `rspace::persistence` (the ten reader properties, the overflow regression test, the format, ledger, reachability, closure, semantic, admission and publication tests, and the registry test), debug | 48 GiB, one test thread | 445 passed in 20.79 s; the 3 unwind-child helpers ignored by design | `target/perf/logs/phase4/7925-persistence-debug-20261026T161144Z.log` | `a61c1392e89c8ea18650dae00242b5e8f5e3426dac5b236ac5134fa6b337a3ac` |
+| the same, release | as above | 445 passed in 8.49 s; 3 ignored | `target/perf/logs/phase4/7925-persistence-release-20261026T161144Z.log` | `05b9b8190902e4633d4a3ce666250d74bd16ff1695dcbcaac6e3935952a788fc` |
+
+The TLA+ model did not change, so TLC was not rerun. The commit's full export
+gate (`cargo check`, clippy, the release nextest suites for `models`,
+`rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the doc tests) is
+recorded in the pgmcp progress note for task 7925. These results put a complete,
+bounded V2 reader in production behind the dual capability, with every property
+bound to a test. They do not write V2. The path-local writer, whose first
+emission changes persisted bytes and stops for an explicit confirmation, is task
+7926; the trusted successor and its comparison with cold admission are tasks
+7927 and 7928. These are agent-run results; independent review and the approved
+pgmcp verification recipe remain required.
+
+Cited works: R. C. Merkle, "A digital signature based on a conventional
+encryption function", *Advances in Cryptology — CRYPTO '87*, Lecture Notes in
+Computer Science 293, 369–378, 1988,
+[doi:10.1007/3-540-48184-2_32](https://doi.org/10.1007/3-540-48184-2_32);
+D. Michie, "'Memo' functions and machine learning", *Nature* 218(5136):19–22,
+1968, [doi:10.1038/218019a0](https://doi.org/10.1038/218019a0).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

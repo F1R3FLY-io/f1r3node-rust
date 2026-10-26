@@ -11,6 +11,7 @@ use super::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogSlotV1,
     INDEX_HEADER_LEN_V1, IndexGenerationV1, PACK_HEADER_LEN_V1,
 };
+use crate::rspace::persistence::retention::v2_format::RetentionReader;
 use crate::rspace::persistence::{CanonicalSink, GenerationLeaseRegistryV1, PackId};
 
 pub(crate) const CATALOG_FILE_NAME_V1: &str = "catalog.v1";
@@ -797,6 +798,7 @@ pub(crate) struct DurableDirectoryV1 {
     path: PathBuf,
     directory: File,
     generation_leases: GenerationLeaseRegistryV1,
+    retention_reader: RetentionReader,
 }
 
 impl DurableDirectoryV1 {
@@ -833,10 +835,23 @@ impl DurableDirectoryV1 {
             path,
             directory,
             generation_leases,
+            retention_reader: RetentionReader::Dual,
         })
     }
 
     pub(crate) fn path(&self) -> &Path { &self.path }
+
+    /// The retention formats recovery and admission accept from this
+    /// directory. Opened directories read both formats.
+    pub(crate) const fn retention_reader(&self) -> RetentionReader { self.retention_reader }
+
+    /// Downgrade this directory to a strict V1 reader, standing in for a node
+    /// built before the V2 retention reader existed.
+    #[cfg(test)]
+    pub(crate) fn with_retention_reader_for_test(mut self, reader: RetentionReader) -> Self {
+        self.retention_reader = reader;
+        self
+    }
 
     pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
         self.generation_leases.clone()
@@ -860,6 +875,7 @@ impl DurableDirectoryV1 {
             path: self.path.clone(),
             directory,
             generation_leases: self.generation_leases.clone(),
+            retention_reader: self.retention_reader,
         })
     }
 

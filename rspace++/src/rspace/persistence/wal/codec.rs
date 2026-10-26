@@ -23,9 +23,14 @@ use crate::rspace::persistence::manifest::{SEMANTIC_PROFILE_ID_LEN, SemanticProf
 use crate::rspace::persistence::mutation::{
     MutationBatchViewV1, MutationDecodeLimits, StateVersionV1,
 };
-use crate::rspace::persistence::object::{CanonicalObjectKind, CanonicalObjectView};
+use crate::rspace::persistence::object::{
+    CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView,
+};
 use crate::rspace::persistence::physical::{
     PHYSICAL_DIGEST_LEN, PhysicalDigest, STORE_ID_LEN, StoreId,
+};
+use crate::rspace::persistence::retention::v2_format::{
+    RETENTION_RADIX_DOMAIN, RetentionAnchorV2, RetentionReader,
 };
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::transaction::{
@@ -1303,6 +1308,38 @@ pub(super) fn validate_object(
         CanonicalObjectView::AcceleratorManifest(manifest) => manifest.object_ref(),
         CanonicalObjectView::RetentionManifest(manifest) => manifest.object_ref(),
     };
+    if actual != declared {
+        return Err(LogPackFormatError::ObjectReference { declared, actual });
+    }
+    Ok(kind)
+}
+
+/// Validate one contiguous canonical object for a reader with the given
+/// retention capability. A V1-only reader is exactly [`validate_object`].
+pub(crate) fn validate_object_for(
+    declared: ObjectRefV1,
+    canonical_bytes: &[u8],
+    reader: RetentionReader,
+) -> Result<CanonicalObjectKind, LogPackFormatError> {
+    let kind = match CanonicalObjectKind::from_domain_prefix_for(canonical_bytes, reader) {
+        Ok(CanonicalObjectKind::RetentionAnchor) => {
+            RetentionAnchorV2::parse(canonical_bytes)?;
+            CanonicalObjectKind::RetentionAnchor
+        }
+        Ok(CanonicalObjectKind::RetentionRadixNode) => {
+            CanonicalDagNodeView::parse_in_domain(
+                canonical_bytes,
+                RETENTION_RADIX_DOMAIN,
+                "RSpace retention radix node",
+            )?;
+            CanonicalObjectKind::RetentionRadixNode
+        }
+        _ => return validate_object(declared, canonical_bytes),
+    };
+    let actual = ObjectRefV1::new(
+        ObjectDigest::of_canonical_bytes(canonical_bytes),
+        checked_len(canonical_bytes.len(), "WAL canonical object")?,
+    )?;
     if actual != declared {
         return Err(LogPackFormatError::ObjectReference { declared, actual });
     }
