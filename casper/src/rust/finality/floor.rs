@@ -47,26 +47,6 @@ pub struct Floor {
     pub block_number: i64,
 }
 
-/// True iff `hash` is the floor block or one of its DAG ancestors —
-/// i.e., its contents are represented in every future merge base.
-pub(crate) fn in_floor_closure(
-    dag: &KeyValueDagRepresentation,
-    hash: &BlockHash,
-    floor: &Floor,
-) -> Result<bool, CasperError> {
-    if *hash == floor.hash {
-        return Ok(true);
-    }
-    let Some(height) = dag.block_number(hash) else {
-        return Ok(false);
-    };
-    if height > floor.block_number {
-        return Ok(false);
-    }
-    dag.is_dag_ancestor(hash, &floor.hash)
-        .map_err(CasperError::from)
-}
-
 /// Per-block introduced-sig memo shared across the containment checks of
 /// one derivation (the same settled segments are re-walked per candidate).
 pub(crate) type IntroducedSigsMemo = HashMap<BlockHash, HashSet<Bytes>>;
@@ -482,11 +462,14 @@ async fn decidable_tips_metered<W: WorkMeter>(
     meter.step(WorkKind::Traversal)?;
     meter.allocate(4, 256)?;
     let mut decidable: Vec<BlockHash> = Vec::with_capacity(tips.len());
+    let mut memo = WitnessMemo::default();
     for tip in tips {
         meter.step(WorkKind::Traversal)?;
         meter.allocate(4, 256)?;
         let undecidable = match floor_of_block_metered(meter, dag, block_store, tip, ftt).await {
-            Ok(_) => match parent_frontier_metered(meter, dag, tip, live_snapshot, ftt).await {
+            Ok(_) => match parent_frontier_metered(meter, dag, tip, live_snapshot, ftt, &mut memo)
+                .await
+            {
                 Ok(_) => None,
                 Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
                 Err(other) => return Err(other),
@@ -819,6 +802,30 @@ pub async fn finalized_floor_with_candidates_metered<W: WorkMeter>(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<(Floor, Vec<Floor>), CasperError> {
+    let (floor, settled, _main_parent_frontier) = finalized_floor_with_frontier_metered(
+        meter,
+        dag,
+        block_store,
+        parents,
+        latest_messages,
+        ftt,
+    )
+    .await?;
+    Ok((floor, settled))
+}
+
+/// `finalized_floor_with_candidates`, also returning the main parent's
+/// frontier over the snapshot — `F(B)` when the inputs are block B's own
+/// (parents, justifications). With the floor it is exactly what
+/// [`floor_of_block`] persists for B.
+pub(crate) async fn finalized_floor_with_frontier_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<(Floor, Vec<Floor>, Floor), CasperError> {
     meter.allocate(parents.len(), 2048)?;
     meter.step(WorkKind::Traversal)?;
     meter.allocate(4, 256)?;
@@ -828,7 +835,7 @@ pub async fn finalized_floor_with_candidates_metered<W: WorkMeter>(
         meter.allocate(4, 256)?;
         inherited.push(floor_of_block_metered(meter, dag, block_store, parent, ftt).await?);
     }
-    let (floor, _main_parent_frontier) = derive_floor_metered(
+    let (floor, main_parent_frontier) = derive_floor_metered(
         meter,
         dag,
         block_store,
@@ -854,7 +861,7 @@ pub async fn finalized_floor_with_candidates_metered<W: WorkMeter>(
             settled.push(f);
         }
     }
-    Ok((floor, settled))
+    Ok((floor, settled, main_parent_frontier))
 }
 
 /// Core derivation: max over (inherited parent floors ∪ oracle frontiers),
@@ -912,10 +919,13 @@ async fn derive_floor_metered<W: WorkMeter>(
     let mut candidates = inherited;
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
     let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
+    let mut memo = WitnessMemo::default();
     for parent in parents {
         meter.step(WorkKind::Traversal)?;
         meter.allocate(4, 256)?;
-        frontiers.push(parent_frontier_metered(meter, dag, parent, latest_messages, ftt).await?);
+        frontiers.push(
+            parent_frontier_metered(meter, dag, parent, latest_messages, ftt, &mut memo).await?,
+        );
     }
     // parents[0] is the main parent; its frontier over this snapshot is F(B).
     let main_parent_frontier = frontiers[0].clone();
@@ -1208,6 +1218,62 @@ pub async fn floor_of_block_metered<W: WorkMeter>(
     })
 }
 
+/// Oracle verdicts and committees resolved during ONE derivation, over ONE
+/// frozen justification snapshot. Parents' main-parent spines overlap, so
+/// without it the same `(target, snapshot)` verdict is recomputed once per
+/// parent (#477). Both values are pure functions of the block and the
+/// snapshot, so sharing them never changes a frontier — only the work done to
+/// find it. Never reuse one across snapshots.
+#[derive(Default)]
+pub(crate) struct WitnessMemo {
+    verdicts: HashMap<BlockHash, bool>,
+    committees: HashMap<BlockHash, HashMap<Validator, i64>>,
+    evaluations: u64,
+}
+
+impl WitnessMemo {
+    async fn finalized<W: WorkMeter>(
+        &mut self,
+        meter: &W,
+        dag: &KeyValueDagRepresentation,
+        target: &BlockHash,
+        latest_messages: &BTreeMap<Validator, BlockHash>,
+        ftt: FtThreshold,
+    ) -> Result<bool, CasperError> {
+        if let Some(verdict) = self.verdicts.get(target) {
+            return Ok(*verdict);
+        }
+        // A9 exact ≥-semantics (floor path): `strict=false` ⇒ (2q−S)/S ≥ θ.
+        let verdict = CliqueOracle::ft_witnessed_exact_metered(
+            meter,
+            target,
+            dag,
+            latest_messages,
+            ftt,
+            false,
+        )
+        .await?;
+        self.evaluations += 1;
+        self.verdicts.insert(target.clone(), verdict);
+        Ok(verdict)
+    }
+
+    async fn committee<W: WorkMeter>(
+        &mut self,
+        meter: &W,
+        dag: &KeyValueDagRepresentation,
+        block: &BlockHash,
+    ) -> Result<HashMap<Validator, i64>, CasperError> {
+        if let Some(committee) = self.committees.get(block) {
+            return Ok(committee.clone());
+        }
+        let committee =
+            CliqueOracle::get_corresponding_weight_map_metered(meter, block, dag).await?;
+        self.committees.insert(block.clone(), committee.clone());
+        Ok(committee)
+    }
+}
+
 /// The highest witnessed-finalized block on one parent's main chain, over the
 /// given justification snapshot.
 ///
@@ -1238,7 +1304,15 @@ pub(crate) async fn parent_frontier(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
-    parent_frontier_metered(&NoopWork, dag, parent, latest_messages, ftt).await
+    parent_frontier_metered(
+        &NoopWork,
+        dag,
+        parent,
+        latest_messages,
+        ftt,
+        &mut WitnessMemo::default(),
+    )
+    .await
 }
 
 pub(crate) async fn parent_frontier_metered<W: WorkMeter>(
@@ -1247,13 +1321,21 @@ pub(crate) async fn parent_frontier_metered<W: WorkMeter>(
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    memo: &mut WitnessMemo,
 ) -> Result<Floor, CasperError> {
     meter.step(WorkKind::Traversal)?;
     meter.allocate(4, 256)?;
     if let Some(pivot_hash) = dag.get_cached_frontier(parent)? {
-        if let Some(frontier) =
-            incremental_frontier_metered(meter, dag, parent, &pivot_hash, latest_messages, ftt)
-                .await?
+        if let Some(frontier) = incremental_frontier_metered(
+            meter,
+            dag,
+            parent,
+            &pivot_hash,
+            latest_messages,
+            ftt,
+            memo,
+        )
+        .await?
         {
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_FRONTIER_CACHE_HIT_METRIC,
@@ -1268,7 +1350,7 @@ pub(crate) async fn parent_frontier_metered<W: WorkMeter>(
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
     .increment(1);
-    cold_parent_frontier_metered(meter, dag, parent, latest_messages, ftt).await
+    cold_parent_frontier_metered(meter, dag, parent, latest_messages, ftt, memo).await
 }
 
 /// Warm frontier: resolve `parent`'s frontier over the (larger) `latest_messages`
@@ -1284,7 +1366,16 @@ async fn incremental_frontier(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Option<Floor>, CasperError> {
-    incremental_frontier_metered(&NoopWork, dag, parent, pivot_hash, latest_messages, ftt).await
+    incremental_frontier_metered(
+        &NoopWork,
+        dag,
+        parent,
+        pivot_hash,
+        latest_messages,
+        ftt,
+        &mut WitnessMemo::default(),
+    )
+    .await
 }
 
 async fn incremental_frontier_metered<W: WorkMeter>(
@@ -1294,6 +1385,7 @@ async fn incremental_frontier_metered<W: WorkMeter>(
     pivot_hash: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    memo: &mut WitnessMemo,
 ) -> Result<Option<Floor>, CasperError> {
     meter.step(WorkKind::Traversal)?;
     meter.allocate(4, 256)?;
@@ -1317,13 +1409,11 @@ async fn incremental_frontier_metered<W: WorkMeter>(
     // need not be downward-closed and the up-walk could disagree with the cold
     // walk. This is O(band) cheap metadata reads — bounded by the floor-distance
     // backstop — and never an oracle call.
-    let pivot_committee =
-        CliqueOracle::get_corresponding_weight_map_metered(meter, pivot_hash, dag).await?;
+    let pivot_committee = memo.committee(meter, dag, pivot_hash).await?;
     for block in &spine {
         meter.step(WorkKind::Traversal)?;
         meter.allocate(4, 256)?;
-        let committee =
-            CliqueOracle::get_corresponding_weight_map_metered(meter, block, dag).await?;
+        let committee = memo.committee(meter, dag, block).await?;
         if committee != pivot_committee {
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
@@ -1338,19 +1428,16 @@ async fn incremental_frontier_metered<W: WorkMeter>(
     // snapshot. It was finalized over `parent`'s own snapshot, and a superset can
     // only raise the fault tolerance — but a bonding event in the band can break
     // that monotonicity, so we verify rather than assume.
-    let mut oracle_calls: u64 = 1;
-    // A9 exact ≥-semantics (floor path): the pivot must still be witnessed-
-    // finalized over the larger snapshot. `strict=false` ⇒ (2q−S)/S ≥ θ.
-    let pivot_finalized = CliqueOracle::ft_witnessed_exact_metered(
-        meter,
-        pivot_hash,
-        dag,
-        latest_messages,
-        ftt,
-        false,
-    )
-    .await?;
+    let evaluations_before = memo.evaluations;
+    let pivot_finalized = memo
+        .finalized(meter, dag, pivot_hash, latest_messages, ftt)
+        .await?;
     if !pivot_finalized {
+        metrics::counter!(
+            crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .increment(memo.evaluations - evaluations_before);
         metrics::counter!(
             crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
             "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -1369,18 +1456,9 @@ async fn incremental_frontier_metered<W: WorkMeter>(
     for candidate in spine[..spine.len() - 1].iter().rev() {
         meter.step(WorkKind::Traversal)?;
         meter.allocate(4, 256)?;
-        // A9 exact ≥-semantics (floor path): advance while each block stays
-        // witnessed-finalized over the snapshot.
-        let finalized = CliqueOracle::ft_witnessed_exact_metered(
-            meter,
-            candidate,
-            dag,
-            latest_messages,
-            ftt,
-            false,
-        )
-        .await?;
-        oracle_calls += 1;
+        let finalized = memo
+            .finalized(meter, dag, candidate, latest_messages, ftt)
+            .await?;
         if finalized {
             best_hash = candidate.clone();
             best_number = held_number_metered(meter, dag, candidate)?;
@@ -1394,7 +1472,7 @@ async fn incremental_frontier_metered<W: WorkMeter>(
         crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
-    .increment(oracle_calls);
+    .increment(memo.evaluations - evaluations_before);
     metrics::histogram!(
         crate::rust::metrics_constants::FLOOR_FRONTIER_ADVANCE_METRIC,
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -1424,7 +1502,15 @@ async fn cold_parent_frontier(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
-    cold_parent_frontier_metered(&NoopWork, dag, parent, latest_messages, ftt).await
+    cold_parent_frontier_metered(
+        &NoopWork,
+        dag,
+        parent,
+        latest_messages,
+        ftt,
+        &mut WitnessMemo::default(),
+    )
+    .await
 }
 
 async fn cold_parent_frontier_metered<W: WorkMeter>(
@@ -1433,27 +1519,21 @@ async fn cold_parent_frontier_metered<W: WorkMeter>(
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    memo: &mut WitnessMemo,
 ) -> Result<Floor, CasperError> {
     meter.step(WorkKind::Traversal)?;
     meter.allocate(4, 256)?;
     let mut current = parent.clone();
     let mut walked: usize = 0;
-    let mut oracle_calls: u64 = 0;
+    let evaluations_before = memo.evaluations;
     loop {
         meter.step(WorkKind::Traversal)?;
         meter.allocate(4, 256)?;
-        // A9 exact ≥-semantics (floor path): first witnessed-finalized block down
-        // the main-parent chain is the frontier.
-        let finalized = CliqueOracle::ft_witnessed_exact_metered(
-            meter,
-            &current,
-            dag,
-            latest_messages,
-            ftt,
-            false,
-        )
-        .await?;
-        oracle_calls += 1;
+        // The first witnessed-finalized block down the main-parent chain is
+        // the frontier.
+        let finalized = memo
+            .finalized(meter, dag, &current, latest_messages, ftt)
+            .await?;
         tracing::debug!(
             target: "f1r3.trace.floor_walk",
             parent = %PrettyPrinter::build_string_bytes(parent),
@@ -1469,7 +1549,7 @@ async fn cold_parent_frontier_metered<W: WorkMeter>(
                 crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
                 "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
             )
-            .increment(oracle_calls);
+            .increment(memo.evaluations - evaluations_before);
             trace_frontier(
                 parent,
                 &current,
@@ -1502,7 +1582,7 @@ async fn cold_parent_frontier_metered<W: WorkMeter>(
                     crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
                     "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
                 )
-                .increment(oracle_calls);
+                .increment(memo.evaluations - evaluations_before);
                 trace_frontier(parent, &current, block_number, walked, "genesis");
                 return Ok(Floor {
                     hash: current,

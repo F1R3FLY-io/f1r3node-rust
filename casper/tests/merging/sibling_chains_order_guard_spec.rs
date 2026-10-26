@@ -174,7 +174,7 @@ async fn concurrent_pos_calls_in_one_block_do_not_trip_order_guard() {
         metrics::with_local_recorder(&recorder, || {
             conflict_set_merger::compute_merged_state(
                 &resolved,
-                &|chain: &DeployChainIndex| Ok(chain.state_changes.clone()),
+                &|chain: &DeployChainIndex| Ok(chain.state_changes.as_ref().clone()),
                 &|chain: &DeployChainIndex| chain.source_block_hash.clone(),
                 &|chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone(),
                 &|_, _| Ok(Vec::<HotStoreTrieAction<(), (), (), ()>>::new()),

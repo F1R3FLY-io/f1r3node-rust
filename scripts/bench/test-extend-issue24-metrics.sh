@@ -34,23 +34,21 @@ cmp "$tmp/once.py" "$tmp/metrics.py"
 
 for metric in \
     dag_merge_relation_items \
-    deploy_pool_lock_wait_time \
-    deploy_pool_lock_hold_time \
     proposer_queue_depth \
     runtime_scheduler_delay_time \
     compute_parents_post_state_floor_distance \
     deploy_store_read_all_decoded \
+    deploy_lifecycle_release_failures \
+    deploy_lifecycle_settle_row_failures \
     proposer_create_time \
     proposer_effect_time \
-    deploy_lifecycle_observe_time \
+    deploy_lifecycle_settle_time \
     deploy_lifecycle_carrier_prune_time \
     block_creator_deploy_admission_cap_source_soft_stalled \
     block_creator_deploy_admission_cap_source_hard \
     finalizer_run_time \
-    finalizer_api_lfb_time \
     deploy_selection_age_time \
     finalizer_run_timeouts \
-    finalizer_api_lfb_overlaps \
     block_creator_ordinary_deploys_deferred \
     block_creator_empty_block_skipped \
     block_creator_empty_block_built \
@@ -108,6 +106,8 @@ registries = {
     and node.targets[0].id in {"METRICS_TO_SCRAPE", "COUNTERS_TO_SCRAPE"}
 }
 histograms = registries["METRICS_TO_SCRAPE"]
+assert "deploy_pool_lock_wait_time" not in histograms
+assert "deploy_pool_lock_hold_time" not in histograms
 counters = registries["COUNTERS_TO_SCRAPE"]
 assert len(histograms) == len(set(histograms))
 assert len(counters) == len(set(counters))

@@ -211,6 +211,12 @@ mod tests {
             self.inner.put_one_if_absent(key, value)
         }
 
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.delete_if_value(key, expected)
+        }
+
         fn delete(&self, keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
             self.writes
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
