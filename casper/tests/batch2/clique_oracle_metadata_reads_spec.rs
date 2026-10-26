@@ -39,6 +39,10 @@ impl KeyValueStore for CountingStore {
         self.inner.put_one_if_absent(key, value)
     }
 
+    fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+        self.inner.delete_if_value(key, expected)
+    }
+
     fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> { self.inner.delete(keys) }
 
     fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> { self.inner.iterate(f) }

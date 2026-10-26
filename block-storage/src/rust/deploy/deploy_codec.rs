@@ -201,14 +201,14 @@ mod tests {
                 .put_one(key.clone(), legacy_bytes.clone())
                 .unwrap();
         }
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
         storage.add(vec![parameterized.clone()]).unwrap();
         buffer.add(vec![parameterized.clone()]).unwrap();
         drop(storage);
         drop(buffer);
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
         let expected = std::collections::HashSet::from([old.clone(), parameterized]);
         assert_eq!(storage.read_all().unwrap(), expected);
         assert_eq!(buffer.read_all().unwrap(), expected);
