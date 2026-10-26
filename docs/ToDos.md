@@ -26,6 +26,34 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+### TASK-030-10: Preserve PR 54 policy in the BigInt proposal
+
+```yaml
+id: TASK-030-10
+status: complete
+claimed_by: codex-20261026-bigint-scope
+branch: proposal/pr54-bigint-staking-fees
+acceptance:
+  - "Keep the peek fix and required BigInt amount conversion."
+  - "Restore PR 54 default bond limits and fee validation behavior."
+  - "Verify explicit BigInt configuration and large-stake replay."
+  - "Review changes with Claude Opus and keep edits local."
+```
+
+### TASK-030-9: Validate the BigInt pipeline with the system-reply fix
+
+```yaml
+id: TASK-030-9
+status: complete
+claimed_by: codex-20261025-bigint-peek
+branch: proposal/pr54-bigint-staking-fees
+acceptance:
+  - "Apply and review the system-reply peek fix on the proposal branch."
+  - "Build and deploy the exact branch image on the node VPS."
+  - "Run the full economic pipeline and fix confirmed causes."
+  - "Keep all new commits local and preserve unrelated services."
+```
+
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
@@ -80,6 +108,7 @@ epic_id: EPIC-030
 title: "BigInt economic pipeline proposal based on PR #54"
 status: complete
 completed_date: 2026-10-23
+scope_corrected_date: 2026-10-26
 priority: p1
 user_story: US-014
 branch: proposal/pr54-bigint-staking-fees
@@ -98,6 +127,7 @@ tasks:
   - id: TASK-030-2
     title: "Propose checked fee arithmetic and replay safeguards"
     status: complete
+    scope_note: "Historical work in 814aa002f. Removed from the current proposal on 2026-10-26."
     claimed_by: codex-session-01a16578
     acceptance:
       - "Fee boundaries, direct/API admission, proposal selection, and forged replay metadata tests pass."
@@ -116,6 +146,34 @@ tasks:
       - "Opus reviews the proposal and confirmed defects are resolved."
       - "Validation and compatibility limits are recorded."
       - "One commit is pushed on the requested new branch without deployment."
+  - id: TASK-030-5
+    title: "Deploy the proposal image and test the economic pipeline"
+    status: complete
+    claimed_by: codex-20261025-economic
+    acceptance:
+      - "The isolated VPS network runs the image from commit 814aa002f."
+      - "Economic tests use exact BigInt amounts and record all validation limits."
+      - "Existing node networks and bridge services remain intact."
+    authorization: "The user requested deployment and full economic pipeline tests on 2026-10-25."
+    protocol_decision: "Keep protocol version 1 and use fresh isolated state."
+  - id: TASK-030-6
+    title: "Find the cause of the native outbound endpoint stall"
+    status: complete
+    claimed_by: codex-20261025-root-cause
+    claimed_at: 2026-10-25T16:11:19Z
+    acceptance:
+      - "A controlled reproducer identifies the first failed step and the cause."
+      - "The exact node image and protocol version remain unchanged."
+      - "Original failed contracts and unrelated services remain intact."
+  - id: TASK-030-7
+    title: "Check current dev for the confirmed system-reply peek defect"
+    status: complete
+    claimed_by: codex-20261025-dev-check
+    claimed_at: 2026-10-25T16:36:26Z
+    acceptance:
+      - "Fetch origin/dev and inspect the system-reply and ordinary peek paths."
+      - "Record the checked commit and source comparison."
+
 ```
 
 ---

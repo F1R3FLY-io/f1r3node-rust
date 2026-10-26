@@ -1057,12 +1057,8 @@ pub struct ProcessedDeploy {
 }
 
 impl ProcessedDeploy {
-    pub fn refund_amount(&self) -> Result<i64, String> {
-        self.deploy.data.total_phlo_charge()?;
-        let remaining = (self.deploy.data.phlo_limit as u64).saturating_sub(self.cost.cost);
-        (remaining as i64)
-            .checked_mul(self.deploy.data.phlo_price)
-            .ok_or_else(|| "Deploy refund exceeds the signed 64-bit fee range".to_string())
+    pub fn refund_amount(&self) -> i64 {
+        (self.deploy.data.phlo_limit - self.cost.cost as i64).max(0) * self.deploy.data.phlo_price
     }
 
     pub fn empty(deploy: Signed<DeployData>) -> Self {
@@ -1328,17 +1324,7 @@ impl ToMessage for DeployData {
 }
 
 impl DeployData {
-    pub fn total_phlo_charge(&self) -> Result<i64, String> {
-        if self.phlo_limit <= 0 {
-            return Err("Deploy phloLimit must be positive".to_string());
-        }
-        if self.phlo_price < 0 {
-            return Err("Deploy phloPrice must be nonnegative".to_string());
-        }
-        self.phlo_limit
-            .checked_mul(self.phlo_price)
-            .ok_or_else(|| "Deploy precharge exceeds the signed 64-bit fee range".to_string())
-    }
+    pub fn total_phlo_charge(&self) -> i64 { self.phlo_limit * self.phlo_price }
 
     /// Returns true if this deploy has a time-based expiration set
     pub fn has_expiration(&self) -> bool {
@@ -2068,51 +2054,6 @@ mod tests {
     }
 
     #[test]
-    fn fee_arithmetic_rejects_invalid_metadata_and_overflow() {
-        let mut deploy = signed_deploy().data;
-        for (limit, price, expected) in [
-            (i64::MAX, 1, Some(i64::MAX)),
-            (i64::MAX / 2, 2, Some(i64::MAX - 1)),
-            (1, 0, Some(0)),
-            (5_000_000_000, 10_000_000_000, None),
-            (i64::MAX, 2, None),
-            (0, 1, None),
-            (-1, 1, None),
-            (1, -1, None),
-            (-1, -1, None),
-        ] {
-            deploy.phlo_limit = limit;
-            deploy.phlo_price = price;
-            assert_eq!(
-                deploy.total_phlo_charge().ok(),
-                expected,
-                "limit={limit}, price={price}"
-            );
-        }
-    }
-
-    #[test]
-    fn refund_arithmetic_never_narrows_unsigned_cost() {
-        let mut processed = ProcessedDeploy::empty(signed_deploy());
-        processed.deploy.data.phlo_limit = i64::MAX;
-        processed.deploy.data.phlo_price = 1;
-        for (cost, expected) in [
-            (0, i64::MAX),
-            (1, i64::MAX - 1),
-            (i64::MAX as u64, 0),
-            (i64::MAX as u64 + 1, 0),
-            (u64::MAX, 0),
-        ] {
-            processed.cost.cost = cost;
-            assert_eq!(processed.refund_amount().unwrap(), expected);
-        }
-        processed.deploy.data.phlo_price = 2;
-        assert!(processed.refund_amount().is_err());
-        processed.deploy.data.phlo_limit = -1;
-        assert!(processed.refund_amount().is_err());
-    }
-
-    #[test]
     fn rejected_deploy_decodes_legacy_wire_format() {
         let legacy = [0x0a, 0x03, b's', b'i', b'g'];
         let decoded = RejectedDeployProto::decode(legacy.as_slice()).unwrap();
@@ -2334,7 +2275,7 @@ mod tests {
         );
 
         let expected_refund = (deploy.data.phlo_limit - 100).max(0) * deploy.data.phlo_price;
-        assert_eq!(processed.refund_amount().unwrap(), expected_refund);
+        assert_eq!(processed.refund_amount(), expected_refund);
 
         let info = processed.clone().to_deploy_info();
         assert_eq!(info.term, deploy.data.term);
@@ -2438,7 +2379,7 @@ mod tests {
             expiration_timestamp: None,
             parameters: Vec::new(),
         };
-        assert_eq!(deploy.total_phlo_charge().unwrap(), 77);
+        assert_eq!(deploy.total_phlo_charge(), 77);
         assert!(!deploy.has_expiration());
         assert!(!deploy.is_expired_at(i64::MAX));
 

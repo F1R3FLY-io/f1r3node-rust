@@ -52,7 +52,6 @@ pub const UNLIMITED_PARENTS: i32 = -1;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
     ParsingError(String),
-    InvalidCost(String),
     MissingUser,
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
@@ -75,7 +74,6 @@ impl DeployError {
 impl Display for DeployError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DeployError::InvalidCost(details) => write!(f, "Invalid deploy cost: {}", details),
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
             DeployError::UnknownSignatureAlgorithm(alg) => {

@@ -200,7 +200,7 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
 
     let deploy_result = &replay.deploy_report_result[0];
     let deploy = &deploy_result.processed_deploy.deploy;
-    let expected_precharge = deploy.data.total_phlo_charge().unwrap();
+    let expected_precharge = deploy.data.total_phlo_charge();
     assert_eq!(
         expected_precharge,
         PHLO_LIMIT * PHLO_PRICE,
@@ -291,7 +291,7 @@ async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
             i
         );
         assert_eq!(
-            processed.deploy.data.total_phlo_charge().unwrap(),
+            processed.deploy.data.total_phlo_charge(),
             0,
             "genesis deploy {} must have zero precharge amount",
             i

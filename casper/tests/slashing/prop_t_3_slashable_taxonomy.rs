@@ -3,12 +3,23 @@
 // `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
-// Regression tests for the production slashable taxonomy.
+// Property-based test for T-3 (slashable taxonomy correctness).
 //
-// The historical T-3 formal models use a broader slashable set. These tests
-// check the current Rust predicate directly. Only equivocation verdicts
-// authorize slashing. InvalidDeployCost is an admission rejection and must
-// not authorize a penalty.
+// Theorem: T-3 (`slashable_post_fix_extends_pre_fix`,
+// formal/rocq/slashing/theories/InvalidBlock.v:151).
+// Reference: docs/casper/theory/slashing/slashing-specification.md §4
+// (Theorem 4.3).
+//
+// Property: the post-fix slashable set is exactly the 18-element set
+// listed in spec §4 — the 17 pre-fix slashable variants plus
+// `IgnorableEquivocation`. The 8 remaining variants (InvalidFormat,
+// InvalidSignature, InvalidSender, InvalidVersion, InvalidTimestamp,
+// InvalidRejectedDeploy, NotOfInterest, LowDeployCost) are not
+// slashable.
+//
+// This test exercises the *production* `InvalidBlock::is_slashable`
+// method directly (not via the harness's projected Status), proving
+// the source-of-truth taxonomy matches the design's normative table.
 
 use casper::rust::block_status::InvalidBlock;
 
@@ -65,7 +76,7 @@ fn t_3_slashable_set_is_the_equivocation_class() {
 }
 
 #[test]
-fn t_3_non_slashable_admission_set_has_9_elements() {
+fn t_3_non_slashable_set_is_8_elements() {
     let non_slashable = vec![
         InvalidBlock::InvalidFormat,
         InvalidBlock::InvalidSignature,
@@ -75,13 +86,8 @@ fn t_3_non_slashable_admission_set_has_9_elements() {
         InvalidBlock::InvalidRejectedDeploy,
         InvalidBlock::NotOfInterest,
         InvalidBlock::LowDeployCost,
-        InvalidBlock::InvalidDeployCost,
     ];
-    assert_eq!(
-        non_slashable.len(),
-        9,
-        "non-slashable admission set has 9 variants"
-    );
+    assert_eq!(non_slashable.len(), 8, "non-slashable set has 8 variants");
     for v in &non_slashable {
         assert!(
             !v.is_slashable(),

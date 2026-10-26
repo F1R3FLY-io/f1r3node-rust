@@ -243,15 +243,6 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
-    pub fn validate_bond_limits(&self) -> Result<(), String> {
-        if self.bond_minimum < BigInt::from(1) || self.bond_maximum < self.bond_minimum {
-            return Err(
-                "bond-minimum must be at least 1 and no greater than bond-maximum".to_string(),
-            );
-        }
-        Ok(())
-    }
-
     /// Validates native-token-* fields. Called during config load so a
     /// misconfigured node fails startup loudly rather than baking bad
     /// values into genesis or serving misleading metadata via `/api/status`.

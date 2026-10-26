@@ -1919,18 +1919,6 @@ impl Validate {
         }
     }
 
-    pub fn deploy_costs(b: &BlockMessage) -> ValidBlockProcessing {
-        if b.body.deploys.iter().all(|deploy| {
-            deploy.deploy.data.total_phlo_charge().is_ok()
-                && (deploy.system_deploy_error.is_none()
-                    || (deploy.is_failed && deploy.cost.cost == 0))
-        }) {
-            Either::Right(ValidBlock::Valid)
-        } else {
-            Either::Left(BlockError::Invalid(InvalidBlock::InvalidDeployCost))
-        }
-    }
-
     /// All of deploys must have greater or equal phloPrice than minPhloPrice
     pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
         if b.body
@@ -2104,79 +2092,5 @@ mod merge_recovery_validation_tests {
             Validate::neglected_invalid_block(&block, &mut snapshot),
             Either::Right(ValidBlock::Valid)
         ));
-    }
-}
-
-#[cfg(test)]
-mod deploy_cost_tests {
-    use models::rust::block_implicits::get_random_block_default;
-    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
-
-    use super::*;
-
-    #[test]
-    fn failed_precharge_requires_zero_cost_and_failed_status() {
-        let deploy = crate::rust::util::construct_deploy::source_deploy(
-            "Nil".to_string(),
-            1,
-            Some(1),
-            Some(1),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let mut block = get_random_block_default();
-        let mut processed = ProcessedDeploy::empty(deploy);
-        processed.system_deploy_error = Some("payment failed".to_string());
-        for (failed, cost, valid) in [
-            (true, 0, true),
-            (false, 0, false),
-            (true, 1, false),
-            (true, u64::MAX, false),
-        ] {
-            processed.is_failed = failed;
-            processed.cost.cost = cost;
-            block.body.deploys = vec![processed.clone()];
-            assert_eq!(
-                matches!(Validate::deploy_costs(&block), Either::Right(_)),
-                valid
-            );
-        }
-    }
-
-    #[test]
-    fn invalid_fee_metadata_has_a_specific_block_verdict() {
-        for (limit, price, valid) in [
-            (i64::MAX, 1, true),
-            (1, 0, true),
-            (i64::MAX, 2, false),
-            (5_000_000_000, 10_000_000_000, false),
-            (0, 1, false),
-            (-1, 1, false),
-            (1, -1, false),
-        ] {
-            let deploy = crate::rust::util::construct_deploy::source_deploy(
-                "Nil".to_string(),
-                1,
-                Some(limit),
-                Some(price),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            let mut block = get_random_block_default();
-            block.body.deploys = vec![ProcessedDeploy::empty(deploy)];
-            let result = Validate::deploy_costs(&block);
-            if valid {
-                assert_eq!(result, Either::Right(ValidBlock::Valid));
-            } else {
-                assert_eq!(
-                    result,
-                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidDeployCost))
-                );
-            }
-        }
     }
 }

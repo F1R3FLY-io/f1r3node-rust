@@ -517,7 +517,7 @@ async fn time_replay_one_deploy(
     // (BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC).
     let precharge_start = Instant::now();
     let mut precharge = PreChargeDeploy {
-        charge_amount: processed_deploy.deploy.data.total_phlo_charge().unwrap(),
+        charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
         pk: processed_deploy.deploy.pk.clone(),
         rand: system_deploy_util::generate_pre_charge_deploy_random_seed(&processed_deploy.deploy),
     };
@@ -540,7 +540,7 @@ async fn time_replay_one_deploy(
     // Refund — matches BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC.
     let refund_start = Instant::now();
     let mut refund = RefundDeploy {
-        refund_amount: processed_deploy.refund_amount().unwrap(),
+        refund_amount: processed_deploy.refund_amount(),
         rand: system_deploy_util::generate_refund_deploy_random_seed(&processed_deploy.deploy),
     };
     let (_, mut refund_eval) = replay_ops

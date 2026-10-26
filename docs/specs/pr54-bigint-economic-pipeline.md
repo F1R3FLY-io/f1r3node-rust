@@ -18,14 +18,14 @@
 - The authority-finality harness parses stake strings without a fixed integer limit and rejects malformed or mismatched witnesses.
 - Tests include a 100 ASI amount at 18 decimals and invalid negative amounts.
 
-## Fees
+## Preserved policy
 
-- Fee metadata requires a positive limit and a nonnegative price. Existing minimum-price policy still applies.
-- A precharge must fit the existing nonnegative signed 64-bit fee range.
-- Invalid metadata fails at admission, execution, and replay.
-- Refunds equal the remaining allowed gas multiplied by price, using checked operations.
-- Costs above the gas limit yield zero refund without signed narrowing.
-- Tests cover the exact boundary, overflow, negative metadata, and costs above `i64::MAX`.
+- The default bond minimum remains 1 and maximum remains 9223372036854775807.
+- Bond limits use BigInt without changing their configured values.
+- Explicit test configuration can supply values above the signed 64-bit range.
+- Fee arithmetic, admission, and failed-precharge replay behavior remain as in PR #54.
+- The separate fee-hardening proposal is outside this scope.
+- The system-reply peek fix remains a required pipeline dependency.
 
 ## Upgrade and replay validation
 
@@ -34,5 +34,4 @@
 - Tests use fresh local state. They do not establish compatibility with an existing or mixed-version network.
 - The production LMDB mapping registers the metadata schema store.
 - Startup checks the schema before legacy LFB migration can decode or change metadata.
-- Failed precharges require `is_failed = true` and `cost = 0` in block validation and replay.
-- Regression tests exercise production LMDB restart, peer replay with large stakes, and forged precharge metadata.
+- Regression tests exercise production LMDB restart, peer replay with large stakes, and system-reply peek behavior.

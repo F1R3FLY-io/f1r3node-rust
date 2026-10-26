@@ -983,8 +983,7 @@ async fn prepare_user_deploys_with_policy(
     let valid: HashSet<Signed<DeployData>> = unfinalized
         .iter()
         .filter(|deploy| {
-            deploy.data.total_phlo_charge().is_ok()
-                && not_future_deploy(block_number, &deploy.data)
+            not_future_deploy(block_number, &deploy.data)
                 && not_expired_deploy(block_expiry_bound(deploy), &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })

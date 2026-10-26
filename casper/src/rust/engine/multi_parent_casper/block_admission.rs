@@ -76,9 +76,6 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
-    if let Err(error) = deploy.data.total_phlo_charge() {
-        return Ok(Either::Left(DeployError::InvalidCost(error)));
-    }
     let deploy_id = deploy.sig.to_vec();
     // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
     if deploy_is_known(this, &deploy_id)? {

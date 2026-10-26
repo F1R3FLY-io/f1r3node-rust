@@ -637,10 +637,6 @@ impl BlockAPI {
         // Return early if validation fails
         validation_result.map_err(|e| eyre::Report::new(e))?;
 
-        d.data
-            .total_phlo_charge()
-            .map_err(|message| eyre::Report::new(DeployValidationError { message }))?;
-
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
 

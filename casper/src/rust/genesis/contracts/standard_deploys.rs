@@ -296,7 +296,6 @@ pub fn token_metadata(
 }
 
 pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
-    assert!(pos.minimum_bond >= num_bigint::BigInt::from(1));
     assert!(pos.minimum_bond <= pos.maximum_bond);
     assert!(!pos.validators.is_empty());
 

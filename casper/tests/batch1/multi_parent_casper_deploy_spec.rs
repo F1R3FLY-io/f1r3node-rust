@@ -532,60 +532,6 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     );
 }
 
-#[tokio::test]
-async fn fee_overflow_is_rejected_before_deploy_storage() {
-    let genesis = GenesisBuilder::new()
-        .build_genesis_with_parameters(None)
-        .await
-        .unwrap();
-    let node = TestNode::standalone(genesis.clone()).await.unwrap();
-    for (limit, price, expected) in [
-        (
-            i64::MAX,
-            2,
-            "Deploy precharge exceeds the signed 64-bit fee range",
-        ),
-        (
-            5_000_000_000,
-            10_000_000_000,
-            "Deploy precharge exceeds the signed 64-bit fee range",
-        ),
-        (0, 1, "Deploy phloLimit must be positive"),
-        (-1, 1, "Deploy phloLimit must be positive"),
-        (1, -1, "Deploy phloPrice must be nonnegative"),
-    ] {
-        let deploy = construct_deploy::source_deploy(
-            "Nil".to_string(),
-            1,
-            Some(limit),
-            Some(price),
-            None,
-            None,
-            Some(genesis.genesis_block.shard_id.clone()),
-        )
-        .unwrap();
-        assert!(matches!(
-            node.casper.deploy(deploy.clone()).unwrap(),
-            Either::Left(DeployError::InvalidCost(message)) if message == expected
-        ));
-        assert!(!node
-            .deploy_storage
-            .lock()
-            .contains_sig(&deploy.sig)
-            .unwrap());
-        let api_error = BlockAPI::deploy(
-            &node.engine_cell,
-            deploy,
-            &None,
-            false,
-            &genesis.genesis_block.shard_id,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(api_error.to_string(), expected);
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
     use casper::rust::casper::CASPER_PROTOCOL_VERSION;

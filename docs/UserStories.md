@@ -204,7 +204,7 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 
 ---
 
-#### US-014: Review exact staking amounts and fee safeguards
+#### US-014: Review exact BigInt staking amounts
 
 > As a **node team reviewer**, I want **a concrete BigInt economic pipeline proposal** so that **the team can decide protocol and migration requirements**.
 
@@ -216,7 +216,7 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 
 **Acceptance Criteria:**
 - [x] Demonstrate a strict BigInt predicate and exact staking above the signed 64-bit limit.
-- [x] Demonstrate checked fee arithmetic and failed-precharge replay rejection.
+- [x] Preserve existing bond defaults and fee rules while supporting explicit BigInt test configuration.
 - [x] Preserve protocol version 1 and document the remaining compatibility and activation decisions.
 - [x] Publish the reviewed proposal on a separate branch based directly on PR #54.
 

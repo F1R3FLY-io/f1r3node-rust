@@ -315,24 +315,8 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
-        if processed_deploy.system_deploy_error.is_some() {
-            if !processed_deploy.is_failed {
-                return Err(CasperError::ReplayFailure(
-                    ReplayFailure::replay_status_mismatch(false, true),
-                ));
-            }
-            if processed_deploy.cost.cost != 0 {
-                return Err(CasperError::ReplayFailure(
-                    ReplayFailure::replay_cost_mismatch(processed_deploy.cost.cost, 0),
-                ));
-            }
-        }
         let mut pre_charge_deploy = PreChargeDeploy {
-            charge_amount: processed_deploy
-                .deploy
-                .data
-                .total_phlo_charge()
-                .map_err(CasperError::RuntimeError)?,
+            charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
             pk: processed_deploy.deploy.pk.clone(),
             rand: system_deploy_util::generate_pre_charge_deploy_random_seed(
                 &processed_deploy.deploy,
@@ -389,9 +373,7 @@ impl ReplayRuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "refund-started");
             let refund_start = Instant::now();
             let mut refund_deploy = RefundDeploy {
-                refund_amount: processed_deploy
-                    .refund_amount()
-                    .map_err(CasperError::RuntimeError)?,
+                refund_amount: processed_deploy.refund_amount(),
                 rand: system_deploy_util::generate_refund_deploy_random_seed(
                     &processed_deploy.deploy,
                 ),
