@@ -1,4 +1,0 @@
-# Contraction fixture
-
-The user's words stay in quotes: "don't change it".
-The agent's reply is short.

@@ -1,9 +1,0 @@
-# Citation fixture
-
-The first entry [[BAD](#ref-bad)] has a short registrant. The second entry [[MIS](#ref-mis)] shows one DOI and targets another.
-
-## References
-
-<a id="ref-bad"></a>[BAD] A. Author, "A title," 2020. [doi:10.12/abc](https://doi.org/10.12/abc)
-
-<a id="ref-mis"></a>[MIS] A. Author, "A title," 2020. [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.017)

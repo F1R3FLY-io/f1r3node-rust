@@ -1,3 +1,0 @@
-# Diagram fixture
-
-![Sample diagram: one rectangle.](diagrams/01-sample.svg)

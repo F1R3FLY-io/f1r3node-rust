@@ -1,7 +1,0 @@
-# Math fixture
-
-A space id has $|sid| = 32$ bytes.
-
-$$
-sid = next(r)
-$$

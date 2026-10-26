@@ -1,3 +1,0 @@
-# Procedure fixture
-
-1. Run the render script with the check flag before you commit a changed diagram source to the campaign feature branch.

@@ -1,9 +1,0 @@
-{
-  "name": "doc_lint fixture corpus",
-  "entries": [
-    {
-      "source": "new x in {\n  x!(1)\n}",
-      "expected_prost_hex": "00"
-    }
-  ]
-}

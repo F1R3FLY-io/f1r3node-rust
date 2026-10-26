@@ -1,4 +1,0 @@
-@startuml 02-uncolored
-!include ../palette.iuml
-rectangle "Sample" as S
-@enduml

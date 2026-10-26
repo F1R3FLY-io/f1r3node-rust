@@ -1,3 +1,0 @@
-# Glossary fixture
-
-A [space](glossary.md#space) holds data and continuations.

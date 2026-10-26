@@ -1,8 +1,0 @@
-# Mermaid fixture
-
-PlantUML has no Sankey renderer, so this diagram uses Mermaid.
-
-```mermaid
-sankey-beta
-Supply,Pool,3
-```

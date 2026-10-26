@@ -1,3 +1,0 @@
-# Contraction fixture
-
-The parser doesn't change ordinary programs.

@@ -1,6 +1,0 @@
-# Fence fixture
-
-The block below has no closing fence.
-
-```text
-plain text

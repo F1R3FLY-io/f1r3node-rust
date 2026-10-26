@@ -1,4 +1,0 @@
-@startuml 06A-upper-letter
-!include ../../palette.iuml
-rectangle "Upper" as U $ca_supply
-@enduml

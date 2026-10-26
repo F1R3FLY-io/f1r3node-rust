@@ -1,1 +1,0 @@
-The runner of the inline example: new y in { y!(2) }
