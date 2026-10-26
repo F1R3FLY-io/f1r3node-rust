@@ -115,6 +115,43 @@ fn replay_authority_reset_invalidates_all_prior_context_checkpoints_and_bindings
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn local_authority_never_enters_native_or_replay_execution(
+        funding in 0_i64..1_000_001,
+        epoch in prop::sample::select(execution_epochs().to_vec()),
+    ) {
+        let local = RuntimeBudget::new(Cost::create(funding, "local authority property"));
+        local.enable_standalone_resting_comm().expect("fresh local grant");
+        let available = local.remaining();
+        let signature = local.signature();
+        let deploy = local.deploy_id();
+        prop_assert!(local.reset_for_native_execution(
+            config(funding as u64, [0, 1, 1, 0]).with_event_codec_epoch(epoch),
+        ).is_err());
+        prop_assert!(local.standalone_resting_comm_enabled());
+        prop_assert_eq!(local.native_event_codec_epoch(), None);
+        prop_assert_eq!(local.remaining(), available.clone());
+        prop_assert!(ReplayAuthorityBinding::new(local.clone(), deploy).is_err());
+        prop_assert!(local.standalone_resting_comm_enabled());
+        prop_assert_eq!(local.native_event_codec_epoch(), None);
+        prop_assert_eq!(local.remaining(), available);
+        prop_assert_eq!(local.signature(), signature);
+        prop_assert_eq!(local.deploy_id(), deploy);
+
+        let native = RuntimeBudget::new(Cost::create(funding, "native authority property"));
+        native.reset_for_native_execution(
+            config(funding as u64, [0, 1, 1, 0]).with_event_codec_epoch(epoch),
+        ).expect("fresh native configuration");
+        let available = native.remaining();
+        prop_assert!(native.enable_standalone_resting_comm().is_err());
+        prop_assert!(!native.standalone_resting_comm_enabled());
+        prop_assert_eq!(native.native_event_codec_epoch(), Some(epoch));
+        prop_assert_eq!(native.remaining(), available);
+        prop_assert!(ReplayAuthorityBinding::new(native.clone(), native.deploy_id()).is_ok());
+        prop_assert_eq!(native.native_event_codec_epoch(), Some(epoch));
+    }
+
     #[test]
     fn replay_authority_publication_and_cancellation_preserve_each_purse(
         owners in 1_usize..33,

@@ -207,7 +207,7 @@ pub struct RunOptions {
     pub network_timeout: Option<Duration>,
 
     /// Port used for node discovery based on Kademlia algorithm
-    #[arg(long = "discovery-port", default_value = "40404")]
+    #[arg(long = "discovery-port")]
     pub discovery_port: Option<u16>,
 
     /// Peer discovery interval
@@ -231,7 +231,7 @@ pub struct RunOptions {
     pub discovery_heartbeat_failure_threshold: Option<u32>,
 
     /// gRPC port serving F1r3fly Protocol messages
-    #[arg(short = 'p', long = "protocol-port", default_value = "40400")]
+    #[arg(short = 'p', long = "protocol-port")]
     pub protocol_port: Option<u16>,
 
     /// Maximum message size for gRPC transport server
@@ -267,11 +267,11 @@ pub struct RunOptions {
     pub api_host: Option<String>,
 
     /// Port for external gRPC API
-    #[arg(short = 'e', long = "api-port-grpc-external", default_value = "40401")]
+    #[arg(short = 'e', long = "api-port-grpc-external")]
     pub api_port_grpc_external: Option<u16>,
 
     /// Port for internal gRPC API
-    #[arg(short = 'i', long = "api-port-grpc-internal", default_value = "40402")]
+    #[arg(short = 'i', long = "api-port-grpc-internal")]
     pub api_port_grpc_internal: Option<u16>,
 
     /// Maximum message size for gRPC API server
@@ -279,11 +279,11 @@ pub struct RunOptions {
     pub api_grpc_max_recv_message_size: Option<u32>,
 
     /// Port for HTTP services
-    #[arg(long = "api-port-http", default_value = "40403")]
+    #[arg(long = "api-port-http")]
     pub api_port_http: Option<u16>,
 
     /// Port for admin HTTP services
-    #[arg(short = 'a', long = "api-port-admin-http", default_value = "40405")]
+    #[arg(short = 'a', long = "api-port-admin-http")]
     pub api_port_admin_http: Option<u16>,
 
     /// The max block numbers you can acquire from api

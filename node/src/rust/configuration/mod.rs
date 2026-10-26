@@ -441,6 +441,96 @@ pub mod builder {
 pub use builder::build;
 
 #[cfg(test)]
+mod port_precedence_tests {
+    use clap::Parser;
+    use proptest::prelude::*;
+
+    use super::commandline::ConfigMapper;
+    use super::*;
+
+    const DEFAULTS: [u16; 6] = [40400, 40404, 40401, 40402, 40403, 40405];
+    const FIELDS: [(&str, &str); 6] = [
+        ("protocol-server.port", "--protocol-port"),
+        ("peers-discovery.port", "--discovery-port"),
+        ("api-server.port-grpc-external", "--api-port-grpc-external"),
+        ("api-server.port-grpc-internal", "--api-port-grpc-internal"),
+        ("api-server.port-http", "--api-port-http"),
+        ("api-server.port-admin-http", "--api-port-admin-http"),
+    ];
+
+    fn ports(file: [Option<u16>; 6], cli: [Option<u16>; 6]) -> [u16; 6] {
+        let mut source = String::new();
+        let mut arguments = vec!["node".to_owned(), "run".to_owned()];
+        for (index, (key, flag)) in FIELDS.iter().enumerate() {
+            if let Some(value) = file[index] {
+                source.push_str(&format!("{key} = {value}\n"));
+            }
+            if let Some(value) = cli[index] {
+                arguments.extend([(*flag).to_owned(), value.to_string()]);
+            }
+        }
+        let mut config: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str(&source)
+            .unwrap()
+            .resolve()
+            .unwrap();
+        config.override_config_values(Options::try_parse_from(arguments).unwrap());
+        [
+            config.protocol_server.port,
+            config.peers_discovery.port,
+            config.api_server.port_grpc_external,
+            config.api_server.port_grpc_internal,
+            config.api_server.port_http,
+            config.api_server.port_admin_http,
+        ]
+    }
+
+    #[test]
+    fn absent_port_overrides_keep_embedded_defaults() {
+        assert_eq!(ports([None; 6], [None; 6]), DEFAULTS);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn configured_ports_survive_absent_cli(values in any::<[u16; 6]>()) {
+            prop_assert_eq!(ports(values.map(Some), [None; 6]), values);
+        }
+
+        #[test]
+        fn explicit_cli_ports_override_configuration(
+            file in any::<[u16; 6]>(),
+            cli in any::<[u16; 6]>(),
+        ) {
+            prop_assert_eq!(ports(file.map(Some), cli.map(Some)), cli);
+        }
+
+        #[test]
+        fn mixed_port_sources_match_precedence_and_preserve_other_fields(
+            file in prop::array::uniform6(prop::option::of(any::<u16>())),
+            cli in prop::array::uniform6(prop::option::of(any::<u16>())),
+            changed in 0usize..6,
+            replacement in any::<u16>(),
+        ) {
+            let expected = std::array::from_fn(|index| {
+                cli[index].or(file[index]).unwrap_or(DEFAULTS[index])
+            });
+            let actual = ports(file, cli);
+            prop_assert_eq!(actual, expected);
+            let mut changed_cli = cli;
+            changed_cli[changed] = Some(replacement);
+            let updated = ports(file, changed_cli);
+            for index in 0..6 {
+                prop_assert_eq!(updated[index], if index == changed { replacement } else { actual[index] });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod heartbeat_conf_hocon_tests {
     //! Targeted HOCON deserialization tests for the heartbeat tuning fields.
     //!

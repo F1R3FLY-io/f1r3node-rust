@@ -199,7 +199,10 @@ upper node application, under checked public whole-body preparation. It returns
 owned normalized `Par` plus required fold and guard descriptors to the existing
 prepared-program handoff. It does not introduce a second lowerer or evaluator.
 Failure must leave no artifact or auxiliary state; actual caller imports,
-resolver, options and preparation limits remain explicit inputs.
+resolver, options and preparation size limits remain explicit inputs.
+Preparation has no work budget and no storage-unit budget: DR-131 meters
+only COMMs and stored bytes, and user decision 1 of 2026-10-16 extends that
+rule to F1R3Lang.
 
 The application may depend on the MeTTaIL runtime bridge. Core libraries must
 not reach MeTTaIL or the application through normal or build dependencies.

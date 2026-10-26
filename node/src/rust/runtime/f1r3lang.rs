@@ -13,7 +13,9 @@ use mettail_rholang_runtime::language_install::{
 use mettail_rholang_runtime::rholang_ast::{RholangPreparationPolicy, RholangProgramFrontend};
 use mettail_rholang_runtime::speculation::server::LookaheadEngine;
 use mettail_rholang_runtime::{EmptyFltResolver, LanguageRight, LanguageRights, RuntimePolicy};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+// Disabled by the DR-131 extension to F1R3Lang (user decision 1 of 2026-10-16):
+// F1R3Lang meters only COMMs and stored bytes, so the node sets no host-work limits.
+// use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::frontend::{PreparedProgram, ProgramFrontend};
 use rholang::rust::interpreter::rho_runtime::{
@@ -181,7 +183,9 @@ pub struct F1r3langEvaluation {
     pub(crate) frontend: Arc<dyn ProgramFrontend>,
     pub(crate) max_source_bytes: usize,
     pub(crate) funding: Cost,
-    pub(crate) lookahead_host_work: HostWorkLimits,
+    // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+    // lookahead service has no host-work budget.
+    // pub(crate) lookahead_host_work: HostWorkLimits,
     pub(crate) matcher: SubstrateGuardMatcher,
     pub(crate) lookahead: LookaheadEngine,
 }
@@ -208,13 +212,16 @@ impl F1r3langComposition {
     /// This initial route supports inline modules; registry reads remain unavailable.
     pub fn from_environment() -> Result<Self, String> {
         let read = |name: &str| std::env::var(name).ok();
-        let (preparation, funding, lookahead_work) = host_policy(&read)?;
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+        // host policy has no lookahead host-work limit.
+        // let (preparation, funding, lookahead_work) = host_policy(&read)?;
+        let (preparation, funding) = host_policy(&read)?;
         Self::new(
             Arc::new(EmptyRegistrySnapshot),
             inline_language_install_policy(),
             preparation,
             funding,
-            lookahead_work,
+            // lookahead_work,
         )
     }
 
@@ -224,20 +231,23 @@ impl F1r3langComposition {
         policy: LanguageInstallPolicy,
         preparation: RholangPreparationPolicy,
         funding: i64,
-        lookahead_work: HostWorkLimits,
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1).
+        // lookahead_work: HostWorkLimits,
     ) -> Result<Self, String> {
         if funding <= 0 || funding == i64::MAX {
             return Err("F1R3Lang requires a positive finite host-funded evaluation budget".into());
         }
-        if lookahead_work
-            .into_array()
-            .iter()
-            .any(|limit| limit.get() == 0 || limit.get() == u64::MAX)
-        {
-            return Err(
-                "F1R3Lang requires finite positive standalone lookahead host-work limits".into(),
-            );
-        }
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+        // lookahead service has no host-work limits to check.
+        // if lookahead_work
+        //     .into_array()
+        //     .iter()
+        //     .any(|limit| limit.get() == 0 || limit.get() == u64::MAX)
+        // {
+        //     return Err(
+        //         "F1R3Lang requires finite positive standalone lookahead host-work limits".into(),
+        //     );
+        // }
         let service = Arc::new(LanguageInstallService::new(snapshot, policy));
         let runtime = Arc::new(RholangLanguageRuntime::new(service));
         let mut definitions = language_runtime_definitions(runtime.clone());
@@ -254,7 +264,8 @@ impl F1r3langComposition {
                     Arc::new(EmptyFltResolver),
                 )),
                 funding: Cost::create(funding, "F1R3Lang host evaluation policy"),
-                lookahead_host_work: lookahead_work,
+                // Disabled by the DR-131 extension to F1R3Lang (user decision 1).
+                // lookahead_host_work: lookahead_work,
                 matcher,
                 lookahead,
             },
@@ -273,9 +284,12 @@ fn positive(name: &str, read: &impl Fn(&str) -> Option<String>) -> Result<u64, S
     Ok(value)
 }
 
+// Disabled by the DR-131 extension to F1R3Lang (user decision 1): the policy
+// no longer returns host-work limits. The former return type was
+// `Result<(RholangPreparationPolicy, i64, HostWorkLimits), String>`.
 fn host_policy(
     read: &impl Fn(&str) -> Option<String>,
-) -> Result<(RholangPreparationPolicy, i64, HostWorkLimits), String> {
+) -> Result<(RholangPreparationPolicy, i64), String> {
     let size = |name| {
         usize::try_from(positive(name, read)?)
             .map_err(|_| format!("Host policy {name} exceeds this platform's size limit"))
@@ -285,22 +299,26 @@ fn host_policy(
     if funding == i64::MAX {
         return Err("F1R3LANG_EVAL_PHLO may not select the unlimited sentinel".into());
     }
-    let lookahead_work = positive("F1R3LANG_LOOKAHEAD_HOST_WORK", read)?;
-    if lookahead_work == u64::MAX {
-        return Err("F1R3LANG_LOOKAHEAD_HOST_WORK may not select the unlimited sentinel".into());
-    }
+    // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+    // lookahead service has no host-work budget.
+    // let lookahead_work = positive("F1R3LANG_LOOKAHEAD_HOST_WORK", read)?;
+    // if lookahead_work == u64::MAX {
+    //     return Err("F1R3LANG_LOOKAHEAD_HOST_WORK may not select the unlimited sentinel".into());
+    // }
     Ok((
         RholangPreparationPolicy {
             max_source_bytes: size("F1R3LANG_MAX_SOURCE_BYTES")?,
             max_import_entries: size("F1R3LANG_MAX_IMPORT_ENTRIES")?,
             max_import_nodes: size("F1R3LANG_MAX_IMPORT_NODES")?,
             max_import_payload_bytes: size("F1R3LANG_MAX_IMPORT_BYTES")?,
-            max_preparation_work: positive("F1R3LANG_PREPARATION_WORK", read)?,
-            max_preparation_units: size("F1R3LANG_PREPARATION_UNITS")?,
+            // Disabled by the DR-131 extension to F1R3Lang (user decision 1):
+            // checked preparation has no work budget and no storage-unit budget.
+            // max_preparation_work: positive("F1R3LANG_PREPARATION_WORK", read)?,
+            // max_preparation_units: size("F1R3LANG_PREPARATION_UNITS")?,
             lowering: LoweringOptions::NO_DISCHARGE,
         },
         funding,
-        HostWorkLimits::uniform(HostWorkLimit::new(lookahead_work)),
+        // HostWorkLimits::uniform(HostWorkLimit::new(lookahead_work)),
     ))
 }
 
@@ -445,41 +463,74 @@ mod tests {
 
     #[test]
     fn host_funding_and_preparation_limits_are_retained_exactly() {
-        let (policy, funding, lookahead_work) = host_policy(&|_| Some("1234".into())).unwrap();
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+        // host policy returns no lookahead host-work limits.
+        // let (policy, funding, lookahead_work) = host_policy(&|_| Some("1234".into())).unwrap();
+        let (policy, funding) =
+            host_policy(&|_| Some("1234".into())).expect("complete host policy");
         assert_eq!(funding, 1234);
         assert_eq!(policy.max_source_bytes, 1234);
-        assert_eq!(policy.max_preparation_work, 1234);
-        assert_eq!(policy.max_preparation_units, 1234);
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1): checked
+        // preparation has no work budget and no storage-unit budget, and the
+        // lookahead service has no host-work budget.
+        // assert_eq!(policy.max_preparation_work, 1234);
+        // assert_eq!(policy.max_preparation_units, 1234);
         assert_eq!(policy.lowering, LoweringOptions::NO_DISCHARGE);
-        assert_eq!(
-            lookahead_work
-                .get(models::rust::host_work::HostWorkDimension::SearchCandidates)
-                .get(),
-            1234
-        );
+        // assert_eq!(
+        //     lookahead_work
+        //         .get(models::rust::host_work::HostWorkDimension::SearchCandidates)
+        //         .get(),
+        //     1234
+        // );
     }
 
     #[test]
-    fn standalone_lookahead_host_work_is_required_finite_and_independent() {
-        for invalid in ["0", "-1", "18446744073709551615"] {
-            assert!(host_policy(&|name| {
-                if name == "F1R3LANG_LOOKAHEAD_HOST_WORK" {
-                    Some(invalid.into())
-                } else {
-                    Some("1234".into())
-                }
-            })
-            .is_err());
-        }
-        assert!(host_policy(&|name| {
-            (name != "F1R3LANG_LOOKAHEAD_HOST_WORK").then(|| "1234".into())
-        })
-        .is_err());
+    fn host_policy_requires_no_host_work_budget() {
+        const REMOVED: [&str; 3] = [
+            "F1R3LANG_LOOKAHEAD_HOST_WORK",
+            "F1R3LANG_PREPARATION_WORK",
+            "F1R3LANG_PREPARATION_UNITS",
+        ];
+        let (policy, funding) =
+            host_policy(&|name| (!REMOVED.contains(&name)).then(|| "1234".into()))
+                .expect("the host policy reads no host-work budget");
+        assert_eq!(funding, 1234);
+        assert_eq!(policy.max_source_bytes, 1234);
     }
+
+    // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+    // lookahead service has no host-work budget, so the host policy neither
+    // requires nor checks F1R3LANG_LOOKAHEAD_HOST_WORK.
+    // `host_policy_requires_no_host_work_budget` pins the new rule.
+    // #[test]
+    // fn standalone_lookahead_host_work_is_required_finite_and_independent() {
+    //     for invalid in ["0", "-1", "18446744073709551615"] {
+    //         assert!(host_policy(&|name| {
+    //             if name == "F1R3LANG_LOOKAHEAD_HOST_WORK" {
+    //                 Some(invalid.into())
+    //             } else {
+    //                 Some("1234".into())
+    //             }
+    //         })
+    //         .is_err());
+    //     }
+    //     assert!(host_policy(&|name| {
+    //         (name != "F1R3LANG_LOOKAHEAD_HOST_WORK").then(|| "1234".into())
+    //     })
+    //     .is_err());
+    // }
 
     #[test]
     fn provider_definitions_pass_real_node_registration_checks() {
-        let (policy, funding, lookahead_work) = host_policy(&|_| Some("1234".into())).unwrap();
+        use mettail_rholang_runtime::lookahead::{
+            spec_channel_par, SPEC_ALL_CHANNEL, SPEC_ALL_V2_CHANNEL, SPEC_ALL_V3_CHANNEL,
+            SPEC_N_CHANNEL, SPEC_N_V2_CHANNEL, SPEC_N_V3_CHANNEL,
+        };
+
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1).
+        // let (policy, funding, lookahead_work) = host_policy(&|_| Some("1234".into())).unwrap();
+        let (policy, funding) =
+            host_policy(&|_| Some("1234".into())).expect("complete host policy");
         let composition = F1r3langComposition::new(
             Arc::new(EmptyRegistrySnapshot),
             LanguageInstallPolicy::new(
@@ -489,19 +540,34 @@ mod tests {
             ),
             policy,
             funding,
-            lookahead_work,
+            // lookahead_work,
         )
-        .unwrap();
+        .expect("composition accepts the complete host policy");
         assert!(!composition.definitions.is_empty());
         validate_extra_system_processes(&composition.definitions).unwrap();
-        assert_eq!(
-            composition
-                .definitions
+        let expected = [
+            ("mtl:spec:all", SPEC_ALL_CHANNEL, 2),
+            ("mtl:spec:n", SPEC_N_CHANNEL, 3),
+            ("mtl:spec:all:v2", SPEC_ALL_V2_CHANNEL, 2),
+            ("mtl:spec:n:v2", SPEC_N_V2_CHANNEL, 3),
+            ("mtl:spec:all:v3", SPEC_ALL_V3_CHANNEL, 2),
+            ("mtl:spec:n:v3", SPEC_N_V3_CHANNEL, 3),
+        ];
+        let registered = composition
+            .definitions
+            .iter()
+            .filter(|definition| definition.urn.starts_with("mtl:spec:"))
+            .collect::<Vec<_>>();
+        assert_eq!(registered.len(), expected.len());
+        for (urn, channel, arity) in expected {
+            let definition = registered
                 .iter()
-                .filter(|definition| definition.urn.starts_with("mtl:spec:"))
-                .count(),
-            4
-        );
+                .find(|definition| definition.urn == urn)
+                .expect("required lookahead registration");
+            assert_eq!(definition.fixed_channel, spec_channel_par(channel), "{urn}");
+            assert_eq!(definition.arity, arity, "{urn}");
+            assert!(definition.remainder.is_none(), "{urn}");
+        }
         assert!(!composition.evaluation.lookahead.host_bound());
         assert_eq!(composition.evaluation.funding.value, funding);
     }
@@ -510,15 +576,18 @@ mod tests {
     fn trusted_node_frontend_preserves_cost_name_and_hash_principals() {
         use models::rhoapi::cost_signature::Value as CostValue;
 
-        let (policy, funding, lookahead_work) = host_policy(&|_| Some("1000000".into())).unwrap();
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1).
+        // let (policy, funding, lookahead_work) = host_policy(&|_| Some("1000000".into())).unwrap();
+        let (policy, funding) =
+            host_policy(&|_| Some("1000000".into())).expect("complete host policy");
         let composition = F1r3langComposition::new(
             Arc::new(EmptyRegistrySnapshot),
             inline_language_install_policy(),
             policy,
             funding,
-            lookahead_work,
+            // lookahead_work,
         )
-        .unwrap();
+        .expect("composition accepts the complete host policy");
         let prepare = |source| {
             composition
                 .evaluation

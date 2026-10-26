@@ -200,6 +200,7 @@ mod prepared_route_tests {
     use mettail_rholang_runtime::guard_par_substrate::SubstrateGuardMatcher;
     use mettail_rholang_runtime::speculation::server::LookaheadEngine;
     use rholang::rust::interpreter::accounting::has_cost::HasCost;
+    use rholang::rust::interpreter::accounting::BillableKind;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::frontend::{
         PreparationError, PreparedProgram, ProgramFrontend, PREPARED_PROGRAM_ABI_V1,
@@ -251,19 +252,22 @@ mod prepared_route_tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let runtime = runtime(matcher.clone()).await;
         let lookahead = LookaheadEngine::new();
-        let lookahead_host_work = models::rust::host_work::HostWorkLimits::uniform(
-            models::rust::host_work::HostWorkLimit::new(10_000),
-        );
-        assert!(lookahead
-            .bind_standalone_host(runtime.cost().clone(), lookahead_host_work.clone())
-            .expect("finite test host-work policy"));
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+        // lookahead service has no host-work budget.
+        // let lookahead_host_work = models::rust::host_work::HostWorkLimits::uniform(
+        //     models::rust::host_work::HostWorkLimit::new(10_000),
+        // );
+        // assert!(lookahead
+        //     .bind_standalone_host(runtime.cost().clone(), lookahead_host_work.clone())
+        //     .expect("finite test host-work policy"));
+        assert!(lookahead.bind_standalone_host(runtime.cost().clone()));
         let service = ReplGrpcServiceImpl::with_f1r3lang(
             runtime,
             crate::rust::runtime::f1r3lang::F1r3langEvaluation {
                 frontend: Arc::new(CountingFrontend(calls.clone())),
                 max_source_bytes: 4096,
                 funding: Cost::create(10_000, "test host grant"),
-                lookahead_host_work,
+                // lookahead_host_work,
                 matcher,
                 lookahead,
             },
@@ -315,14 +319,17 @@ mod prepared_route_tests {
                 max_import_entries: 16,
                 max_import_nodes: 4096,
                 max_import_payload_bytes: 65_536,
-                max_preparation_work: 10_000_000,
-                max_preparation_units: 10_000_000,
+                // Disabled by the DR-131 extension to F1R3Lang (user decision 1):
+                // checked preparation has no work budget and no storage-unit budget.
+                // max_preparation_work: 10_000_000,
+                // max_preparation_units: 10_000_000,
                 lowering: LoweringOptions::NO_DISCHARGE,
             },
             funding,
-            models::rust::host_work::HostWorkLimits::uniform(
-                models::rust::host_work::HostWorkLimit::new(10_000_000),
-            ),
+            // Disabled by the DR-131 extension to F1R3Lang (user decision 1).
+            // models::rust::host_work::HostWorkLimits::uniform(
+            //     models::rust::host_work::HostWorkLimit::new(10_000_000),
+            // ),
         )
         .unwrap();
         let mut stores = InMemoryStoreManager::new();
@@ -337,14 +344,14 @@ mod prepared_route_tests {
         )
         .await
         .expect("public-route test runtime initializes");
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+        // binding takes no host-work limits. The former call passed
+        // `composition.evaluation.lookahead_host_work.clone()` and then
+        // `.expect("finite test host-work policy")`.
         assert!(composition
             .evaluation
             .lookahead
-            .bind_standalone_host(
-                runtime.cost().clone(),
-                composition.evaluation.lookahead_host_work.clone(),
-            )
-            .expect("finite test host-work policy"));
+            .bind_standalone_host(runtime.cost().clone()));
         ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation)
     }
 
@@ -374,19 +381,73 @@ mod prepared_route_tests {
             .collect()
     }
 
+    async fn successful_public_send_costs(
+        service: &ReplGrpcServiceImpl,
+        source: &str,
+        expected: &[(&str, i64)],
+    ) -> (i64, i64) {
+        let response = public_eval(service, source).await;
+        assert!(!response.output.contains("Error"), "{}", response.output);
+        for (name, value) in expected {
+            assert_eq!(public_values(service, name).await, vec![
+                models::rust::utils::new_gint_par(*value, Vec::new(), false),
+            ]);
+        }
+        let runtime = service.runtime.lock().await;
+        let events = runtime.get_cost_event_log();
+        let mut introductions = 0;
+        let mut cost = 0_u64;
+        let mut largest = 0_u64;
+        for event in events {
+            match event.kind {
+                BillableKind::RSpaceProduce => {
+                    assert!(event.weight > 0);
+                    introductions += 1;
+                    cost = cost.checked_add(event.weight).unwrap();
+                    largest = largest.max(event.weight);
+                }
+                BillableKind::Comm | BillableKind::RSpaceConsume => {
+                    panic!("unexpected interaction in unmatched-send control: {event:?}");
+                }
+                BillableKind::Reduction
+                | BillableKind::Primitive(_)
+                | BillableKind::Substitution => {}
+            }
+        }
+        assert_eq!(introductions, expected.len());
+        let cost = i64::try_from(cost).unwrap();
+        assert_eq!(runtime.cost.total_cost().value, cost);
+        assert!(runtime.cost.last_oop_event().is_none());
+        (cost, i64::try_from(largest).unwrap())
+    }
+
     #[tokio::test]
     async fn finite_public_funding_exhaustion_rolls_back_and_next_request_is_clean() {
-        let service = finite_public_service(1).await;
-        let seeded = public_eval(&service, "@\"public.keep\"!(7)").await;
+        let seed = "@\"public.keep\"!(7)";
+        let next = "@\"public.next\"!(9)";
+        let partial =
+            "@\"public.partial.a\"!(1) | @\"public.partial.b\"!(2) | @\"public.partial.c\"!(3)";
+        let calibration = finite_public_service(10_000_000).await;
+        let (seed_cost, _) =
+            successful_public_send_costs(&calibration, seed, &[("public.keep", 7)]).await;
+        let (next_cost, _) =
+            successful_public_send_costs(&calibration, next, &[("public.next", 9)]).await;
+        let (partial_cost, largest_introduction) =
+            successful_public_send_costs(&calibration, partial, &[
+                ("public.partial.a", 1),
+                ("public.partial.b", 2),
+                ("public.partial.c", 3),
+            ])
+            .await;
+        let funding = seed_cost.max(next_cost).max(largest_introduction);
+        assert!(0 < funding && funding < partial_cost);
+        let service = finite_public_service(funding).await;
+        let seeded = public_eval(&service, seed).await;
         assert!(!seeded.output.contains("Error"), "{}", seeded.output);
         let expected = vec![models::rust::utils::new_gint_par(7, Vec::new(), false)];
         assert_eq!(public_values(&service, "public.keep").await, expected);
 
-        let refused = public_eval(
-            &service,
-            "@\"public.partial.a\"!(1) | @\"public.partial.b\"!(2) | @\"public.partial.c\"!(3)",
-        )
-        .await;
+        let refused = public_eval(&service, partial).await;
         assert!(
             refused.output.contains("Errors received during evaluation"),
             "{}",
@@ -401,8 +462,12 @@ mod prepared_route_tests {
         );
         {
             let runtime = service.runtime.lock().await;
-            assert_eq!(runtime.cost.total_cost().value, 1);
+            assert_eq!(runtime.cost.total_cost().value, funding);
             assert!(runtime.cost.last_oop_event().is_some());
+            assert!(runtime
+                .get_cost_event_log()
+                .iter()
+                .any(|event| event.kind == BillableKind::RSpaceProduce));
         }
         assert_eq!(public_values(&service, "public.keep").await, expected);
         for name in ["public.partial.a", "public.partial.b", "public.partial.c"] {
@@ -418,23 +483,33 @@ mod prepared_route_tests {
             let runtime = service.runtime.lock().await;
             assert_eq!(runtime.cost.total_cost().value, 0);
             assert!(runtime.cost.last_oop_event().is_none());
+            assert!(runtime.get_cost_event_log().is_empty());
+            assert_eq!(runtime.cost.remaining().value, funding);
         }
-        let valid = public_eval(&service, "@\"public.next\"!(9)").await;
+        let valid = public_eval(&service, next).await;
         assert!(!valid.output.contains("Error"), "{}", valid.output);
         assert_eq!(public_values(&service, "public.next").await, vec![
             models::rust::utils::new_gint_par(9, Vec::new(), false),
         ]);
         assert_eq!(public_values(&service, "public.keep").await, expected);
         let runtime = service.runtime.lock().await;
-        assert_eq!(runtime.cost.total_cost().value, 1);
+        assert_eq!(runtime.cost.total_cost().value, next_cost);
         assert!(runtime.cost.last_oop_event().is_none());
-        assert_eq!(service.f1r3lang.as_ref().unwrap().funding.value, 1);
+        assert_eq!(service.f1r3lang.as_ref().unwrap().funding.value, funding);
     }
 
     #[tokio::test]
     async fn public_preparation_refusal_preserves_storage_and_next_request_runs() {
-        let service = finite_public_service(1).await;
-        let seeded = public_eval(&service, "@\"public.before\"!(11)").await;
+        let before = "@\"public.before\"!(11)";
+        let after = "@\"public.after\"!(12)";
+        let calibration = finite_public_service(10_000_000).await;
+        let (seed_cost, _) =
+            successful_public_send_costs(&calibration, before, &[("public.before", 11)]).await;
+        let (after_cost, _) =
+            successful_public_send_costs(&calibration, after, &[("public.after", 12)]).await;
+        let funding = seed_cost.max(after_cost);
+        let service = finite_public_service(funding).await;
+        let seeded = public_eval(&service, before).await;
         assert!(!seeded.output.contains("Error"), "{}", seeded.output);
         let before_cost = service.runtime.lock().await.cost.total_cost();
         let before_events = service.runtime.lock().await.get_cost_event_log();
@@ -459,15 +534,16 @@ mod prepared_route_tests {
             assert_eq!(runtime.get_cost_event_log(), before_events);
         }
 
-        let valid = public_eval(&service, "@\"public.after\"!(12)").await;
+        let valid = public_eval(&service, after).await;
         assert!(!valid.output.contains("Error"), "{}", valid.output);
         assert_eq!(public_values(&service, "public.before").await, expected);
         assert_eq!(public_values(&service, "public.after").await, vec![
             models::rust::utils::new_gint_par(12, Vec::new(), false),
         ]);
         let runtime = service.runtime.lock().await;
-        assert_eq!(runtime.cost.total_cost().value, 1);
+        assert_eq!(runtime.cost.total_cost().value, after_cost);
         assert!(runtime.cost.last_oop_event().is_none());
+        assert_eq!(service.f1r3lang.as_ref().unwrap().funding.value, funding);
     }
 
     #[tokio::test]
@@ -605,14 +681,17 @@ mod prepared_route_tests {
                 max_import_entries: 16,
                 max_import_nodes: 4096,
                 max_import_payload_bytes: 65_536,
-                max_preparation_work: 100_000_000,
-                max_preparation_units: 100_000_000,
+                // Disabled by the DR-131 extension to F1R3Lang (user decision 1):
+                // checked preparation has no work budget and no storage-unit budget.
+                // max_preparation_work: 100_000_000,
+                // max_preparation_units: 100_000_000,
                 lowering: LoweringOptions::NO_DISCHARGE,
             },
             100_000_000,
-            models::rust::host_work::HostWorkLimits::uniform(
-                models::rust::host_work::HostWorkLimit::new(100_000_000),
-            ),
+            // Disabled by the DR-131 extension to F1R3Lang (user decision 1).
+            // models::rust::host_work::HostWorkLimits::uniform(
+            //     models::rust::host_work::HostWorkLimit::new(100_000_000),
+            // ),
         )
         .unwrap();
         let declaration_source = include_str!(concat!(
@@ -656,14 +735,14 @@ mod prepared_route_tests {
         crate::rust::runtime::f1r3lang::ensure_eval_registry(&mut runtime)
             .await
             .expect("the production eval registry installs");
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1): the
+        // binding takes no host-work limits. The former call passed
+        // `composition.evaluation.lookahead_host_work.clone()` and then
+        // `.expect("finite test host-work policy")`.
         assert!(composition
             .evaluation
             .lookahead
-            .bind_standalone_host(
-                runtime.cost().clone(),
-                composition.evaluation.lookahead_host_work.clone(),
-            )
-            .expect("finite test host-work policy"));
+            .bind_standalone_host(runtime.cost().clone()));
         let service = ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation);
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
             "/../../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho"));

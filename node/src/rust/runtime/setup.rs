@@ -293,14 +293,16 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         super::f1r3lang::ensure_eval_registry(&mut runtime)
             .await
             .map_err(CasperError::Other)?;
+        // Disabled by the DR-131 extension to F1R3Lang (user decision 1 of
+        // 2026-10-16): the binding takes no host-work limits, so it has no
+        // error case. The former call passed
+        // `f1r3lang.evaluation.lookahead_host_work.clone()` as a second
+        // argument and then mapped the limit error with
+        // `.map_err(|error| CasperError::Other(error.into()))?`.
         if !f1r3lang
             .evaluation
             .lookahead
-            .bind_standalone_host(
-                runtime.cost().clone(),
-                f1r3lang.evaluation.lookahead_host_work.clone(),
-            )
-            .map_err(|error| CasperError::Other(error.into()))?
+            .bind_standalone_host(runtime.cost().clone())
         {
             return Err(CasperError::Other(
                 "F1R3Lang lookahead host budget was already bound".into(),

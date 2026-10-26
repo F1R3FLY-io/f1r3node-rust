@@ -93,6 +93,41 @@ The following flags override HOCON configuration at startup. CLI flags always ta
 
 ### Config Mapping
 
+Port flags override the configuration only when the operator supplies them.
+An absent flag preserves the configured port. Without a configured port, the
+embedded default applies. Each port has an independent override.
+
+| Port flag | Configuration field | Embedded default |
+| --- | --- | --- |
+| `--protocol-port` | `protocol-server.port` | 40400 |
+| `--discovery-port` | `peers-discovery.port` | 40404 |
+| `--api-port-grpc-external` | `api-server.port-grpc-external` | 40401 |
+| `--api-port-grpc-internal` | `api-server.port-grpc-internal` | 40402 |
+| `--api-port-http` | `api-server.port-http` | 40403 |
+| `--api-port-admin-http` | `api-server.port-admin-http` | 40405 |
+
+For example, `api-server.port-grpc-internal = 41402` selects port 41402.
+An explicit `--api-port-grpc-internal 42402` selects port 42402 instead.
+The selected port must pass the existing availability check before startup.
+
+The [configuration model](../../formal/rocq/cost_accounted_rho/theories/ConfigurationPrecedence.v)
+proves precedence for independent fields. It also proves that synthetic CLI
+defaults can discard configured values. The model does not prove HOCON or
+Clap internals. The `port_precedence_tests` module exercises both libraries
+and the actual configuration mapper.
+
+| Model law | Implementation verification |
+| --- | --- |
+| `layered_resolution_matches_specification` | Generated mixed file, CLI, and default sources |
+| `explicit_cli_wins` | Generated explicit CLI ports override configured ports |
+| `absent_cli_preserves_file` | Generated configured ports survive absent CLI flags |
+| `absent_overrides_preserve_default` | All six embedded defaults remain unchanged |
+| `unrelated_fields_do_not_interfere` | Changing one CLI port preserves every other port |
+| `legacy_default_discards_configured_value` | Generated file-only cases reject the former CLI-default behavior |
+
+Run the focused checks with
+`cargo test -p node --lib rust::configuration::port_precedence_tests`.
+
 CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 
 - `--ceremony-master-mode` unconditionally sets `casper.genesis_ceremony.ceremony_master_mode = true`.

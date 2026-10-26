@@ -3474,6 +3474,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.18.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3743,6 +3749,7 @@ version = "0.1.0"
 name = "mettail-semantic-key"
 version = "0.1.0"
 dependencies = [
+ "lru",
  "rustc-hash 2.1.3",
 ]
 
@@ -5613,7 +5620,6 @@ dependencies = [
  "rholang-codegen",
  "rspace_plus_plus",
  "runtime",
- "shared",
  "syn 2.0.119",
  "tokio",
  "tracing",

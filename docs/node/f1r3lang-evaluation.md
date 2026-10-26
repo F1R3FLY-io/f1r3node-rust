@@ -41,13 +41,10 @@ implicit unlimited evaluation budget. The source program cannot change them.
 | Setting | Meaning |
 | --- | --- |
 | `F1R3LANG_EVAL_PHLO` | Positive host-funded token grant per evaluation, below the maximum signed 64-bit value |
-| `F1R3LANG_LOOKAHEAD_HOST_WORK` | Positive finite native work cap per lookahead request and dimension, below the maximum unsigned 64-bit value; separate from phlogiston and preparation work |
 | `F1R3LANG_MAX_SOURCE_BYTES` | Source byte limit, checked before the blocking-worker source copy |
 | `F1R3LANG_MAX_IMPORT_ENTRIES` | Maximum caller-import entries |
 | `F1R3LANG_MAX_IMPORT_NODES` | Maximum admitted import structural occurrences |
 | `F1R3LANG_MAX_IMPORT_BYTES` | Maximum import payload bytes |
-| `F1R3LANG_PREPARATION_WORK` | Checked lowering work limit |
-| `F1R3LANG_PREPARATION_UNITS` | Checked lowering logical storage limit, not physical resident memory |
 
 For example, an operator may explicitly select the following local-test policy.
 These are example grants, not measured minimum requirements or production
@@ -55,23 +52,24 @@ recommendations:
 
 ```sh
 export F1R3LANG_EVAL_PHLO=10000000
-export F1R3LANG_LOOKAHEAD_HOST_WORK=100000000
 export F1R3LANG_MAX_SOURCE_BYTES=1048576
 export F1R3LANG_MAX_IMPORT_ENTRIES=1024
 export F1R3LANG_MAX_IMPORT_NODES=1000000
 export F1R3LANG_MAX_IMPORT_BYTES=16777216
-export F1R3LANG_PREPARATION_WORK=100000000
-export F1R3LANG_PREPARATION_UNITS=100000000
 ```
 
-The node's trusted standalone composition supplies the lookahead work cap,
-then binds those immutable limits once to the evaluation runtime together
-with the deploy's phlogiston budget. Each request receives a fresh native
-host-work budget with those limits. The scalar above is expanded to the native
-host-work dimensions; search candidates and scanned/backing bytes draw on the
-search dimensions. Source code cannot set or raise it. This local authorization is
-only for the standalone evaluator and is not a consensus event-epoch choice:
-block execution and replay require the separately adopted genesis policy.
+Cost accounting meters only COMMs (compute) and stored bytes (storage). The
+decision record DR-131 removed host-work metering from cost accounting. User
+decision 1 of 2026-10-16 extends that removal to F1R3Lang. Thus the node no
+longer reads `F1R3LANG_LOOKAHEAD_HOST_WORK`, `F1R3LANG_PREPARATION_WORK` or
+`F1R3LANG_PREPARATION_UNITS`, and an exported value has no effect.
+
+The node's trusted standalone composition binds the evaluation runtime's
+phlogiston budget once to the lookahead service. The service charges each
+committed sandbox COMM back to that budget. Source code cannot set or change
+the binding. This local authorization is only for the standalone evaluator. It
+is not a consensus event-epoch choice: block execution and replay require the
+separately adopted genesis policy.
 
 This feature requires the native-operation profile audited by MeTTaIL's
 `runtime/build.rs`: the standard x86-64, 64-bit Rust compiler at commit
@@ -89,6 +87,12 @@ cargo +nightly-2026-09-03 build --locked -p node --features mettail-frontend
 ```
 
 Use that binary's existing `run --standalone`, `eval`, and REPL commands.
+The standalone ceremony-master configuration can initialize without a validator
+private key. Public eval does not require a validator identity. A validating
+node requires its separate validator configuration.
+
+Use separate data and ports when another node already runs on the machine.
+The six port settings follow the [configuration precedence rules](README.md#config-mapping).
 For the complete Regex application, allow a longer client wait explicitly:
 
 ```sh
@@ -102,8 +106,8 @@ Its default remains `30s`; durations outside the platform clock range refuse
 before connection. The limit applies separately to each evaluation RPC,
 including server preparation and execution, not to the entire batch of files.
 File reading is outside this RPC limit, and the connection timeout remains
-five seconds. Increasing the wait does not change host funding, preparation,
-or semantic-work limits. Expiration stops the client's wait; it does not
+five seconds. Increasing the wait does not change host funding, source and
+import size, or semantic-work limits. Expiration stops the client's wait; it does not
 guarantee cancellation or rollback of work already running on the node.
 The example also explicitly permits a response of up to 32 MiB using the
 existing receive-size option: the complete application's verbose storage dump
@@ -112,7 +116,7 @@ limit, not a change to server execution budgets.
 
 Non-standalone startup explicitly refuses. The generated source parser keeps
 its existing canonical generalized-LL and ambiguity-realization limits.
-Source-byte and preparation limits do not substitute for those parser limits.
+Source-byte and import limits do not substitute for those parser limits.
 Installed-language parsers use the existing finite `RuntimePolicy` defaults;
 the host grants the existing native FLT rights, not publication or bridging
 authority. Compile-time guard discharge is disabled on this route so runtime
@@ -225,12 +229,37 @@ It does not substitute a test evaluator or native regex engine.
 Expected observations are nullable `true`, derivative `a*`, full match `true`,
 search byte span `[2,6)` containing `λλ`, replace-first `xba`, replace-all `xbx`,
 and guarded consumption of `abcb`. The nonmatching `ax` remains on the input
-channel. Search and replacement captures are structural guest `Text` terms,
-not automatically unwrapped host strings; their private-tag representation in
-stdout is expected. The test independently derives the declaration's language
-commitment and compares the exact reflected values and their metadata.
+channel. The application explicitly projects guest values to strings for stdout.
+The derivative displays as `(PStar (PLiteral "a"))`. Search displays `λλ`, and
+replacement displays `xba` and `xbx`. Stored captures retain their structural
+guest `Text` representation. The test independently derives the declaration's
+language commitment and compares the reflected values and their metadata.
+
+The conjunction guard consumes `abcb` and retains `ax`. The disjunction guard
+consumes `ax`. Lookahead reports one nullable trace and two distinct choice traces.
+The mixed trace count equals half the combined lengths of those two guest traces.
+This counts each possible position of the host COMM in each guest trace.
 
 The other tests in this group check one-time preparation, unavailable-route
 refusal, finite funding, rollback, and clean subsequent requests. This focused
-check is separate from standalone CLI startup, full public-preparation resource
-closure, production deployment/replay, and the campaign's final acceptance gates.
+check is separate from standalone CLI startup, production deployment/replay,
+and the campaign's final acceptance gates.
+
+The finite-funding tests measure successful public sends before they select
+the exercised grant. CostV2 charges measured storage bytes, so one send can
+cost more than one token. The exhaustion grant permits each individual send
+but cannot fund the complete three-send request. The test requires an accepted
+produce event, preserves prior data, and rejects every partial output.
+The next `Nil` request must clear the event trace and restore the full grant.
+Preparation refusal must preserve storage, cost, and events.
+
+`VaultBackedByteAccounting.v` proves the byte-charge formula and trace sum.
+The existing `produce_introduction_is_exact_canonical_footprint` property
+checks the implementation formula. The public controls check exact stored
+values and require total cost to equal the sum of produce-event weights.
+Diagnostic reduction, primitive, and substitution events consume no funding.
+The controls reject COMM and consume events because their sends have no receivers.
+`RuntimeBudgetRefinement.v` proves exhaustion, permutation invariance, and
+request reset. Its existing generated accounting properties check these laws.
+The public tests connect these contracts to the admission and rollback laws
+in `PreparedProgramAdmission.v`.
