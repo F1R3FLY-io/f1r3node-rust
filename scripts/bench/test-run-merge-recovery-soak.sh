@@ -543,6 +543,191 @@ grep -q '^FAILURES=1$' "$TMP/output-breach-stop-fail/.soak-state"
 grep -q '^segments=2$' "$TMP/output-breach-stop-fail/summary.txt"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output-breach-stop-fail/summary.txt"
 
+# Four owned node containers remain at the end of a segment. FAKE_STOP_MODE
+# selects the docker behavior: slow (each inspect and kill takes 1 s), vanish
+# (each container exits before its inspect), exits (each container exits
+# before its kill), or stuck (kill fails and the containers keep running).
+mkdir -p "$TMP/bin-stop"
+cat >"$TMP/bin-stop/docker" <<'SH'
+#!/usr/bin/env bash
+ended() {
+	[ "${FAKE_ALWAYS_LIST:-0}" = 1 ] && return 0
+	[ -s "$FAKE_POETRY_PID_FILE" ] && ! kill -0 "$(cat "$FAKE_POETRY_PID_FILE")" 2>/dev/null
+}
+if [ "$1" = ps ] && printf '%s\n' "$*" | grep -q 'label=io.f1r3fly.soak.owner='; then
+	ended || exit 0
+	for f in "$FAKE_CONTAINER_DIR"/*; do
+		[ -e "$f" ] || continue
+		if [ "$(cat "$f")" = running ] || [ "$2" = -aq ]; then basename "$f"; fi
+	done
+	exit 0
+fi
+if [ "$1" = inspect ] && [ -e "$FAKE_CONTAINER_DIR/${!#}" ]; then
+	[ "$FAKE_STOP_MODE" != slow ] || sleep 1
+	if [ "$FAKE_STOP_MODE" = vanish ]; then
+		rm -f "$FAKE_CONTAINER_DIR/${!#}"
+		printf 'Error: No such container: %s\n' "${!#}" >&2
+		exit 1
+	fi
+	printf '%s\n' "$SOAK_WRITER_OWNER"
+	exit 0
+fi
+if [ "$1" = kill ]; then
+	shift
+	[ "$FAKE_STOP_MODE" != slow ] || sleep 1
+	status=0
+	for cid in "$@"; do
+		case "$FAKE_STOP_MODE" in
+			exits)
+				printf 'exited\n' >"$FAKE_CONTAINER_DIR/$cid"
+				printf 'Error: container %s is not running\n' "$cid" >&2
+				status=1
+				;;
+			stuck)
+				printf 'Error: cannot kill container: %s\n' "$cid" >&2
+				status=1
+				;;
+			*) printf 'exited\n' >"$FAKE_CONTAINER_DIR/$cid" ;;
+		esac
+	done
+	exit "$status"
+fi
+exec "$FAKE_BASE_DOCKER" "$@"
+SH
+chmod +x "$TMP/bin-stop/docker"
+
+# writer_stop_case MODE [PATH_PREFIX [NAME=VALUE...]]: runs one segment with
+# four owned containers and sets status. Each NAME=VALUE overrides a setting.
+writer_stop_case() {
+	local mode="$1" prefix="${2:-}" n
+	shift
+	[ "$#" -eq 0 ] || shift
+	mkdir -p "$TMP/si-stop-$mode" "$TMP/containers-$mode"
+	for n in 1 2 3 4; do
+		printf 'running\n' >"$TMP/containers-$mode/$(printf 'c0ffee00000%s%052d' "$n" 0)"
+	done
+	status=0
+	timeout --signal=TERM --kill-after=2 90 env PATH="$prefix$TMP/bin-stop:$TMP/bin3:$TMP/bin:$PATH" \
+		FAKE_STOP_MODE="$mode" \
+		FAKE_CONTAINER_DIR="$TMP/containers-$mode" \
+		FAKE_BASE_DOCKER="$TMP/bin3/docker" \
+		FAKE_DF_AVAIL_FILE="$TMP/fake-df-avail" \
+		FAKE_POETRY_PID_FILE="$TMP/fake-poetry-stop-$mode.pid" \
+		FAKE_WRITER_PID_FILE="$TMP/fake-writer-stop-$mode.pid" \
+		FAKE_DATA_DIR="$TMP/si-stop-$mode/integration-tests/data" \
+		FAKE_ARCHIVE_DIR="$TMP/si-stop-$mode/integration-tests/.subprocess-data" \
+		SOAK_DURATION_SECONDS=6 \
+		SYSTEM_INTEGRATION_DIR="$TMP/si-stop-$mode" \
+		SOAK_OUTPUT_DIR="$TMP/output-stop-$mode" \
+		SOAK_RSS_CEILING_MB=0 \
+		SOAK_HOST_FREE_FLOOR_MB=0 \
+		SOAK_DISK_FREE_FLOOR_MB=0 \
+		SOAK_TMP_ROOT="$TMP/tmp3" \
+		SOAK_RUNNER_ROOT="$TMP/runner3" \
+		SOAK_GUARDIAN_POLL_SECONDS=1 \
+		SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+		"$@" \
+		"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver-stop-$mode.log" 2>&1 || status=$?
+	[ "$status" -ne 124 ] || { cat "$TMP/driver-stop-$mode.log" >&2; echo "the $mode stop scenario did not finish" >&2; exit 1; }
+}
+
+# writer_stop_confirmed MODE: the stop of that case succeeded, and the soak
+# records no stop failure.
+writer_stop_confirmed() {
+	local out="$TMP/output-stop-$1"
+	if [ -e "$out/writer-stop-failure.txt" ] || grep -q '^writer_stop_failed' "$out/early-exit.txt" 2>/dev/null; then
+		cat "$out/writer-stop-failure.txt" "$TMP/driver-stop-$1.log" >&2 2>/dev/null || true
+		echo "the $1 stop scenario failed a confirmed writer stop" >&2
+		exit 1
+	fi
+	grep -q '^failures=0$' "$out/summary.txt"
+	! cat "$TMP/containers-$1"/* 2>/dev/null | grep -qx running
+}
+
+# A slow docker daemon must not exhaust the stop budget of the segment end.
+writer_stop_case slow
+writer_stop_confirmed slow
+
+# A container that exits before its inspect or its kill is stopped.
+writer_stop_case vanish
+writer_stop_confirmed vanish
+grep -q "No such container" "$TMP/output-stop-vanish/writer-stop.log"
+writer_stop_case exits
+writer_stop_confirmed exits
+
+# A container that still runs after the kill fails the soak, and the failure
+# record names the container and the docker error.
+writer_stop_case stuck
+[ "$status" -ne 0 ] || { cat "$TMP/driver-stop-stuck.log" >&2; echo 'a stuck container passed the soak' >&2; exit 1; }
+grep -q '^writer_stop_failed:' "$TMP/output-stop-stuck/early-exit.txt"
+grep -q '^container c0ffee000001 remains after docker kill$' "$TMP/output-stop-stuck/writer-stop-failure.txt"
+grep -q 'cannot kill container' "$TMP/output-stop-stuck/writer-stop-failure.txt"
+
+# An iteration fails without its teardown, and the state write after it fails.
+# The driver exits 2 between iterations. The exit cleanup must still stop the
+# owned writers of the segment.
+mkdir -p "$TMP/bin-persist"
+cat >"$TMP/bin-persist/poetry" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
+printf 'fake pytest failed\n'
+exit 1
+SH
+cat >"$TMP/bin-persist/jq" <<SH
+#!/usr/bin/env bash
+if [ -s "\$FAKE_POETRY_PID_FILE" ] && ! kill -0 "\$(cat "\$FAKE_POETRY_PID_FILE")" 2>/dev/null &&
+	[[ " \$* " == *" trigger_source "* ]]; then
+	echo 'simulated state write failure' >&2
+	exit 1
+fi
+exec "$(command -v jq)" "\$@"
+SH
+chmod +x "$TMP/bin-persist/poetry" "$TMP/bin-persist/jq"
+writer_stop_case persist "$TMP/bin-persist:"
+[ "$status" -eq 2 ] || { cat "$TMP/driver-stop-persist.log" >&2; echo "the persist scenario exited $status, not 2" >&2; exit 1; }
+if cat "$TMP/containers-persist"/* 2>/dev/null | grep -qx running; then
+	cat "$TMP/driver-stop-persist.log" >&2
+	echo 'an exit between iterations left owned writers running' >&2
+	exit 1
+fi
+
+# The first pytest dies from SIGKILL without its teardown. Its owned writers
+# must stop before the next iteration starts, not at the end of the segment.
+mkdir -p "$TMP/bin-sigkill"
+cat >"$TMP/bin-sigkill/poetry" <<'SH'
+#!/usr/bin/env bash
+if [ -e "$FAKE_POETRY_PID_FILE" ]; then
+	if cat "$FAKE_CONTAINER_DIR"/* 2>/dev/null | grep -qx running; then
+		printf 'running\n' >>"$FAKE_LEAK_FILE"
+	fi
+	printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
+	printf 'fake pytest passed\n'
+	exit 0
+fi
+printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
+kill -KILL "$$"
+SH
+chmod +x "$TMP/bin-sigkill/poetry"
+writer_stop_case sigkill "$TMP/bin-sigkill:" FAKE_LEAK_FILE="$TMP/leak-sigkill" SOAK_DURATION_SECONDS=45
+if [ -s "$TMP/leak-sigkill" ]; then
+	cat "$TMP/driver-stop-sigkill.log" >&2
+	echo 'the writers of a killed pytest ran into the next iteration' >&2
+	exit 1
+fi
+grep -q 'fake pytest passed' "$TMP/driver-stop-sigkill.log" "$TMP/output-stop-sigkill"/iteration-*/pytest.log 2>/dev/null
+
+# After a host protection breach, the writer stop keeps the emergency budget,
+# so a slow docker daemon cannot delay the breach records.
+writer_stop_case breach "" FAKE_STOP_MODE=slow FAKE_ALWAYS_LIST=1 \
+	SOAK_DURATION_SECONDS=120 SOAK_DISK_FREE_FLOOR_MB=4096
+[ "$status" -ne 0 ] || { cat "$TMP/driver-stop-breach.log" >&2; echo 'the breach scenario passed the soak' >&2; exit 1; }
+grep -q '^host_protection_breach: disk floor' "$TMP/output-stop-breach/early-exit.txt"
+grep -q '^The stop did not complete within 2 s\.$' "$TMP/output-stop-breach/writer-stop-failure.txt" || {
+	cat "$TMP/output-stop-breach/writer-stop-failure.txt" "$TMP/driver-stop-breach.log" >&2 2>/dev/null || true
+	echo 'the stop after a breach did not keep the emergency budget' >&2
+	exit 1
+}
+
 # A successful early exit leaves the count at 0. The failed stop after it makes
 # the soak fail with a count of 1, and the reason of the early exit stays.
 mkdir -p "$TMP/bin-pass"
@@ -565,10 +750,22 @@ writer_stop_failure_case advanced-stop-fail 60 0 "$TMP/bin-pass:" \
 	SOAK_NODE_REPO_DIR="$TMP/target-node" SOAK_MERGE_EXIT_MIN_SECONDS=1
 [ "$status" -ne 0 ] || { cat "$TMP/driver-advanced-stop-fail.log" >&2; echo 'a failed writer stop passed the soak' >&2; exit 1; }
 test -s "$TMP/output-advanced-stop-fail/writer-stop-failure.txt"
-grep -q "^fixture advanced past $first_sha" "$TMP/output-advanced-stop-fail/early-exit.txt"
+grep -q "^target_advanced: fixture advanced past $first_sha" "$TMP/output-advanced-stop-fail/early-exit.txt"
 test -z "$(find "$TMP/output-advanced-stop-fail" -name exit-code.txt)"
 grep -q '^FAILURES=1$' "$TMP/output-advanced-stop-fail/.soak-state"
 grep -q '^early_exit_reason=target_advanced$' "$TMP/output-advanced-stop-fail/summary.txt"
+
+# A later segment of that soak does no work. Its summary keeps the reason of
+# the early exit.
+writer_stop_failure_case advanced-stop-fail 60 0 "$TMP/bin-pass:" \
+	SOAK_TARGET_REF=fixture SOAK_TARGET_SHA="$first_sha" \
+	SOAK_NODE_REPO_DIR="$TMP/target-node" SOAK_MERGE_EXIT_MIN_SECONDS=1
+grep -q '^soak already ended (' "$TMP/driver-advanced-stop-fail.log"
+grep -q '^early_exit_reason=target_advanced$' "$TMP/output-advanced-stop-fail/summary.txt" || {
+	grep early_exit_reason "$TMP/output-advanced-stop-fail/summary.txt" >&2
+	echo 'a restart after target_advanced lost the reason' >&2
+	exit 1
+}
 
 # Several failed iterations come before the failed stop. The stop keeps their
 # count.
@@ -739,4 +936,4 @@ fi
 grep -Eq "^segment=1 pid=$(cat "$TMP/stale-writer-6.pid") name=bash reason=arguments environment=readable owner=absent\$" \
 	"$TMP/output6/residual-writers.txt"
 
-printf 'legacy soak driver tests passed (fail-closed + deadline + segment writer stop + disk-band + restart reason + writer stop failure + evidence scope + failed reset + restart state + residual writer stop + stale session scope)\n'
+printf 'legacy soak driver tests passed (fail-closed + deadline + segment writer stop + disk-band + restart reason + writer stop failure + writer stop races + evidence scope + failed reset + restart state + residual writer stop + stale session scope)\n'
