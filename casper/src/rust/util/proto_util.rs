@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/util/ProtoUtil.scala
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -300,40 +300,81 @@ pub enum UnheldParent {
     SkipSettled,
 }
 
-pub fn parent_metadatas_above_block_number(
-    block: &BlockMetadata,
-    block_number: i64,
+/// Breadth-first walk from `start` down the parent edges, over the blocks at
+/// or above `block_number`. The start blocks are always visited. `visit` sees
+/// each block once, in breadth-first order, and stops the walk by returning
+/// `true`; that block is the result.
+///
+/// A parent is resolved when the walk first reaches it: one metadata row per
+/// block, read only for a parent that is not yet queued and whose height in
+/// the in-memory index is inside the window (#776). Reading every parent of
+/// every visited block made one walk cost ~window·n² rows of size O(n).
+/// A parent without a metadata row meets the unheld policy at that point and
+/// is never queued, so `visit` only sees held blocks, and a `Surface` walk
+/// fails before any later block can match.
+pub fn walk_blocks_in_scope<F>(
     dag: &KeyValueDagRepresentation,
+    start: impl IntoIterator<Item = BlockMetadata>,
+    block_number: i64,
     on_unheld: UnheldParent,
-) -> Result<Vec<BlockMetadata>, CasperError> {
-    let mut result = Vec::with_capacity(block.parents.len());
-    for parent in &block.parents {
-        match dag.lookup(parent).map_err(CasperError::from)? {
-            Some(meta) => {
-                if meta.block_number >= block_number {
-                    result.push(meta);
-                }
-            }
-            None => match on_unheld {
-                UnheldParent::Surface => {
-                    return Err(CasperError::BlockNotHeld(
-                        parent.clone(),
-                        MissingBlockContext::new("parent_metadatas_above_block_number"),
-                    ))
-                }
-                UnheldParent::SkipSettled => {
-                    tracing::warn!(
-                        parent = %PrettyPrinter::build_string_bytes(parent),
-                        child = %PrettyPrinter::build_string_bytes(&block.block_hash),
-                        earliest_wanted = block_number,
-                        "in-scope walk skipped an unheld parent: settled ancestry below \
-                         a restore horizon, or an undersized block floor"
-                    );
-                }
-            },
+    mut visit: F,
+) -> Result<Option<BlockHash>, CasperError>
+where
+    F: FnMut(&BlockHash) -> Result<bool, CasperError>,
+{
+    let mut visited: HashSet<BlockHash> = HashSet::new();
+    let mut queue: VecDeque<(BlockHash, Vec<BlockHash>)> = VecDeque::new();
+    for meta in start {
+        if visited.insert(meta.block_hash.clone()) {
+            queue.push_back((meta.block_hash, meta.parents));
         }
     }
-    Ok(result)
+    while let Some((current, parents)) = queue.pop_front() {
+        if visit(&current)? {
+            return Ok(Some(current));
+        }
+        for parent in parents {
+            if visited.contains(&parent) {
+                continue;
+            }
+            match dag.block_number(&parent) {
+                Some(number) if number < block_number => {}
+                Some(_) => match dag.lookup(&parent).map_err(CasperError::from)? {
+                    Some(meta) => {
+                        visited.insert(parent.clone());
+                        queue.push_back((parent, meta.parents));
+                    }
+                    None => unheld_in_scope(&parent, &current, block_number, on_unheld)?,
+                },
+                None => unheld_in_scope(&parent, &current, block_number, on_unheld)?,
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn unheld_in_scope(
+    parent: &BlockHash,
+    child: &BlockHash,
+    block_number: i64,
+    on_unheld: UnheldParent,
+) -> Result<(), CasperError> {
+    match on_unheld {
+        UnheldParent::Surface => Err(CasperError::BlockNotHeld(
+            parent.clone(),
+            MissingBlockContext::new("walk_blocks_in_scope"),
+        )),
+        UnheldParent::SkipSettled => {
+            tracing::warn!(
+                parent = %PrettyPrinter::build_string_bytes(parent),
+                child = %PrettyPrinter::build_string_bytes(child),
+                earliest_wanted = block_number,
+                "in-scope walk skipped an unheld parent: settled ancestry below \
+                 a restore horizon, or an undersized block floor"
+            );
+            Ok(())
+        }
+    }
 }
 
 pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
@@ -1082,32 +1123,78 @@ mod fork_choice_b1_repro_tests {
             &v,
         );
         let dag = dag_with(vec![held_meta, child_meta.clone()]);
+        let walk = |block_number: i64, on_unheld: UnheldParent| {
+            let mut visited = Vec::new();
+            walk_blocks_in_scope(
+                &dag,
+                [child_meta.clone()],
+                block_number,
+                on_unheld,
+                |hash| {
+                    visited.push(hash.clone());
+                    Ok(false)
+                },
+            )
+            .map(|_| visited)
+        };
 
-        let in_window =
-            parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::SkipSettled)
-                .expect("unheld parent must be skipped, not an error");
         assert_eq!(
-            in_window.iter().map(|m| &m.block_hash).collect::<Vec<_>>(),
-            vec![&held_parent],
+            walk(3, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error"),
+            vec![child.clone(), held_parent.clone()],
             "the held parent survives; the unheld one is silently settled"
         );
-
-        let above_window =
-            parent_metadatas_above_block_number(&child_meta, 6, &dag, UnheldParent::SkipSettled)
-                .expect("unheld parent must be skipped, not an error");
-        assert!(
-            above_window.is_empty(),
+        assert_eq!(
+            walk(6, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error"),
+            vec![child.clone()],
             "the number filter still bounds the held parent"
         );
 
         // The verdict policy refuses the same DAG.
         assert!(
             matches!(
-                parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::Surface),
+                walk(3, UnheldParent::Surface),
                 Err(crate::rust::errors::CasperError::BlockNotHeld(ref h, _)) if *h == missing_parent
             ),
             "the verdict walk must surface the unheld parent"
         );
+    }
+
+    /// Breadth-first order, each block once, and the walk stops at the first
+    /// block `visit` accepts.
+    #[test]
+    fn in_scope_walk_visits_each_block_once_and_stops_at_a_match() {
+        let v = h(9);
+        let (root, left, right, top) = (h(10), h(11), h(12), h(13));
+        let top_meta = md(top.clone(), vec![left.clone(), right.clone()], 2, &v);
+        let dag = dag_with(vec![
+            md(root.clone(), vec![], 0, &v),
+            md(left.clone(), vec![root.clone()], 1, &v),
+            md(right.clone(), vec![root.clone()], 1, &v),
+            top_meta.clone(),
+        ]);
+
+        let mut visited = Vec::new();
+        let found =
+            walk_blocks_in_scope(&dag, [top_meta.clone()], 0, UnheldParent::Surface, |hash| {
+                visited.push(hash.clone());
+                Ok(false)
+            })
+            .expect("held walk");
+        assert_eq!(found, None);
+        assert_eq!(visited, vec![
+            top.clone(),
+            left.clone(),
+            right.clone(),
+            root.clone()
+        ]);
+
+        let found = walk_blocks_in_scope(&dag, [top_meta], 0, UnheldParent::Surface, |hash| {
+            Ok(*hash == right)
+        })
+        .expect("held walk");
+        assert_eq!(found, Some(right));
     }
 
     /// The BFS twin of the case above: the traversed block itself is unheld
