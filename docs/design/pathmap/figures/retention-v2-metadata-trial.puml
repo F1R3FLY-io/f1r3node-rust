@@ -1,0 +1,85 @@
+@startuml retention-v2-metadata-trial
+' ============================================================================
+' The metadata ledger trial of one V2 commit (task 7926), on the objects of
+' retention-v2-path-local-edit: bind_durable_transaction and
+' attach_retention_v2 (rspace++/src/rspace/persistence/durable/admission.rs),
+' commit_retention_v2 (retention/v2_writer.rs), run_ledger_trial
+' (closure/ledger_trial.rs) and seed_retention_metadata (closure.rs). The
+' theorems are T6, T6m, T7 and T7m of
+' formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v.
+'   BLUE   #1565C0  the writer and the seeded predecessor ledger
+'   GREEN  #2E7D32  activation of the successor anchor: objects that arrive
+'   RED    #C62828  deactivation of the predecessor anchor: objects that leave
+'   GREY   #616161  shared objects: counted, never expanded
+'   PURPLE #6A1B9A  the deactivate-first negative control
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam SequenceLifeLineBorderColor #455A64
+skinparam ParticipantBorderColor #455A64
+skinparam NoteBorderColor #455A64
+skinparam SequenceGroupBorderColor #455A64
+
+title <b>The metadata ledger trial of one V2 commit</b>\nactivating the successor before deactivating the predecessor expands only the objects that change
+
+participant "Writer\nbind_durable_transaction" as W #BBDEFB
+participant "Editor\ncommit_retention_v2" as E #C8E6C9
+participant "Staging overlay\n(dual reader)" as S #E0E0E0
+participant "Trial\nrun_ledger_trial" as T #C8E6C9
+participant "Predecessor ledger\nmetadata domain" as L #BBDEFB
+
+note over L #E3F2FD
+  Seeded once at cold admission (T7): every metadata object counts
+  its root multiplicity plus its occurrences as a child of a distinct
+  metadata object, so X and Y count 1 (each is a child of r) and the
+  anchor A counts 1. This is the ledger that activating A from an
+  empty domain builds, obtained without reading an object again.
+end note
+
+W -> E : commit(A, c')
+E -> S : load the old search path r, n1, L1
+E -> S : stage r', n1', m, L1'', Lc and A'
+E --> W : A' = (c', n + 1, r')
+W -> T : run(Metadata, added [A'], removed [A])
+T -> L : authorize removing A (root multiplicity 1)
+
+group #F1F8E9 Activation of the successor anchor A' first
+  T -> S : expand A', r', n1', m, L1'', Lc\n(each count crosses 0 to 1)
+  T -> T : X and Y: 1 to 2, already live: not expanded
+end
+
+group #FFEBEE Then deactivation of the predecessor anchor A
+  T -> S : expand A, r, n1, L1\n(each count crosses 1 to 0)
+  T -> T : X and Y: 2 to 1, still live: not expanded
+end
+
+T --> W : the successor ledger, equal to the cold ledger of A'
+note right of T #FFF3E0
+  <b>Work</b> (T6): expansions = <latex>|M \,\triangle\, M'| = 4 + 6 = 10</latex>
+  references = 2 root events + the out-degrees
+  of the changed objects = <latex>2 + 5 + 7 = 14</latex>
+  for one insertion or eviction, at w = 48:
+  <latex>2 + \text{expansions} \le 2w + 7 = 103</latex>
+end note
+W -> W : attach A' and the staged nodes (with_retention_metadata)
+
+group #F3E5F5 Negative control: deactivate first (T6m)
+  T -> S : deactivate [A]: A, r, n1, L1, X, Y and every\nobject below X and Y cross 1 to 0
+  T -> S : activate [A']: X, Y and every object below them\ncross 0 to 1 again
+  note right of T #F3E5F5
+    expansions = <latex>|M| + |M'|</latex>, which grows with
+    the history; the end ledger is the same
+  end note
+end
+
+group #F3E5F5 Negative control: a set seed (T7m)
+  T -> L : seed every object with count 1
+  note right of L #F3E5F5
+    a leaf shared by two parents counts 1 instead of 2;
+    evicting one alias deactivates it although the
+    successor still references it
+  end note
+end
+@enduml

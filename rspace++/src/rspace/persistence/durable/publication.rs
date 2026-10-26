@@ -36,6 +36,7 @@ use super::startup::{
     DurableStartupErrorV1, recover_physical_from_lease_v1, recover_physical_with_lease_v1,
 };
 use crate::rspace::persistence::canonical::CanonicalSink;
+use crate::rspace::persistence::closure::ClosureInventoryV1;
 use crate::rspace::persistence::durable::PACK_HEADER_LEN_V1;
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::wal::{
@@ -266,6 +267,12 @@ pub(crate) enum IncrementalPublicationErrorV1 {
     PublishedCatalogDirectory(DurableIoError),
     PublishedRecovery(Box<DurableStartupErrorV1>),
     PublishedAdmission(Box<DurableAdmissionErrorV1>),
+    /// The published successor's cold-admitted retention V2 metadata closure
+    /// differs from the one the private ledger trial derived.
+    PublishedMetadataInventory {
+        trial: ClosureInventoryV1,
+        admitted: ClosureInventoryV1,
+    },
     BaseStateMismatch {
         expected: crate::rspace::persistence::StateVersionV1,
         actual: crate::rspace::persistence::StateVersionV1,
@@ -286,7 +293,8 @@ impl IncrementalPublicationErrorV1 {
             Self::CatalogCommitIndeterminate(_) => Outcome::Indeterminate,
             Self::PublishedCatalogDirectory(_) |
             Self::PublishedRecovery(_) |
-            Self::PublishedAdmission(_) => Outcome::Published,
+            Self::PublishedAdmission(_) |
+            Self::PublishedMetadataInventory { .. } => Outcome::Published,
             Self::Append(_) |
             Self::Io(_) |
             Self::LogPack(_) |
@@ -972,6 +980,19 @@ pub(crate) fn publish_incremental_with_terminal_v1<P: SemanticProfile>(
     )?;
     let successor = admit_physical_source::<P>(lease, physical, admission_limits)
         .map_err(|error| IncrementalPublicationErrorV1::PublishedAdmission(Box::new(error)))?;
+    let admitted = ClosureInventoryV1 {
+        distinct_objects: successor.report().retention_metadata_objects,
+        canonical_bytes: successor.report().retention_metadata_canonical_bytes,
+    };
+    match inventory.metadata {
+        Some(trial) if trial != admitted => {
+            return Err(IncrementalPublicationErrorV1::PublishedMetadataInventory {
+                trial,
+                admitted,
+            });
+        }
+        Some(_) | None => {}
+    }
     #[cfg(test)]
     incremental_publication_test_point(
         GenerationCheckpointPublicationHookPointV1::AfterSemanticAdmission,

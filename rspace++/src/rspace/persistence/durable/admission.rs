@@ -24,23 +24,31 @@ use crate::rspace::persistence::canonical::{
 };
 use crate::rspace::persistence::checkpoint::{
     CheckpointReferenceVisitErrorV1, GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1,
-    try_visit_checkpoint_references,
+    try_visit_checkpoint_references, try_visit_checkpoint_references_v2,
+};
+use crate::rspace::persistence::closure::ledger_trial::{
+    LedgerTrialAxisV1, LedgerTrialLimitsV1, LedgerTrialRefusalV1, run_ledger_trial,
 };
 use crate::rspace::persistence::closure::{
-    ClosureCreditV1, ClosureError, RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1,
-    StructuralClosureLedgerV1, StructuralClosureReport, StructuralValidationLimits,
+    ClosureCreditV1, ClosureDomainV1, ClosureError, ClosureInventoryV1,
+    RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1, StructuralClosureLedgerV1,
+    StructuralClosureReport, StructuralValidationLimits,
     verify_structural_closure_in_ledger_with_credit,
     verify_structural_closure_in_ledger_with_limits,
 };
 use crate::rspace::persistence::mutation::MutationBatchViewV1;
-use crate::rspace::persistence::retention::v2_format::RetentionFormat;
+use crate::rspace::persistence::retention::v2_format::{
+    RetentionAnchorV2, RetentionFormat, RetentionReader,
+};
 use crate::rspace::persistence::retention::v2_reader::{
     AdmittedRetention, AdmittedRetentionMetadataV2, AppointedRetention, RetentionRadixErrorV2,
     RetentionRadixRefusalV2, admit_retention_history_v2,
 };
+use crate::rspace::persistence::retention::v2_writer::{commit_retention_v2, migrate_retention_v1};
 use crate::rspace::persistence::retention::{
-    RetainedStateIter, RetainedStateV1, RetentionManifestV1, RetentionManifestView,
+    RetainedStateIter, RetainedStateV1, RetentionManifestV1,
 };
+use crate::rspace::persistence::rewrite::{DagRewriteLimits, RewriteError};
 use crate::rspace::persistence::semantic::{
     SemanticProfile, SemanticValidationLimits, SemanticValidationReport,
     SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural,
@@ -505,6 +513,10 @@ pub(crate) enum DurableAdmissionErrorV1 {
         computed: u64,
     },
     RetentionRadix(RetentionRadixRefusalV2),
+    RetentionWriterUnreadable {
+        writer: RetentionFormat,
+        reader: RetentionReader,
+    },
     #[cfg(test)]
     InjectedFailure(&'static str),
     AuthorityChanged,
@@ -551,6 +563,11 @@ impl Display for DurableAdmissionErrorV1 {
                  {computed}"
             ),
             Self::RetentionRadix(refusal) => Display::fmt(refusal, formatter),
+            Self::RetentionWriterUnreadable { writer, reader } => write!(
+                formatter,
+                "a {writer:?} retention writer would seal successors that its {reader:?} \
+                 retention reader refuses"
+            ),
             #[cfg(test)]
             Self::InjectedFailure(point) => {
                 write!(formatter, "injected durable semantic-admission failure at {point}")
@@ -1079,6 +1096,9 @@ pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
     retained_closure: StructuralClosureLedgerV1,
     report: DurableAdmissionReportV1,
     admission_requirements: DurableAdmissionRequirementsV1,
+    /// The retention format in which this writer seals successors and
+    /// checkpoints, fixed by its directory at admission.
+    retention_writer: RetentionFormat,
     profile: PhantomData<fn() -> P>,
 }
 
@@ -1123,40 +1143,58 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
 
     /// Derive fresh-generation checkpoint authority from the exact closure
     /// and byte inventories admitted under this still-current catalog token.
+    ///
+    /// A V1 source copies its manifest beside the retained union under either
+    /// writer. A V2 source copies its metadata closure, which holds the
+    /// appointed anchor, and only the V2 writer may derive it.
     pub(crate) fn checkpoint_descriptor(
         &self,
     ) -> Result<GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1> {
-        if let RetentionFormat::V2 = self.retention_format() {
-            return Err(GenerationCheckpointErrorV1::SourceRetentionFormatNotWritable(
-                RetentionFormat::V2,
-            ));
-        }
         let pack = self.authority.slot().pack();
-        let retention_manifest = pack.retention_manifest();
-        GenerationCheckpointDescriptorV1::from_retained_union(
-            P::ID,
-            self.version,
-            retention_manifest,
-            self.report.current_structural.distinct_objects,
-            pack.current_state_canonical_bytes(),
-            &self.retained_closure,
-        )
+        match (self.retention_format(), self.retention_writer) {
+            (RetentionFormat::V1, _) => GenerationCheckpointDescriptorV1::from_retained_union(
+                P::ID,
+                self.version,
+                pack.retention_manifest(),
+                self.report.current_structural.distinct_objects,
+                pack.current_state_canonical_bytes(),
+                &self.retained_closure,
+            ),
+            (RetentionFormat::V2, RetentionFormat::V2) => {
+                GenerationCheckpointDescriptorV1::from_retained_union_and_metadata(
+                    P::ID,
+                    self.version,
+                    pack.retention_manifest(),
+                    self.report.current_structural.distinct_objects,
+                    pack.current_state_canonical_bytes(),
+                    &self.retained_closure,
+                )
+            }
+            (format @ RetentionFormat::V2, RetentionFormat::V1) => {
+                Err(GenerationCheckpointErrorV1::SourceRetentionFormatNotWritable(format))
+            }
+        }
     }
 
     pub(crate) fn try_visit_checkpoint_references<E>(
         &self,
         visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
     ) -> Result<(), CheckpointReferenceVisitErrorV1<E>> {
-        if let RetentionFormat::V2 = self.retention_format() {
-            return Err(CheckpointReferenceVisitErrorV1::Checkpoint(
-                GenerationCheckpointErrorV1::SourceRetentionFormatNotWritable(RetentionFormat::V2),
-            ));
+        match (self.retention_format(), self.retention_writer) {
+            (RetentionFormat::V1, _) => try_visit_checkpoint_references(
+                &self.retained_closure,
+                self.authority.slot().pack().retention_manifest(),
+                visitor,
+            ),
+            (RetentionFormat::V2, RetentionFormat::V2) => {
+                try_visit_checkpoint_references_v2(&self.retained_closure, visitor)
+            }
+            (format @ RetentionFormat::V2, RetentionFormat::V1) => {
+                Err(CheckpointReferenceVisitErrorV1::Checkpoint(
+                    GenerationCheckpointErrorV1::SourceRetentionFormatNotWritable(format),
+                ))
+            }
         }
-        try_visit_checkpoint_references(
-            &self.retained_closure,
-            self.authority.slot().pack().retention_manifest(),
-            visitor,
-        )
     }
 
     pub(crate) fn copy_checkpoint_object<S: CanonicalSink>(
@@ -1216,6 +1254,7 @@ pub(crate) enum DurableTransactionPreparationError {
     AuthorityMismatch,
     AdmissionPolicyMismatch,
     RetentionFormatNotWritable(RetentionFormat),
+    RetentionWrite(Box<RetentionWriteErrorV2>),
 }
 
 impl std::fmt::Display for DurableTransactionPreparationError {
@@ -1235,9 +1274,10 @@ impl std::fmt::Display for DurableTransactionPreparationError {
             }
             Self::RetentionFormatNotWritable(format) => write!(
                 formatter,
-                "an admitted {format:?} retention source cannot seal a successor before task 7926 \
-                 adds the V2 writer"
+                "an admitted {format:?} retention source cannot seal a successor under the V1 \
+                 retention writer"
             ),
+            Self::RetentionWrite(error) => Display::fmt(error, formatter),
         }
     }
 }
@@ -1248,10 +1288,40 @@ impl From<CanonicalFormatError> for DurableTransactionPreparationError {
     fn from(error: CanonicalFormatError) -> Self { Self::Canonical(error) }
 }
 
+impl From<RetentionWriteErrorV2> for DurableTransactionPreparationError {
+    fn from(error: RetentionWriteErrorV2) -> Self { Self::RetentionWrite(Box::new(error)) }
+}
+
+/// A refused retention V2 successor write. Nothing was staged outside the
+/// write's private overlay.
+#[derive(Debug)]
+pub(crate) enum RetentionWriteErrorV2 {
+    Edit(RewriteError<StagingStoreError<DurableObjectReadErrorV1>>),
+    Trial(LedgerTrialRefusalV1<StagingStoreError<DurableObjectReadErrorV1>>),
+    Staging(StagingStoreError<DurableObjectReadErrorV1>),
+}
+
+impl Display for RetentionWriteErrorV2 {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Edit(error) => write!(formatter, "retention history edit failed: {error}"),
+            Self::Trial(refusal) => {
+                write!(formatter, "retention metadata trial refused the successor: {refusal:?}")
+            }
+            Self::Staging(error) => {
+                write!(formatter, "retention metadata could not be sealed: {error}")
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DurableSuccessorInventoryV1 {
     pub(super) current: StructuralClosureReport,
     pub(super) retained_union: RetainedUnionClosureReportV1,
+    /// The successor's retention V2 metadata closure, as the private ledger
+    /// trial derived it; none under the V1 writer.
+    pub(super) metadata: Option<ClosureInventoryV1>,
 }
 
 pub(crate) struct SealedDurableTransactionV1<'mutation, P: SemanticProfile> {
@@ -1495,20 +1565,24 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         self.bind_durable_transaction(lease, sealed, admission_limits)
     }
 
-    /// Refuse a successor of a V2 source: only the V1 successor manifest can
-    /// be written until the V2 writer exists.
+    /// Refuse a successor of a V2 source under the V1 writer, which would
+    /// replace the V2 metadata with a stale V1 manifest.
     fn require_writable_retention(&self) -> Result<(), DurableTransactionPreparationError> {
-        match self.retention_format() {
-            RetentionFormat::V1 => Ok(()),
-            format @ RetentionFormat::V2 => {
+        match (self.retention_format(), self.retention_writer) {
+            (format @ RetentionFormat::V2, RetentionFormat::V1) => {
                 Err(DurableTransactionPreparationError::RetentionFormatNotWritable(format))
             }
+            (RetentionFormat::V1, _) | (RetentionFormat::V2, RetentionFormat::V2) => Ok(()),
         }
     }
 
-    /// Attach the target retention manifest to a sealed transaction. The
+    /// Attach the target retention metadata to a sealed transaction. The
     /// previous current state becomes historical; no durable bytes are
-    /// published until this manifest is included in the prepared object set.
+    /// published until this metadata is included in the prepared object set.
+    ///
+    /// The V1 writer seals a complete successor manifest. The V2 writer edits
+    /// only the history radix path of the predecessor's current state, or
+    /// migrates a V1 source once.
     pub(crate) fn bind_durable_transaction<'mutation>(
         &self,
         lease: &DurableWriterLeaseV1,
@@ -1522,8 +1596,10 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
             return Err(DurableTransactionPreparationError::AuthorityMismatch);
         }
         self.require_writable_retention()?;
-        let current = RetentionManifestView::parse(self.retention_manifest_bytes())?;
-        let retained_states = checked_len(current.historical().len(), "historical states")?
+        let appointed =
+            AppointedRetention::parse(self.retention_manifest_bytes(), RetentionReader::Dual)?;
+        let retained_states = appointed
+            .historical_count()?
             .checked_add(2)
             .ok_or(CanonicalFormatError::CounterOverflow("successor retained states"))?;
         DurableAdmissionRequirementsV1::require(
@@ -1535,19 +1611,98 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         let inventory = self
             .successor_inventory(&sealed, limits)
             .map_err(|error| DurableTransactionPreparationError::Inventory(Box::new(error)))?;
-        let mut historical = current.historical().collect::<Result<Vec<_>, _>>()?;
-        historical.push(current.current());
         let target = sealed.receipt().target();
         let target_state = RetainedStateV1::new(target, inventory.current.canonical_bytes)?;
-        let manifest = RetentionManifestV1::new(target_state, historical.into_boxed_slice())?;
-        let sealed = sealed.with_retention_manifest(manifest)?;
+        let (sealed, metadata) = match (appointed, self.retention_writer) {
+            (AppointedRetention::V1(current), RetentionFormat::V1) => {
+                let mut historical = current.historical().collect::<Result<Vec<_>, _>>()?;
+                historical.push(current.current());
+                let manifest =
+                    RetentionManifestV1::new(target_state, historical.into_boxed_slice())?;
+                (sealed.with_retention_manifest(manifest)?, None)
+            }
+            (AppointedRetention::V1(current), RetentionFormat::V2) => {
+                let staging = self.retention_staging();
+                let step = migrate_retention_v1(
+                    &staging,
+                    current,
+                    target_state,
+                    DagRewriteLimits::UNBOUNDED,
+                )
+                .map_err(RetentionWriteErrorV2::Edit)?;
+                let (sealed, metadata) =
+                    self.attach_retention_v2(sealed, staging, step.anchor(), &[], limits)?;
+                (sealed, Some(metadata))
+            }
+            (AppointedRetention::V2(predecessor), RetentionFormat::V2) => {
+                let staging = self.retention_staging();
+                let step = commit_retention_v2(
+                    &staging,
+                    predecessor,
+                    target_state,
+                    DagRewriteLimits::UNBOUNDED,
+                )
+                .map_err(RetentionWriteErrorV2::Edit)?;
+                let (sealed, metadata) = self.attach_retention_v2(
+                    sealed,
+                    staging,
+                    step.anchor(),
+                    &[predecessor.object_ref()],
+                    limits,
+                )?;
+                (sealed, Some(metadata))
+            }
+            (AppointedRetention::V2(_), RetentionFormat::V1) => {
+                return Err(DurableTransactionPreparationError::RetentionFormatNotWritable(
+                    RetentionFormat::V2,
+                ));
+            }
+        };
         Ok(SealedDurableTransactionV1 {
             sealed,
             predecessor: self.authority().clone(),
             registry: self.registry.clone(),
-            inventory,
+            inventory: DurableSuccessorInventoryV1 {
+                metadata,
+                ..inventory
+            },
             admission_limits: limits,
         })
+    }
+
+    /// The private overlay a retention V2 write stages into: it reads the
+    /// pinned store and admits the retention metadata domains.
+    fn retention_staging(&self) -> StagingObjectStore<'_, DurableIndexedObjectStoreV1> {
+        StagingObjectStore::new(&self.store).with_retention_reader(RetentionReader::Dual)
+    }
+
+    /// Account a staged retention V2 successor in the metadata closure with
+    /// one private ledger trial, which activates the successor anchor before
+    /// it deactivates the predecessor's, then attach the staged metadata.
+    /// The trial visits only the objects whose metadata count crosses zero.
+    fn attach_retention_v2<'mutation>(
+        &self,
+        sealed: SealedDagTransaction<'mutation, P>,
+        staging: StagingObjectStore<'_, DurableIndexedObjectStoreV1>,
+        anchor: RetentionAnchorV2,
+        predecessor: &[ObjectRefV1],
+        limits: DurableAdmissionLimitsV1,
+    ) -> Result<(SealedDagTransaction<'mutation, P>, ClosureInventoryV1), RetentionWriteErrorV2>
+    {
+        let trial = run_ledger_trial(
+            &staging,
+            &self.retained_closure,
+            ClosureDomainV1::Metadata,
+            &[anchor.object_ref()],
+            predecessor,
+            metadata_trial_limits(limits),
+        )
+        .map_err(RetentionWriteErrorV2::Trial)?;
+        let metadata = trial.successor.metadata_inventory();
+        let sealed = sealed
+            .with_retention_metadata(anchor, staging)
+            .map_err(RetentionWriteErrorV2::Staging)?;
+        Ok((sealed, metadata))
     }
 
     pub(crate) fn get_object_bounded(
@@ -1656,6 +1811,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         Ok(DurableSuccessorInventoryV1 {
             current,
             retained_union,
+            metadata: None,
         })
     }
 }
@@ -1693,6 +1849,16 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         return Err(DurableAdmissionErrorV1::ProfileMismatch {
             expected: P::ID,
             actual: catalog.profile_id(),
+        });
+    }
+
+    let retention_writer = lease.directory().retention_writer();
+    if let (RetentionFormat::V2, reader @ RetentionReader::V1Only) =
+        (retention_writer, lease.directory().retention_reader())
+    {
+        return Err(DurableAdmissionErrorV1::RetentionWriterUnreadable {
+            writer: retention_writer,
+            reader,
         });
     }
 
@@ -1842,6 +2008,10 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         )?;
     }
 
+    if let Some(admitted) = admitted_retention.metadata_v2() {
+        ledger.seed_retention_metadata(admitted.anchor().object_ref(), admitted.metadata())?;
+    }
+
     let retained_union = ledger.retained_union_report();
     if let TerminalCommitViewV1::GenerationCheckpoint(commit) = terminal_commit {
         compare_inventory(
@@ -1899,8 +2069,23 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         retained_closure: ledger,
         report,
         admission_requirements,
+        retention_writer,
         profile: PhantomData,
     })
+}
+
+/// The metadata trial's budgets, drawn from the admission limits that bound
+/// the cold reader's walk of the same closure: no new limit is introduced.
+const fn metadata_trial_limits(limits: DurableAdmissionLimitsV1) -> LedgerTrialLimitsV1 {
+    LedgerTrialLimitsV1::UNBOUNDED
+        .with(LedgerTrialAxisV1::UnionObjects, limits.max_object_reads)
+        .with(LedgerTrialAxisV1::UnionBytes, limits.max_object_read_bytes)
+        .with(LedgerTrialAxisV1::Scratch, limits.per_state_structural.max_worklist)
+        .with(LedgerTrialAxisV1::References, limits.max_aggregate_references)
+        .with(LedgerTrialAxisV1::Expansions, limits.max_object_reads)
+        .with(LedgerTrialAxisV1::QuotedBytes, limits.max_object_read_bytes)
+        .with(LedgerTrialAxisV1::FinalObjects, limits.max_object_reads)
+        .with(LedgerTrialAxisV1::FinalBytes, limits.max_object_read_bytes)
 }
 
 /// The historical entries of either retention format, in strict state order.

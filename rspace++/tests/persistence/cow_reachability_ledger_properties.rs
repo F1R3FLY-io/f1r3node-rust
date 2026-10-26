@@ -77,9 +77,9 @@ struct DomainObservation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LedgerObservation {
-    objects: Vec<(ObjectRefV1, [u64; 2])>,
-    roots: Vec<(ObjectDigest, [u64; 2])>,
-    inventories: [ClosureInventoryV1; 2],
+    objects: Vec<(ObjectRefV1, [u64; 3])>,
+    roots: Vec<(ObjectDigest, [u64; 3])>,
+    inventories: [ClosureInventoryV1; 3],
     union: Vec<ObjectRefV1>,
 }
 
@@ -287,11 +287,10 @@ fn wide(value: usize) -> u64 { u64::try_from(value).expect("test counts fit u64"
 
 fn narrow(value: u64) -> usize { usize::try_from(value).expect("test counts fit usize") }
 
-fn other(domain: ClosureDomainV1) -> ClosureDomainV1 {
-    match domain {
-        ClosureDomainV1::Current => ClosureDomainV1::Retained,
-        ClosureDomainV1::Retained => ClosureDomainV1::Current,
-    }
+fn others(domain: ClosureDomainV1) -> impl Iterator<Item = ClosureDomainV1> {
+    ClosureDomainV1::ALL
+        .into_iter()
+        .filter(move |other| *other != domain)
 }
 
 fn cold_build_refs<S>(
@@ -496,11 +495,12 @@ fn agrees_with_model(setup: &TrialSetup, model: &TrialResult, production: &Trial
                     canonical_bytes: evidence.bytes,
                 },
             };
-            let unchanged = other(setup.domain);
             observe_domain(references, &prepared.successor, setup.domain) == expected &&
                 model_usage(prepared.usage) == evidence.usage &&
-                observe_domain(references, &prepared.successor, unchanged) ==
-                    observe_domain(references, &setup.predecessor, unchanged)
+                others(setup.domain).all(|unchanged| {
+                    observe_domain(references, &prepared.successor, unchanged) ==
+                        observe_domain(references, &setup.predecessor, unchanged)
+                })
         }
         _ => false,
     }
@@ -1130,7 +1130,7 @@ fn production_trial_limits_are_exact_per_axis_and_domain() {
                 observe_ledger(&at_exact.successor),
                 observe_ledger(&unbounded.successor)
             );
-            for (position, domain) in ClosureDomainV1::ALL.into_iter().enumerate() {
+            for (position, domain) in ClosureDomainV1::SEMANTIC.into_iter().enumerate() {
                 for axis in BUDGET_AXES {
                     let index = axis as usize;
                     if exact[position][index] == 0 {

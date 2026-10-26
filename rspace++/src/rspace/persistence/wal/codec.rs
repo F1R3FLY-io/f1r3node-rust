@@ -357,7 +357,11 @@ impl<'transaction, 'mutation, P: SemanticProfile>
                     });
                 }
             }
-            validate_object(reference, object.canonical_bytes())?;
+            validate_object_for(
+                reference,
+                object.canonical_bytes(),
+                transaction.retention_reader(),
+            )?;
             object_bytes =
                 checked_sum(object_bytes, reference.encoded_len(), "WAL canonical object bytes")?;
             if *disposition == LogPackObjectDispositionV1::Data {

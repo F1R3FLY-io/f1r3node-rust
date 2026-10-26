@@ -12,6 +12,7 @@ use super::object::{
     CanonicalBlobKind, CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView,
     EndpointValue,
 };
+use super::retention::v2_reader::RetentionMetadataInventoryV2;
 use super::rewrite::{ExactPath, InheritedBoundaryKind, InheritedObjectRef, RewriteProvenance};
 use super::store::{ImmutableObjectStore, StagingObjectStore, StagingStoreError};
 
@@ -185,19 +186,27 @@ enum IncrementalWork {
     Exit(IncrementalVisitKey),
 }
 
+/// The ledger's independent reachability domains. The two semantic domains
+/// count state-DAG objects; the metadata domain counts the retention V2
+/// anchor and the radix nodes reachable from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClosureDomainV1 {
     Current,
     Retained,
+    Metadata,
 }
 
 impl ClosureDomainV1 {
-    pub(crate) const ALL: [Self; 2] = [Self::Current, Self::Retained];
+    pub(crate) const ALL: [Self; 3] = [Self::Current, Self::Retained, Self::Metadata];
+    /// The two domains a semantic closure credits.
+    #[cfg(test)]
+    pub(crate) const SEMANTIC: [Self; 2] = [Self::Current, Self::Retained];
 
     const fn index(self) -> usize {
         match self {
             Self::Current => 0,
             Self::Retained => 1,
+            Self::Metadata => 2,
         }
     }
 }
@@ -231,7 +240,7 @@ struct DigestState {
     visit_epoch: u64,
     active_epoch: u64,
     verified_expectations: u32,
-    counts: [u64; 2],
+    counts: [u64; 3],
 }
 
 impl DigestState {
@@ -241,7 +250,7 @@ impl DigestState {
             visit_epoch: 0,
             active_epoch: 0,
             verified_expectations: 0,
-            counts: [0; 2],
+            counts: [0; 3],
         }
     }
 
@@ -278,9 +287,9 @@ impl DigestState {
 #[derive(Clone)]
 pub(crate) struct StructuralClosureLedgerV1 {
     states: PathMap<DigestState>,
-    roots: PathMap<[u64; 2]>,
+    roots: PathMap<[u64; 3]>,
     next_epoch: u64,
-    inventories: [ClosureInventoryV1; 2],
+    inventories: [ClosureInventoryV1; 3],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -328,7 +337,7 @@ impl StructuralClosureLedgerV1 {
             states: PathMap::new(),
             roots: PathMap::new(),
             next_epoch: 1,
-            inventories: [ClosureInventoryV1::default(); 2],
+            inventories: [ClosureInventoryV1::default(); 3],
         }
     }
 
@@ -338,6 +347,12 @@ impl StructuralClosureLedgerV1 {
             distinct_objects: inventory.distinct_objects,
             canonical_bytes: inventory.canonical_bytes,
         }
+    }
+
+    /// The inventory of the retention V2 metadata closure: empty for a V1
+    /// retention source.
+    pub(crate) const fn metadata_inventory(&self) -> ClosureInventoryV1 {
+        self.inventories[ClosureDomainV1::Metadata.index()]
     }
 
     #[cfg(test)]
@@ -360,7 +375,7 @@ impl StructuralClosureLedgerV1 {
     }
 
     #[cfg(test)]
-    pub(crate) fn counted_objects(&self) -> Vec<(ObjectRefV1, [u64; 2])> {
+    pub(crate) fn counted_objects(&self) -> Vec<(ObjectRefV1, [u64; 3])> {
         let mut objects = Vec::new();
         let mut cursor = self.states.read_zipper_at_borrowed_path(&[]);
         if let Some(state) = cursor.val() {
@@ -373,7 +388,7 @@ impl StructuralClosureLedgerV1 {
     }
 
     #[cfg(test)]
-    pub(crate) fn root_multiplicities(&self) -> Vec<(ObjectDigest, [u64; 2])> {
+    pub(crate) fn root_multiplicities(&self) -> Vec<(ObjectDigest, [u64; 3])> {
         let mut roots = Vec::new();
         let mut cursor = self.roots.read_zipper_at_borrowed_path(&[]);
         let digest = |path: &[u8]| {
@@ -418,6 +433,51 @@ impl StructuralClosureLedgerV1 {
         ledger
     }
 
+    /// Seed the metadata domain from an admitted retention V2 closure. The
+    /// anchor is the domain's only root, and each object's count is its root
+    /// multiplicity plus its occurrences as a child of a distinct metadata
+    /// object: exactly the ledger that activating the anchor from an empty
+    /// metadata domain builds, obtained without reading any object again.
+    pub(crate) fn seed_retention_metadata(
+        &mut self,
+        anchor: ObjectRefV1,
+        metadata: &RetentionMetadataInventoryV2,
+    ) -> Result<(), CanonicalFormatError> {
+        let domain = ClosureDomainV1::Metadata.index();
+        if self.inventories[domain] != ClosureInventoryV1::default() {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "retention metadata was seeded more than once".to_owned(),
+            });
+        }
+        for (reference, &count) in metadata.objects().iter().zip(metadata.occurrences()) {
+            let key = reference.digest();
+            let mut state = match self.states.get_val_at(key.as_bytes()).copied() {
+                Some(state) if state.declared_len != reference.encoded_len() => {
+                    return Err(CanonicalFormatError::ObjectLengthMismatch {
+                        expected: state.declared_len,
+                        actual: reference.encoded_len(),
+                    });
+                }
+                Some(state) => state,
+                None => DigestState::fresh(reference.encoded_len()),
+            };
+            state.counts[domain] = count;
+            self.states.insert(key.as_bytes(), state);
+        }
+        let mut roots = self
+            .roots
+            .get_val_at(anchor.digest().as_bytes())
+            .copied()
+            .unwrap_or([0; 3]);
+        roots[domain] = 1;
+        self.roots.insert(anchor.digest().as_bytes(), roots);
+        self.inventories[domain] = ClosureInventoryV1 {
+            distinct_objects: metadata.object_count(),
+            canonical_bytes: metadata.canonical_bytes(),
+        };
+        Ok(())
+    }
+
     /// Visit the retained closure directly in the digest order maintained by
     /// the PathMap.  The callback receives exact content references rebuilt
     /// from the trie key and its admitted declared length; no flattened list,
@@ -436,6 +496,31 @@ impl StructuralClosureLedgerV1 {
         while let Some(state) = cursor.to_next_get_val() {
             if state.counts[retained] > 0 {
                 visitor(object_ref_from_ledger_entry(cursor.path(), *state))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Visit the retained union together with the retention V2 metadata
+    /// closure in one digest-ordered traversal: the DATA objects of a V2
+    /// generation checkpoint. An object live in both domains is visited once.
+    pub(crate) fn try_visit_retained_union_and_metadata<E>(
+        &self,
+        mut visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let retained = ClosureDomainV1::Retained.index();
+        let metadata = ClosureDomainV1::Metadata.index();
+        let mut cursor = self.states.read_zipper_at_borrowed_path(&[]);
+        if let Some(state) = cursor.val() {
+            match (state.counts[retained], state.counts[metadata]) {
+                (0, 0) => {}
+                _ => visitor(object_ref_from_ledger_entry(cursor.path(), *state))?,
+            }
+        }
+        while let Some(state) = cursor.to_next_get_val() {
+            match (state.counts[retained], state.counts[metadata]) {
+                (0, 0) => {}
+                _ => visitor(object_ref_from_ledger_entry(cursor.path(), *state))?,
             }
         }
         Ok(())
@@ -461,7 +546,7 @@ impl StructuralClosureLedgerV1 {
             .roots
             .get_val_at(manifest.as_bytes())
             .copied()
-            .unwrap_or([0; 2]);
+            .unwrap_or([0; 3]);
         for domain in ClosureDomainV1::ALL {
             if credit.contains(domain) {
                 counts[domain.index()] =

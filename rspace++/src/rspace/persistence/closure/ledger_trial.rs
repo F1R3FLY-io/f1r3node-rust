@@ -5,7 +5,12 @@ use super::{
     format_error, load_reference,
 };
 use crate::rspace::persistence::canonical::{CanonicalFormatError, ObjectRefV1, checked_len};
-use crate::rspace::persistence::object::{CanonicalObjectView, EndpointValue};
+use crate::rspace::persistence::object::{
+    CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView, EndpointValue,
+};
+use crate::rspace::persistence::retention::v2_format::{
+    RETENTION_RADIX_DOMAIN, RetentionAnchorV2, RetentionReader,
+};
 use crate::rspace::persistence::store::ImmutableObjectStore;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +31,12 @@ pub(crate) struct LedgerTrialLimitsV1(pub(crate) [u64; 9]);
 
 impl LedgerTrialLimitsV1 {
     pub(crate) const UNBOUNDED: Self = Self([u64::MAX; 9]);
+
+    /// Replace one axis's budget, so a caller names every budget it sets.
+    pub(crate) const fn with(mut self, axis: LedgerTrialAxisV1, limit: u64) -> Self {
+        self.0[axis as usize] = limit;
+        self
+    }
 
     const fn get(self, axis: LedgerTrialAxisV1) -> u64 { self.0[axis as usize] }
 }
@@ -94,7 +105,7 @@ struct TrialCharge {
 
 struct LedgerTrial<'a, S> {
     store: &'a S,
-    domain: usize,
+    domain: ClosureDomainV1,
     limits: LedgerTrialLimitsV1,
     states: PathMap<DigestState>,
     live: ClosureInventoryV1,
@@ -119,7 +130,7 @@ where
     let roots = authorized_roots(&predecessor.roots, index, added, removed)?;
     let mut trial = LedgerTrial {
         store,
-        domain: index,
+        domain,
         limits,
         states: predecessor.states.clone(),
         live: predecessor.inventories[index],
@@ -184,15 +195,15 @@ where
 }
 
 fn authorized_roots<E>(
-    predecessor: &PathMap<[u64; 2]>,
+    predecessor: &PathMap<[u64; 3]>,
     domain: usize,
     added: &[ObjectRefV1],
     removed: &[ObjectRefV1],
-) -> Result<PathMap<[u64; 2]>, LedgerTrialRefusalV1<E>> {
+) -> Result<PathMap<[u64; 3]>, LedgerTrialRefusalV1<E>> {
     let mut roots = predecessor.clone();
     for reference in added {
         let key = reference.digest();
-        let mut counts = roots.get_val_at(key.as_bytes()).copied().unwrap_or([0; 2]);
+        let mut counts = roots.get_val_at(key.as_bytes()).copied().unwrap_or([0; 3]);
         counts[domain] = counts[domain].checked_add(1).ok_or_else(|| {
             LedgerTrialRefusalV1::Closure(format_error(CanonicalFormatError::CounterOverflow(
                 "closure root multiplicities",
@@ -202,7 +213,7 @@ fn authorized_roots<E>(
     }
     for reference in removed {
         let key = reference.digest();
-        let mut counts = roots.get_val_at(key.as_bytes()).copied().unwrap_or([0; 2]);
+        let mut counts = roots.get_val_at(key.as_bytes()).copied().unwrap_or([0; 3]);
         counts[domain] = match counts[domain] {
             0 => return Err(LedgerTrialRefusalV1::UnauthorizedRemoval),
             positive => positive - 1,
@@ -280,7 +291,7 @@ where S: ImmutableObjectStore
             Some(state) => state,
             None => DigestState::fresh(reference.encoded_len()),
         };
-        let before = state.counts[self.domain];
+        let before = state.counts[self.domain.index()];
         let (after, charged_count, crossing) = match (phase, before) {
             (Phase::Activation, _) => {
                 let after = u128::from(before) + 1;
@@ -319,7 +330,7 @@ where S: ImmutableObjectStore
             self.push_cursor(reference)?;
         }
         self.events.pop();
-        state.counts[self.domain] =
+        state.counts[self.domain.index()] =
             u64::try_from(after).expect("a reserved reference count is within its u64 limit");
         self.states.insert(key.as_bytes(), state);
         self.live = ClosureInventoryV1 {
@@ -361,9 +372,72 @@ where S: ImmutableObjectStore
         reference: ObjectRefV1,
     ) -> Result<(), LedgerTrialRefusalV1<S::Error>> {
         let bytes = load_reference(self.store, reference).map_err(LedgerTrialRefusalV1::Closure)?;
-        let object = CanonicalObjectView::parse(bytes.as_ref())
-            .map_err(|error| LedgerTrialRefusalV1::Closure(format_error(error)))?;
         let start = self.references.len();
+        match self.domain {
+            ClosureDomainV1::Metadata => {
+                self.push_metadata_references(reference, bytes.as_ref())?
+            }
+            ClosureDomainV1::Current | ClosureDomainV1::Retained => {
+                self.push_semantic_references(reference, bytes.as_ref())?
+            }
+        }
+        self.cursors
+            .try_reserve(1)
+            .map_err(|_| allocation_failure(self.cursors.len() + 1))?;
+        self.cursors.push(TrialCursor {
+            start,
+            next: start,
+            end: self.references.len(),
+        });
+        Ok(())
+    }
+
+    /// A metadata object is a retention anchor, which references its radix
+    /// root, or a radix node, which references its children. Every other
+    /// domain is refused, so no state-DAG object enters the metadata domain.
+    fn push_metadata_references(
+        &mut self,
+        reference: ObjectRefV1,
+        bytes: &[u8],
+    ) -> Result<(), LedgerTrialRefusalV1<S::Error>> {
+        let closure = |error| LedgerTrialRefusalV1::Closure(format_error(error));
+        match CanonicalObjectKind::from_domain_prefix_for(bytes, RetentionReader::Dual)
+            .map_err(closure)?
+        {
+            CanonicalObjectKind::RetentionAnchor => {
+                let anchor = RetentionAnchorV2::parse(bytes).map_err(closure)?;
+                self.reserve_references(1)?;
+                self.references.push(anchor.historical_root());
+            }
+            CanonicalObjectKind::RetentionRadixNode => {
+                let node = CanonicalDagNodeView::parse_in_domain(
+                    bytes,
+                    RETENTION_RADIX_DOMAIN,
+                    "RSpace retention radix node",
+                )
+                .map_err(closure)?;
+                let children = node.children().iter();
+                self.reserve_references(children.len())?;
+                self.references.extend(children.map(|child| child.target));
+            }
+            kind => {
+                return Err(closure(CanonicalFormatError::UnexpectedObjectKind {
+                    digest: reference.digest(),
+                    expected: "retention anchor or retention radix node",
+                    actual: kind.name(),
+                }));
+            }
+        }
+        Ok(())
+    }
+
+    fn push_semantic_references(
+        &mut self,
+        reference: ObjectRefV1,
+        bytes: &[u8],
+    ) -> Result<(), LedgerTrialRefusalV1<S::Error>> {
+        let object = CanonicalObjectView::parse(bytes)
+            .map_err(|error| LedgerTrialRefusalV1::Closure(format_error(error)))?;
         match object {
             CanonicalObjectView::SemanticManifest(manifest) => {
                 let roots = manifest.roots().iter();
@@ -393,14 +467,6 @@ where S: ImmutableObjectStore
                 )));
             }
         }
-        self.cursors
-            .try_reserve(1)
-            .map_err(|_| allocation_failure(self.cursors.len() + 1))?;
-        self.cursors.push(TrialCursor {
-            start,
-            next: start,
-            end: self.references.len(),
-        });
         Ok(())
     }
 

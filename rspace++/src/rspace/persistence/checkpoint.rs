@@ -267,10 +267,51 @@ impl CheckpointObjectInventoryV1 {
         Self::from_ordered(report, retention_manifest, ordered)
     }
 
-    /// Test-only V2 inventory: DATA is the retained union plus the metadata
-    /// closure. Production V2 emission belongs to task 7926.
+    /// The V2 inventory: DATA is the retained union together with the
+    /// retention metadata closure, which holds the appointed anchor and every
+    /// radix node, in one digest-ordered traversal of the closure ledger.
+    pub(crate) fn from_retained_union_and_metadata(
+        ledger: &StructuralClosureLedgerV1,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        let report = ledger.retained_union_report();
+        let metadata = ledger.metadata_inventory();
+        let data_objects = report
+            .distinct_objects
+            .checked_add(metadata.distinct_objects)
+            .ok_or(GenerationCheckpointErrorV1::CounterOverflow("checkpoint DATA objects"))?;
+        let data_canonical_bytes = report
+            .canonical_bytes
+            .checked_add(metadata.canonical_bytes)
+            .ok_or(GenerationCheckpointErrorV1::CounterOverflow(
+                "checkpoint DATA canonical bytes",
+            ))?;
+        let mut builder = OrderedObjectInventoryBuilderV1::new(data_objects, data_canonical_bytes);
+        try_visit_checkpoint_references_v2(ledger, |reference| builder.push(reference)).map_err(
+            |error| match error {
+                CheckpointReferenceVisitErrorV1::Checkpoint(error) |
+                CheckpointReferenceVisitErrorV1::Visitor(error) => error,
+            },
+        )?;
+        Self::from_ordered_v2(
+            report,
+            metadata.distinct_objects,
+            metadata.canonical_bytes,
+            builder.finish()?,
+        )
+    }
+
+    /// Test-only V2 inventory over an explicit metadata closure.
     #[cfg(test)]
     pub(crate) fn from_test_ordered_v2(
+        report: RetainedUnionClosureReportV1,
+        metadata_objects: u64,
+        metadata_canonical_bytes: u64,
+        ordered: OrderedObjectInventoryV1,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        Self::from_ordered_v2(report, metadata_objects, metadata_canonical_bytes, ordered)
+    }
+
+    fn from_ordered_v2(
         report: RetainedUnionClosureReportV1,
         metadata_objects: u64,
         metadata_canonical_bytes: u64,
@@ -422,6 +463,18 @@ pub(crate) fn try_visit_checkpoint_references<E>(
     Ok(())
 }
 
+/// Visit the DATA objects of a V2 checkpoint: the retained union and the
+/// retention metadata closure, which holds the appointed anchor, merged in
+/// one digest-ordered traversal of the closure ledger.
+pub(crate) fn try_visit_checkpoint_references_v2<E>(
+    ledger: &StructuralClosureLedgerV1,
+    visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
+) -> Result<(), CheckpointReferenceVisitErrorV1<E>> {
+    ledger
+        .try_visit_retained_union_and_metadata(visitor)
+        .map_err(CheckpointReferenceVisitErrorV1::Visitor)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GenerationCheckpointDescriptorV1 {
     profile_id: SemanticProfileId,
@@ -447,6 +500,25 @@ impl GenerationCheckpointDescriptorV1 {
             profile_id,
             state,
             retention_manifest,
+            current_state_objects,
+            current_state_canonical_bytes,
+            inventory,
+        )
+    }
+
+    pub(crate) fn from_retained_union_and_metadata(
+        profile_id: SemanticProfileId,
+        state: StateVersionV1,
+        retention_anchor: ObjectRefV1,
+        current_state_objects: u64,
+        current_state_canonical_bytes: u64,
+        ledger: &StructuralClosureLedgerV1,
+    ) -> Result<Self, GenerationCheckpointErrorV1> {
+        let inventory = CheckpointObjectInventoryV1::from_retained_union_and_metadata(ledger)?;
+        Self::from_admitted_inventory(
+            profile_id,
+            state,
+            retention_anchor,
             current_state_objects,
             current_state_canonical_bytes,
             inventory,
@@ -886,8 +958,8 @@ impl Display for GenerationCheckpointErrorV1 {
             ),
             Self::SourceRetentionFormatNotWritable(format) => write!(
                 formatter,
-                "an admitted {format:?} retention source cannot derive a checkpoint before task \
-                 7926 adds the V2 writer"
+                "an admitted {format:?} retention source cannot derive a checkpoint under the V1 \
+                 retention writer"
             ),
         }
     }

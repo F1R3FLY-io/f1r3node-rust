@@ -865,6 +865,14 @@ rocq_check_modules "shared retention V2 format and V1 migration" \
   StackSafePDA.ChannelImage StackSafePDA.GenerationCheckpointPublication \
   StackSafePDA.IncrementalLedgerTrial StackSafePDA.IncrementalDomainComposition \
   StackSafePDA.RetentionV2Format
+rocq_reject_placeholders theories/RetentionV2Editor.v
+rocq_compile_with_closed_count theories/RetentionV2Editor.v 16 \
+  "path-local retention V2 metadata editor"
+rocq_check_modules "path-local retention V2 metadata editor" \
+  StackSafePDA.ChannelImage StackSafePDA.GenerationCheckpointPublication \
+  StackSafePDA.IncrementalLedgerTrial StackSafePDA.IncrementalDomainComposition \
+  StackSafePDA.CreditedClosureLedger StackSafePDA.RetentionV2Format \
+  StackSafePDA.RetentionV2Editor
 streaming_codec_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/StreamingCodecPDA.v 2>&1

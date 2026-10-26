@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use super::canonical::{CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len};
-use super::object::CanonicalObjectView;
+use super::object::{CanonicalObjectView, validate_canonical_object_for};
+use super::retention::v2_format::RetentionReader;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectAdmission {
@@ -100,9 +101,12 @@ impl<O: AsRef<[u8]>> AsRef<[u8]> for LayeredObject<O> {
 ///
 /// Staging never calls the base store's admission method.  A failed rewrite
 /// can therefore be discarded without exposing a prefix of its object graph.
+/// Staged bytes are fully parsed for the overlay's retention reader, which is
+/// V1-only unless a retention V2 writer selects the dual reader.
 pub struct StagingObjectStore<'a, S: ImmutableObjectStore> {
     base: &'a S,
     limits: StagingStoreLimits,
+    reader: RetentionReader,
     state: RwLock<StagingState>,
 }
 
@@ -119,15 +123,23 @@ impl<'a, S: ImmutableObjectStore> StagingObjectStore<'a, S> {
         Self {
             base,
             limits,
+            reader: RetentionReader::V1Only,
             state: RwLock::new(StagingState::default()),
         }
+    }
+
+    /// Admit the retention metadata domains a reader with this capability
+    /// accepts. Only the retention V2 writer selects the dual reader.
+    pub(crate) const fn with_retention_reader(mut self, reader: RetentionReader) -> Self {
+        self.reader = reader;
+        self
     }
 
     pub fn stage(
         &self,
         canonical_bytes: Arc<[u8]>,
     ) -> Result<(ObjectRefV1, ObjectAdmission), StagingStoreError<S::Error>> {
-        let _ = CanonicalObjectView::parse(&canonical_bytes)?;
+        validate_canonical_object_for(&canonical_bytes, self.reader)?;
         self.stage_prevalidated(canonical_bytes)
     }
 
@@ -333,7 +345,7 @@ impl<S: ImmutableObjectStore> MutableObjectStore for StagingObjectStore<'_, S> {
             }
             .into());
         }
-        let _ = CanonicalObjectView::parse(&canonical_bytes)?;
+        validate_canonical_object_for(&canonical_bytes, self.reader)?;
         let actual = ObjectDigest::of_canonical_bytes(&canonical_bytes);
         if actual != reference.digest() {
             return Err(CanonicalFormatError::DigestMismatch {

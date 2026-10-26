@@ -145,19 +145,38 @@ impl<E> From<CanonicalFormatError> for RetentionRadixErrorV2<E> {
 }
 
 /// The complete V2 retention metadata closure: the anchor and every radix
-/// node reachable from it, in digest order.
+/// node reachable from it, in digest order, each with its reference count in
+/// the metadata domain (its root multiplicity plus its occurrences as a child
+/// of a distinct metadata object).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RetentionMetadataInventoryV2 {
     objects: Box<[ObjectRefV1]>,
+    occurrences: Box<[u64]>,
     canonical_bytes: u64,
 }
 
 impl RetentionMetadataInventoryV2 {
     pub(crate) fn objects(&self) -> &[ObjectRefV1] { &self.objects }
 
+    /// The metadata-domain reference count of each object, parallel to
+    /// [`Self::objects`].
+    pub(crate) fn occurrences(&self) -> &[u64] { &self.occurrences }
+
     pub(crate) fn object_count(&self) -> u64 { self.objects.len() as u64 }
 
     pub(crate) const fn canonical_bytes(&self) -> u64 { self.canonical_bytes }
+
+    /// The same closure with every reference count replaced, standing in for
+    /// a seed that miscounts shared radix children.
+    #[cfg(test)]
+    pub(crate) fn with_occurrences_for_test(&self, occurrences: Box<[u64]>) -> Self {
+        assert_eq!(occurrences.len(), self.objects.len(), "one count per metadata object");
+        Self {
+            objects: self.objects.clone(),
+            occurrences,
+            canonical_bytes: self.canonical_bytes,
+        }
+    }
 }
 
 /// An admitted V2 anchor together with its authenticated metadata closure.
@@ -285,38 +304,65 @@ where
     };
     validate_historical(anchor.current(), &entries)?;
     let metadata = match declared {
-        0 => metadata_inventory(anchor.object_ref(), [root].into_iter())?,
+        0 => metadata_inventory(anchor.object_ref(), root, [(root, &[][..])].into_iter())?,
         _ => metadata_inventory(
             anchor.object_ref(),
-            nodes.values().map(|(reference, _)| *reference),
+            root,
+            nodes
+                .values()
+                .map(|(reference, node)| (*reference, &node.children[..])),
         )?,
     };
     Ok(AdmittedRetentionHistoryV2 { entries, metadata })
 }
 
-/// Merge the anchor into the digest-ordered radix references.
-fn metadata_inventory(
+/// Merge the anchor into the digest-ordered radix nodes and count each
+/// object's metadata-domain references: the anchor is the only root, the
+/// radix root is referenced once by the anchor, and every distinct radix node
+/// references each of its children once per edge. No object is read again.
+fn metadata_inventory<'a>(
     anchor: ObjectRefV1,
-    radix: impl ExactSizeIterator<Item = ObjectRefV1>,
+    root: ObjectRefV1,
+    radix: impl ExactSizeIterator<Item = (ObjectRefV1, &'a [DagChild])> + Clone,
 ) -> Result<RetentionMetadataInventoryV2, CanonicalFormatError> {
+    let mut references = BTreeMap::new();
+    references.insert(root.digest(), 1_u64);
+    for (_, children) in radix.clone() {
+        for child in children {
+            let count = references.entry(child.target.digest()).or_insert(0_u64);
+            *count = count
+                .checked_add(1)
+                .ok_or(CanonicalFormatError::CounterOverflow("retention metadata references"))?;
+        }
+    }
     let mut objects = Vec::with_capacity(radix.len() + 1);
+    let mut occurrences = Vec::with_capacity(radix.len() + 1);
     let mut canonical_bytes = anchor.encoded_len();
     let mut anchor_pending = true;
-    for reference in radix {
+    for (reference, _) in radix {
         if anchor_pending && anchor.digest() < reference.digest() {
             objects.push(anchor);
+            occurrences.push(1);
             anchor_pending = false;
         }
         canonical_bytes = canonical_bytes
             .checked_add(reference.encoded_len())
             .ok_or(CanonicalFormatError::CounterOverflow("retention metadata bytes"))?;
         objects.push(reference);
+        occurrences.push(
+            references
+                .get(&reference.digest())
+                .copied()
+                .expect("every admitted radix node is the radix root or a child of one"),
+        );
     }
     if anchor_pending {
         objects.push(anchor);
+        occurrences.push(1);
     }
     Ok(RetentionMetadataInventoryV2 {
         objects: objects.into_boxed_slice(),
+        occurrences: occurrences.into_boxed_slice(),
         canonical_bytes,
     })
 }

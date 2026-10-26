@@ -19573,6 +19573,291 @@ Computer Science 293, 369–378, 1988,
 D. Michie, "'Memo' functions and machine learning", *Nature* 218(5136):19–22,
 1968, [doi:10.1038/218019a0](https://doi.org/10.1038/218019a0).
 
+### J-249 — 2026-10-26: path-local retention V2 metadata writer (task 7926)
+
+**DERIVED.** This entry follows J-248, whose cold reader admits the V2
+representation that J-247 froze, and which left three items to this task: the
+writer, the production builder of the V2 checkpoint inventory and the
+production migration. The acceptance criterion of task 7926 reads: "Reuse
+existing canonical radix bodies/editor/zipper under metadata domains for
+insert/evict/current-root replacement. CoW-update exact history count and
+metadata-closure inventory using proved ledger; do not collect or re-encode all
+historical entries. Preserve generation/reference aliases and canonical
+encoding; explicit one-time V1 migration may enumerate history. Property-test
+edit histories and exact bytes/inventory against independent rebuilt cold
+fixtures; measure operation counters for fixed change versus growing history."
+Its execution boundary is to prove the new algorithms first, extract every
+invariant into a normal-suite property test, and implement only that model. The
+first V2 successor of a directory is a one-way change for it, so the user
+decided on 2026-10-26 to activate after the gates: this change selects the V2
+writer only through a test-build setter, and a separate commit, after this
+change's full gate, makes V2 the default writer with a release note.
+
+The new theory `formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v` proves
+sixteen capstones, T1 to T8 and their negative controls T1m to T8m, all closed
+under the global context. The production writer is the new module
+`rspace++/src/rspace/persistence/retention/v2_writer.rs`, over a seam of the
+existing radix editor and a third domain of the closure ledger. These design
+decisions are what a reconstruction must preserve:
+
+1. One editor. The persistent DAG's `RadixEditor` (`rewrite.rs`) edits the
+   history radix. It was tied to the semantic DAG in exactly four places: the
+   namespace in its CAS failure, the node kind that `load_node` accepts, the
+   domain header of its encoder and the V1-only validation of the staging
+   overlay. The change parameterizes those four, by `RadixDomainV1` and a
+   reader capability, and nothing else. A radix node is the DAG node body under
+   `RSpaceDAG.RetR`, so semantic bytes are unchanged.
+2. One CAS per successor. A successor inserts the outgoing current entry
+   $`c`$ with $`(\mathrm{key}(c), \mathrm{Absent}, \mathrm{Multiplicity}(b_c))`$.
+   Rule R8 puts $`\mathrm{key}(c)`$ above every historical key, so the edit
+   follows the radix's right spine, copying one search path and sharing every
+   other node, which is path copying (Driscoll et al., 1989). The current entry
+   lives only in the anchor: replacing the current root is the anchor's field
+   together with the metadata root change $`[A']`$ in, $`[A]`$ out.
+3. The count comes from the CAS outcomes. `cas_count` adds one per insertion and
+   subtracts one per eviction with checked arithmetic, and the editor refuses a
+   batch unless every CAS matches. The count never uses the editor's
+   `inserted_objects`, because two entries can share one leaf object (theorem
+   T4m).
+4. The empty root is vacant. The editor starts an empty history from a vacant
+   node without reading it, because the format fixes the empty node's bytes,
+   and it stages the empty node whenever an edit empties a history.
+5. The metadata closure is a third ledger domain. `ClosureDomainV1::Metadata`
+   runs the copy-on-write ledger trial of J-246 over anchors and radix nodes
+   only. A step activates $`[A']`$ before it deactivates $`[A]`$, so it expands
+   exactly $`\lvert M \,\triangle\, M' \rvert`$ objects (theorem T6): reference
+   counting (Collins, 1960) with a pointer replacement's increments applied
+   before its decrements. Its budgets are the admission limits that bound the
+   cold reader's walk of the same closure, and no limit is added.
+6. The seed counts occurrences. Cold admission of a V2 source seeds the
+   metadata domain once, with the reference counts that the reader computes
+   from nodes it has already parsed (theorem T7). A seed that counts each
+   object once is unsound for a leaf shared by two parents (theorem T7m).
+7. One-time migration. A V1 source migrates at its first successor under the V2
+   writer: one sorted batch of its $`n`$ historical entries followed by its
+   current entry, from the vacant root, with exactly $`n + 1`$ edits reserved,
+   and a trial that only activates the new anchor. It is crash-atomic, because
+   its objects reach the directory only in the commit's WAL transaction, and
+   nothing exports V2 back to V1.
+8. The writer switch. `DurableDirectoryV1` carries a writer beside its reader.
+   `open` selects the V1 writer, and only the test-build setter
+   `with_retention_writer_for_test` selects V2. A V2 writer must read back what
+   it writes, so cold admission refuses it under the V1-only reader
+   (`RetentionWriterUnreadable`).
+9. The transaction's reader. A sealed transaction carries a reader capability,
+   V1-only until V2 metadata is attached and dual afterwards. The WAL encoder
+   validates every sealed object under it, so no metadata object can enter a
+   transaction without attached V2 metadata.
+10. V2 checkpoints. Under the V2 writer, a generation checkpoint of a V2 source
+    declares as DATA the retained union and the metadata closure, in one
+    digest-ordered traversal of the ledger's two disjoint domains. A V1 source
+    keeps its V1 checkpoint until its first successor.
+11. The post-publication check. A V2 successor ends in an incremental terminal,
+    which declares no DATA. After the catalog slot commits, the publisher
+    compares the trial's metadata inventory with the one that cold re-admission
+    reports, and returns `PublishedMetadataInventory`, with the outcome
+    `Published`, when they differ.
+12. No byte changes for opened directories, which keep the V1 writer, and none
+    in blocks, state roots or wire formats. No PathMap, MORK, rholang-rs or
+    Casper source changes. Activation is a separate commit.
+
+The task's requirements map onto the work as follows:
+
+| Requirement | Where it is met |
+|---|---|
+| reuse the existing canonical radix bodies and editor under metadata domains | decision 1; theorems T1 and T2; `RV-30`, `RV-31` |
+| insert, evict and current-root replacement | the commit, the eviction and the anchor's root change; theorems T2 and T4; `RV-31`, `RV-33` |
+| copy-on-write update of the exact history count | decision 3; theorems T4 and T4m; `RV-33` |
+| copy-on-write update of the metadata-closure inventory with the proved ledger | decisions 5 and 6; theorems T6, T6m, T7 and T7m; `RV-35`, `RV-36` |
+| no collection or re-encoding of all historical entries | one search path per edit and a count-only preflight; theorems T3 and T3m; `RV-32` |
+| generation and reference aliases preserved | the same manifest at two generations is two keys, because the generation leads the key; identical subtrees are one object, counted by occurrences; the aliased growth shape and the aliased leaves of `RV-33` and `RV-36` |
+| canonical encoding preserved | the editor's image is the canonical rebuild, byte for byte; theorems T1, T2 and T5; `RV-30`, `RV-31`, `RV-34` |
+| explicit one-time V1 migration that may enumerate history | decision 7; theorems T8 and T8m; `RV-37`; the directory test of the migration |
+| edit histories, exact bytes and inventory against independent rebuilt cold fixtures | `RV-30` to `RV-37`, each compared after every step with the test model's rebuild, anchor, closure and cold admission |
+| operation counters for a fixed change against a growing history | `RV-32` and `RV-35`, from $`2^{4}`$ to $`2^{14}`$ entries under three generation shapes |
+
+The editor seam, the literate commit, eviction and migration, the work and byte
+equations, the literate successor binding, the metadata trial and its seed, the
+post-publication check, the coherence matrix, the checkpoints, the theorem table
+and the `RV-30`–`RV-37` bindings are in the
+[generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#path-local-retention-v2-metadata-writer-2026-10-26),
+with a flow figure of one successor under both writers
+(`figures/retention-v2-writer-commit.svg`), a figure of one commit as a
+path-local edit (`figures/retention-v2-path-local-edit.svg`) and a sequence
+figure of the metadata trial (`figures/retention-v2-metadata-trial.svg`).
+
+**DEPARTURES FROM THE DESIGN.** Six choices differ from the design recorded
+before the theory:
+
+1. The design's theorem T3 said that an insertion's new objects lie on the new
+   search path. That is false: the node split off beside the path is new. With
+   one entry $`a`$ and an inserted key $`k`$ whose longest common prefix with
+   $`a`$ is shorter than $`w`$, the leaf of $`a`$ becomes an inner node over
+   two leaves, and the leaf of the remainder of $`a`$ is new but not on the
+   search path of $`k`$. T3 states the symmetric pair instead: a node of the
+   larger image that the smaller one lacks is on the key's search path in the
+   larger image or is the one node that the insertion splits off and the
+   eviction merges away. An insertion therefore adds at most $`w + 2`$ radix
+   nodes and removes at most $`w + 1`$, and an eviction the reverse, so the
+   bound $`2 + \lvert M \,\triangle\, M' \rvert \le 2w + 7`$ is unchanged.
+2. The design checked that a V2 writer has the dual reader in
+   `require_writable_retention`, at every successor. It is a refusal of cold
+   admission instead, in `admit_physical_source`, after the profile check and
+   before the store is pinned. The writer and reader pair belongs to the opened
+   directory, not to a successor, so it is refused once, before any successor
+   or checkpoint can be prepared, and the refusal writes nothing.
+3. The design had the writer refuse a target whose generation is not above the
+   current entry's. That refusal is unreachable and was not written: sealing
+   requires the target generation to be the base generation plus one
+   (`require_contiguous_generation`, `mutation.rs:1286-1294`), the base is the
+   current entry's state, and cold admission enforces rule R8.
+4. The design gave the sealed transaction a retention format, from which its
+   reader would follow. It carries the reader capability itself, because the
+   WAL encoder validates under a reader.
+5. The design's builder took the ledger and the anchor. It takes only the
+   ledger, whose metadata domain already counts the anchor as its root, and the
+   traversal that the design called `try_visit_checkpoint_union` is
+   `try_visit_retained_union_and_metadata`, after the two domains it visits.
+6. The design planned growth runs at $`2^{16}`$ to $`2^{20}`$ entries marked
+   `#[ignore]`, and a report of the V1 manifest's bytes beside the counters.
+   The properties run $`2^{4}`$ to $`2^{14}`$ entries in the normal suite and
+   assert every counter equal to the oracle's, the V1 manifest's exact size and
+   the exact crossover; no test is ignored. Longer histories and the recorded
+   scaling series are task 7929's measurement.
+
+**EXECUTABLE REFINEMENT.** The production change has nine parts:
+
+- `retention/v2_writer.rs` (new): `commit_retention_v2`, `evict_retention_v2`,
+  `migrate_retention_v1`, `cas_count` and `stage_anchor`. The eviction has no
+  production caller and carries `expect(dead_code)` outside tests, naming task
+  7756;
+- `rewrite.rs`: `RadixDomainV1`, the domain in `CompareAndSwapFailure`, the
+  entry point `rewrite_retention_history` with its vacant empty root, the
+  retention arms of `load_node` and `build_final`, and semantic provenance
+  recorded only in the semantic domain;
+- `object.rs`: the shared `write_body`, `RetentionRadixNodeV2` with
+  `as_retention_radix`, and `validate_canonical_object_for`;
+- `store.rs`: the staging overlay's reader capability and
+  `with_retention_reader`;
+- `closure.rs` and `closure/ledger_trial.rs`: `ClosureDomainV1::Metadata` and
+  `SEMANTIC`, the three-domain counts, roots and inventories,
+  `seed_retention_metadata`, `metadata_inventory`,
+  `try_visit_retained_union_and_metadata` and the metadata cursor
+  `push_metadata_references`;
+- `retention/v2_reader.rs`: the occurrence counts of
+  `RetentionMetadataInventoryV2`;
+- `transaction.rs` and `wal/codec.rs`: `with_retention_metadata`, the
+  transaction's reader, and validation under it;
+- `checkpoint.rs`: the production V2 builders
+  `from_retained_union_and_metadata` of the inventory and the descriptor, and
+  `try_visit_checkpoint_references_v2`;
+- `durable/io.rs`, `durable/admission.rs` and `durable/publication.rs`: the
+  writer and its test setter, the coherence refusal, the seed at cold
+  admission, the successor binding with `attach_retention_v2` and
+  `metadata_trial_limits`, the V2 checkpoint descriptor and visitor, and
+  `PublishedMetadataInventory`.
+
+Eight properties in the new `retention_v2_editor_properties.rs` bind `RV-30` to
+`RV-37`, and four directory tests in `durable_publication.rs` run the writer
+through real directories. `property_support.rs` binds the eight rows, and the
+registry now holds 187 IDs, up from 179. `_CoqProject` lists the theory, and the
+runner compiles it with `rocq_compile_with_closed_count … 16` and kernel-checks
+it. `generation_checkpoint_properties.rs` includes the theory and the new
+property source, so the registry test checks both. The test model's helpers in
+`retention_v2_format_properties.rs` became visible to the new module, and
+`cow_reachability_ledger_properties.rs` reads three-domain arrays, requires a
+trial to leave every other domain unchanged, and names the two semantic domains
+`ClosureDomainV1::SEMANTIC` where it meant them. Development found these, each
+recorded with its evidence:
+
+- *Theorem T3 of the design* (departure 1). The proof of the corrected statement
+  analyzes one insertion into a canonical image structurally, shows that the
+  edited tree is already canonical, so finalization is the identity, and reads
+  the eviction as the same pair backwards.
+- *Large numerals in Rocq 9.* Natural-number literals of 5000 and above are
+  abstracted as `Nat.of_num_uint`, which `lia` cannot see through. The node
+  bound is therefore written as `32 + 8 + w + 1 + 9 + (32 + 40 * 256)`, and
+  T3m states the crossover symbolically, as a history at least as long as the
+  path-local bound; the exact crossover at 9 258 entries is executable
+  (`RV-32`).
+- *The editor's cursor.* The theory walks every CAS of a batch from the root,
+  while `RadixEditor::apply` (`rewrite.rs:792-816`) resumes at the last cursor
+  step that ends within the longest common prefix of the previous and the
+  current key. That step's node path is the current key's prefix of the same
+  length, so resuming there skips only nodes the batch has already opened. The
+  equivalence is argued, not mechanized; the theory's header and the catalog's
+  boundary state it, and the multi-edit batches of `RV-30`, `RV-31` and `RV-37`
+  check it against the independent rebuild.
+- *Mechanical proof failures*, kept so that they are not retried: a helper that
+  took the nested induction hypothesis as a `Forall` predicate defeated
+  higher-order unification and was replaced by rewriting with `Forall_forall`;
+  the fuel-structural `partition_build` needed an explicit equation for the
+  empty list; a hypothesis elaborated with
+  `@cons (list nat * option nat * option nat)` did not rewrite a goal stated
+  with the alias `cas_mutation`, although the two are convertible, and is
+  restated through the alias with `exact`; and a premise that `destruct … eqn:`
+  had rewritten to `false = false` is discharged by `eq_refl`.
+- *A host failure.* The host stopped abruptly at about 19:25 UTC while the last
+  four capstones, T6, T6m, T7 and T7m, were being proved. The working copy of
+  the theory lost its last 24 bytes, which were restored from the export copy
+  after its first 278,431 bytes were verified identical, and the failed
+  strategies for those capstones after 19:19 UTC were lost with a volatile
+  scratch directory. After recovery the theory compiled with 16 of 16
+  capstones closed and passed kernel checking
+  (`target/perf/logs/phase0/7926-model-rocq-20261026T201816Z.log`, SHA-256
+  `5c9191a8fc1ece62a7b1a373712ee324105bafdf1ee5ea2ab5ddae2c61ffc6db`).
+- *The registry's own control.* With the eight properties bound and no catalog
+  rows yet, the registry test failed, as predicted, with "catalog and
+  executable property IDs diverged", while the other twelve focused tests
+  passed (`target/perf/logs/c22/focused-7926-20261026T215314Z.log`); it passes
+  with the rows.
+
+Four test-design choices matter for reproducing the evidence. The oracle never
+calls the editor: it rebuilds each image with the test model's `build_radix`,
+encodes anchors with `model_anchor_bytes`, and computes closures, occurrence
+counts and search paths from the rebuilt objects, and the directory tests track
+their expected history with `RetentionOracle`, which keeps the entries without
+the editor. The work properties read the editor's report, the trial's counters
+and the reads of a tracing store, and compare each with the value that the
+oracle derives from the two search paths, not with a bound alone. The growth
+shapes cover the aliasing that the criterion names: consecutive generations;
+generations with gaps, $`1009\,i + (i \bmod 7)`$ for entry $`i`$; and one
+manifest at every generation, whose leaves are one shared object. As in J-248,
+the directory snapshot omits the advisory writer lock, so "unchanged directory"
+compares durable state only.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `6eea22a4` exported to
+`target/scratch/idx`. That tree is HEAD `21912f66` plus this change, with this
+journal entry and the catalog's verification-record paragraph and pinned-source
+table still holding placeholders. It ran one heavy job at a time, each in a
+headless user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| Rocq dependency closure, retention-editor closed capstones, placeholder scan, `coqchk` | 16 GiB | the dependencies compiled; retention editor 16 of 16 closed; no placeholder; kernel check passed | `target/perf/logs/phase0/7926-rocq-20261026T224211Z.log` | `cd35e8f5fd878c4d49e14e0fbcb3438e5139ba7d311e3fbedd30ad0b7330841b` |
+| the 457 selected rspace++ library tests under `rspace::persistence` (the eight writer properties, the four directory tests, the format, reader, ledger, reachability, closure, semantic, admission and publication tests, and the registry test), debug | 48 GiB, one test thread | 457 passed in 25.89 s; the three unwind-child helpers ignored by design | `target/perf/logs/phase4/7926-persistence-debug-20261026T224319Z.log` | `130891546d9121fb63a139477a25e2a5b38cd76aa606c7615cdc127daacf1109` |
+| the same, release | as above | 457 passed in 9.66 s; the three unwind-child helpers ignored by design | `target/perf/logs/phase4/7926-persistence-release-20261026T224319Z.log` | `45ce8d289c6defaaa6730d84fc2b5eeeb919f0503aacf4ff86fd1c9cce2a3860` |
+
+The TLA+ models did not change, so TLC was not rerun. The commit's full export
+gate (`cargo check`, clippy, the release nextest suites for `models`,
+`rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the doc tests) is
+recorded in the pgmcp progress note for task 7926. These results put a complete
+path-local V2 writer in production code behind the test-build setter, with every
+capstone bound to a property and every property to a test. They do not activate
+it: opened directories keep the V1 writer until the activation commit. The
+trusted successor, its comparison with cold admission and the scaling evidence
+are tasks 7927, 7928 and 7929, and the eviction policy is task 7756. These are
+agent-run results; independent review and the approved pgmcp verification recipe
+remain required.
+
+Cited works: G. E. Collins, "A method for overlapping and erasure of lists",
+*Communications of the ACM* 3(12):655–657, 1960,
+[doi:10.1145/367487.367501](https://doi.org/10.1145/367487.367501);
+J. R. Driscoll, N. Sarnak, D. D. Sleator and R. E. Tarjan, "Making data
+structures persistent", *Journal of Computer and System Sciences*
+38(1):86–124, 1989,
+[doi:10.1016/0022-0000(89)90034-2](<https://doi.org/10.1016/0022-0000(89)90034-2>).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

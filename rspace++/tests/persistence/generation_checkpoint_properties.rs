@@ -481,6 +481,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalDomainComposition.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/RetentionV2Format.v"),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v"),
     ]
     .concat();
     let mut cited_tla = BTreeSet::new();
@@ -576,6 +577,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         formal_gate.contains("theories/RetentionV2Format.v"),
         "the integrated formal gate does not compile the retention V2 theory cited by RV rows",
     );
+    assert!(
+        formal_gate.contains("theories/RetentionV2Editor.v"),
+        "the integrated formal gate does not compile the radix editor theory cited by RV rows",
+    );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols
             .iter()
@@ -627,6 +632,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("durable_rspace_authority.rs"),
         include_str!("generation_checkpoint_properties.rs"),
         include_str!("incremental_reachability_properties.rs"),
+        include_str!("retention_v2_editor_properties.rs"),
         include_str!("retention_v2_format_properties.rs"),
         include_str!("wal_codec.rs"),
         include_str!("../hot_store/journal_commit.rs"),

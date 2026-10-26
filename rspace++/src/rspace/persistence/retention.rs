@@ -22,6 +22,7 @@ use super::mutation::StateVersionV1;
 
 pub(crate) mod v2_format;
 pub(crate) mod v2_reader;
+pub(crate) mod v2_writer;
 
 pub(crate) const RETENTION_MANIFEST_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Retn\0\0";
 const STATE_ENTRY_LEN: u64 = 8 + 32 + 8 + 8;

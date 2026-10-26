@@ -1,0 +1,96 @@
+@startuml retention-v2-writer-commit
+' ============================================================================
+' One durable successor under the V1 and V2 retention writers (task 7926):
+' what rspace++/src/rspace/persistence/durable/admission.rs
+' (admit_physical_source, seal_transaction, bind_durable_transaction,
+' attach_retention_v2), retention/v2_writer.rs (commit_retention_v2,
+' migrate_retention_v1) and durable/publication.rs
+' (publish_incremental_with_terminal_v1) do between admission and the
+' adoption of the published successor.
+'   BLUE   #1565C0  steps shared by both writers
+'   AMBER  #EF6C00  the unchanged V1 writer
+'   GREEN  #2E7D32  the V2 writer: one radix edit, one anchor, one trial
+'   PURPLE #6A1B9A  the one-time migration of a V1 source
+'   GREY   #616161  publication and cold re-admission
+'   RED    #C62828  refusals; only the last is reported after publication
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFE0B2
+skinparam ActivityDiamondBorderColor #EF6C00
+skinparam NoteBorderColor #455A64
+skinparam PartitionBorderColor #455A64
+
+title <b>One durable successor under the V1 and V2 retention writers</b>\nthe V2 writer edits one search path, appoints one anchor and accounts only the metadata objects that change
+
+start
+partition "Cold admission (once per opened writer)" {
+  :Physical recovery: select the catalog slot
+  and bind the derived object index; <<#E0E0E0>>
+  if (V2 writer with a V1-only reader?) then (yes)
+    :Refuse RetentionWriterUnreadable,
+    after physical recovery and before
+    the store is pinned; <<#FFCDD2>>
+    stop
+  else (no)
+  endif
+  :Admit the source; for a V2 source, seed the
+  metadata ledger domain with the reader's
+  occurrence count of every metadata object; <<#BBDEFB>>
+}
+partition "Seal and bind one successor" {
+  if (V2 source under the V1 writer?) then (yes)
+    :Refuse RetentionFormatNotWritable(V2)
+    before the mutation is sealed; <<#FFCDD2>>
+    stop
+  else (no)
+  endif
+  :Seal the mutation: target state t, whose
+  generation is the base generation plus one; <<#BBDEFB>>
+  :Require n + 2 within max_retained_states,
+  with n read from the appointed object; <<#BBDEFB>>
+  :Close the successor's current state:
+  the target entry c' = (t, its closure bytes); <<#BBDEFB>>
+  switch (Appointed format and writer?)
+  case (V1 and V1)
+    :Re-encode the whole manifest,
+    96 + 56(n + 1) bytes, and attach it; <<#FFE0B2>>
+  case (V1 and V2)
+    :Migrate once: insert historical ++ [c] as one
+    sorted batch into the empty radix, giving r',
+    and stage A' = (c', n + 1, r'); <<#E1BEE7>>
+    :Metadata ledger trial: activate [A'],
+    deactivate nothing; <<#C8E6C9>>
+    :Attach A' and the staged radix nodes
+    to the sealed object set; <<#C8E6C9>>
+  case (V2 and V2)
+    :Commit: one compare-and-swap inserts key(c)
+    on its search path, giving r', and stage
+    A' = (c', n + 1, r'); <<#C8E6C9>>
+    :Metadata ledger trial: activate [A'],
+    then deactivate [A]; only objects whose
+    count crosses zero are expanded; <<#C8E6C9>>
+    :Attach A' and the staged radix nodes
+    to the sealed object set; <<#C8E6C9>>
+  endswitch
+}
+partition "Prepare, publish and re-admit" {
+  :Validate every sealed object under the
+  transaction's reader, which is dual once V2
+  metadata is attached; write the WAL transaction; <<#E0E0E0>>
+  :Commit the catalog slot that appoints
+  the successor's retention object; <<#E0E0E0>>
+  :Cold re-admission of the published successor; <<#E0E0E0>>
+  if (A V2 trial ran, and the admitted metadata\nclosure differs from the trial's?) then (yes)
+    :Report PublishedMetadataInventory,
+    with the outcome Published; <<#FFCDD2>>
+    stop
+  else (no)
+  endif
+  :Adopt the successor; <<#C8E6C9>>
+}
+stop
+@enduml

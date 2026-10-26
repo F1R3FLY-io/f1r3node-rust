@@ -23,7 +23,8 @@ use super::durable_recovery::{
 use super::durable_rspace_authority::assert_v2_owner_checkpoint_refuses_before_durable_mutation;
 use super::property_support::independent_inventory_digest;
 use super::retention_v2_format_properties::{
-    RadixDefect, migrate_checkpoint_source_to_v2, radix_defect_sources, v1_manifest_entries,
+    History, RadixDefect, build_radix, encoded, metadata_closure, migrate_checkpoint_source_to_v2,
+    model_anchor_bytes, model_key, radix_defect_sources, v1_manifest_entries,
     v1_source_with_manifest, v2_source_from_objects, v2_source_with_history,
     v2_source_with_radix_child,
 };
@@ -3511,6 +3512,10 @@ enum ColdRefusal {
         declared: u64,
         computed: u64,
     },
+    WriterUnreadable {
+        writer: RetentionFormat,
+        reader: RetentionReader,
+    },
     Unclassified(String),
 }
 
@@ -3576,6 +3581,9 @@ fn cold_refusal(error: DurableAdmissionErrorV1) -> ColdRefusal {
             declared,
             computed,
         },
+        DurableAdmissionErrorV1::RetentionWriterUnreadable { writer, reader } => {
+            ColdRefusal::WriterUnreadable { writer, reader }
+        }
         error => ColdRefusal::Unclassified(format!("{error:?}")),
     }
 }
@@ -4836,5 +4844,370 @@ fn v2_admitted_sources_refuse_every_successor_before_durable_mutation() {
     let readmitted = admitted(scratch.path(), RetentionReader::Dual);
     assert_eq!((readmitted.report(), readmitted.authority()), (report, &authority));
     drop(readmitted);
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+}
+
+/// Cold admission by a directory whose writer seals retention in `writer`.
+fn admit_writing(
+    root: &Path,
+    writer: RetentionFormat,
+    reader: RetentionReader,
+) -> Result<AdmittedWriter, ColdRefusal> {
+    DurableDirectoryV1::open(root)
+        .expect("open the durable trial directory")
+        .with_retention_reader_for_test(reader)
+        .with_retention_writer_for_test(writer)
+        .recover_and_admit_v1::<TestSemanticProfile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .map_err(cold_refusal)
+}
+
+#[track_caller]
+fn admitted_v2_writer(root: &Path) -> AdmittedWriter {
+    match admit_writing(root, RetentionFormat::V2, RetentionReader::Dual) {
+        Ok(writer) => writer,
+        Err(refusal) => panic!("the V2 writer refused an admissible checkpoint: {refusal:?}"),
+    }
+}
+
+/// The retention entries a directory must appoint, kept without the editor:
+/// the current state and the key-ordered history.
+struct RetentionOracle {
+    current: RetainedStateV1,
+    history: History,
+}
+
+impl RetentionOracle {
+    fn of(v1: &SyntheticCheckpointSource) -> Self {
+        let (current, historical) = v1_manifest_entries(v1);
+        let history = historical
+            .iter()
+            .map(|entry| (model_key(entry.state()), entry.canonical_bytes()))
+            .collect::<History>();
+        assert_eq!(history.len(), historical.len(), "a V1 history has distinct keys");
+        Self { current, history }
+    }
+
+    /// A successor moves the current state into the history.
+    fn commit(&mut self, target: RetainedStateV1) {
+        let predecessor = std::mem::replace(&mut self.current, target);
+        assert_eq!(
+            self.history
+                .insert(model_key(predecessor.state()), predecessor.canonical_bytes()),
+            None,
+            "a successor's predecessor is not yet historical"
+        );
+    }
+
+    /// The appointed anchor and every object of its metadata closure.
+    fn metadata(&self) -> (RetentionAnchorV2, Vec<(ObjectRefV1, Vec<u8>)>) {
+        let image = build_radix(&self.history);
+        let anchor = RetentionAnchorV2::new(self.current, self.history.len() as u64, image.root)
+            .expect("the oracle anchor appoints its radix root");
+        let objects = metadata_closure(anchor, &image)
+            .expect("the oracle radix image is canonical")
+            .into_values()
+            .map(|reference| match image.objects.get(&reference.digest()) {
+                Some(bytes) => (reference, bytes.clone()),
+                None => {
+                    assert_eq!(
+                        reference,
+                        anchor.object_ref(),
+                        "the metadata closure is the anchor and its radix image"
+                    );
+                    (reference, encoded(&anchor))
+                }
+            })
+            .collect();
+        (anchor, objects)
+    }
+}
+
+/// `writer` appoints the oracle's anchor, admitted exactly the oracle's
+/// metadata closure, and stores every object of it.
+#[track_caller]
+fn assert_appoints(writer: &AdmittedWriter, oracle: &RetentionOracle) {
+    let (anchor, objects) = oracle.metadata();
+    let count = oracle.history.len() as u64;
+    assert_eq!(writer.catalog().pack().retention_manifest(), anchor.object_ref());
+    assert_eq!(
+        writer.retention_manifest_bytes(),
+        model_anchor_bytes(oracle.current, count, anchor.historical_root())
+    );
+    let report = writer.report();
+    assert_eq!(report.retained_states, count + 1);
+    assert_eq!(report.retention_manifest_canonical_bytes, RETENTION_ANCHOR_CANONICAL_LEN);
+    assert_eq!(
+        (report.retention_metadata_objects, report.retention_metadata_canonical_bytes),
+        (
+            objects.len() as u64,
+            objects
+                .iter()
+                .map(|(reference, _)| reference.encoded_len())
+                .sum::<u64>()
+        )
+    );
+    assert_admitted_objects(writer, &objects);
+}
+
+/// Seal, prepare and publish one data successor. The returned writer is the
+/// published successor as cold admission adopted it.
+fn publish_data_successor(writer: AdmittedWriter, identity: &str) -> AdmittedWriter {
+    let mutation = data_batch(writer.catalog().state(), identity);
+    let sealed = writer
+        .seal_transaction(
+            MutationBatchViewV1::parse(&mutation).expect("the successor mutation parses"),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .expect("the writer seals a data successor");
+    let sequence = writer
+        .catalog()
+        .commit_sequence()
+        .successor()
+        .expect("the commit sequence has a successor");
+    let prepared = writer
+        .prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
+        .expect("the sealed successor prepares");
+    let published = writer
+        .publish_incremental_transaction_v1(
+            &prepared,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .expect("the prepared successor publishes");
+    assert_eq!(published.catalog().state(), sealed.receipt().target());
+    published
+}
+
+/// Publish a data successor and advance the oracle by the retention entry
+/// step; the target claims the closure bytes that cold admission computed.
+fn publish_and_track(
+    writer: AdmittedWriter,
+    oracle: &mut RetentionOracle,
+    identity: &str,
+) -> AdmittedWriter {
+    let published = publish_data_successor(writer, identity);
+    oracle.commit(
+        RetainedStateV1::new(
+            published.catalog().state(),
+            published.report().current_structural.canonical_bytes,
+        )
+        .expect("the current closure covers its manifest"),
+    );
+    assert_appoints(&published, oracle);
+    published
+}
+
+/// Drop `writer` and restart its directory. The V1-only reader refuses with
+/// `old_reader` under either writer and writes nothing; the V2 writer under
+/// the dual reader then adopts exactly what `writer` admitted, apart from how
+/// recovery bound the index.
+#[track_caller]
+fn restart_v2_writer(
+    root: &Path,
+    writer: AdmittedWriter,
+    old_reader: ColdRefusal,
+) -> AdmittedWriter {
+    let (report, authority) = (writer.report(), writer.authority().clone());
+    let retention = writer.retention_manifest_bytes().to_vec();
+    drop(writer);
+    let snapshot = directory_snapshot(root);
+    assert_eq!(refused(root, RetentionReader::V1Only), old_reader);
+    assert_eq!(
+        admit_writing(root, RetentionFormat::V2, RetentionReader::V1Only).err(),
+        Some(old_reader)
+    );
+    assert_eq!(directory_snapshot(root), snapshot, "a refused restart writes nothing");
+    let restarted = admitted_v2_writer(root);
+    assert_eq!(restarted.authority(), &authority);
+    assert_eq!(restarted.retention_manifest_bytes(), retention);
+    assert_eq!(
+        DurableAdmissionReportV1 {
+            startup_disposition: report.startup_disposition,
+            startup_work: report.startup_work,
+            ..restarted.report()
+        },
+        report
+    );
+    restarted
+}
+
+/// Executable refinement of RV-33 and RV-34 at the durable directory: each
+/// successor the V2 writer publishes appoints the anchor of the retention
+/// entry step, and cold admission adopts exactly the oracle's metadata
+/// closure. The writer survives publication and restart, and the V1-only
+/// reader refuses the directory at its V2 descriptor without changing it.
+#[test]
+fn v2_writer_successors_appoint_the_retention_entry_step_across_restarts() {
+    let v1 = checkpoint_source_fixture();
+    let (scratch, _) = installed("v2-writer-successors-", &migrate_checkpoint_source_to_v2(&v1));
+    let mut oracle = RetentionOracle::of(&v1);
+    let writer = admitted_v2_writer(scratch.path());
+    assert_appoints(&writer, &oracle);
+    let writer = publish_and_track(writer, &mut oracle, "v2-writer-first");
+    let writer = publish_and_track(writer, &mut oracle, "v2-writer-second");
+    let writer = restart_v2_writer(scratch.path(), writer, v1_reader_refusal());
+    assert_appoints(&writer, &oracle);
+    let writer = publish_and_track(writer, &mut oracle, "v2-writer-third");
+    assert_eq!(oracle.history.len(), v1_manifest_entries(&v1).1.len() + 3);
+    drop(restart_v2_writer(scratch.path(), writer, v1_reader_refusal()));
+}
+
+/// Executable refinement of RV-37 at the durable directory: the first
+/// successor the V2 writer publishes over a V1 source migrates its history
+/// together with its current state, and the next one edits the migrated
+/// radix. The V1-only reader refuses the migration transaction in recovery;
+/// the V1 writer adopts the migrated directory as the V2 writer does but
+/// refuses to extend it.
+#[test]
+fn v2_writer_migrates_a_v1_source_at_its_first_successor() {
+    let v1 = checkpoint_source_fixture();
+    let (scratch, _) = installed("v2-writer-migration-", &v1);
+    let mut oracle = RetentionOracle::of(&v1);
+    let writer = admitted_v2_writer(scratch.path());
+    assert_eq!(
+        writer.catalog().pack().retention_manifest(),
+        v1.descriptor.retention_manifest(),
+        "the V2 writer adopts a V1 source unchanged"
+    );
+    let writer = publish_and_track(writer, &mut oracle, "v2-writer-migration");
+    let writer = publish_and_track(writer, &mut oracle, "v2-writer-after-migration");
+    let writer = restart_v2_writer(
+        scratch.path(),
+        writer,
+        ColdRefusal::Wal(LogPackFormatError::Canonical(CanonicalFormatError::UnknownObjectDomain)),
+    );
+    let (report, authority) = (writer.report(), writer.authority().clone());
+    drop(writer);
+
+    let snapshot = directory_snapshot(scratch.path());
+    let v1_writer = admitted(scratch.path(), RetentionReader::Dual);
+    assert_eq!((v1_writer.report(), v1_writer.authority()), (report, &authority));
+    let mutation = data_batch(authority.slot().state(), "v1-writer-after-migration");
+    assert!(matches!(
+        v1_writer.seal_transaction(
+            MutationBatchViewV1::parse(&mutation).expect("the successor mutation parses"),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        ),
+        Err(DurableTransactionPreparationError::RetentionFormatNotWritable(RetentionFormat::V2))
+    ));
+    drop(v1_writer);
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+}
+
+/// Executable refinement of RV-08 and RV-24 for the production checkpoint
+/// builder: under the V2 writer, the writer's publication, the writer's
+/// compaction and the publication authority each publish a generation
+/// checkpoint of a V2 source whose DATA is the retained union plus the
+/// metadata closure. With the pack that held the edited radix nodes
+/// reclaimed, restart still adopts the oracle's anchor and closure. A V1
+/// source keeps its V1 checkpoint under the V2 writer until its first
+/// successor.
+#[test]
+fn v2_writer_checkpoints_carry_the_retained_union_and_the_metadata_closure() {
+    let v1 = checkpoint_source_fixture();
+    let (scratch, _) = installed("v2-writer-checkpoint-", &migrate_checkpoint_source_to_v2(&v1));
+    let mut oracle = RetentionOracle::of(&v1);
+    let mut writer = publish_and_track(
+        admitted_v2_writer(scratch.path()),
+        &mut oracle,
+        "v2-writer-before-checkpoint",
+    );
+    let edited_pack = scratch.path().join(pack_file_name(
+        PackId::new(writer.catalog().pack().active_pack()).expect("the active pack is live"),
+    ));
+    assert!(edited_pack.exists());
+    let publishers: [(&str, CheckpointPublisher); 3] = [
+        ("writer publication", |writer| {
+            writer.publish_generation_checkpoint_v1(
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+        }),
+        ("writer compaction", |writer| {
+            writer.compact_generation_v1(
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+        }),
+        ("publication authority", |writer| {
+            writer
+                .into_checkpoint_publication()
+                .publish_generation_checkpoint_v1(
+                    limits(),
+                    LogPackDecodeLimits::UNBOUNDED,
+                    DurableAdmissionLimitsV1::UNBOUNDED,
+                )
+        }),
+    ];
+    for (name, publisher) in publishers {
+        let (state, retained_union) = (writer.catalog().state(), writer.report().retained_union);
+        let published = match publisher(writer) {
+            Ok(published) => published,
+            Err(error) => panic!("{name} refused under the V2 writer: {error:?}"),
+        };
+        assert_eq!(published.catalog().state(), state, "{name}");
+        assert_eq!(published.report().retained_union, retained_union, "{name}");
+        assert_appoints(&published, &oracle);
+        assert!(!edited_pack.exists(), "{name} kept the pack of the edited radix nodes");
+        writer = restart_v2_writer(scratch.path(), published, v1_reader_refusal());
+    }
+    drop(writer);
+
+    let (scratch, _) = installed("v2-writer-v1-checkpoint-", &v1);
+    let writer = admitted_v2_writer(scratch.path());
+    let (state, retention) = (writer.catalog().state(), writer.retention_manifest_bytes().to_vec());
+    let published = publish(writer).expect("the V2 writer checkpoints a V1 source");
+    assert_eq!(published.catalog().state(), state);
+    assert_eq!(published.retention_manifest_bytes(), retention);
+    drop(published);
+    let v1_reader = admitted(scratch.path(), RetentionReader::V1Only);
+    assert_eq!(v1_reader.retention_manifest_bytes(), retention);
+}
+
+/// The V2 writer must read back what it writes, so it requires the dual
+/// reader: with the V1-only reader, a V1 directory is refused after physical
+/// recovery and before the store is pinned, and a V2 directory is refused in
+/// recovery as before; neither refusal changes the directory. The V1 writer
+/// works under both readers, and opened directories write V1 until the V2
+/// writer is activated.
+#[test]
+fn v2_writer_requires_the_dual_reader_and_is_not_the_default() {
+    let v1 = checkpoint_source_fixture();
+    let (scratch, _) = installed("v2-writer-v1-only-", &v1);
+    assert_eq!(
+        DurableDirectoryV1::open(scratch.path())
+            .expect("open the durable trial directory")
+            .retention_writer(),
+        RetentionFormat::V1
+    );
+    let snapshot = directory_snapshot(scratch.path());
+    assert_eq!(
+        admit_writing(scratch.path(), RetentionFormat::V2, RetentionReader::V1Only).err(),
+        Some(ColdRefusal::WriterUnreadable {
+            writer: RetentionFormat::V2,
+            reader: RetentionReader::V1Only,
+        })
+    );
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+    for reader in [RetentionReader::V1Only, RetentionReader::Dual] {
+        assert_eq!(admit_writing(scratch.path(), RetentionFormat::V1, reader).err(), None);
+    }
+    assert_eq!(directory_snapshot(scratch.path()), snapshot);
+
+    let (scratch, _) = installed("v2-writer-v2-v1-only-", &migrate_checkpoint_source_to_v2(&v1));
+    let snapshot = directory_snapshot(scratch.path());
+    assert_eq!(
+        admit_writing(scratch.path(), RetentionFormat::V2, RetentionReader::V1Only).err(),
+        Some(v1_reader_refusal())
+    );
     assert_eq!(directory_snapshot(scratch.path()), snapshot);
 }

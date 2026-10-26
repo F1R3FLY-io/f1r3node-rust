@@ -11,7 +11,7 @@ use super::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogSlotV1,
     INDEX_HEADER_LEN_V1, IndexGenerationV1, PACK_HEADER_LEN_V1,
 };
-use crate::rspace::persistence::retention::v2_format::RetentionReader;
+use crate::rspace::persistence::retention::v2_format::{RetentionFormat, RetentionReader};
 use crate::rspace::persistence::{CanonicalSink, GenerationLeaseRegistryV1, PackId};
 
 pub(crate) const CATALOG_FILE_NAME_V1: &str = "catalog.v1";
@@ -799,6 +799,7 @@ pub(crate) struct DurableDirectoryV1 {
     directory: File,
     generation_leases: GenerationLeaseRegistryV1,
     retention_reader: RetentionReader,
+    retention_writer: RetentionFormat,
 }
 
 impl DurableDirectoryV1 {
@@ -836,6 +837,7 @@ impl DurableDirectoryV1 {
             directory,
             generation_leases,
             retention_reader: RetentionReader::Dual,
+            retention_writer: RetentionFormat::V1,
         })
     }
 
@@ -850,6 +852,18 @@ impl DurableDirectoryV1 {
     #[cfg(test)]
     pub(crate) fn with_retention_reader_for_test(mut self, reader: RetentionReader) -> Self {
         self.retention_reader = reader;
+        self
+    }
+
+    /// The retention format in which this directory's writer seals successors
+    /// and generation checkpoints. Opened directories write V1.
+    pub(crate) const fn retention_writer(&self) -> RetentionFormat { self.retention_writer }
+
+    /// Select the retention writer, standing in for a node built with the
+    /// V2 retention writer active.
+    #[cfg(test)]
+    pub(crate) fn with_retention_writer_for_test(mut self, writer: RetentionFormat) -> Self {
+        self.retention_writer = writer;
         self
     }
 
@@ -876,6 +890,7 @@ impl DurableDirectoryV1 {
             directory,
             generation_leases: self.generation_leases.clone(),
             retention_reader: self.retention_reader,
+            retention_writer: self.retention_writer,
         })
     }
 

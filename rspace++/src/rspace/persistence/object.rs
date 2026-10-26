@@ -13,8 +13,8 @@ use super::manifest::{
     SemanticStateManifestView,
 };
 use super::retention::v2_format::{
-    RETENTION_ANCHOR_DOMAIN, RETENTION_RADIX_DOMAIN, RetentionFormat, RetentionReader,
-    empty_retention_radix_ref,
+    RETENTION_ANCHOR_DOMAIN, RETENTION_RADIX_DOMAIN, RetentionAnchorV2, RetentionFormat,
+    RetentionReader, empty_retention_radix_ref,
 };
 use super::retention::{RETENTION_MANIFEST_DOMAIN, RetentionManifestView};
 
@@ -229,13 +229,14 @@ impl CanonicalDagNode {
         ObjectRefV1::new(self.canonical_digest(), self.canonical_len)
             .expect("validated node length includes the object envelope")
     }
-}
 
-impl CanonicalEncode for CanonicalDagNode {
-    fn canonical_len(&self) -> u64 { self.canonical_len }
+    /// This node shape as a retention radix node: the same body under the
+    /// retention radix domain, so the two images never share a digest.
+    pub(crate) const fn as_retention_radix(&self) -> RetentionRadixNodeV2<'_> {
+        RetentionRadixNodeV2(self)
+    }
 
-    fn write_canonical<S: CanonicalSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        write_envelope_header(sink, DAG_NODE_DOMAIN, self.body_len)?;
+    fn write_body<S: CanonicalSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         write_u64(sink, self.prefix.len() as u64)?;
         sink.write_all(&self.prefix)?;
         self.endpoint.write(sink)?;
@@ -273,6 +274,36 @@ impl CanonicalEncode for CanonicalDagNode {
             }
         }
         Ok(())
+    }
+}
+
+impl CanonicalEncode for CanonicalDagNode {
+    fn canonical_len(&self) -> u64 { self.canonical_len }
+
+    fn write_canonical<S: CanonicalSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        write_envelope_header(sink, DAG_NODE_DOMAIN, self.body_len)?;
+        self.write_body(sink)
+    }
+}
+
+/// A canonical node shape encoded as a retention radix node. Only the
+/// 16-byte domain differs from the semantic DAG node encoding.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RetentionRadixNodeV2<'a>(&'a CanonicalDagNode);
+
+impl RetentionRadixNodeV2<'_> {
+    pub(crate) fn object_ref(self) -> ObjectRefV1 {
+        ObjectRefV1::new(self.canonical_digest(), self.0.canonical_len)
+            .expect("validated node length includes the object envelope")
+    }
+}
+
+impl CanonicalEncode for RetentionRadixNodeV2<'_> {
+    fn canonical_len(&self) -> u64 { self.0.canonical_len }
+
+    fn write_canonical<S: CanonicalSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        write_envelope_header(sink, RETENTION_RADIX_DOMAIN, self.0.body_len)?;
+        self.0.write_body(sink)
     }
 }
 
@@ -1800,5 +1831,30 @@ impl<'a> CanonicalObjectView<'a> {
             Self::AcceleratorManifest(_) => CanonicalObjectKind::AcceleratorManifest,
             Self::RetentionManifest(_) => CanonicalObjectKind::RetentionManifest,
         }
+    }
+}
+
+/// Fully parse one contiguous canonical object for a reader with the given
+/// retention capability. A V1-only reader is exactly
+/// [`CanonicalObjectView::parse`]; a dual reader also admits the retention
+/// anchor and radix-node domains, each under its own parser.
+pub(crate) fn validate_canonical_object_for(
+    bytes: &[u8],
+    reader: RetentionReader,
+) -> Result<CanonicalObjectKind, CanonicalFormatError> {
+    match CanonicalObjectKind::from_domain_prefix_for(bytes, reader)? {
+        CanonicalObjectKind::RetentionAnchor => {
+            RetentionAnchorV2::parse(bytes)?;
+            Ok(CanonicalObjectKind::RetentionAnchor)
+        }
+        CanonicalObjectKind::RetentionRadixNode => {
+            CanonicalDagNodeView::parse_in_domain(
+                bytes,
+                RETENTION_RADIX_DOMAIN,
+                "RSpace retention radix node",
+            )?;
+            Ok(CanonicalObjectKind::RetentionRadixNode)
+        }
+        _ => CanonicalObjectView::parse(bytes).map(CanonicalObjectView::kind),
     }
 }

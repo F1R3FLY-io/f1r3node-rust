@@ -38,7 +38,7 @@ use crate::rspace::persistence::{
     StateVersionV1,
 };
 
-const KEY_WIDTH: usize = 48;
+pub(super) const KEY_WIDTH: usize = 48;
 const MODEL_ANCHOR_DOMAIN: &[u8; 16] = b"RSpaceDAG.RetA\0\0";
 const MODEL_RADIX_DOMAIN: &[u8; 16] = b"RSpaceDAG.RetR\0\0";
 const MODEL_CHECKPOINT_V2_DOMAIN: &[u8; 16] = b"RSpaceDAG.Chkp2\0";
@@ -60,10 +60,10 @@ const EXISTING_DOMAINS: [&[u8; 16]; 15] = [
     b"RSpace.Rust.V1\0\0",
 ];
 
-type History = BTreeMap<[u8; KEY_WIDTH], u64>;
-type ObjectSet = BTreeMap<ObjectDigest, Vec<u8>>;
+pub(super) type History = BTreeMap<[u8; KEY_WIDTH], u64>;
+pub(super) type ObjectSet = BTreeMap<ObjectDigest, Vec<u8>>;
 
-fn runner(cases: u32) -> TestRunner {
+pub(super) fn runner(cases: u32) -> TestRunner {
     TestRunner::new(ProptestConfig {
         cases,
         source_file: Some(file!()),
@@ -71,25 +71,25 @@ fn runner(cases: u32) -> TestRunner {
     })
 }
 
-fn reference(digest: [u8; 32], encoded_len: u64) -> ObjectRefV1 {
+pub(super) fn reference(digest: [u8; 32], encoded_len: u64) -> ObjectRefV1 {
     ObjectRefV1::new(ObjectDigest::from_array(digest), encoded_len)
         .expect("model references cover an object envelope")
 }
 
-fn state(generation: u64, digest: [u8; 32], encoded_len: u64) -> StateVersionV1 {
+pub(super) fn state(generation: u64, digest: [u8; 32], encoded_len: u64) -> StateVersionV1 {
     StateVersionV1::new(generation, reference(digest, encoded_len))
 }
 
-fn retained(state: StateVersionV1, claim: u64) -> RetainedStateV1 {
+pub(super) fn retained(state: StateVersionV1, claim: u64) -> RetainedStateV1 {
     RetainedStateV1::new(state, claim).expect("model claims cover the manifest length")
 }
 
-fn reference_of(bytes: &[u8]) -> ObjectRefV1 {
+pub(super) fn reference_of(bytes: &[u8]) -> ObjectRefV1 {
     ObjectRefV1::new(ObjectDigest::of_canonical_bytes(bytes), bytes.len() as u64)
         .expect("model objects carry an envelope")
 }
 
-fn encoded<T: CanonicalEncode>(value: &T) -> Vec<u8> {
+pub(super) fn encoded<T: CanonicalEncode>(value: &T) -> Vec<u8> {
     value.try_canonical_bytes().expect("model values encode")
 }
 
@@ -107,7 +107,7 @@ fn reference_bytes(reference: ObjectRefV1) -> Vec<u8> {
     [reference.digest().as_bytes(), &reference.encoded_len().to_le_bytes()[..]].concat()
 }
 
-fn model_key(state: StateVersionV1) -> [u8; KEY_WIDTH] {
+pub(super) fn model_key(state: StateVersionV1) -> [u8; KEY_WIDTH] {
     [
         &state.generation().to_be_bytes()[..],
         state.manifest().digest().as_bytes(),
@@ -118,7 +118,7 @@ fn model_key(state: StateVersionV1) -> [u8; KEY_WIDTH] {
     .expect("a retention key is 48 bytes")
 }
 
-fn model_decode_key(key: &[u8]) -> Option<StateVersionV1> {
+pub(super) fn model_decode_key(key: &[u8]) -> Option<StateVersionV1> {
     let (generation, rest) = key.split_first_chunk::<8>()?;
     let (digest, rest) = rest.split_first_chunk::<32>()?;
     let encoded_len: &[u8; 8] = rest.try_into().ok()?;
@@ -137,7 +137,11 @@ fn little_endian_key(state: StateVersionV1) -> Vec<u8> {
     .concat()
 }
 
-fn model_anchor_bytes(current: RetainedStateV1, count: u64, root: ObjectRefV1) -> Vec<u8> {
+pub(super) fn model_anchor_bytes(
+    current: RetainedStateV1,
+    count: u64,
+    root: ObjectRefV1,
+) -> Vec<u8> {
     let body = [
         &current.state().generation().to_le_bytes()[..],
         &reference_bytes(current.state().manifest()),
@@ -149,13 +153,13 @@ fn model_anchor_bytes(current: RetainedStateV1, count: u64, root: ObjectRefV1) -
     envelope(MODEL_ANCHOR_DOMAIN, &body)
 }
 
-fn radix_node(prefix: &[u8], endpoint: EndpointValue, children: &[DagChild]) -> Vec<u8> {
+pub(super) fn radix_node(prefix: &[u8], endpoint: EndpointValue, children: &[DagChild]) -> Vec<u8> {
     let node = CanonicalDagNode::new(prefix, endpoint, children.to_vec())
         .expect("model radix shapes are canonical DAG shapes");
     with_domain(&encoded(&node), MODEL_RADIX_DOMAIN)
 }
 
-fn insert_object(objects: &mut ObjectSet, bytes: Vec<u8>) -> ObjectRefV1 {
+pub(super) fn insert_object(objects: &mut ObjectSet, bytes: Vec<u8>) -> ObjectRefV1 {
     let reference = reference_of(&bytes);
     objects.entry(reference.digest()).or_insert(bytes);
     reference
@@ -167,9 +171,9 @@ fn golden(bytes: &[u8], length: usize, digest: &str) {
 }
 
 #[derive(Clone, Debug)]
-struct RadixImage {
-    root: ObjectRefV1,
-    objects: ObjectSet,
+pub(super) struct RadixImage {
+    pub(super) root: ObjectRefV1,
+    pub(super) objects: ObjectSet,
 }
 
 struct PlannedNode {
@@ -180,7 +184,7 @@ struct PlannedNode {
     children: Vec<(u8, usize)>,
 }
 
-fn build_radix(history: &History) -> RadixImage {
+pub(super) fn build_radix(history: &History) -> RadixImage {
     let entries = history
         .iter()
         .map(|(key, claim)| (*key, *claim))
@@ -260,7 +264,7 @@ fn build_radix(history: &History) -> RadixImage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum RadixRefusal {
+pub(super) enum RadixRefusal {
     MissingObject,
     ReferenceMismatch,
     NotRadixDomain,
@@ -275,20 +279,20 @@ enum RadixRefusal {
 }
 
 #[derive(Clone, Debug)]
-struct RadixNodeImage {
-    prefix: Vec<u8>,
-    endpoint: EndpointValue,
-    children: Vec<DagChild>,
+pub(super) struct RadixNodeImage {
+    pub(super) prefix: Vec<u8>,
+    pub(super) endpoint: EndpointValue,
+    pub(super) children: Vec<DagChild>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct UnfoldedLeaf {
-    key: [u8; KEY_WIDTH],
-    claim: u64,
-    object: ObjectDigest,
+pub(super) struct UnfoldedLeaf {
+    pub(super) key: [u8; KEY_WIDTH],
+    pub(super) claim: u64,
+    pub(super) object: ObjectDigest,
 }
 
-fn load_radix_node(
+pub(super) fn load_radix_node(
     objects: &ObjectSet,
     reference: ObjectRefV1,
 ) -> Result<RadixNodeImage, RadixRefusal> {
@@ -313,7 +317,7 @@ fn load_radix_node(
     })
 }
 
-fn unfold_radix(
+pub(super) fn unfold_radix(
     objects: &ObjectSet,
     root: ObjectRefV1,
     declared: u64,
@@ -372,7 +376,7 @@ fn unfold_radix(
     Ok(leaves)
 }
 
-fn memoized_count(objects: &ObjectSet, root: ObjectRefV1) -> Result<u64, RadixRefusal> {
+pub(super) fn memoized_count(objects: &ObjectSet, root: ObjectRefV1) -> Result<u64, RadixRefusal> {
     let mut memo = BTreeMap::<(ObjectDigest, usize), u64>::new();
     let mut pending = vec![(root, KEY_WIDTH, false)];
     while let Some((reference, remaining, expanded)) = pending.pop() {
@@ -418,7 +422,7 @@ fn memoized_count(objects: &ObjectSet, root: ObjectRefV1) -> Result<u64, RadixRe
         .expect("the root is counted"))
 }
 
-fn metadata_closure(
+pub(super) fn metadata_closure(
     anchor: RetentionAnchorV2,
     image: &RadixImage,
 ) -> Result<BTreeMap<ObjectDigest, ObjectRefV1>, RadixRefusal> {
@@ -459,7 +463,7 @@ fn state_strategy() -> impl Strategy<Value = StateVersionV1> {
         .prop_map(|(generation, digest, encoded_len)| state(generation, digest, encoded_len))
 }
 
-fn clustered_state() -> impl Strategy<Value = StateVersionV1> {
+pub(super) fn clustered_state() -> impl Strategy<Value = StateVersionV1> {
     (
         prop_oneof![0_u64..4, Just(255_u64), Just(256_u64), Just(u64::MAX)],
         0_u8..2,
@@ -473,7 +477,7 @@ fn clustered_state() -> impl Strategy<Value = StateVersionV1> {
         })
 }
 
-fn history_strategy(max_entries: usize) -> impl Strategy<Value = History> {
+pub(super) fn history_strategy(max_entries: usize) -> impl Strategy<Value = History> {
     prop::collection::vec((clustered_state(), 0_u64..3), 0..=max_entries).prop_map(|entries| {
         entries
             .into_iter()
@@ -523,7 +527,7 @@ fn history_anchor(history: &History, image: &RadixImage) -> RetentionAnchorV2 {
     .expect("the model history root matches its count")
 }
 
-fn assert_v1_readers_refuse(bytes: &[u8]) {
+pub(super) fn assert_v1_readers_refuse(bytes: &[u8]) {
     assert!(matches!(
         CanonicalObjectKind::from_domain_prefix(bytes),
         Err(CanonicalFormatError::UnknownObjectDomain)
@@ -2028,7 +2032,7 @@ fn production_class(error: RetentionRadixErrorV2<CanonicalFormatError>) -> Admis
     }
 }
 
-fn tracing_store(objects: &ObjectSet) -> TracingStore {
+pub(super) fn tracing_store(objects: &ObjectSet) -> TracingStore {
     let store = TracingStore::default();
     for (digest, bytes) in objects {
         store
@@ -2139,7 +2143,10 @@ fn shape_strict_count(
         .expect("the root is counted"))
 }
 
-fn model_count_by_depth(objects: &ObjectSet, root: ObjectRefV1) -> Result<u64, RadixRefusal> {
+pub(super) fn model_count_by_depth(
+    objects: &ObjectSet,
+    root: ObjectRefV1,
+) -> Result<u64, RadixRefusal> {
     shape_strict_count(objects, root, true)
 }
 
@@ -2223,27 +2230,29 @@ fn radix_defect_strategy() -> impl Strategy<Value = RadixDefect> {
 /// One occurrence of a radix node in the unfolded tree: the child indices
 /// from the root, the node, and the key bytes read before it.
 #[derive(Clone, Debug)]
-struct RadixOccurrence {
-    path: Vec<usize>,
-    reference: ObjectRefV1,
-    node: RadixNodeImage,
-    key_prefix: Vec<u8>,
+pub(super) struct RadixOccurrence {
+    pub(super) path: Vec<usize>,
+    pub(super) reference: ObjectRefV1,
+    pub(super) node: RadixNodeImage,
+    pub(super) key_prefix: Vec<u8>,
 }
 
 impl RadixOccurrence {
-    fn is_leaf(&self) -> bool {
+    pub(super) fn is_leaf(&self) -> bool {
         matches!(self.node.endpoint, EndpointValue::Multiplicity(_)) &&
             self.node.children.is_empty()
     }
 
-    fn is_inner(&self) -> bool {
+    pub(super) fn is_inner(&self) -> bool {
         matches!(self.node.endpoint, EndpointValue::Absent) && !self.node.children.is_empty()
     }
 
-    fn leaf_key(&self) -> Vec<u8> { [&self.key_prefix[..], &self.node.prefix[..]].concat() }
+    pub(super) fn leaf_key(&self) -> Vec<u8> {
+        [&self.key_prefix[..], &self.node.prefix[..]].concat()
+    }
 }
 
-fn radix_occurrences(objects: &ObjectSet, root: ObjectRefV1) -> Vec<RadixOccurrence> {
+pub(super) fn radix_occurrences(objects: &ObjectSet, root: ObjectRefV1) -> Vec<RadixOccurrence> {
     let mut occurrences = Vec::new();
     let mut pending = vec![(root, Vec::new(), Vec::with_capacity(KEY_WIDTH))];
     while let Some((reference, path, key_prefix)) = pending.pop() {
@@ -2270,7 +2279,7 @@ fn radix_occurrences(objects: &ObjectSet, root: ObjectRefV1) -> Vec<RadixOccurre
 
 /// Replace the reference reached along `path` and re-encode every ancestor
 /// on that path; other occurrences of shared nodes keep the originals.
-fn rewrite_radix_path(
+pub(super) fn rewrite_radix_path(
     objects: &mut ObjectSet,
     root: ObjectRefV1,
     path: &[usize],
@@ -2291,7 +2300,7 @@ fn rewrite_radix_path(
     target
 }
 
-fn raw_radix_node(prefix: &[u8], endpoint: &[u8], children: &[DagChild]) -> Vec<u8> {
+pub(super) fn raw_radix_node(prefix: &[u8], endpoint: &[u8], children: &[DagChild]) -> Vec<u8> {
     let branch = match children.len() {
         0 => 0_u8,
         1..=4 => 1,

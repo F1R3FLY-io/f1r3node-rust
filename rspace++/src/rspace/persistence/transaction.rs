@@ -6,6 +6,7 @@
 //! owns its private overlay; only SealedDagTransaction can cross into the
 //! physical WAL/publication layer.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
@@ -21,6 +22,7 @@ use super::manifest::{SemanticProfileId, SemanticStateManifestV1};
 use super::mutation::{ContentTransition, MutationBatchViewV1, StateVersionV1};
 use super::object::{CanonicalBlobKind, CanonicalObjectKind, CanonicalObjectView};
 use super::retention::RetentionManifestV1;
+use super::retention::v2_format::{RetentionAnchorV2, RetentionReader};
 use super::rewrite::{
     DagRewriteLimits, DagRewriteProduct, DagRewriteReport, RewriteError,
     rewrite_semantic_roots_in_store,
@@ -582,6 +584,7 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
             mutation_bytes: self.mutation.canonical_bytes(),
             objects,
             retention_manifest: None,
+            retention_reader: RetentionReader::V1Only,
             profile: PhantomData,
         })
     }
@@ -660,6 +663,9 @@ pub struct SealedDagTransaction<'mutation, P: SemanticProfile> {
     mutation_bytes: &'mutation [u8],
     objects: Box<[SealedObject]>,
     retention_manifest: Option<ObjectRefV1>,
+    /// The reader that admits the sealed objects: V1-only unless retention
+    /// V2 metadata is attached.
+    retention_reader: RetentionReader,
     profile: PhantomData<fn() -> P>,
 }
 
@@ -714,5 +720,75 @@ impl<'mutation, P: SemanticProfile> SealedDagTransaction<'mutation, P> {
         Ok(self)
     }
 
+    /// Attach a retention V2 successor: the appointed anchor together with
+    /// every radix node the writer staged, merged into the digest-ordered
+    /// object set. The sealed objects are then admitted by the dual reader.
+    pub(crate) fn with_retention_metadata<B: ImmutableObjectStore>(
+        mut self,
+        anchor: RetentionAnchorV2,
+        staged: StagingObjectStore<'_, B>,
+    ) -> Result<Self, StagingStoreError<B::Error>> {
+        if self.retention_manifest.is_some() {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "retention metadata was attached more than once".to_owned(),
+            }
+            .into());
+        }
+        let reference = anchor.object_ref();
+        let staged = staged.into_objects(|reference, canonical_bytes| SealedObject {
+            reference,
+            canonical_bytes,
+        })?;
+        let capacity = self.objects.len().checked_add(staged.len()).ok_or(
+            CanonicalFormatError::CounterOverflow("sealed objects with retention metadata"),
+        )?;
+        let mut merged = Vec::new();
+        merged.try_reserve_exact(capacity).map_err(|_| {
+            CanonicalFormatError::AllocationFailure {
+                requested: u64::try_from(capacity).unwrap_or(u64::MAX),
+            }
+        })?;
+        let mut sealed = self.objects.into_vec().into_iter().peekable();
+        let mut staged = staged.into_vec().into_iter().peekable();
+        loop {
+            let order = match (sealed.peek(), staged.peek()) {
+                (Some(left), Some(right)) => {
+                    match left.reference.digest().cmp(&right.reference.digest()) {
+                        Ordering::Equal if left.canonical_bytes != right.canonical_bytes => {
+                            return Err(CanonicalFormatError::ContentCollision(
+                                left.reference.digest(),
+                            )
+                            .into());
+                        }
+                        order => order,
+                    }
+                }
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => break,
+            };
+            let object = match order {
+                Ordering::Less => sealed.next(),
+                Ordering::Greater => staged.next(),
+                Ordering::Equal => {
+                    staged.next();
+                    sealed.next()
+                }
+            };
+            merged.push(object.expect("a peeked object is next"));
+        }
+        let Ok(_) =
+            merged.binary_search_by_key(&reference.digest(), |object| object.reference.digest())
+        else {
+            return Err(CanonicalFormatError::MissingObject(reference.digest()).into());
+        };
+        self.objects = merged.into_boxed_slice();
+        self.retention_manifest = Some(reference);
+        self.retention_reader = RetentionReader::Dual;
+        Ok(self)
+    }
+
     pub(crate) const fn retention_manifest(&self) -> Option<ObjectRefV1> { self.retention_manifest }
+
+    pub(crate) const fn retention_reader(&self) -> RetentionReader { self.retention_reader }
 }

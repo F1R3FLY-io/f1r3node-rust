@@ -2494,6 +2494,580 @@ The cold-reader evidence in the verification record was taken at these sources:
 | `rspace++/tests/persistence/canonical_object_streaming_properties.rs` | `5f5b1557b47e02a0889dfb33db29a56831d4baac2972c4586c64e07360d0fbad` |
 | `rspace++/tests/persistence/property_support.rs` | `9404ad361d979e386dd9323cac7e76c14ee1dc9b44c28a1d726bd93f3be87039` |
 
+### Path-local retention V2 metadata writer (2026-10-26)
+
+Task 7926 implements the writer of the representation that the format section
+froze and the cold reader above admits. The V1 writer collects the whole history
+at every successor and re-encodes it as a new manifest of $`96 + 56(n + 1)`$
+bytes. The V2 writer instead edits the history radix along the one search path
+of the outgoing current state's key, with the existing iterative radix editor of
+the persistent DAG, appoints one new 136-byte anchor, and accounts for the
+metadata closure with one private ledger trial that expands only the objects
+whose reference count crosses zero. The successor's historical count comes from
+the compare-and-swap outcomes, never from the number of objects the editor
+stored. A V1 source migrates once, at its first successor under the V2 writer,
+by one sorted batch from the empty radix. The V1 writer is unchanged and remains
+the writer of every opened directory: only the test-build setter
+`with_retention_writer_for_test` (`durable/io.rs:865`) selects the V2 writer.
+Making V2 the default is a separate commit, because the first V2 successor of a
+directory is a one-way change for that directory. No block, state root or wire
+byte changes, and no running node uses the durable backend yet: the authority
+backends are `Memory` and `Lmdb` (`state/rspace_state_authority.rs:142-145`).
+
+This section discharges the three items that the format and cold-reader sections
+above left to this task: the production builder of the V2 checkpoint inventory,
+the production migration, and the binding of the metadata of incremental
+terminals.
+
+Nine artifacts implement the task:
+
+- sixteen closed capstones, T1 to T8 and their negative controls T1m to T8m, in
+  the new `formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v`, which
+  `_CoqProject` lists and the integrated runner
+  (`scripts/check-stack-safe-pda-proofs.sh`) compiles;
+- the radix-domain seam of the existing editor in
+  `rspace++/src/rspace/persistence/rewrite.rs`: `RadixDomainV1` and the entry
+  point `rewrite_retention_history`;
+- the retention radix encoding `RetentionRadixNodeV2` and the reader-parameterized
+  validator `validate_canonical_object_for` in `object.rs`, and the staging
+  overlay's reader capability in `store.rs`;
+- the new module `rspace++/src/rspace/persistence/retention/v2_writer.rs`, with
+  the commit, the eviction and the migration;
+- the metadata domain `ClosureDomainV1::Metadata`, its seed and its cursor in
+  `closure.rs` and `closure/ledger_trial.rs`, and the reference counts that the
+  cold reader now reports in `retention/v2_reader.rs`;
+- `SealedDagTransaction::with_retention_metadata` and the sealed transaction's
+  reader in `transaction.rs`, with which the WAL encoder in `wal/codec.rs`
+  validates;
+- the writer switch, the coherence refusal, the successor binding, the checkpoint
+  builder and the post-publication comparison in
+  `durable/{io,admission,publication}.rs` and `checkpoint.rs`;
+- the properties `RV-30` to `RV-37` in the new
+  `rspace++/tests/persistence/retention_v2_editor_properties.rs`, and four
+  directory tests in `durable_publication.rs`;
+- the three figures of this section.
+
+![One durable successor under the V1 and V2 retention writers. Cold admission runs once per opened writer: after physical recovery, in grey, a V2 writer with a V1-only reader is refused RetentionWriterUnreadable, in red, before the store is pinned; otherwise the source is admitted, and a V2 source seeds the metadata ledger domain with the reader's occurrence counts, in blue. Sealing refuses a V2 source under the V1 writer before the mutation is sealed. The sealed successor requires n + 2 within max_retained_states and closes the target entry c'. The appointed format and the writer then select one of three branches: V1 under the V1 writer re-encodes the whole manifest, in amber; V1 under the V2 writer migrates once, in purple, and runs a trial that only activates the new anchor; V2 under the V2 writer commits one compare-and-swap, in green, and runs a trial that activates the new anchor before it deactivates the old one. Both V2 branches attach the anchor and the staged radix nodes to the sealed object set. Publication validates every sealed object under the transaction's reader, writes the WAL transaction, commits the catalog slot and re-admits the successor cold; a metadata closure that differs from the trial's is reported as PublishedMetadataInventory with the outcome Published, and otherwise the successor is adopted](figures/retention-v2-writer-commit.svg)
+
+**Vocabulary.** The terms of the two sections above keep their meaning; these are
+added:
+
+- $`w = 48`$ is the key width. A retention key $`\mathrm{key}(e)`$ is the
+  48-byte big-endian encoding of an entry's generation, manifest digest and
+  manifest length, so keys sort as entries do (format section).
+- An anchor $`A = (c, n, r)`$ carries the current entry $`c`$, the historical
+  count $`n`$ and the radix root $`r`$. A successor of the target state $`t`$
+  closes the *target entry* $`c' = (t, b_t)`$, where $`b_t`$ is the canonical
+  byte count of the closure of $`t`$, and appoints $`A' = (c', n', r')`$.
+- An *endpoint* is `Absent` or `Multiplicity(b)`; a leaf's endpoint carries its
+  entry's claim $`b`$. A *CAS edit* $`(k, e, e')`$ replaces the endpoint $`e`$
+  at key $`k`$ by $`e'`$, and is refused unless the image holds $`e`$ at
+  $`k`$. An *insertion* is $`(k, \mathrm{Absent}, \mathrm{Multiplicity}(b))`$
+  and an *eviction* $`(k, \mathrm{Multiplicity}(b), \mathrm{Absent})`$.
+- The *search path* $`P(k)`$ of a key in an image is the sequence of nodes that a
+  search for $`k`$ visits from the root, ending where the key ends, leaves a
+  node's prefix or misses an edge. Every node after the root consumes at least
+  its edge byte, so $`\lvert P(k) \rvert \le w + 1`$.
+- The *canonical image* of a set of entries is the radix that satisfies the shape
+  rules of the format section. The *independent rebuild* is the test model's
+  `build_radix`, and the theory's `partition_build`: the longest common prefix of
+  the sorted entries, then one child per next byte.
+- $`M`$ and $`M'`$ are the metadata closures of $`A`$ and $`A'`$: the anchor and
+  every radix node reachable from it. The objects that change are
+  $`M \,\triangle\, M' = (M \setminus M') \cup (M' \setminus M)`$.
+- The *occurrence count* of a metadata object is its reference count in the
+  metadata domain: its root multiplicity, which is 1 for the anchor and 0
+  otherwise, plus one for each edge of a distinct metadata object that names it.
+
+**The editor seam.** The persistent DAG already has a radix editor:
+`RadixEditor` behind `rewrite_root` (`rewrite.rs`). It applies a sorted batch of
+CAS edits with a longest-common-prefix cursor, expands children lazily, and
+finalizes iteratively, pruning childless absent nodes and merging a unary absent
+node into its child, the root included. It keeps its work on the heap and
+preallocates. It was tied to the semantic DAG in exactly four places, and task
+7926 parameterizes those four and nothing else:
+
+1. `RadixDomainV1` (`rewrite.rs:43-55`) is `Semantic(namespace)` or
+   `RetentionHistory`, and `CompareAndSwapFailure` (`rewrite.rs:58`) names it.
+   Under `RetentionHistory` the editor records no semantic provenance.
+2. `load_node` (`rewrite.rs:1498`) accepts, under `RetentionHistory`, only an
+   object that the dual reader classifies as a retention radix node, and parses
+   it with `CanonicalDagNodeView::parse_in_domain` under `RSpaceDAG.RetR`
+   (`rewrite.rs:1523`).
+3. The encoder of `CanonicalDagNode` is split into the envelope header and a
+   shared `write_body` (`object.rs:239`). `as_retention_radix` (`object.rs:235`)
+   writes the same body under `RSpaceDAG.RetR` as a `RetentionRadixNodeV2`
+   (`object.rs:292`), and `build_final` (`rewrite.rs:1355`) emits that encoding
+   for the retention domain (`rewrite.rs:1375`). Semantic bytes are unchanged,
+   and a semantic node and a radix node with the same body have different
+   digests, because their domains differ (theorem 5 of the format section).
+4. `StagingObjectStore` gains a reader capability, V1-only by default
+   (`store.rs:126`). `with_retention_reader` (`store.rs:133`) selects the dual
+   reader, and `stage` and `put_if_absent_or_equal` validate with
+   `validate_canonical_object_for` (`object.rs:1841`), which for the V1-only
+   reader is exactly `CanonicalObjectView::parse`.
+
+The entry point is `rewrite_retention_history` (`rewrite.rs:624-636`). When the
+root is the empty radix node, the editor starts from a vacant node and does not
+read it (`rewrite.rs:665-667`): the format fixes that node's bytes, and the
+editor stages it whenever an edit empties a history.
+
+**The commit, in literate form.** `commit_retention_v2`
+(`retention/v2_writer.rs:50-60`) receives the staging overlay, the predecessor's
+anchor $`A = (c, n, r)`$, the target entry $`c'`$ and the editor's limits:
+
+1. ⟨Edit⟩ Form the one insertion
+   $`(\mathrm{key}(c), \mathrm{Absent}, \mathrm{Multiplicity}(b_c))`$
+   (`:108-121`) and apply it from $`r`$ with `rewrite_retention_history`
+   (`edit_history`, `:123-137`). Every historical generation is below the
+   current one (rule R8 of the format section), and keys sort by generation
+   first, so $`\mathrm{key}(c)`$ is above every historical key and its search
+   path takes the largest edge at every node. The editor loads the old search
+   path, splits the node whose prefix $`\mathrm{key}(c)`$ leaves, builds the new
+   leaf and stages the new search path. It returns the new root $`r'`$ and its
+   work report.
+2. ⟨Count⟩ `cas_count` (`:142-151`) folds the batch with checked arithmetic: an
+   insertion adds one, an eviction subtracts one, and any other edit keeps the
+   count. The editor refuses the whole batch unless every CAS matches, so the
+   fold counts exactly the entries that changed, and $`n' = n + 1`$.
+3. ⟨Anchor⟩ Build $`A' = (c', n', r')`$ with `RetentionAnchorV2::new`, which
+   refuses unless $`n' = 0`$ exactly when $`r'`$ is the empty node.
+4. ⟨Stage⟩ `stage_anchor` (`:153-163`) encodes $`A'`$ and puts it into the
+   overlay that holds the radix nodes. The step returns the anchor and the
+   editor's report.
+
+Nothing reaches the directory here: the staged objects stay in the private
+overlay until the binder attaches them to a sealed transaction.
+
+The count must come from the CAS outcomes because a new entry need not add a
+stored object. A leaf object holds only the bytes of its key below its parent's
+edge and its claim, so two entries that differ only above that edge and have
+equal claims have byte-identical leaves, which are one content-addressed object.
+The editor's `inserted_objects` (`rewrite.rs:1404`) counts the objects that the
+store reports as newly inserted, so it undercounts such an insertion
+(theorem T4m, `RV-33`).
+
+**Eviction.** `evict_retention_v2` (`:67-77`) applies the one eviction
+$`(\mathrm{key}(v), \mathrm{Multiplicity}(b_v), \mathrm{Absent})`$ and appoints
+$`(c, n - 1, r')`$. When the history empties, the editor stages the empty node
+and the anchor names it. Retention is keep-all, and nothing in production evicts:
+the eviction policy is task 7756. The function exists so that the theory's
+eviction step and the properties below exercise the editor's removals.
+
+**Migration of a V1 source.** `migrate_retention_v1` (`:82-106`) runs once, at
+the first successor of a V1 source under the V2 writer. It reserves exactly
+$`n + 1`$ edits with `try_reserve_exact`, inserts the $`n`$ historical entries
+in their strict V1 order followed by the current entry $`c`$, as one sorted
+batch from the empty root, which is vacant and never read, and appoints
+$`A' = (c', n + 1, r')`$. Theorem T8 shows that this is the canonical rebuild of
+the committed history and equals a commit on the migrated anchor. Migration
+enumerates the history once, which the acceptance criterion allows; every later
+successor is a path-local commit. A migration is as crash-atomic as any
+successor, because its objects reach the directory only inside the commit's WAL
+transaction.
+
+![One V2 commit as a path-local edit of the history radix, on a history whose search path for the outgoing current entry's key is the root r, the inner node n1 and the leaf L1. In red, the predecessor's anchor A and that old search path, which the editor loads once and the successor no longer reaches. In green, the successor's anchor A' and the new search path: r', n1', the split point m and the new leaf Lc. In purple, the old leaf's remainder L1'', split off beside the path: key(c) continues past L1's prefix s with a byte b' above L1's byte b, so it leaves L1's prefix there. In grey, the subtrees X and Y, which both images share by reference and the commit neither reads nor writes. The commit loads 3 nodes, emits 5 and reuses 2 child references. Every node has at most 10,370 bytes, a search path at most 49 nodes, and the staged radix bytes at most 518,500, which the V1 manifest of 96 + 56n bytes passes exactly when n is at least 9,258. The count is n + 1 from the CAS outcome, even when Lc is an object the history already stores](figures/retention-v2-path-local-edit.svg)
+
+**What one edit touches.** Let $`P`$ and $`P'`$ be the search paths of the edited
+key in the old and the new image. The editor's report (`DagRewriteReport`,
+`rewrite.rs:100-115`) is determined by them. For an insertion,
+
+```math
+\mathrm{loaded} = \lvert P \rvert,
+\qquad
+\mathrm{emitted} = \lvert P' \rvert + s,
+\qquad
+\mathrm{reused} = \sum_{v \in P} \lvert \mathrm{children}(v) \rvert - \bigl(\lvert P \rvert - 1\bigr),
+```
+
+where $`s`$ is 1 when a node is split off beside the new path and 0 otherwise.
+The reused child references are every child of the old path except the one
+followed at each step, which the new path carries by reference only. For an
+eviction, $`\mathrm{loaded} = \lvert P \rvert + m`$, where $`m`$ is 1 when the
+evicted leaf's parent is left with one child, which is then loaded to merge with
+it, and $`\mathrm{emitted} = \lvert P' \rvert`$. An insertion into the empty
+history loads nothing, emits two nodes, the leaf built below the vacant root and
+the root that it merges into, and stages one object.
+
+Every node of an image of key width $`w`$ has at most
+
+```math
+\beta(w) \;=\; \underbrace{32}_{\text{envelope}} \;+\; \underbrace{8 + w}_{\text{prefix}} \;+\; \underbrace{1}_{\text{endpoint}} \;+\; \underbrace{9}_{\text{branch}} \;+\; \underbrace{32 + 40 \cdot 256}_{\text{child table}} \;=\; 10\,322 + w
+```
+
+bytes. The child table has 41 bytes per child for Node4 and Node16, a 256-byte
+slot table and 40 bytes per child for Node48, and a 32-byte bitmap and 40 bytes
+per child for Node256. An inner node's prefix is shorter than $`w`$ and its
+endpoint is absent, so the largest node is an inner Node256 node, and a leaf has
+at most $`58 + w`$ bytes. One insertion or eviction stages at most $`w + 2`$
+radix nodes, a search path and one split-off node, so whatever the history's
+length it writes at most
+
+```math
+(w + 2)\,\beta(w) \;=\; 50 \cdot 10\,370 \;=\; 518\,500 \text{ bytes at } w = 48 .
+```
+
+A V1 manifest of $`n`$ historical entries has $`96 + 56n`$ bytes, and passes
+that bound exactly when
+
+```math
+96 + 56n \;>\; 518\,500 \iff n \;\ge\; 9\,258 .
+```
+
+Theorem T3m proves that the V1 manifest grows by 56 bytes per entry without bound
+and passes the path-local bound once $`n`$ is at least the bound itself; the
+exact crossover is executable evidence (`RV-32`).
+
+The bound is a worst case, and short histories invert the comparison. Derived
+from the formulas above, not measured: in a dense history, whose generations are
+consecutive, the last inner node of the right spine gathers up to 256 children,
+and every commit re-encodes it, up to $`\beta(w)`$ bytes, while a V1 manifest
+reaches that size only at about 184 entries. Below roughly two hundred entries a
+V2 commit can therefore write more bytes than the V1 manifest it replaces; its
+cost, unlike the manifest's, does not grow with $`n`$. Task 7929 measures the
+scaling.
+
+**Binding a successor, in literate form.** `bind_durable_transaction`
+(`durable/admission.rs:1586-1671`) turns a sealed mutation into a durable
+successor:
+
+1. ⟨Authority⟩ Refuse `AuthorityMismatch` unless the sealed receipt's base is the
+   admitted state and its profile the admitted profile, then refuse a V2 source
+   under the V1 writer with `RetentionFormatNotWritable(V2)`
+   (`require_writable_retention`, `:1570-1577`). `seal_transaction`
+   (`:1552-1566`) makes the same refusal before it seals the mutation, so a
+   refused successor seals nothing.
+2. ⟨Preflight⟩ Parse the appointed retention object under the dual reader and
+   require $`n + 2`$, computed with a checked addition, within
+   `max_retained_states` (`:1599-1610`). Only the count is read, so for V2 the
+   preflight does constant work.
+3. ⟨Close the target⟩ Compute the successor's inventory and the target entry
+   $`c' = (t, b_t)`$ from its current closure (`:1611-1615`).
+4. ⟨Write⟩ Dispatch on the appointed format and the writer:
+   - V1 under the V1 writer: collect the history, append $`c`$, and attach a
+     complete V1 manifest (`:1617-1623`), unchanged by this task;
+   - V1 under the V2 writer: migrate (`:1624-1636`);
+   - V2 under the V2 writer: commit (`:1637-1654`);
+   - V2 under the V1 writer: refuse `RetentionFormatNotWritable(V2)`
+     (`:1655-1659`).
+
+   Both V2 branches stage into `retention_staging` (`:1675-1677`), a private
+   overlay over the pinned store with the dual reader. The editor runs without
+   limits of its own: a commit touches at most $`w + 2`$ nodes (theorem T3), and
+   a migration inserts $`n + 1`$ entries, which the preflight bounded by
+   `max_retained_states`.
+5. ⟨Account⟩ `attach_retention_v2` (`:1683-1706`) runs one ledger trial in the
+   metadata domain from the predecessor's ledger: $`[A']`$ added and $`[A]`$
+   removed for a commit; for a migration nothing is removed, because a V1
+   manifest is not a metadata object. The trial's budgets are the admission
+   limits that bound the cold reader's walk of the same closure
+   (`metadata_trial_limits`, `:2079-2089`); no limit is added.
+6. ⟨Attach⟩ `SealedDagTransaction::with_retention_metadata`
+   (`transaction.rs:726-789`) merges the staged objects into the sealed,
+   digest-ordered object set. It refuses a second attachment, a digest that
+   names different bytes (`ContentCollision`) and an anchor missing from the
+   merged set; it appoints the anchor and makes the transaction's reader dual
+   (`retention_reader`, `transaction.rs:793`). The successor's inventory carries
+   the trial's metadata inventory $`(\lvert M' \rvert, \mathrm{bytes}(M'))`$.
+
+Preparing the transaction validates every sealed object under the transaction's
+reader (`wal/codec.rs:360-364`), so the anchor and the radix nodes pass, and no
+metadata object can enter a transaction without attached V2 metadata.
+
+![The metadata ledger trial of one V2 commit, on the objects of the path-local edit figure. The predecessor ledger was seeded once at cold admission with occurrence counts, so the shared subtrees X and Y count 1 and the anchor A counts 1. The writer commits, the editor loads the old search path and stages the new one together with A', and the trial runs with A' added and A removed. Activation of A' comes first: it expands A', r', n1', m, L1'' and Lc, whose counts cross from 0 to 1, and raises X and Y from 1 to 2 without expanding them. Deactivation of A follows: it expands A, r, n1 and L1, whose counts cross from 1 to 0, and lowers X and Y back to 1. The trial expands the 10 changed objects with 14 references, within 2w + 7 = 103 root events and expansions, and its result is the cold ledger of A'. Two negative controls: deactivating first expands both whole closures, and a seed that counts each object once deactivates a leaf shared by two parents that the successor still references](figures/retention-v2-metadata-trial.svg)
+
+**The metadata trial.** The trial is the private ledger trial of the
+copy-on-write section above (task 7924), run in a third domain.
+`ClosureDomainV1::Metadata` widens the per-domain arrays to three
+(`closure.rs:196-209`), and `ClosureDomainV1::SEMANTIC` (`closure.rs:203`) names
+the two semantic domains that the semantic trials still run over. The cursor
+decodes a metadata object by its domain: an anchor references its radix root, a
+radix node references its children, and any other object is refused, so no
+state-DAG object enters the metadata domain (`push_metadata_references`,
+`closure/ledger_trial.rs:398-432`). Root changes are authorized against the root
+multiplicity in the trial's domain (`authorized_roots`, `:197-224`).
+
+The trial activates $`[A']`$ before it deactivates $`[A]`$. During activation an
+object is expanded when its count crosses from zero to one; an object of
+$`M \cap M'`$ already has a positive count, so it is only incremented. During
+deactivation an object is expanded when its count crosses from one to zero; an
+object of $`M \cap M'`$ keeps a positive count. The trial therefore expands
+exactly the changed objects (theorem T6):
+
+```math
+\mathrm{expansions} \;=\; \lvert M \,\triangle\, M' \rvert,
+\qquad
+\mathrm{references} \;=\; 2 + \sum_{v \,\in\, M \triangle M'} \mathrm{outdeg}(v),
+```
+
+where the 2 counts the two root events, an anchor's out-degree is 1, and a radix
+node's is its number of children. In the theory every cursor step spends one unit
+of expansion credit, $`1 + 2\,\lvert \mathrm{children}(v) \rvert`$ for an
+expanded object (`GenerationCheckpointPublication.v:2390`), so the trial takes
+$`2 + \sum_{v \in M \triangle M'} \bigl(1 + 2\,\lvert \mathrm{children}(v) \rvert\bigr)`$
+steps. For one insertion or eviction, one side of the change has at most
+$`w + 3`$ objects, a search path, the node split off or merged away and an
+anchor, and the other at most $`w + 2`$, a search path and an anchor, so
+
+```math
+2 + \mathrm{expansions} \;\le\; 2 + (w + 3) + (w + 2) \;=\; 2w + 7 \;=\; 103 \text{ at } w = 48 .
+```
+
+The trial reads each departing object, $`M \setminus M'`$, once from the pinned
+store, and each arriving object from the overlay. The editor has already read
+every departing object except the anchor $`A`$, so the old search path, and the
+merged sibling of an eviction, are read twice: at most $`w + 2`$ objects.
+
+The order matters (theorem T6m). Deactivating $`[A]`$ first drives every object
+of $`M`$ to zero and expands it, and activating $`[A']`$ afterwards expands every
+object of $`M'`$: $`\lvert M \rvert + \lvert M' \rvert`$ expansions, which grow
+with the history, although the final ledger is the same. This is Collins's
+reference counting (Collins, 1960) with the increments of a pointer replacement
+applied before its decrements, so a shared subtree never passes through zero.
+
+**The seed.** Cold admission of a V2 source seeds the metadata domain once
+(`durable/admission.rs:2011-2013`). `seed_retention_metadata`
+(`closure.rs:441-479`) gives every object of $`M`$ its occurrence count and the
+anchor a root multiplicity of one, and refuses a second seed. The cold reader
+computes the counts while it builds $`M`$ (`metadata_inventory`,
+`retention/v2_reader.rs:323-368`), from the children of the nodes it has already
+parsed, so seeding reads no object again. Theorem T7 shows that this seed is the
+ledger that activating $`[A]`$ from an empty domain builds. A seed that counts
+each object once is wrong (theorem T7m): a leaf shared by two parents would count
+1, and evicting one of its aliases would deactivate it while the successor still
+references it, dropping that object and its bytes from $`M'`$.
+
+**Publication and its metadata check.** After the catalog slot is committed,
+`publish_incremental_with_terminal_v1` (`durable/publication.rs:838-1002`)
+re-admits the published successor cold, as every incremental publication does
+until task 7927. A V2 successor ends in an incremental terminal, which declares
+no DATA, so step 7 of the cold reader has nothing to compare. The publisher
+therefore compares the trial's metadata inventory with the admitted one and
+reports `PublishedMetadataInventory{trial, admitted}` when they differ
+(`durable/publication.rs:981-995`). The slot is already committed, so the outcome
+is `Published` (`:297`): the directory holds the successor, and the error reports
+that the writer's accounting disagrees with what a cold reader adopts. This binds
+the metadata of incremental terminals.
+
+**Writer and reader coherence.** `DurableDirectoryV1` now carries a writer beside
+its reader (`durable/io.rs:801-802`). `open` selects the V1 writer and the dual
+reader (`:839-840`), and `try_clone_reader` copies both (`:892-893`). A V2
+writer must read back what it writes, so it requires the dual reader:
+`admit_physical_source` refuses `RetentionWriterUnreadable{writer, reader}` for
+a V2 writer with the V1-only reader (`durable/admission.rs:1855-1863`), after the
+profile check and before the store is pinned, so the refusal writes nothing.
+Physical recovery runs first, so content that the V1-only reader cannot read is
+refused there, as before.
+
+| Appointed source | Writer | Reader | Cold admission | Successor | Generation checkpoint |
+|---|---|---|---|---|---|
+| V1 | V1 | either | admitted, unchanged | a V1 manifest of $`96 + 56(n + 1)`$ bytes | V1: the retained union and the manifest |
+| V1 | V2 | dual | admitted, unchanged | the migration, then V2 commits | V1, until the first successor |
+| V2 | V1 | dual | admitted | refused `RetentionFormatNotWritable(V2)` before sealing | refused `SourceRetentionFormatNotWritable(V2)` |
+| V2 | V2 | dual | admitted, with the metadata domain seeded | a path-local commit | V2: the retained union and $`M`$ |
+| V1 | V2 | V1-only | refused `RetentionWriterUnreadable` after physical recovery | not reached | not reached |
+| V2 | either | V1-only | refused in physical recovery, as before | not reached | not reached |
+
+**Old readers after the first V2 successor.** The first V2 successor of a
+directory is a one-way change for it:
+
+- a V1-only reader refuses the directory in physical recovery and writes
+  nothing: at a V2 checkpoint descriptor with `InvalidDomain`, or, when the last
+  checkpoint is V1 and a migration transaction follows it, at that transaction's
+  first anchor or radix node with `UnknownObjectDomain`;
+- the V1 writer under the dual reader still adopts the directory, with the report
+  and authority that the V2 writer adopts, but refuses to extend it
+  (`RetentionFormatNotWritable(V2)`) or to checkpoint it
+  (`SourceRetentionFormatNotWritable(V2)`, `RV-28`);
+- nothing exports V2 back to V1.
+
+No reader adopts content that it does not support, which is the property
+`NoReaderAdoptsUnsupportedContent` of the upgrade model
+(`RSpaceRetentionV2Upgrade.tla`). This task does not change that model; the
+directory tests below realize its refusal witnesses on images that the writer
+produced.
+
+**Checkpoints.** Under the V2 writer, a generation checkpoint of a V2 source
+declares as DATA the retained union and the metadata closure.
+`checkpoint_descriptor` (`durable/admission.rs:1150-1177`) builds it with
+`GenerationCheckpointDescriptorV1::from_retained_union_and_metadata`
+(`checkpoint.rs:509-526`), whose inventory (`checkpoint.rs:273-301`) traverses
+the closure ledger once in digest order and visits every object counted in the
+retained or the metadata domain (`try_visit_retained_union_and_metadata`,
+`closure.rs:507-527`); the domains are disjoint, so no object is counted in
+both. The copy visitor (`try_visit_checkpoint_references`,
+`durable/admission.rs:1179-1198`) uses the same traversal
+(`try_visit_checkpoint_references_v2`, `checkpoint.rs:469-476`). This is the
+production builder that the format section left to this task; the test-only
+`from_test_ordered_v2` still builds the fixtures. Cold admission then compares
+$`\mathrm{DATA} - R_{\mathrm{decl}}`$ with $`M`$ exactly, as before. A V1 source
+keeps its V1 checkpoint under the V2 writer until its first successor. Because a
+checkpoint carries $`M`$ completely, compaction may reclaim the pack that held
+superseded radix nodes, and the next restart still adopts the anchor and its
+closure.
+
+**Theorems.** `RetentionV2Editor.v` proves sixteen capstones without axioms, and
+the module passes independent kernel checking:
+
+| # | Theorem (`RetentionV2Editor.`…) | Statement |
+|---|---|---|
+| T1 | `canonical_radix_exists_and_is_unique` | For strictly sorted entries of width $`w`$, the partition build is a canonical root that denotes exactly those entries, and every canonical root that denotes them is that build. |
+| T1m | `unary_inner_mutant_breaks_uniqueness` | Negative control: a shape rule that admits unary inner nodes accepts two distinct images of one entry, a unary root above a leaf and the leaf alone, and the unary one is not canonical. |
+| T2 | `radix_edit_batch_is_the_canonical_rebuild` | On a canonical root, a batch of width-$`w`$ CAS edits is refused exactly when some CAS does not match the entry it meets, and otherwise yields the partition build of the updated entries, which is canonical, denotes them, and is the empty tree when none remain. |
+| T2m | `unpruned_empty_child_mutant_is_not_the_rebuild` | Negative control: evicting one of two entries with a finalizer that does not prune leaves an empty child, so the result is neither the partition build of the remaining entry nor canonical. |
+| T3 | `radix_edit_changes_only_the_edited_paths` | For a key absent from sorted width-$`w`$ entries, inserting it into the partition build and evicting it again move between the two partition builds; both search paths have at most $`w + 1`$ nodes; a node only in the larger image is on its search path or is the one node that the insertion splits off and the eviction merges away; a node only in the smaller image is on its search path; and every node has at most $`\beta(w)`$ bytes. |
+| T3m | `flat_manifest_mutant_rewrites_bytes_proportional_to_history` | Negative control: the V1 manifest of $`n`$ entries has $`96 + 56n`$ bytes, grows by 56 bytes per entry, passes every bound for some $`n`$, and passes $`(w + 2)\,\beta(w)`$ once $`n`$ is at least that bound. |
+| T4 | `anchor_step_realizes_the_retention_entry_step` | The anchor of a valid V1 manifest reads back as that manifest; a commit of a target above the current entry and an eviction of a historical entry yield the anchors of the stepped manifests, which read back as them and whose composition entries are the `step_entries` of the composition section; and the metadata root change, $`[A']`$ in and $`[A]`$ out, is authorized and moves the root multiplicity from $`A`$ to $`A'`$. |
+| T4m | `inserted_object_count_mutant_undercounts_an_aliased_leaf` | Negative control: a commit into a history of two entries that share one leaf object inserts no leaf object, so counting inserted leaves gives 2, while the CAS count gives the 3 entries of the result. |
+| T5 | `canonical_radix_store_is_admitted_by_the_cold_reader` | For an injective naming and a store that holds a canonical image, the image is named by the empty node exactly when it has no entries; otherwise the plain count and the memoized count, with a sound memo, return its number of entries, and the unfold yields its entries in strict key order. |
+| T5m | `unmerged_root_mutant_is_refused_by_the_cold_reader` | Negative control: evicting one of two entries with a finalizer that does not merge the root leaves a unary root with the same entries; the faithful result counts 1, while the count, the unfold and the memoized count all refuse the unmerged root. |
+| T6 | `metadata_trial_work_is_the_changed_objects` | From a valid predecessor whose roots are the occurrences of $`A`$, a trial of $`[A']`$ in and $`[A]`$ out ends in the seed of $`A'`$, prepares $`\lvert M' \rvert`$ objects, expands exactly the $`\lvert M \,\triangle\, M' \rvert`$ changed objects in $`2 + \sum_{v \in M \triangle M'} (1 + 2\,\lvert \mathrm{children}(v) \rvert)`$ cursor steps, and for one insertion or eviction satisfies $`2 + \mathrm{expansions} \le 2w + 7`$. |
+| T6m | `deactivate_first_mutant_expands_the_shared_history` | Negative control: for a commit into an aliased history, the faithful trial expands the 5 changed objects, while deactivating first expands $`\lvert M \rvert + \lvert M' \rvert = 9`$. |
+| T7 | `metadata_ledger_seed_is_the_cold_ledger` | The seed of an anchor with occurrence counts is active exactly on the objects reachable from the anchor, is a credited cold build, agrees count for count with every credited cold build, and is a valid trial base. |
+| T7m | `set_seed_mutant_drops_a_shared_radix_child` | Negative control: when an eviction removes one alias of a leaf shared by two parents, the occurrence seed counts the leaf 2 and the trial keeps it with count 1, while a seed of ones deactivates it, although a live node still references it and the cold ledger of the successor has it active. |
+| T8 | `v1_migration_is_the_canonical_rebuild_of_its_history` | For a valid V1 manifest, inserting its history into the empty tree yields its anchor's canonical root and count, the anchor denotes the migrated manifest and reads back as it, and migrating the committed manifest equals committing on the migrated anchor. |
+| T8m | `current_in_history_migration_mutant_duplicates_the_current_entry` | Negative control: a migration that also inserts the current entry reads back with the current entry in the history, which V1 refuses, and counts that entry twice among the retained roots. |
+
+**Executable bindings.** Every property compares the production writer with the
+independent test model of the two sections above: `build_radix` and
+`model_anchor_bytes` for images and anchors; the reference unfold, the memoized
+count and the depth-keyed count for admission; and a closure and occurrence
+oracle that walks the rebuilt image for the ledger. No property compares the
+writer with itself. Each row gives its number of generated cases.
+
+| ID | Required property and negative-control boundary | Test |
+|---|---|---|
+| RV-30 | On 128 generated histories of up to 24 entries with up to 8 detour keys, one sorted batch from the empty root and a seeded order of single insertions, followed by the evictions of the detours, both end at the independent rebuild's root with exactly its reachable objects. Splitting a generated leaf into a unary inner node is refused `CompressibleUnaryNode` by the node constructor, and the stored unary image is refused `Body(CompressibleUnaryNode)` by the cold reader and by the reference unfold, while the rebuild is admitted. | `canonical_radix_images_are_determined_by_their_entries` |
+| RV-31 | On 256 generated histories with batches of up to 10 CAS edits on present or fresh keys, consistent or stale, a consistent batch yields the rebuild of the updated entries, stages only rebuild objects byte for byte, reports one mutation per edit, and yields and stages the empty node when it empties the history; a stale batch is refused `CompareAndSwap` with the model's failure (domain `RetentionHistory`, key digest, expected and actual endpoints) and stages nothing; both outcomes occur. An eviction finalized without pruning keeps an empty child, which the node constructor refuses `EmptyNode` and the cold reader and the reference unfold refuse `Body(EmptyNode)`. | `radix_edits_equal_the_independent_rebuild` |
+| RV-32 | On 128 generated manifests of up to 16 entries, one commit and one eviction each report exactly the oracle's work from the two search paths: loaded nodes and bytes, emitted nodes and bytes, reused child references and staged objects. Every object that appears is staged, at most one removed object lies beside the old path and none for a commit, at most $`w + 2`$ objects are loaded or staged, the emitted bytes are within $`(w + 2)\,\beta(w)`$ and every node within $`\beta(w)`$. A commit into the empty history loads 0, emits 2 and stages 1; one that splits a leaf root loads 1, emits 3 and stages 3; one whose split remainder equals the new leaf emits 3 and stages 2; an eviction that merges into the root loads 3, emits 1 and stages 1; one that empties the history stages exactly the empty node. At $`2^4`$ to $`2^{14}`$ entries with dense, gapped and aliased generations, a commit and an eviction report exactly the oracle's work within the same bounds, the V1 manifest has exactly $`96 + 56n`$ bytes, and it passes the path-local bound exactly when $`n \ge 9\,258`$. | `radix_edit_work_is_the_changed_path_under_geometric_growth` |
+| RV-33 | On 128 generated manifests, a commit's anchor is byte for byte the model anchor of the committed history with count $`n + 1`$, the cold reader reads it back as the committed entries, and those entries form a valid V1 manifest with the target; an eviction's anchor is the model anchor of the evicted history and reads back as it. On two historical entries that share one leaf object, the committed entry's leaf is that object again: the CAS count, 3, is admitted, while the stored-leaf count, 2, is refused `CountMismatch` with 2 declared and 3 counted. | `anchor_steps_realize_retention_entry_steps` |
+| RV-34 | On 96 generated manifests of up to 6 entries followed by 1 to 9 commits and evictions, the cold reader admits the image after every step: the anchor's root is the rebuild's, the entries, the metadata closure and its bytes are the oracle's, and the reference unfold, the memoized count and the depth-keyed count all give $`n`$; a step that empties the history appoints and stages the empty node, and some sequence does. An eviction that leaves the root with one child, finalized without the merge, is refused `CompressibleUnaryNode` by the cold reader, the reference unfold, the memoized count and the depth-keyed count, while the faithful merged root is admitted with the remaining entry. | `editor_images_are_admitted_by_the_cold_reader` |
+| RV-35 | On 64 generated manifests of up to 12 entries, for one commit and one eviction, the metadata trial from the seeded predecessor expands exactly $`\lvert M \,\triangle\, M' \rvert`$ objects with 2 plus the out-degrees of those objects as references, stays within $`2w + 7`$ root events and expansions, reads exactly the $`\lvert M \setminus M' \rvert`$ departing objects from the store, ends with the inventory of $`M'`$ and the cold ledger's count for every object of $`M \cup M'`$, and moves the root multiplicity from $`A`$ to $`A'`$. At $`2^4`$ to $`2^{14}`$ entries with the three generation shapes, the bound holds for a commit and an eviction. Deactivating first expands exactly $`\lvert M \rvert + \lvert M' \rvert`$ objects with the same final inventory and roots, more than $`n`$ for dense and gapped histories. | `metadata_trial_work_is_the_changed_objects_under_geometric_growth` |
+| RV-36 | On 128 generated manifests, the reader's occurrence counts equal the oracle's, the root multiplicity plus one per edge of a distinct closure object, and the seeded ledger equals the ledger that activating the anchor from an empty domain builds: the same counted objects, root multiplicities, metadata inventory and count of every object. On a history whose two aliased entries share one leaf, the leaf's occurrence count is 2, and evicting one alias keeps it at 1 with the successor's exact inventory, while a seed of ones drops it to 0 and undercounts the inventory by that object and its bytes. | `seeded_metadata_ledger_equals_the_cold_ledger` |
+| RV-37 | On 128 generated manifests, the migration reads no object, loads no node, makes $`n + 1`$ mutations, and stages exactly the rebuild's objects and the model anchor of the history with the current entry inserted; its anchor equals a commit of the target on the V2 twin of the source; the cold reader reads it back; and both V1 readers refuse every staged object. An anchor that appoints the migrated image while keeping the old current entry current is refused `RetentionContainsCurrent` by the cold reader and by the V1 manifest constructor. | `v1_migration_is_the_canonical_rebuild_and_refused_by_old_readers` |
+
+**Directory tests.** Four tests in `durable_publication.rs` run the writer
+through real directories. They select the V2 writer with the test setter, and
+track the expected history with `RetentionOracle` (`durable_publication.rs:4878`),
+which keeps the entries without the editor and builds the expected anchor and
+closure with the test model:
+
+- `v2_writer_successors_appoint_the_retention_entry_step_across_restarts` refines
+  `RV-33` and `RV-34`. Three successors over a migrated V2 source, with two
+  restarts: each successor appoints the oracle's anchor, and cold admission adopts
+  exactly the oracle's metadata closure. At each restart the V1-only reader
+  refuses at the V2 descriptor under either writer and writes nothing, and the V2
+  writer adopts the same authority and report.
+- `v2_writer_migrates_a_v1_source_at_its_first_successor` refines `RV-37`. The
+  V2 writer adopts a V1 source unchanged, migrates at its first successor and
+  edits the migrated radix at its second. The V1-only reader refuses the
+  migration transaction in recovery with `UnknownObjectDomain`. The V1 writer
+  adopts the migrated directory with the same report and authority, refuses to
+  extend it with `RetentionFormatNotWritable(V2)`, and leaves it unchanged.
+- `v2_writer_checkpoints_carry_the_retained_union_and_the_metadata_closure`
+  refines `RV-08` and `RV-24`. The writer's publication, the writer's compaction
+  and the publication authority each publish a checkpoint of a V2 source with
+  the same state and retained union, whose DATA is the retained union and the
+  metadata closure. The pack that held the edited radix nodes is reclaimed, and
+  each restart adopts the oracle's anchor and closure. A V1 source keeps its V1
+  checkpoint under the V2 writer, and the V1-only reader adopts it.
+- `v2_writer_requires_the_dual_reader_and_is_not_the_default`. An opened
+  directory has the V1 writer. The V2 writer with the V1-only reader is refused
+  `RetentionWriterUnreadable` on a V1 directory and in recovery on a V2
+  directory, neither refusal changes the directory, and the V1 writer is admitted
+  under both readers.
+
+`model_property_manifest_is_unique_and_exhaustive` now checks 187 bindings,
+these eight among them. It requires each of the sixteen `Print Assumptions`
+capstones of `RetentionV2Editor.v` to be cited by an RV row of the derivation
+matrix, and the integrated runner compiles the theory expecting sixteen closed
+capstones.
+
+**Boundary.**
+
+- Activation. The V2 writer becomes the default in a separate commit after this
+  one, with a release note, because an older binary cannot read a directory after
+  its first V2 successor and nothing exports it back to V1. `RV-28` then
+  describes the V1 writer only.
+- Eviction has no production caller; the retention policy that evicts is task
+  7756.
+- The theory walks every edit of a batch from the root. `RadixEditor::apply`
+  (`rewrite.rs:792-816`) instead resumes at the last cursor step that ends
+  within the longest common prefix of the previous and the current key. That
+  step's node path is the current key's prefix of the same length, so a walk
+  from the root passes through the same node at the same position, and resuming
+  there skips only nodes the batch has already opened. The theory does not
+  mechanize this equivalence; the multi-edit batches of `RV-30`, `RV-31` and
+  `RV-37` check it executably against the independent rebuild.
+- Publication still re-admits every successor cold, so a successor costs
+  $`O(n)`$ end to end until the trusted successor of task 7927 replaces
+  re-admission on ordinary commits. Comparing that successor with cold admission
+  after every step is task 7928, and the scaling evidence is task 7929.
+- Superseded radix nodes stay in their packs until compaction or the garbage
+  collector reclaims them; the collector must treat the metadata closure of
+  every retained anchor as live (tasks 7943 to 7945).
+- The third domain adds 8 bytes to each digest's state in the ledger, and
+  8 bytes to each root's multiplicities.
+- The TLA+ models are unchanged: crash atomicity is the commit's WAL transaction
+  (`RSpaceAtomicCheckpointAuthority`), and the old-reader fence is
+  `RSpaceRetentionV2Upgrade`.
+
+Cited works:
+
+- D. R. Morrison, "PATRICIA — Practical Algorithm To Retrieve Information Coded
+  in Alphanumeric", *Journal of the ACM* 15(4):514–534, 1968,
+  [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481), for the
+  path-compressed radix tree, whose unary inner nodes the shape rules forbid.
+- V. Leis, A. Kemper and T. Neumann, "The adaptive radix tree: ARTful indexing
+  for main-memory databases", *Proceedings of the 29th IEEE International
+  Conference on Data Engineering (ICDE)*, 38–49, 2013,
+  [doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812),
+  for the Node4, Node16, Node48 and Node256 child tables.
+- J. R. Driscoll, N. Sarnak, D. D. Sleator and R. E. Tarjan, "Making data
+  structures persistent", *Journal of Computer and System Sciences*
+  38(1):86–124, 1989,
+  [doi:10.1016/0022-0000(89)90034-2](<https://doi.org/10.1016/0022-0000(89)90034-2>),
+  for path copying: an update copies its search path and shares every other
+  node.
+- G. E. Collins, "A method for overlapping and erasure of lists",
+  *Communications of the ACM* 3(12):655–657, 1960,
+  [doi:10.1145/367487.367501](https://doi.org/10.1145/367487.367501), for
+  reference counting.
+- R. C. Merkle, "A digital signature based on a conventional encryption
+  function", *Advances in Cryptology — CRYPTO '87*, Lecture Notes in Computer
+  Science 293, 369–378, 1988,
+  [doi:10.1007/3-540-48184-2_32](https://doi.org/10.1007/3-540-48184-2_32), for
+  naming every node by the digest of its content, which makes identical
+  subtrees one object.
+
+The writer evidence in the verification record was taken at these sources:
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v` | `878da37f174f3f8f8ffe46b206b345704617f350ef24387647ab21a42d9fd2b0` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `e54c18c4bb08abe690c66a72054a9569805ca58ab84ef4cece7f7edc9d23ae02` |
+| `rspace++/src/rspace/persistence/retention/v2_writer.rs` | `a3af7d4dc6caf186aebced776eb6044378fc0e26f4b57060485322ebe2b609ab` |
+| `rspace++/src/rspace/persistence/retention/v2_reader.rs` | `cc4b66d2a49e397b8093575d8fa147e7bbd1cbaac226f68f70910866c34d32f3` |
+| `rspace++/src/rspace/persistence/retention.rs` | `e5971ed87b6973bdbc09fd02609507c2a8dc8af4459f8bb973df59e2782529de` |
+| `rspace++/src/rspace/persistence/rewrite.rs` | `638c62e1299377d50480022b0e57a25b2a566cfe57e1580bf14d29a4216fde73` |
+| `rspace++/src/rspace/persistence/object.rs` | `b1bd27345892c3a3c0a1aba611b33e93e57a2fcbdb7c7d70fe4eae638c93937a` |
+| `rspace++/src/rspace/persistence/store.rs` | `3f79a99fa14ca15c36269e21ff17e32aa7d64ac3c14b470f8d2fc0f40b694a29` |
+| `rspace++/src/rspace/persistence/closure.rs` | `768b54c28e8a0e4c68826ff67d8510228345a62bef7d3559ca92027b977feec6` |
+| `rspace++/src/rspace/persistence/closure/ledger_trial.rs` | `b5d887bf057c63d13b6b37a158d2ceaec29139192a521044d26a01be9c65ffc3` |
+| `rspace++/src/rspace/persistence/checkpoint.rs` | `c3805f569d926d3a64a8ff08db73172a056b200aa796251e66ee5dce3c5547ff` |
+| `rspace++/src/rspace/persistence/transaction.rs` | `7361e447a0114837dfb3f24f57a63e4d3fbbbba7ccda19f9dd48bda78f02c21b` |
+| `rspace++/src/rspace/persistence/wal/codec.rs` | `02a30b3a057d635dd6bcfa91cc4f4b40635300a1a5b5340dd45dafed5181e427` |
+| `rspace++/src/rspace/persistence/durable/io.rs` | `4cc5db7ef8b2fed0d952cdace30495f61cb6673f22e3af4b790df435ccc47157` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `d0c10d21705bfe5889a7aa49e4f9d5ee5b97579d46bcb6c1f80300de55eb02c1` |
+| `rspace++/src/rspace/persistence/durable/publication.rs` | `6b22101d11e5d795a8f2843bf8e94695b07dafd1bbe3f17e7e9d981c5396ab37` |
+| `rspace++/tests/persistence/retention_v2_editor_properties.rs` | `6d3c70af410a660afcf748e146c2f151e3f6ab14ed5c07429c72607d618aba0f` |
+| `rspace++/tests/persistence/retention_v2_format_properties.rs` | `fba70440c3b860db27ad705a09f41ad663805a44d10870b57069a9c232468d1c` |
+| `rspace++/tests/persistence/durable_publication.rs` | `4203049158834abb07fbff5787d6516bf951049806d1326bcb806cc1993bc8d0` |
+| `rspace++/tests/persistence/cow_reachability_ledger_properties.rs` | `0e3317fa328a823147b829be8dc6be5943ca5132293bbec5707c875ab47e28bd` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `e5aebfbb8bb7d655fd334a17abb3492e977d8e4eff891aba7fd0ace101100993` |
+| `rspace++/tests/persistence/property_support.rs` | `46573d3b4365f648d39bb1512dafb8e89bf2e9350e3b68662637cdf010946aa4` |
+| `rspace++/tests/persistence/mod.rs` | `ffda73dca27f38fbf177a8358635a9b10156313a347d97f47eb84dc17d8462c9` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -2560,14 +3134,14 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | RV-05 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences` | P | The theory abstracts the DAG body; the body parser's canonical-shape refusals and the typed refusal of each rule are executable, and the production reader refines the reference decoder (RV-22). |
 | RV-06 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences`, `RetentionV2Format.distinct_leaf_count_mutant_undercounts_shared_entries` | P | Sharing is generated over product histories; the production reader memoizes the same pairs of digest and width (RV-23). |
 | RV-07 | `EXEC_ONLY` | `RetentionV2Format.domain_separation_excludes_cross_universe_digest_aliases`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | Closure completeness is checked on the test model's images; the stack bound is platform evidence. |
-| RV-08 | `EXEC_ONLY` | `RetentionV2Format.v2_checkpoint_inventory_is_retained_plus_metadata`, `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | The codec checks the V2 rule's minimum (RV-21) and cold admission the exact metadata closure (RV-24); the builder that produces the inventory is task 7926. |
+| RV-08 | `EXEC_ONLY` | `RetentionV2Format.v2_checkpoint_inventory_is_retained_plus_metadata`, `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | The codec checks the V2 rule's minimum (RV-21) and cold admission the exact metadata closure (RV-24); under the V2 writer the production builder `CheckpointObjectInventoryV1::from_retained_union_and_metadata` produces the inventory, and `v2_writer_checkpoints_carry_the_retained_union_and_the_metadata_closure` publishes it through all three checkpoint publishers. |
 | RV-09 | `NoReaderAdoptsUnsupportedContent` | `RetentionV2Format.retention_domains_are_pairwise_distinct` | P | The model's format check is realized by the domain refusal of every V1 object reader. |
 | RV-10 | `EXEC_ONLY` | `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.retention_domains_are_pairwise_distinct` | P | The V1 codec checks the domain before the inventory; both refusals and their order are exercised in descriptors, prepare records and commit records. |
 | RV-11 | `ReadersSelectTheSameSlot`, `RetentionV2TypeInvariant` | `EXEC_ONLY` | P | The model's envelope is the 336-byte slot outside the retention reference and the CRC. |
 | RV-12 | `AdoptionIsNewestPublished` | `EXEC_ONLY` | P | Each executable envelope change realizes the model's changed envelope, and the observed fallback is the negative control's stale adoption. |
 | RV-13 | `AdoptionIsNewestPublished`, `NeverOldReaderRefusesV2`, `CrashRecoverySelectsOnlyValidAuthority` | `EXEC_ONLY` | P | Terminal refusal is the existing no-fallback recovery; old readers refuse real V2 directory images in RV-27. |
 | RV-14 | `EXEC_ONLY` | `RetentionV2Format.retention_domains_are_pairwise_distinct`, `RetentionV2Format.domain_separation_excludes_cross_universe_digest_aliases`, `RetentionV2Format.shared_node_domain_mutant_aliases_empty_metadata_and_semantic_roots` | D | Collision checking is the duplicate-digest refusal of the production inventory builder. |
-| RV-15 | `NeverDualReaderAdoptsV2` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots` | P | The migration runs on the test model's radix builder; the production migration is task 7926. |
+| RV-15 | `NeverDualReaderAdoptsV2` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots` | P | The test model's radix builder migrates the fixtures; the production migration `migrate_retention_v1` is bound by RV-37 and by `v2_writer_migrates_a_v1_source_at_its_first_successor`. |
 | RV-16 | `EXEC_ONLY` | `RetentionV2Format.retention_format_binding_separates_representations_of_one_state`, `RetentionV2Format.state_version_only_binding_mutant_resumes_across_formats` | P | The binding is a contract; its realization in the transfer protocol is tasks 5690 and 7938. |
 | RV-17 | `EXEC_ONLY` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots` | P | Root preservation is checked on parsed semantic manifests; consensus identity remains the contract of task 5691. |
 | RV-18 | `EXEC_ONLY` | `EXEC_ONLY` | E | Totality is executable evidence over arbitrary and perturbed bytes. |
@@ -2580,8 +3154,16 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | RV-25 | `EXEC_ONLY` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots`, `RetentionV2Format.memoized_radix_count_agrees_with_radix_count` | P | Each V2 source is the migration of its V1 twin; equal reports, the read equations and the limit boundaries are executable. |
 | RV-26 | `EXEC_ONLY` | `EXEC_ONLY` | E | Resource boundaries are executable evidence; no limit was added. |
 | RV-27 | `AdoptionIsNewestPublished`, `NoReaderAdoptsUnsupportedContent`, `NeverOldReaderRefusesV2`, `NeverDualReaderAdoptsV2`, `NeverAdoptsBehindTornSuccessor` | `EXEC_ONLY` | P | Directory images realize the model's refusal and adoption witnesses; which layer refuses each corruption is executable. |
-| RV-28 | `EXEC_ONLY` | `EXEC_ONLY` | E | Successor refusal is an executable guard until the writer of task 7926 exists. |
+| RV-28 | `EXEC_ONLY` | `EXEC_ONLY` | E | Successor refusal is the executable guard of the V1 writer, which every opened directory uses until the V2 writer is activated; RV-33 to RV-37 cover the V2 writer. |
 | RV-29 | `EXEC_ONLY` | `EXEC_ONLY` | E | Totality is executable evidence over arbitrary bytes and arbitrary graphs. |
+| RV-30 | `EXEC_ONLY` | `RetentionV2Editor.canonical_radix_exists_and_is_unique`, `RetentionV2Editor.unary_inner_mutant_breaks_uniqueness` | P | The theory names nodes by an injective function; byte-identical images under every edit order, and the refusal of a unary node by the constructor and the reader, are executable. |
+| RV-31 | `EXEC_ONLY` | `RetentionV2Editor.radix_edit_batch_is_the_canonical_rebuild`, `RetentionV2Editor.unpruned_empty_child_mutant_is_not_the_rebuild` | P | The theory's editor follows `RadixEditor` step by step but walks every edit from the root, where `RadixEditor` resumes at a cursor step within the common prefix of adjacent keys (writer section, boundary); that resumption, the staged bytes, the typed CAS failure and the empty node are executable. |
+| RV-32 | `EXEC_ONLY` | `RetentionV2Editor.radix_edit_changes_only_the_edited_paths`, `RetentionV2Editor.flat_manifest_mutant_rewrites_bytes_proportional_to_history` | P | The theory bounds the changed nodes and their bytes; the exact report counters, the fixed cases, the growth to $`2^{14}`$ entries and the crossover at 9 258 entries are executable. |
+| RV-33 | `EXEC_ONLY` | `RetentionV2Editor.anchor_step_realizes_the_retention_entry_step`, `RetentionV2Editor.inserted_object_count_mutant_undercounts_an_aliased_leaf` | P | Anchor bytes and the refusal of the undercounted anchor are executable; `v2_writer_successors_appoint_the_retention_entry_step_across_restarts` publishes the steps in a directory. |
+| RV-34 | `EXEC_ONLY` | `RetentionV2Editor.canonical_radix_store_is_admitted_by_the_cold_reader`, `RetentionV2Editor.unmerged_root_mutant_is_refused_by_the_cold_reader` | P | The production reader refines the theory's counts and unfold (RV-22, RV-23); admission after every step, by the reader and the three model passes, is executable. |
+| RV-35 | `EXEC_ONLY` | `RetentionV2Editor.metadata_trial_work_is_the_changed_objects`, `RetentionV2Editor.deactivate_first_mutant_expands_the_shared_history` | P | The theory counts cursor steps by expansion credit; the production trial's expansion, reference and read counters are compared exactly with the oracle's changed objects. |
+| RV-36 | `EXEC_ONLY` | `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger`, `RetentionV2Editor.set_seed_mutant_drops_a_shared_radix_child` | P | The reader's occurrence counts realize the theory's seed; its equality with the ledger of an activation from an empty domain is executable. |
+| RV-37 | `NoReaderAdoptsUnsupportedContent` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.current_in_history_migration_mutant_duplicates_the_current_entry` | P | Both V1 readers refuse every migrated object, which realizes the model's format check; `v2_writer_migrates_a_v1_source_at_its_first_successor` shows recovery refusing the migration transaction. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -2790,6 +3372,24 @@ production code that reads V2: the dual dispatch, the versioned descriptor, the
 two-phase radix reader and the new cold-admission steps. No production code
 writes V2. See engineering journal J-248 for caps, evidence hashes and the
 remaining obligations.
+
+The 2026-10-26 writer extension adds `RV-30` through `RV-37`. The
+catalog/derivation/binding registry now contains **187** IDs: the 179 above and
+the eight writer rows. On an isolated export of the candidate tree,
+`RetentionV2Editor.v` compiled with all **16** capstones closed under the global
+context, and the module passed independent kernel checking; the TLA+ models did
+not change. All 457 selected rspace++ library tests under `rspace::persistence`
+passed single-threaded in debug (25.89 s) and release (9.66 s), with the three
+unwind-child helpers ignored by design. They
+include the eight writer properties, the four directory tests, the format,
+reader, ledger, reachability, closure, semantic, admission and publication
+tests, and this registry test. Unlike the reader extension, these results cover
+production code that writes V2: the editor under the retention domain, the
+commit and the migration, the metadata trial, the successor binding, the V2
+checkpoint builder and the post-publication check. Only the test setter selects
+the V2 writer; opened directories keep writing V1 until the activation commit.
+See engineering journal J-249 for caps, evidence hashes and the remaining
+obligations.
 
 ## Caller-authority contract (2026-09-06)
 

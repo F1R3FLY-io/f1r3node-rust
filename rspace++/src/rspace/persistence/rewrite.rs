@@ -19,7 +19,11 @@ use super::manifest::{
 };
 use super::mutation::MutationBatchViewV1;
 use super::object::{
-    CanonicalDagNode, CanonicalObjectKind, CanonicalObjectView, DagChild, EndpointValue,
+    CanonicalDagNode, CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView, DagChild,
+    EndpointValue,
+};
+use super::retention::v2_format::{
+    RETENTION_RADIX_DOMAIN, RetentionReader, empty_retention_radix_ref,
 };
 use super::store::{
     ImmutableObjectStore, MutableObjectStore, ObjectAdmission, StagingObjectStore,
@@ -33,9 +37,26 @@ pub enum RewriteError<E> {
     CompareAndSwap(Box<CompareAndSwapFailure>),
 }
 
+/// The radix image one editor rewrites: a semantic namespace of the state
+/// DAG, or the historical-entry radix of a retention V2 anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RadixDomainV1 {
+    Semantic(SemanticNamespace),
+    RetentionHistory,
+}
+
+impl RadixDomainV1 {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Semantic(namespace) => namespace.name(),
+            Self::RetentionHistory => "retention-history",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompareAndSwapFailure {
-    pub namespace: SemanticNamespace,
+    pub domain: RadixDomainV1,
     pub key_digest: ObjectDigest,
     pub key_len: u64,
     pub expected: EndpointValue,
@@ -49,7 +70,7 @@ impl<E: Display> Display for RewriteError<E> {
             Self::Format(error) => Display::fmt(error, formatter),
             Self::CompareAndSwap(failure) => {
                 let CompareAndSwapFailure {
-                    namespace,
+                    domain,
                     key_digest,
                     key_len,
                     expected,
@@ -59,7 +80,7 @@ impl<E: Display> Display for RewriteError<E> {
                     formatter,
                     "{} mutation compare-and-swap failed at {}-byte key digest {}: expected {}, \
                      found {}",
-                    namespace.name(),
+                    domain.name(),
                     key_len,
                     key_digest,
                     expected.name(),
@@ -485,7 +506,7 @@ pub(crate) fn rewrite_semantic_roots_in_store<S: MutableObjectStore>(
     let (data_bag, data_report) = rewrite_root(
         store,
         roots.data_bag,
-        SemanticNamespace::DataBag,
+        RadixDomainV1::Semantic(SemanticNamespace::DataBag),
         mutation.data().map(|entry| {
             (
                 entry.key,
@@ -500,7 +521,7 @@ pub(crate) fn rewrite_semantic_roots_in_store<S: MutableObjectStore>(
     let (continuation_map, continuation_report) = rewrite_root(
         store,
         roots.continuation_map,
-        SemanticNamespace::ContinuationMap,
+        RadixDomainV1::Semantic(SemanticNamespace::ContinuationMap),
         mutation.continuations().map(|entry| {
             (
                 entry.key,
@@ -517,7 +538,7 @@ pub(crate) fn rewrite_semantic_roots_in_store<S: MutableObjectStore>(
     let (join_bag, join_report) = rewrite_root(
         store,
         roots.join_bag,
-        SemanticNamespace::JoinBag,
+        RadixDomainV1::Semantic(SemanticNamespace::JoinBag),
         mutation.joins().map(|entry| {
             (
                 entry.key,
@@ -592,10 +613,32 @@ fn load_manifest_authority<S: ImmutableObjectStore>(
     })
 }
 
+/// Rewrite one retention V2 history radix by a sorted batch of
+/// compare-and-swap edits on 48-byte retention keys.
+///
+/// This is the semantic editor under the retention radix domain: nodes are
+/// read and written in that domain and no semantic provenance is recorded.
+/// The result is the canonical radix of the edited entries, and only the
+/// edited search paths are read or written. The empty history's image is
+/// the format's fixed empty node, which is materialized, never read.
+pub(crate) fn rewrite_retention_history<'a, S, I>(
+    store: &S,
+    root: ObjectRefV1,
+    edits: I,
+    limits: DagRewriteLimits,
+) -> Result<(ObjectRefV1, DagRewriteReport), RewriteError<S::Error>>
+where
+    S: MutableObjectStore,
+    I: IntoIterator<Item = (&'a [u8], EndpointValue, EndpointValue)>,
+{
+    let mut provenance = RewriteProvenance::new(limits.max_inherited_boundaries);
+    rewrite_root(store, root, RadixDomainV1::RetentionHistory, edits, limits, &mut provenance)
+}
+
 fn rewrite_root<'a, S, I>(
     store: &S,
     root: ObjectRefV1,
-    namespace: SemanticNamespace,
+    domain: RadixDomainV1,
     mutations: I,
     limits: DagRewriteLimits,
     provenance: &mut RewriteProvenance,
@@ -606,40 +649,52 @@ where
 {
     let mut mutations = mutations.into_iter();
     let Some((first_key, first_before, first_after)) = mutations.next() else {
-        let boundary = InheritedObjectRef {
-            namespace,
-            kind: InheritedBoundaryKind::NodeEntry,
-            path: ExactPath::empty(),
-            reference: root,
-        };
-        provenance.insert_eligible(boundary)?;
-        provenance.inherit_if_eligible(boundary)?;
+        if let RadixDomainV1::Semantic(namespace) = domain {
+            let boundary = InheritedObjectRef {
+                namespace,
+                kind: InheritedBoundaryKind::NodeEntry,
+                path: ExactPath::empty(),
+                reference: root,
+            };
+            provenance.insert_eligible(boundary)?;
+            provenance.inherit_if_eligible(boundary)?;
+        }
         return Ok((root, DagRewriteReport::default()));
     };
-    require_limit(1, limits.max_loaded_nodes, "loaded nodes")?;
-    require_limit(1, limits.max_edited_nodes, "edited nodes")?;
-    let (root_node, loaded_bytes, prefix_bytes) = load_node(
-        store,
-        root,
-        limits.max_loaded_bytes,
-        limits.max_retained_prefix_bytes,
-        namespace,
-        ExactPath::empty(),
-        provenance,
-        limits.max_exact_path_chunks,
-    )?;
+    let (root_node, loaded_nodes, loaded_bytes, prefix_bytes) = match domain {
+        RadixDomainV1::RetentionHistory if root == empty_retention_radix_ref() => {
+            require_limit(1, limits.max_edited_nodes, "edited nodes")?;
+            (EditNode::vacant(), 0, 0, 0)
+        }
+        RadixDomainV1::Semantic(_) | RadixDomainV1::RetentionHistory => {
+            require_limit(1, limits.max_loaded_nodes, "loaded nodes")?;
+            require_limit(1, limits.max_edited_nodes, "edited nodes")?;
+            let (root_node, loaded_bytes, prefix_bytes) = load_node(
+                store,
+                root,
+                limits.max_loaded_bytes,
+                limits.max_retained_prefix_bytes,
+                domain,
+                ExactPath::empty(),
+                provenance,
+                limits.max_exact_path_chunks,
+            )?;
+            (root_node, 1, loaded_bytes, prefix_bytes)
+        }
+    };
     let mut editor = RadixEditor::new(
         store,
-        namespace,
+        domain,
         root_node,
+        loaded_nodes,
         loaded_bytes,
         prefix_bytes,
         limits,
         provenance,
     )?;
-    editor.apply(namespace, first_key, first_before, first_after)?;
+    editor.apply(first_key, first_before, first_after)?;
     for (key, before, after) in mutations {
-        editor.apply(namespace, key, before, after)?;
+        editor.apply(key, before, after)?;
     }
     editor.finish()
 }
@@ -681,7 +736,7 @@ struct CursorStep {
 
 struct RadixEditor<'store, 'mutation, 'provenance, S: MutableObjectStore> {
     store: &'store S,
-    namespace: SemanticNamespace,
+    domain: RadixDomainV1,
     nodes: Vec<EditNode>,
     root: usize,
     cursor: Vec<CursorStep>,
@@ -696,8 +751,9 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
 {
     fn new(
         store: &'store S,
-        namespace: SemanticNamespace,
+        domain: RadixDomainV1,
         root: EditNode,
+        loaded_nodes: u64,
         loaded_bytes: u64,
         retained_prefix_bytes: u64,
         limits: DagRewriteLimits,
@@ -706,7 +762,7 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
         let mut nodes = Vec::new();
         reserve_one(&mut nodes, "rewrite nodes")?;
         nodes.push(root);
-        require_limit(1, limits.max_loaded_nodes, "loaded nodes")?;
+        require_limit(loaded_nodes, limits.max_loaded_nodes, "loaded nodes")?;
         require_limit(loaded_bytes, limits.max_loaded_bytes, "loaded bytes")?;
         require_limit(1, limits.max_edited_nodes, "edited nodes")?;
         require_limit(
@@ -716,13 +772,13 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
         )?;
         Ok(Self {
             store,
-            namespace,
+            domain,
             nodes,
             root: 0,
             cursor: Vec::new(),
             previous_key: None,
             report: DagRewriteReport {
-                loaded_nodes: 1,
+                loaded_nodes,
                 loaded_bytes,
                 edited_nodes: 1,
                 retained_prefix_bytes,
@@ -735,7 +791,6 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
 
     fn apply(
         &mut self,
-        namespace: SemanticNamespace,
         key: &'mutation [u8],
         before: EndpointValue,
         after: EndpointValue,
@@ -870,7 +925,7 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
         let actual = self.nodes[node].endpoint;
         if actual != before {
             return Err(RewriteError::CompareAndSwap(Box::new(CompareAndSwapFailure {
-                namespace,
+                domain: self.domain,
                 key_digest: ObjectDigest::of_canonical_bytes(key),
                 key_len: checked_len(key.len(), "compare-and-swap key")?,
                 expected: before,
@@ -988,7 +1043,7 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
                     reference,
                     remaining_bytes,
                     remaining_prefix,
-                    self.namespace,
+                    self.domain,
                     child_entry_path,
                     self.provenance,
                     self.limits.max_exact_path_chunks,
@@ -1216,7 +1271,7 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
                         child.reference,
                         remaining_bytes,
                         remaining_prefix,
-                        self.namespace,
+                        self.domain,
                         child_entry_path,
                         self.provenance,
                         self.limits.max_exact_path_chunks,
@@ -1302,19 +1357,27 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
         node: CanonicalDagNode,
         entry_path: ExactPath,
     ) -> Result<FinalNode, RewriteError<S::Error>> {
-        record_target_inherited(
-            self.namespace,
-            &node,
-            entry_path,
-            self.provenance,
-            self.limits.max_exact_path_chunks,
-        )?;
+        if let RadixDomainV1::Semantic(namespace) = self.domain {
+            record_target_inherited(
+                namespace,
+                &node,
+                entry_path,
+                self.provenance,
+                self.limits.max_exact_path_chunks,
+            )?;
+        }
         let encoded_len = node.canonical_len();
         self.preflight_emission(encoded_len)?;
         let emitted_nodes = checked_add(self.report.emitted_nodes, 1, "emitted nodes")?;
         let emitted_bytes = checked_add(self.report.emitted_bytes, encoded_len, "emitted bytes")?;
-        let reference = node.object_ref();
-        let bytes: Arc<[u8]> = node.try_canonical_bytes()?.into();
+        let (reference, bytes) = match self.domain {
+            RadixDomainV1::Semantic(_) => (node.object_ref(), node.try_canonical_bytes()?),
+            RadixDomainV1::RetentionHistory => {
+                let radix = node.as_retention_radix();
+                (radix.object_ref(), radix.try_canonical_bytes()?)
+            }
+        };
+        let bytes: Arc<[u8]> = bytes.into();
         self.report.emitted_nodes = emitted_nodes;
         self.report.emitted_bytes = emitted_bytes;
         Ok(FinalNode {
@@ -1437,7 +1500,7 @@ fn load_node<S: ImmutableObjectStore>(
     reference: ObjectRefV1,
     max_loaded_bytes: u64,
     max_prefix_bytes: u64,
-    namespace: SemanticNamespace,
+    domain: RadixDomainV1,
     entry_path: ExactPath,
     provenance: &mut RewriteProvenance,
     max_exact_path_chunks: u64,
@@ -1445,14 +1508,35 @@ fn load_node<S: ImmutableObjectStore>(
     require_limit(reference.encoded_len(), max_loaded_bytes, "loaded bytes")?;
     let object = load_exact_object(store, reference, max_loaded_bytes)?;
     let bytes = object.as_ref();
-    let object = CanonicalObjectView::parse(bytes)?;
-    let CanonicalObjectView::DagNode(node) = object else {
-        return Err(CanonicalFormatError::UnexpectedObjectKind {
-            digest: reference.digest(),
-            expected: CanonicalObjectKind::DagNode.name(),
-            actual: object.kind().name(),
+    let node = match domain {
+        RadixDomainV1::Semantic(_) => match CanonicalObjectView::parse(bytes)? {
+            CanonicalObjectView::DagNode(node) => node,
+            object => {
+                return Err(CanonicalFormatError::UnexpectedObjectKind {
+                    digest: reference.digest(),
+                    expected: CanonicalObjectKind::DagNode.name(),
+                    actual: object.kind().name(),
+                }
+                .into());
+            }
+        },
+        RadixDomainV1::RetentionHistory => {
+            match CanonicalObjectKind::from_domain_prefix_for(bytes, RetentionReader::Dual)? {
+                CanonicalObjectKind::RetentionRadixNode => CanonicalDagNodeView::parse_in_domain(
+                    bytes,
+                    RETENTION_RADIX_DOMAIN,
+                    "RSpace retention radix node",
+                )?,
+                kind => {
+                    return Err(CanonicalFormatError::UnexpectedObjectKind {
+                        digest: reference.digest(),
+                        expected: CanonicalObjectKind::RetentionRadixNode.name(),
+                        actual: kind.name(),
+                    }
+                    .into());
+                }
+            }
         }
-        .into());
     };
     let prefix_bytes = checked_len(node.prefix().len(), "loaded node prefix")?;
     require_limit(prefix_bytes, max_prefix_bytes, "retained prefix bytes")?;
@@ -1474,7 +1558,9 @@ fn load_node<S: ImmutableObjectStore>(
         endpoint: node.endpoint(),
         children,
     };
-    record_base_boundaries(namespace, &loaded, entry_path, provenance, max_exact_path_chunks)?;
+    if let RadixDomainV1::Semantic(namespace) = domain {
+        record_base_boundaries(namespace, &loaded, entry_path, provenance, max_exact_path_chunks)?;
+    }
     Ok((loaded, reference.encoded_len(), prefix_bytes))
 }
 

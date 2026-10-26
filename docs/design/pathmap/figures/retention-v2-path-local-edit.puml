@@ -1,0 +1,106 @@
+@startuml retention-v2-path-local-edit
+' ============================================================================
+' One V2 commit as a path-local edit of the history radix (task 7926): the
+' objects that commit_retention_v2 (rspace++/src/rspace/persistence/
+' retention/v2_writer.rs) reads and stages through rewrite_retention_history
+' (rewrite.rs), and the objects it shares with the predecessor, on a history
+' whose search path for key(c) is root, n1, L1. The theorems are T3 and T4 of
+' formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v.
+'   RED    #C62828  the predecessor's anchor and old search path: loaded once,
+'                   and no longer reachable from the successor's anchor
+'   GREEN  #2E7D32  the successor's anchor and new search path: staged
+'   PURPLE #6A1B9A  the one node split off beside the new search path
+'   GREY   #616161  subtrees shared by both images: neither read nor written
+'   AMBER  #EF6C00  the work and byte bounds
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ObjectBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>A V2 commit edits one search path of the history radix</b>\nthe key of the outgoing current state c is above every historical key, so its search path takes the largest edge at every node
+
+object "A (predecessor anchor)" as A #FFCDD2 {
+  current c, count n, root r
+}
+object "A' (successor anchor)" as A2 #C8E6C9 {
+  current c', count n + 1, root r'
+}
+object "r (old root)" as r #FFCDD2 {
+  inner, prefix p
+}
+object "n1 (old)" as n1 #FFCDD2 {
+  inner, prefix q
+}
+object "L1 (old leaf)" as L1 #FFCDD2 {
+  leaf, prefix s ‖ b ‖ u
+  key(c) continues s ‖ b' with b' > b,
+  so it leaves this prefix at b
+}
+object "r' (new root)" as r2 #C8E6C9 {
+  inner, prefix p
+}
+object "n1' (new)" as n12 #C8E6C9 {
+  inner, prefix q
+}
+object "m (new split point)" as m #C8E6C9 {
+  inner, prefix s
+  exactly two children
+}
+object "Lc (new leaf)" as Lc #C8E6C9 {
+  leaf, prefix u': the rest of key(c)
+  claim: c's closure bytes
+}
+object "L1'' (split off)" as L1s #E1BEE7 {
+  leaf, prefix u
+  the old entry, beside the path
+}
+object "X (shared subtree)" as X #E0E0E0 {
+  unchanged
+}
+object "Y (shared subtree)" as Y #E0E0E0 {
+  unchanged
+}
+
+A --> r : <color:#C62828>historical root</color>
+r --> X : edge 0x00
+r --> n1 : <color:#C62828>edge 0x01</color>
+n1 --> Y : edge 0x00
+n1 --> L1 : <color:#C62828>edge 0x07</color>
+
+A2 --> r2 : <color:#2E7D32>historical root</color>
+r2 --> X : edge 0x00
+r2 --> n12 : <color:#2E7D32>edge 0x01</color>
+n12 --> Y : edge 0x00
+n12 --> m : <color:#2E7D32>edge 0x07</color>
+m --> L1s : <color:#6A1B9A>edge b</color>
+m --> Lc : <color:#2E7D32>edge b' > b</color>
+L1s -[hidden]right- Lc
+A2 -[hidden]left- A
+
+note right of m #FFF3E0
+  <b>Work of this commit</b> (DagRewriteReport)
+  loaded nodes = the old search path {r, n1, L1} = 3
+  emitted nodes = the new search path {r', n1', m, Lc}
+  plus the split-off L1'' = 5
+  reused child references = 2 + 2 + 0 - (3 - 1) = 2: X and Y,
+  carried by reference only
+  ----
+  <b>Bounds for every history</b> (T3, w = 48)
+  every node: <latex>\le 10\,322 + w = 10\,370</latex> bytes
+  a search path: <latex>\le w + 1 = 49</latex> nodes
+  staged radix bytes: <latex>\le (w + 2) \cdot 10\,370 = 518\,500</latex>
+  the V1 manifest: <latex>96 + 56n</latex> bytes, above that bound
+  exactly when <latex>n \ge 9\,258</latex> (T3m)
+end note
+
+note left of A2 #F1F8E9
+  <b>The count comes from the CAS outcome</b> (T4)
+  one insertion (Absent to Multiplicity) adds one:
+  <latex>n' = n + 1</latex>, even when Lc is an object the
+  history already stores and nothing new is inserted
+  (counting inserted objects undercounts: T4m)
+end note
+@enduml
