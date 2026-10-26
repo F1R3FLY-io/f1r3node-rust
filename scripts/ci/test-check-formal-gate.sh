@@ -139,6 +139,7 @@ TLA_TOOLS_SHA256=$(printf fixture | sha256sum | awk '{print $1}')
 export JAVA_HOME_21_X64="$WORK" GITHUB_PATH="$WORK/github-path"
 for workflow in slashing-tests casper-merge-accounting; do
     export HOME="$WORK/$workflow-home" RUNNER_TEMP="$WORK/$workflow-runner"
+    export GITHUB_PATH="$WORK/$workflow-github-path"
     mkdir "$HOME" "$RUNNER_TEMP"
     if [[ "$workflow" == slashing-tests ]]; then
         step='Prepare Java and TLC'
@@ -161,10 +162,8 @@ for workflow in slashing-tests casper-merge-accounting; do
         active { sub(/^          /, ""); print }
     ' "$WORK/setup-step.yml" > "$WORK/setup-tlc.sh"
     [[ -s "$WORK/setup-tlc.sh" ]]
-    if [[ "$workflow" == casper-merge-accounting ]]; then
-        reject env -u JAVA_HOME_21_X64 bash -euo pipefail "$WORK/setup-tlc.sh"
-        [[ ! -e "$HOME/downloads" && ! -e "$TEST_TLC_TARGET" ]]
-    fi
+    reject env -u JAVA_HOME_21_X64 bash -euo pipefail "$WORK/setup-tlc.sh"
+    [[ ! -e "$HOME/downloads" && ! -e "$TEST_TLC_TARGET" && ! -e "$GITHUB_PATH" ]]
     reject env TEST_JAVA_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
     [[ ! -e "$HOME/downloads" && ! -e "$TEST_TLC_TARGET" ]]
     reject env TEST_DOWNLOAD_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
@@ -172,9 +171,7 @@ for workflow in slashing-tests casper-merge-accounting; do
     reject env TEST_TLC_BYTES=altered bash -euo pipefail "$WORK/setup-tlc.sh"
     bash -euo pipefail "$WORK/setup-tlc.sh"
     [[ "$(< "$TEST_TLC_TARGET")" == fixture ]]
-    if [[ "$workflow" == casper-merge-accounting ]]; then
-        grep -Fxq "$JAVA_HOME_21_X64/bin" "$GITHUB_PATH"
-    fi
+    grep -Fxq "$JAVA_HOME_21_X64/bin" "$GITHUB_PATH"
     printf '%s TLC setup: bounded download and failure controls passed.\n' "$workflow"
 done
 printf 'Formal gate: positive round trips, workflow wiring, and %s exact-exit refusal controls passed.\n' "$count"

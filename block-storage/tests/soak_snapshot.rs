@@ -833,6 +833,109 @@ fn bounded_block_decoding_rejects_short_decompression_with_valid_zero_padding() 
 }
 
 #[test]
+fn bigint_metadata_weights_survive_capture_and_scratch_round_trip() {
+    let fx = fixture("bigint-weights");
+    let typed = metadata_store(fx.handle("block-metadata"));
+    let hash = fx.chain[1].block_hash.clone();
+    let mut metadata = typed.get_unsafe(&BlockHashSerde(hash.clone())).unwrap();
+    metadata.weight_map = [
+        "0",
+        "1",
+        "-1",
+        "9223372036854775808",
+        "115792089237316195423570985008687907853269984665640564039457584007913129639936",
+        "-115792089237316195423570985008687907853269984665640564039457584007913129639936",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, stake)| {
+        (
+            BlockHash::from(vec![index as u8; 32]),
+            stake.parse().unwrap(),
+        )
+    })
+    .collect();
+    typed
+        .put_one(BlockHashSerde(hash.clone()), metadata.clone())
+        .unwrap();
+    let before = fx.store_bytes();
+    let snapshot = capture(&fx.dag, &fx.blocks, &request(&[])).unwrap();
+    assert_eq!(snapshot.blocks[&hash].metadata, metadata);
+    let scratch = snapshot.scratch_view().unwrap();
+    assert_eq!(
+        scratch.representation.lookup(&hash).unwrap(),
+        Some(metadata)
+    );
+    assert_eq!(before, fx.store_bytes());
+}
+
+#[test]
+fn bigint_metadata_lengths_are_bounded_before_typed_decoding() {
+    let fx = fixture("bigint-wire");
+    let typed = metadata_store(fx.handle("block-metadata"));
+    let hash = fx.chain[1].block_hash.clone();
+    let validator = BlockHash::from(vec![9; 32]);
+    let mut metadata = typed.get_unsafe(&BlockHashSerde(hash.clone())).unwrap();
+    metadata.weight_map = [(validator.clone(), 1.into())].into_iter().collect();
+    let key = typed.encode_key(&BlockHashSerde(hash)).unwrap();
+    let good = typed.encode_value(&metadata).unwrap();
+    let stake_offset = bincode::serialized_size(&(
+        metadata.block_hash.to_vec(),
+        metadata
+            .parents
+            .iter()
+            .map(|p| p.to_vec())
+            .collect::<Vec<_>>(),
+        metadata.sender.to_vec(),
+        &metadata.justifications,
+        1u64,
+        validator.to_vec(),
+    ))
+    .unwrap() as usize;
+    let stake_bytes = bincode::serialize(&metadata.weight_map[&validator]).unwrap();
+    assert_eq!(
+        &good[stake_offset..stake_offset + stake_bytes.len()],
+        stake_bytes.as_slice()
+    );
+    for count in [u64::MAX, u64::MAX / 4 + 1, good.len() as u64] {
+        let mut forged = good.clone();
+        forged[stake_offset + 1..stake_offset + 9].copy_from_slice(&count.to_le_bytes());
+        typed.raw_store().put_one(key.clone(), forged).unwrap();
+        assert!(matches!(
+            capture(&fx.dag, &fx.blocks, &request(&[])),
+            Err(SnapshotError::LimitExceeded {
+                kind: "metadata stake digits",
+                ..
+            })
+        ));
+    }
+    for length in [
+        stake_offset,
+        stake_offset + 1,
+        stake_offset + 8,
+        stake_offset + 12,
+    ] {
+        typed
+            .raw_store()
+            .put_one(key.clone(), good[..length].to_vec())
+            .unwrap();
+        assert!(capture(&fx.dag, &fx.blocks, &request(&[])).is_err());
+    }
+    let mut invalid_sign = good.clone();
+    invalid_sign[stake_offset] = 2;
+    typed
+        .raw_store()
+        .put_one(key.clone(), invalid_sign)
+        .unwrap();
+    assert!(matches!(
+        capture(&fx.dag, &fx.blocks, &request(&[])),
+        Err(SnapshotError::Malformed(_))
+    ));
+    typed.raw_store().put_one(key, good).unwrap();
+    assert!(capture(&fx.dag, &fx.blocks, &request(&[])).is_ok());
+}
+
+#[test]
 fn metadata_collections_are_bounded_before_typed_decoding() {
     let fx = fixture("nested-limits");
     let typed = metadata_store(fx.handle("block-metadata"));

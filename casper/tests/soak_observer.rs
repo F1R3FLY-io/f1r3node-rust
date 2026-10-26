@@ -33,6 +33,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, CasperMessage, DeployData, Justification,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -2305,7 +2306,7 @@ fn update_display_metadata(
 }
 
 #[tokio::test]
-async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
+async fn display_rejects_negative_stakes_before_projection() {
     use casper::rust::soak_observer::display::calculate;
     let fixture = Fixture::new().await;
     add_display_record(&fixture, 7, 0);
@@ -2313,6 +2314,7 @@ async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
     for weights in [
         BTreeMap::from([(validator(7), -1), (validator(8), 1)]),
         BTreeMap::from([(validator(7), -1)]),
+        BTreeMap::from([(validator(7), 1), (validator(8), -1)]),
     ] {
         update_display_metadata(&fixture, |m| {
             m.weight_map = weights
@@ -2331,7 +2333,7 @@ async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
                 &meter(work_limits())
             )
             .unwrap_err(),
-            "initial_fault_weight_overflow"
+            "negative_stake"
         );
         assert_eq!(before, fixture.stored());
     }
@@ -2347,7 +2349,7 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
     for (a, b, fault_bits) in [
         (0, 0, 0),
         (1, 2, 0x3f2a_aaab),
-        (16_777_217, 16_777_219, 0x3f7f_fffe),
+        (16_777_217, 16_777_219, 0x3f7f_ffff),
         (i64::MAX / 2, i64::MAX / 2, 0x3f80_0000),
     ] {
         update_display_metadata(&fixture, |m| {
@@ -2381,6 +2383,43 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
             assert_eq!(inputs.matched_records, 2);
             assert_eq!(inputs.distinct_equivocators, 1);
         }
+        assert_eq!(before, fixture.stored());
+    }
+}
+
+#[tokio::test]
+async fn display_preserves_bigint_totals_and_record_multiplicity_above_machine_ranges() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    add_display_record(&fixture, 7, 1);
+    add_display_record(&fixture, 9, 0);
+    for shift in [64usize, 128, 1024] {
+        let unit = BigInt::from(1) << shift;
+        let a = &unit * BigInt::from(3);
+        let b = &unit * BigInt::from(5);
+        update_display_metadata(&fixture, |m| {
+            m.weight_map = BTreeMap::from([(validator(7), a), (validator(8), b)])
+        });
+        let before = fixture.stored();
+        let (snapshot, tracker) = display_capture(&fixture);
+        let (actual, inputs) = calculate(
+            &snapshot,
+            &tracker,
+            &fixture.chain[1].block_hash,
+            Some(("original_oracle", 1f32.to_bits())),
+            &meter(work_limits()),
+        )
+        .unwrap();
+        assert_eq!(actual, 0.25f32.to_bits());
+        assert_eq!(inputs.initial_fault_bits, 0.75f32.to_bits());
+        assert_eq!(
+            inputs.equivocating_weight,
+            (&unit * BigInt::from(6)).to_string()
+        );
+        assert_eq!(inputs.total_weight, (&unit * BigInt::from(8)).to_string());
+        assert_eq!(inputs.matched_records, 2);
+        assert_eq!(inputs.distinct_equivocators, 1);
         assert_eq!(before, fixture.stored());
     }
 }
