@@ -22,6 +22,7 @@ use rspace_plus_plus::rspace::trace::event::Event;
 
 use super::block_gate::offered_member_limits;
 use super::held_capacity::LaterHolds;
+use super::producer::SettlementRig;
 use super::{
     NativeFundedExecutionContext, NativeGrantSettlementInput, NativeOfferedAttempt, OfferedGate,
 };
@@ -109,6 +110,8 @@ pub struct SettledOffer {
     pub final_root: [u8; 32],
     pub failure_class: NativeCostFailureClass,
     pub debits: Vec<([u8; 32], u128, u128)>,
+    pub wallet_log: Vec<CasperEvent>,
+    pub receipt_log: Vec<CasperEvent>,
 }
 
 fn invalid(message: &str) -> CasperError { CasperError::RuntimeError(message.to_string()) }
@@ -189,6 +192,7 @@ impl RuntimeManager {
         run: &OfferedRun,
         later: &LaterHolds,
         rolled_back: bool,
+        recorded: Option<(&[CasperEvent], &[CasperEvent])>,
         block_data: &BlockData,
         invalid_blocks: &HashMap<BlockHash, Validator>,
         adopted: &AdoptedResourcePolicy,
@@ -246,10 +250,20 @@ impl RuntimeManager {
                 payers.insert(payer.address.to_base58(), *custody);
             }
         }
-        let mut runtime = RuntimeOps::new(
-            self.spawn_offered_play_runtime(offered_grant_issue_call_limits())
-                .await?,
-        );
+        let rig = recorded.map(|(wallet, receipts)| SettlementRig {
+            wallet: wallet.to_vec(),
+            receipts: receipts.to_vec(),
+        });
+        let mut runtime = RuntimeOps::new(match rig {
+            Some(_) => {
+                self.spawn_offered_replay_runtime(offered_grant_issue_call_limits())
+                    .await?
+            }
+            None => {
+                self.spawn_offered_play_runtime(offered_grant_issue_call_limits())
+                    .await?
+            }
+        });
         runtime.runtime.set_block_data(block_data.clone()).await;
         runtime
             .runtime
@@ -291,6 +305,7 @@ impl RuntimeManager {
                 offered_funded_v6_prepaid_inventory_limits(),
                 offered_funded_v6_prepaid_receipt_limits(),
                 Some(rolled_back),
+                rig.as_ref(),
             )
             .await?;
         let Some(candidate) = candidate else {
@@ -327,11 +342,31 @@ impl RuntimeManager {
             return Err(invalid("two wallet receipt rows name one purse"));
         }
         let failure_class = evidence.failure_class;
+        let boundary = run.replay_log.len()
+            + match rolled_back {
+                true => 0,
+                false => run.grant_issue_log.len(),
+            };
+        let wallet_end = usize::try_from(evidence.wallet_settlement_log_events)
+            .ok()
+            .and_then(|events| boundary.checked_add(events))
+            .ok_or_else(|| invalid("the wallet settlement log boundary overflows"))?;
+        let log = candidate.processed.deploy_log();
+        let (Some(wallet_log), Some(receipt_log)) =
+            (log.get(boundary..wallet_end), log.get(wallet_end..))
+        else {
+            return Err(invalid(
+                "the settlement log boundaries exceed the processed deploy log",
+            ));
+        };
+        let (wallet_log, receipt_log) = (wallet_log.to_vec(), receipt_log.to_vec());
         Ok(Some(SettledOffer {
             processed: candidate.processed,
             final_root: candidate.final_root,
             failure_class,
             debits,
+            wallet_log,
+            receipt_log,
         }))
     }
 }

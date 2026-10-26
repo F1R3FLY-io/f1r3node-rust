@@ -13,8 +13,8 @@ use super::backend::{block_data, close_block, exhausts};
 use super::body::StateHash;
 use super::gate::{GateInput, GateVerdict};
 use super::settlement::{
-    check_executed, check_settled, executed_of, EnvelopeOutcome, EnvelopeRun, ExecutedEnvelope,
-    PurseDebit, SettledEnvelope, Settlement, SettlementOutcome,
+    check_executed, check_settled, executed_of, settled_difference, EnvelopeOutcome, EnvelopeRun,
+    ExecutedEnvelope, PurseDebit, SettledEnvelope, Settlement, SettlementOutcome,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::costacc::direct_wallet_funding::{OfferedRun, RecordedRun};
@@ -228,10 +228,13 @@ impl RhoSettlement {
         let mut rebuilt = Vec::with_capacity(runs.len());
         for (position, run) in runs.iter().enumerate() {
             let entry = &run.executed;
-            if entry.verdict != verdict_of(&plan.admissions()[position]) {
-                return Err(invalid(
-                    "an executed verdict differs from the gate at the pre-state",
-                ));
+            let verdict = verdict_of(&plan.admissions()[position]);
+            if entry.verdict != verdict {
+                return Err(invalid(&format!(
+                    "the executed verdict at position {position} differs from the gate at the \
+                     pre-state: recorded {:?}, recomputed {:?}",
+                    entry.verdict, verdict
+                )));
             }
             let (Some(member), Some(envelope), None) =
                 (plan.position_of(position), offered[position], &run.run)
@@ -280,9 +283,15 @@ impl RhoSettlement {
         pre_root: &StateHash,
         mid_root: &StateHash,
         runs: &[EnvelopeRun],
+        recorded: Option<&SettlementOutcome>,
     ) -> Result<Result<SettlementOutcome, usize>, CasperError> {
         let executed = executed_of(runs);
         check_executed(block, &executed).map_err(|error| invalid(&error))?;
+        if recorded.is_some_and(|outcome| outcome.settled.len() != runs.len()) {
+            return Err(invalid(
+                "the recorded settlement does not cover every envelope",
+            ));
+        }
         let funding_root = root_of(pre_root)?;
         let data = block_data(block);
         let offered = offers(block);
@@ -328,7 +337,14 @@ impl RhoSettlement {
                     root,
                     local,
                     &later[member],
-                    entry.outcome == EnvelopeOutcome::RolledBack,
+                    matches!(
+                        entry.outcome,
+                        EnvelopeOutcome::RolledBack | EnvelopeOutcome::Conflicted
+                    ),
+                    recorded.map(|outcome| {
+                        let settled = &outcome.settled[position];
+                        (&settled.wallet_log[..], &settled.receipt_log[..])
+                    }),
                     &data,
                     &invalid_blocks,
                     &self.policy,
@@ -370,20 +386,35 @@ impl RhoSettlement {
                     })
                     .collect(),
                 cost_evidence: Bytes::copy_from_slice(offer.processed.native_cost_evidence_bytes()),
+                wallet_log: offer.wallet_log,
+                receipt_log: offer.receipt_log,
             });
             root = offer.final_root;
         }
         check_settled(&executed, &settled).map_err(|error| invalid(&error))?;
-        let (post_root, _, system_deploys) = self
-            .runtime_manager
-            .compute_state(
-                &Bytes::copy_from_slice(&root),
-                vec![],
-                vec![close_block(block)],
-                data,
-                None,
-            )
-            .await?;
+        let root = Bytes::copy_from_slice(&root);
+        let (post_root, system_deploys) = match recorded {
+            Some(outcome) => (
+                self.runtime_manager
+                    .replay_compute_state(
+                        &root,
+                        vec![],
+                        outcome.system_deploys.clone(),
+                        &data,
+                        None,
+                        false,
+                    )
+                    .await?,
+                outcome.system_deploys.clone(),
+            ),
+            None => {
+                let (post_root, _, system_deploys) = self
+                    .runtime_manager
+                    .compute_state(&root, vec![], vec![close_block(block)], data, None)
+                    .await?;
+                (post_root, system_deploys)
+            }
+        };
         Ok(Ok(SettlementOutcome {
             post_root,
             settled,
@@ -401,7 +432,7 @@ impl Settlement for RhoSettlement {
         mid_root: &StateHash,
         runs: &[EnvelopeRun],
     ) -> Result<SettlementOutcome, CasperError> {
-        self.settle_checked(block, pre_root, mid_root, runs)
+        self.settle_checked(block, pre_root, mid_root, runs, None)
             .await?
             .map_err(|_| invalid("the held-capacity guard failed after the merge"))
     }
@@ -415,9 +446,24 @@ impl Settlement for RhoSettlement {
         outcome: &SettlementOutcome,
     ) -> Result<StateHash, CasperError> {
         let runs = self.replay_runs(block, pre_root, runs).await?;
-        let recomputed = self.settle(block, pre_root, mid_root, &runs).await?;
+        let recomputed = self
+            .settle_checked(block, pre_root, mid_root, &runs, Some(outcome))
+            .await?
+            .map_err(|_| invalid("a recorded settlement failed its guard"))?;
         if recomputed != *outcome {
-            return Err(invalid("settlement replay reached another outcome"));
+            let field = recomputed
+                .settled
+                .iter()
+                .zip(&outcome.settled)
+                .enumerate()
+                .find_map(|(position, (left, right))| {
+                    settled_difference(right, left)
+                        .map(|field| format!("entry {position}: {field}"))
+                })
+                .unwrap_or_else(|| "the post-state root or system deploys".to_string());
+            return Err(invalid(&format!(
+                "settlement replay reached another outcome: {field}"
+            )));
         }
         Ok(recomputed.post_root)
     }

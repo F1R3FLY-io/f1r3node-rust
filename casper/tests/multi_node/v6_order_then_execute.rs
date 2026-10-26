@@ -6,12 +6,19 @@ use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::DeploySelection;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::costacc::genesis_resource_policy::shard_resource_schedule;
+use casper::rust::util::rholang::costacc::owner_offer::owner_direct_offer;
+use casper::rust::v6::block_record::BlockRecord;
 use casper::rust::v6::body::V6Body;
-use casper::rust::v6::concurrent_record::ConcurrentRecord;
+use casper::rust::v6::record::ExecutionRecord;
+use casper::rust::v6::settlement::EnvelopeOutcome;
 use casper::rust::v6::V6Engine;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::private_key::PrivateKey;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::cost_deploy_data::DeployData;
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::deploy_envelope::DeployEnvelope;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
@@ -19,9 +26,33 @@ use crate::util::genesis_builder::GenesisBuilder;
 
 fn engine(node: &TestNode) -> Arc<V6Engine> { node.casper.v6.clone().expect("v6 engine") }
 
-async fn propose(node: &mut TestNode, deploys: &[Signed<DeployData>]) -> BlockMessage {
+fn offer(key: &PrivateKey, term: &str, time_stamp: i64, shard_id: &str) -> DeployEnvelope {
+    let body = DeployData {
+        term: term.to_string(),
+        language: "rholang".to_string(),
+        time_stamp,
+        valid_after_block_number: 0,
+        shard_id: shard_id.to_string(),
+        expiration_timestamp: None,
+        authority_presentations: Vec::new(),
+    };
+    let proto = owner_direct_offer(
+        key,
+        body,
+        1_000_000,
+        1,
+        &shard_resource_schedule(shard_id, 8),
+    )
+    .unwrap();
+    DeployEnvelope::from_proto(proto, offered_funded_v6_limits().envelope).unwrap()
+}
+
+async fn propose(node: &mut TestNode, deploys: &[DeployEnvelope]) -> BlockMessage {
     for deploy in deploys {
-        node.casper.deploy(deploy.clone()).unwrap();
+        assert!(matches!(
+            node.casper.deploy_envelope(deploy.clone()).unwrap(),
+            Either::Right(_)
+        ));
     }
     let snapshot = node.casper.get_snapshot().await.unwrap();
     let validator = node.casper.get_validator().unwrap();
@@ -46,15 +77,19 @@ async fn broadcast(nodes: &mut [TestNode], block: &BlockMessage) {
     }
 }
 
-async fn wait_for(nodes: &[TestNode], target: usize) -> bool {
-    for _ in 0..600 {
+async fn drive(nodes: &mut [TestNode], blocks: &mut Vec<BlockHash>, target: usize) -> bool {
+    for round in 0..240 {
         if nodes.iter().all(|n| engine(n).canonical_len() >= target) {
             return true;
         }
-        for node in nodes {
+        for node in nodes.iter() {
             engine(node).wake();
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let proposer = round % nodes.len();
+        let block = propose(&mut nodes[proposer], &[]).await;
+        broadcast(nodes, &block).await;
+        blocks.push(block.block_hash.clone());
     }
     false
 }
@@ -77,6 +112,9 @@ fn executed_roots(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_consensus_path() {
     crate::init_logger();
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
     parameters.2.version = casper::rust::casper::PROTOCOL_V6_VERSION;
     let genesis = GenesisBuilder::new()
@@ -99,16 +137,7 @@ async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_c
     let mut offset = 0i64;
     let mut deploy = |source: &str, key: usize| {
         offset += 1;
-        construct_deploy::source_deploy(
-            source.to_string(),
-            now + offset,
-            Some(500_000),
-            None,
-            Some(keys[key].clone()),
-            None,
-            Some(shard_id.clone()),
-        )
-        .unwrap()
+        offer(&keys[key], source, now + offset, &shard_id)
     };
 
     let racing = vec![
@@ -120,7 +149,7 @@ async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_c
     let mut blocks = Vec::new();
     let first = propose(&mut nodes[0], &racing).await;
     assert_eq!(first.body.deploys.len(), 4);
-    assert!(first.body.deploys.iter().all(|d| d.deploy_log().is_empty()));
+    assert!(first.body.deploys.iter().all(|d| d.as_ordered().is_some()));
     assert!(first.body.rejected_deploys.is_empty());
     broadcast(&mut nodes, &first).await;
     blocks.push(first.block_hash.clone());
@@ -138,7 +167,7 @@ async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_c
     }
 
     assert!(
-        wait_for(&nodes, 4).await,
+        drive(&mut nodes, &mut blocks, 4).await,
         "the executors did not fix canonical records"
     );
 
@@ -157,7 +186,8 @@ async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_c
     for node in &nodes {
         assert!(
             engine(node).evidence().is_empty(),
-            "honest validators produced evidence"
+            "honest validators produced evidence: {:?}",
+            engine(node).evidence()
         );
     }
 
@@ -166,12 +196,42 @@ async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_c
         V6Body::decode(&block.body.extra_bytes)
             .unwrap()
             .map(|b| {
-                b.decode_records::<ConcurrentRecord>()
+                b.decode_records::<BlockRecord>()
                     .unwrap()
                     .iter()
-                    .any(|r| r.target == first.block_hash)
+                    .any(|r| r.target() == &first.block_hash)
             })
             .unwrap_or(false)
     });
     assert!(cited, "no block carried a record of the racing block");
+
+    let record = blocks
+        .iter()
+        .find_map(|hash| {
+            let block = nodes[0].block_store.get(hash).unwrap().unwrap();
+            V6Body::decode(&block.body.extra_bytes)
+                .unwrap()
+                .and_then(|b| b.decode_records::<BlockRecord>().ok())
+                .and_then(|records| {
+                    records
+                        .into_iter()
+                        .find(|r| r.target() == &first.block_hash)
+                })
+        })
+        .expect("the racing block's record");
+    let outcomes: Vec<EnvelopeOutcome> = record
+        .entries()
+        .iter()
+        .map(|entry| entry.executed.outcome)
+        .collect();
+    assert_eq!(outcomes, vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::Conflicted,
+        EnvelopeOutcome::Conflicted,
+        EnvelopeOutcome::Conflicted,
+    ]);
+    assert!(record
+        .entries()
+        .iter()
+        .all(|entry| entry.settled.rev_spent > 0));
 }

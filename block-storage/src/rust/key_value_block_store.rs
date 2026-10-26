@@ -171,28 +171,10 @@ impl KeyValueBlockStore {
             None => return Ok(None),
         };
 
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
-        let mut has_any = false;
-        for processed_deploy in body.deploys {
-            let deploy = processed_deploy.deploy.ok_or_else(|| {
-                KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    "Missing deploy field".to_string(),
-                ))
-            })?;
-            let sig = deploy.sig;
-            if sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", sig.len()),
-                )));
-            }
-            if deploy_sigs.contains(&sig) {
-                has_any = true;
-            }
-            block_deploy_sigs.push(sig);
-        }
+        let block_deploy_sigs = self.decode_deploy_ids(block_hash, &bytes)?;
+        let has_any = block_deploy_sigs
+            .iter()
+            .any(|sig| deploy_sigs.contains(sig));
         Self::cache_deploy_sigs(key, block_deploy_sigs);
         Ok(Some(has_any))
     }
@@ -238,7 +220,17 @@ impl KeyValueBlockStore {
             None => return Ok(None),
         };
 
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
+        let block_deploy_sigs = self.decode_deploy_ids(block_hash, &bytes)?;
+        Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
+        Ok(Some(block_deploy_sigs))
+    }
+
+    fn decode_deploy_ids(
+        &self,
+        block_hash: &BlockHash,
+        bytes: &[u8],
+    ) -> Result<Vec<Vec<u8>>, KvStoreError> {
+        let body = Self::decode_block_deploy_sigs(bytes)?;
         let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
         for processed_deploy in body.deploys {
             let deploy = processed_deploy.deploy.ok_or_else(|| {
@@ -247,6 +239,9 @@ impl KeyValueBlockStore {
                     "Missing deploy field".to_string(),
                 ))
             })?;
+            if deploy.sig.is_empty() {
+                return self.decode_envelope_ids(block_hash);
+            }
             if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
                 return Err(KvStoreError::SerializationError(Self::error_block(
                     block_hash.clone(),
@@ -255,9 +250,22 @@ impl KeyValueBlockStore {
             }
             block_deploy_sigs.push(deploy.sig);
         }
+        Ok(block_deploy_sigs)
+    }
 
-        Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
-        Ok(Some(block_deploy_sigs))
+    fn decode_envelope_ids(&self, block_hash: &BlockHash) -> Result<Vec<Vec<u8>>, KvStoreError> {
+        let block = self.get(block_hash)?.ok_or_else(|| {
+            KvStoreError::KeyNotFound(format!(
+                "BlockStore is missing hash: {}",
+                PrettyPrinter::build_string_bytes(block_hash),
+            ))
+        })?;
+        Ok(block
+            .body
+            .deploys
+            .iter()
+            .map(|deploy| deploy.identity_bytes().to_vec())
+            .collect())
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {

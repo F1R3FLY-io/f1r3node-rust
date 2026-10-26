@@ -448,9 +448,18 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
 
     let deploy_storage = Arc::new(parking_lot::Mutex::new(deploy_storage));
     let v6 = if casper_shard_conf.is_v6() {
+        let policy = casper_shard_conf
+            .adopted_resource_policy
+            .clone()
+            .ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "protocol-6 shard: no adopted resource policy".to_string(),
+                )
+            })?;
         let engine = crate::rust::v6::V6Engine::new(
             &approved_block,
             runtime_manager.clone(),
+            policy,
             block_store.clone(),
             block_dag_storage.clone(),
             deploy_storage.clone(),

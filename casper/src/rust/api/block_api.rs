@@ -787,6 +787,11 @@ impl BlockAPI {
         };
 
         if let Some(casper) = eng.with_casper() {
+            if casper.casper_shard_conf().is_v6() {
+                return Err(offered_validation_error(
+                    "a protocol-6 shard accepts only offered-funded deploys",
+                ));
+            }
             // The floor check reads the SAME value the validity rule reads
             // (the shard conf), never a second node-conf copy.
             let min_phlo_price = casper.casper_shard_conf().min_phlo_price;

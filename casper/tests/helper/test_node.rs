@@ -802,6 +802,9 @@ impl TestNode {
         genesis: GenesisContext,
         network_size: usize,
     ) -> Result<Vec<TestNode>, CasperError> {
+        models::rust::record_encoding::set_record_encoding(
+            models::rust::record_encoding::RecordEncoding::Cost,
+        );
         V6_ORDER_THEN_EXECUTE
             .scope(
                 true,
@@ -1232,6 +1235,10 @@ impl TestNode {
             let engine = casper::rust::v6::V6Engine::new(
                 &genesis,
                 Arc::new(runtime_manager.clone()),
+                shard_conf
+                    .adopted_resource_policy
+                    .clone()
+                    .expect("a v6 test node adopts its genesis policy"),
                 block_store.clone(),
                 block_dag_storage.clone(),
                 deploy_storage.clone(),

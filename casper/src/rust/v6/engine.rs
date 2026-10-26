@@ -14,11 +14,12 @@ use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use super::backend::{ConcurrentBackend, ExecutionBackend};
+use super::backend::ExecutionBackend;
+use super::block_record::BlockRecord;
 use super::body::{Attestation, V6Body};
-use super::concurrent_record::ConcurrentRecord;
 use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
-use super::gate::{admitted, AdmitAll, BlockGate};
+use super::executor::BlockExecutor;
+use super::gate::{admitted, BlockGate, RhoBlockGate};
 use super::linearizer::{Advance, Linearizer};
 use super::propose::{select_envelopes, PoolEntry, SelectionContext};
 use super::record::ExecutionRecord;
@@ -29,10 +30,11 @@ use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::floor_committee;
 use crate::rust::util::proto_util;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
-pub struct V6Engine<R: ExecutionRecord = ConcurrentRecord> {
+pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     core: parking_lot::Mutex<ExecutorCore<R>>,
     linearizer: parking_lot::Mutex<Linearizer>,
     backend: Arc<dyn ExecutionBackend<Record = R>>,
@@ -46,24 +48,32 @@ pub struct V6Engine<R: ExecutionRecord = ConcurrentRecord> {
     started: AtomicBool,
 }
 
-impl V6Engine<ConcurrentRecord> {
+impl V6Engine<BlockRecord> {
     pub fn new(
         genesis: &BlockMessage,
         runtime_manager: Arc<RuntimeManager>,
+        policy: Arc<AdoptedResourcePolicy>,
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     ) -> Arc<Self> {
-        let backend = Arc::new(ConcurrentBackend::new(runtime_manager.clone()));
+        let backend = Arc::new(BlockExecutor::new(
+            runtime_manager.clone(),
+            Arc::clone(&policy),
+        ));
+        let gate = Arc::new(RhoBlockGate::new(runtime_manager.clone(), policy));
         Self::with_backend(
             genesis,
             backend,
-            Arc::new(AdmitAll),
+            gate,
             runtime_manager,
             block_store,
             dag_storage,
             deploy_storage,
-            Limits::default(),
+            Limits {
+                ordered_only: true,
+                ..Limits::default()
+            },
             CoreParams::default(),
         )
     }
@@ -219,6 +229,15 @@ impl<R: ExecutionRecord> V6Engine<R> {
                     .replay(&record, &block)
                     .await
                     .map_err(|e| e.to_string());
+                if let Err(error) = &result {
+                    tracing::warn!(
+                        target: "f1r3fly.v6",
+                        block = %hex::encode(&target),
+                        citer = %hex::encode(&citer),
+                        %error,
+                        "v6 record replay failed"
+                    );
+                }
                 self.core
                     .lock()
                     .apply_replay(&target, &citer, &record, result);
@@ -274,17 +293,12 @@ impl<R: ExecutionRecord> V6Engine<R> {
             })
             .collect();
 
-        let (legacy_pool, offered_pool) = {
-            let storage = self.deploy_storage.lock();
-            (
-                storage.read_all()?,
-                storage.read_all_envelopes(offered_funded_v6_limits().envelope)?,
-            )
-        };
-        let pool = legacy_pool
+        let pool = self
+            .deploy_storage
+            .lock()
+            .read_all_envelopes(offered_funded_v6_limits().envelope)?
             .into_iter()
-            .map(PoolEntry::from)
-            .chain(offered_pool.into_iter().map(PoolEntry::from));
+            .map(PoolEntry::from);
         let in_scope = |sig: &Bytes| snapshot.deploys_in_scope.contains(sig);
         let selected = select_envelopes(pool, &SelectionContext {
             next_block_number,

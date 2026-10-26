@@ -29,6 +29,7 @@ use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::record_encoding::{set_record_encoding, RecordEncoding};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
+use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -92,7 +93,11 @@ fn genesis(validator: PublicKey, payers: usize) -> Genesis {
     }
 }
 
-async fn launch(payers: usize) -> Host {
+async fn launch(payers: usize) -> Host { start(payers, None).await }
+
+async fn replica(host: &Host) -> Host { start(0, Some(&host.genesis)).await }
+
+async fn start(payers: usize, replayed: Option<&BlockMessage>) -> Host {
     set_record_encoding(RecordEncoding::Cost);
     let validator = Secp256k1.to_public(&PrivateKey::from_bytes(&[3u8; 32]));
     let mut kvm = InMemoryStoreManager::new();
@@ -110,10 +115,34 @@ async fn launch(payers: usize) -> Host {
         Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
-    let block =
-        Genesis::create_genesis_block(&runtime_manager, &genesis(validator.clone(), payers))
-            .await
-            .expect("the genesis block is created");
+    let block = match replayed {
+        None => {
+            Genesis::create_genesis_block(&runtime_manager, &genesis(validator.clone(), payers))
+                .await
+                .expect("the genesis block is created")
+        }
+        Some(genesis) => {
+            let deploys = genesis
+                .body
+                .deploys
+                .iter()
+                .map(|deploy| deploy.as_legacy().expect("a legacy genesis deploy").clone())
+                .collect();
+            let root = runtime_manager
+                .replay_compute_state(
+                    &RuntimeManager::empty_state_hash_fixed(),
+                    deploys,
+                    genesis.body.system_deploys.clone(),
+                    &BlockData::from_block(genesis),
+                    None,
+                    true,
+                )
+                .await
+                .expect("the replica replays the genesis block");
+            assert_eq!(root, genesis.body.state.post_state_hash);
+            genesis.clone()
+        }
+    };
     block_store
         .put_block_message(&block)
         .expect("genesis stored");
@@ -138,7 +167,7 @@ async fn launch(payers: usize) -> Host {
 
 async fn hosts(payers: usize) -> (Host, Host) {
     let host = launch(payers).await;
-    let other = launch(payers).await;
+    let other = replica(&host).await;
     assert_eq!(pre_root(&host), pre_root(&other));
     (host, other)
 }
@@ -269,7 +298,7 @@ async fn a_send_and_a_receive_in_one_block_conflict_and_the_later_pays() {
         .expect("the block executes");
     assert_eq!(outcomes(&record), vec![
         EnvelopeOutcome::Completed,
-        EnvelopeOutcome::RolledBack
+        EnvelopeOutcome::Conflicted
     ]);
     assert!(record.entries()[1].settled.rev_spent > 0);
     assert_eq!(
@@ -309,7 +338,7 @@ async fn of_two_consumers_of_one_datum_at_most_one_wins() {
     assert_eq!(won, 1);
     assert_eq!(outcomes(&record), vec![
         EnvelopeOutcome::Completed,
-        EnvelopeOutcome::RolledBack
+        EnvelopeOutcome::Conflicted
     ]);
     assert!(record
         .entries()
@@ -330,6 +359,91 @@ async fn of_two_consumers_of_one_datum_at_most_one_wins() {
             .await
             .expect("another host replays the competing block"),
         *record.post_root()
+    );
+}
+
+#[tokio::test]
+async fn two_numbers_sent_on_one_fresh_channel_conflict_and_two_strings_do_not() {
+    let (host, other) = hosts(2).await;
+    let numbers = block(&host, 1, vec![
+        offer(&payer(0), "@\"n\"!(1)", 1),
+        offer(&payer(1), "@\"n\"!(2)", 2),
+    ]);
+    let record = host
+        .executor
+        .execute(&pre_root(&host), &numbers)
+        .await
+        .expect("the numeric block executes");
+    assert_eq!(outcomes(&record), vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::Conflicted
+    ]);
+    assert_eq!(
+        other
+            .executor
+            .replay(&record, &numbers)
+            .await
+            .expect("another host replays the numeric block"),
+        *record.post_root()
+    );
+    let strings = block(&host, 1, vec![
+        offer(&payer(0), "@\"s\"!(\"one\")", 1),
+        offer(&payer(1), "@\"s\"!(\"two\")", 2),
+    ]);
+    let record = host
+        .executor
+        .execute(&pre_root(&host), &strings)
+        .await
+        .expect("the string block executes");
+    assert_eq!(outcomes(&record), vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::Completed
+    ]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_racing_block_run_in_parallel_replays_on_another_host() {
+    let (host, other) = hosts(2).await;
+    let block = block(&host, 1, vec![
+        offer(&payer(0), "@\"race\"!(1)", 1),
+        offer(&payer(1), "@\"race\"!(2)", 2),
+        offer(&payer(0), "for (@v <- @\"race\") { @\"won\"!(v) }", 3),
+        offer(&payer(1), "for (@v <- @\"race\") { @\"second\"!(v) }", 4),
+    ]);
+    let record = host
+        .executor
+        .execute(&pre_root(&host), &block)
+        .await
+        .expect("the racing block executes");
+    assert_eq!(outcomes(&record), vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::Conflicted,
+        EnvelopeOutcome::Conflicted,
+        EnvelopeOutcome::Conflicted
+    ]);
+    for _ in 0..3 {
+        assert_eq!(
+            other
+                .executor
+                .replay(&record, &block)
+                .await
+                .expect("another host replays the racing block"),
+            *record.post_root()
+        );
+    }
+    let again = host
+        .executor
+        .execute(&pre_root(&host), &block)
+        .await
+        .expect("the racing block executes again");
+    assert_eq!(outcomes(&again), outcomes(&record));
+    assert_eq!(
+        other
+            .executor
+            .replay(&again, &block)
+            .await
+            .expect("another host replays the second execution"),
+        *again.post_root()
     );
 }
 

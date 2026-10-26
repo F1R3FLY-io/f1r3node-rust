@@ -2,11 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::Event;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     self, NumberChannelsDiff, NumberChannelsEndVal,
 };
@@ -21,6 +24,10 @@ use crate::rust::merging::conflict_set_merger::{compute_merged_state, ResolvedCo
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
 use crate::rust::merging::deploy_index::DeployIndex;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+
+type HistoryReaderOf = Arc<
+    Box<dyn HistoryReader<Blake2b256Hash, Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
+>;
 
 pub struct RunEffect<'a> {
     pub envelope_id: Bytes,
@@ -56,6 +63,7 @@ pub fn merge_runs(
             "the number-channel diffs do not match the runs".to_string(),
         ));
     }
+    let reader = Arc::new(repository.get_history_reader(&base).map_err(history)?);
     let mut survivors: Vec<DeployChainIndex> = Vec::new();
     let mut merged = Vec::with_capacity(effects.len());
     for (effect, diff) in effects.iter().zip(diffs) {
@@ -82,9 +90,18 @@ pub fn merge_runs(
         let conflicts = survivors.iter().any(|kept| {
             merging_logic::are_conflicting(&kept.event_log_index, &chain.event_log_index)
         });
-        merged.push(!conflicts);
-        if !conflicts {
-            survivors.push(chain);
+        if conflicts {
+            merged.push(false);
+            continue;
+        }
+        survivors.push(chain);
+        match merged_root(&survivors, &reader, &repository, &base, false) {
+            Ok(_) => merged.push(true),
+            Err(HistoryError::MergeError(_)) => {
+                survivors.pop();
+                merged.push(false);
+            }
+            Err(error) => return Err(history(error)),
         }
     }
     if survivors.is_empty() {
@@ -93,9 +110,23 @@ pub fn merge_runs(
             merged,
         });
     }
+    let root = merged_root(&survivors, &reader, &repository, &base, true).map_err(history)?;
+    Ok(Merged {
+        mid_root: root.to_bytes_prost(),
+        merged,
+    })
+}
+
+fn merged_root(
+    survivors: &[DeployChainIndex],
+    reader: &HistoryReaderOf,
+    repository: &RhoHistoryRepository,
+    base: &Blake2b256Hash,
+    apply: bool,
+) -> Result<Blake2b256Hash, HistoryError> {
     let multi_writer: HashSet<Blake2b256Hash> = {
         let mut writers: HashMap<Blake2b256Hash, usize> = HashMap::new();
-        for chain in &survivors {
+        for chain in survivors {
             for entry in chain.state_changes.datums_changes.iter() {
                 if !entry.value().added.is_empty() {
                     *writers.entry(entry.key().clone()).or_insert(0) += 1;
@@ -108,10 +139,10 @@ pub fn merge_runs(
             .map(|(channel, _)| channel)
             .collect()
     };
-    let reader = Arc::new(repository.get_history_reader(&base).map_err(history)?);
     let resolved = ResolvedConflicts {
         to_merge: survivors
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|chain| HashableSet(HashSet::from([chain])))
             .collect(),
         rejected: HashableSet(HashSet::new()),
@@ -131,7 +162,7 @@ pub fn merge_runs(
     let trie_actions = |changes: StateChange, number_channels: NumberChannelsDiff| {
         state_change_merger::compute_trie_actions(
             &changes,
-            &*reader,
+            &**reader,
             &number_channels,
             |hash: &Blake2b256Hash, channel_changes, number_chs: &NumberChannelsDiff| {
                 if let Some((diff, merge_type)) = number_chs.get(hash) {
@@ -159,16 +190,12 @@ pub fn merge_runs(
             },
         )
     };
-    let apply = |actions| {
-        repository
-            .reset(&base)
+    let write = |actions| match apply {
+        true => repository
+            .reset(base)
             .map(|reset| reset.do_checkpoint(actions))
-            .map(|checkpoint| checkpoint.root())
+            .map(|checkpoint| checkpoint.root()),
+        false => Ok(base.clone()),
     };
-    let root = compute_merged_state(&resolved, &state_changes, &mergeable, &trie_actions, &apply)
-        .map_err(history)?;
-    Ok(Merged {
-        mid_root: root.to_bytes_prost(),
-        merged,
-    })
+    compute_merged_state(&resolved, &state_changes, &mergeable, &trie_actions, &write)
 }

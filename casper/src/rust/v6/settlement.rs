@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Event, ProcessedSystemDeploy};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::native_cost_evidence::NativeCostEvidenceV1;
 use prost::bytes::Bytes;
 
 use super::backend::{block_data, close_block};
@@ -18,6 +20,7 @@ pub enum EnvelopeOutcome {
     UserFailure,
     Exhausted,
     RolledBack,
+    Conflicted,
 }
 
 impl EnvelopeOutcome {
@@ -28,6 +31,7 @@ impl EnvelopeOutcome {
             EnvelopeOutcome::UserFailure => 2,
             EnvelopeOutcome::Exhausted => 3,
             EnvelopeOutcome::RolledBack => 4,
+            EnvelopeOutcome::Conflicted => 5,
         }
     }
 
@@ -38,6 +42,7 @@ impl EnvelopeOutcome {
             2 => Ok(EnvelopeOutcome::UserFailure),
             3 => Ok(EnvelopeOutcome::Exhausted),
             4 => Ok(EnvelopeOutcome::RolledBack),
+            5 => Ok(EnvelopeOutcome::Conflicted),
             other => Err(format!("unknown envelope outcome {other}")),
         }
     }
@@ -111,6 +116,8 @@ pub struct SettledEnvelope {
     pub fee_rev: u128,
     pub debits: Vec<PurseDebit>,
     pub cost_evidence: Bytes,
+    pub wallet_log: Vec<Event>,
+    pub receipt_log: Vec<Event>,
 }
 
 impl SettledEnvelope {
@@ -121,6 +128,8 @@ impl SettledEnvelope {
             fee_rev: 0,
             debits: Vec::new(),
             cost_evidence: Bytes::new(),
+            wallet_log: Vec::new(),
+            receipt_log: Vec::new(),
         }
     }
 
@@ -146,6 +155,89 @@ impl SettledEnvelope {
         }
         Ok(())
     }
+}
+
+fn evidence_difference(left: &[u8], right: &[u8]) -> String {
+    let limits = offered_funded_v6_limits().evidence;
+    let wire = models::rust::phlo_wire::PhloWireLimits {
+        total_bytes: limits.total_bytes,
+        field_bytes: limits.field_bytes,
+    };
+    let (Ok(a), Ok(b)) = (
+        NativeCostEvidenceV1::decode(left, wire),
+        NativeCostEvidenceV1::decode(right, wire),
+    ) else {
+        return "cost evidence that does not decode".to_string();
+    };
+    let fields = [
+        (
+            "settlement runtime root",
+            a.settlement_runtime_root != b.settlement_runtime_root,
+        ),
+        ("post-state root", a.post_state_root != b.post_state_root),
+        (
+            "original funding root",
+            a.original_funding_root != b.original_funding_root,
+        ),
+        (
+            "phlo",
+            (a.phlo_used, a.fresh_phlo, a.retained_phlo)
+                != (b.phlo_used, b.fresh_phlo, b.retained_phlo),
+        ),
+        (
+            "wallet event count",
+            a.wallet_settlement_log_events != b.wallet_settlement_log_events,
+        ),
+        (
+            "wallet settlement",
+            a.wallet_settlement != b.wallet_settlement,
+        ),
+        ("funding case", a.funding_case != b.funding_case),
+        ("prepaid delta", a.prepaid_delta != b.prepaid_delta),
+        (
+            "recording",
+            (a.budget_recording, a.operation_journal) != (b.budget_recording, b.operation_journal),
+        ),
+    ];
+    let differing: Vec<&str> = fields
+        .iter()
+        .filter(|(_, differs)| *differs)
+        .map(|(name, _)| *name)
+        .collect();
+    format!("cost evidence ({})", differing.join(", "))
+}
+
+pub fn settled_difference(left: &SettledEnvelope, right: &SettledEnvelope) -> Option<String> {
+    if left.rev_spent != right.rev_spent || left.fee_rev != right.fee_rev {
+        return Some(format!(
+            "charges {}/{} against {}/{}",
+            left.rev_spent, left.fee_rev, right.rev_spent, right.fee_rev
+        ));
+    }
+    if left.debits != right.debits {
+        return Some("purse debits".to_string());
+    }
+    if left.cost_evidence != right.cost_evidence {
+        return Some(evidence_difference(
+            &left.cost_evidence,
+            &right.cost_evidence,
+        ));
+    }
+    if left.wallet_log != right.wallet_log {
+        return Some(format!(
+            "wallet log of {} events against {}",
+            left.wallet_log.len(),
+            right.wallet_log.len()
+        ));
+    }
+    if left.receipt_log != right.receipt_log {
+        return Some(format!(
+            "receipt log of {} events against {}",
+            left.receipt_log.len(),
+            right.receipt_log.len()
+        ));
+    }
+    None
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -331,10 +423,11 @@ mod tests {
             EnvelopeOutcome::UserFailure,
             EnvelopeOutcome::Exhausted,
             EnvelopeOutcome::RolledBack,
+            EnvelopeOutcome::Conflicted,
         ] {
             assert_eq!(EnvelopeOutcome::from_tag(outcome.tag()).unwrap(), outcome);
         }
-        assert!(EnvelopeOutcome::from_tag(5).is_err());
+        assert!(EnvelopeOutcome::from_tag(6).is_err());
     }
 
     #[test]
@@ -374,6 +467,8 @@ mod tests {
                 },
             ],
             cost_evidence: Bytes::new(),
+            wallet_log: Vec::new(),
+            receipt_log: Vec::new(),
         };
         assert!(settled.check().is_ok());
         assert!(SettledEnvelope {

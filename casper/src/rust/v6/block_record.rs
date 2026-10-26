@@ -55,6 +55,10 @@ pub struct RecordEntryProto {
     pub cost_evidence: Bytes,
     #[prost(message, repeated, tag = "13")]
     pub user_log: Vec<EventProto>,
+    #[prost(message, repeated, tag = "14")]
+    pub wallet_log: Vec<EventProto>,
+    #[prost(message, repeated, tag = "15")]
+    pub receipt_log: Vec<EventProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -243,6 +247,18 @@ fn entry_to_proto(entry: &RecordEntry) -> RecordEntryProto {
             .iter()
             .map(Event::to_proto)
             .collect(),
+        wallet_log: entry
+            .settled
+            .wallet_log
+            .iter()
+            .map(Event::to_proto)
+            .collect(),
+        receipt_log: entry
+            .settled
+            .receipt_log
+            .iter()
+            .map(Event::to_proto)
+            .collect(),
     }
 }
 
@@ -296,6 +312,16 @@ fn entry_from_proto(proto: RecordEntryProto) -> Result<RecordEntry, String> {
             fee_rev: amount(&proto.fee_rev)?,
             debits,
             cost_evidence: proto.cost_evidence,
+            wallet_log: proto
+                .wallet_log
+                .into_iter()
+                .map(Event::from_proto)
+                .collect::<Result<Vec<_>, _>>()?,
+            receipt_log: proto
+                .receipt_log
+                .into_iter()
+                .map(Event::from_proto)
+                .collect::<Result<Vec<_>, _>>()?,
         },
     })
 }
@@ -375,6 +401,8 @@ mod tests {
                     fee_rev: 3,
                 }],
                 cost_evidence: b("evidence"),
+                wallet_log: vec![log_event()],
+                receipt_log: vec![log_event()],
             }
         } else {
             SettledEnvelope::unsettled(b(id))
@@ -425,6 +453,15 @@ mod tests {
         let mut debit = base.entries.clone();
         debit[0].settled.debits[0].purse = [4; 32];
         variants.push(debit);
+        let mut wallet = base.entries.clone();
+        wallet[0].settled.wallet_log.clear();
+        variants.push(wallet);
+        let mut receipts = base.entries.clone();
+        receipts[0].settled.receipt_log.clear();
+        variants.push(receipts);
+        let mut conflicted = base.entries.clone();
+        conflicted[0].executed.outcome = EnvelopeOutcome::Conflicted;
+        variants.push(conflicted);
         for entries in variants {
             let changed =
                 BlockRecord::new(b("target"), b("pre"), b("mid"), b("post"), entries, vec![])

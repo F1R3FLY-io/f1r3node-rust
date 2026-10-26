@@ -8,7 +8,7 @@ use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::genesis_resource_policy::shard_resource_schedule;
 use casper::rust::util::rholang::costacc::owner_offer::owner_direct_offer;
-use casper::rust::v6::concurrent_record::ConcurrentRecord;
+use casper::rust::v6::block_record::BlockRecord;
 use casper::rust::v6::validity::{check_structure, Limits};
 use casper::rust::v6::V6Engine;
 use crypto::rust::private_key::PrivateKey;
@@ -22,7 +22,7 @@ use rspace_plus_plus::rspace::history::Either;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
-const LIMIT: u64 = 100_000;
+const LIMIT: u64 = 1_000_000;
 
 fn now() -> i64 {
     std::time::SystemTime::now()
@@ -32,6 +32,9 @@ fn now() -> i64 {
 }
 
 async fn v6_genesis() -> GenesisContext {
+    models::rust::record_encoding::set_record_encoding(
+        models::rust::record_encoding::RecordEncoding::Cost,
+    );
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
     parameters.2.version = casper::rust::casper::PROTOCOL_V6_VERSION;
     parameters.2.proof_of_stake.min_phlo_price = 1;
@@ -116,14 +119,12 @@ async fn an_offered_deploy_is_admitted_and_lands_as_ordered_on_every_validator()
     assert_eq!(ordered[0].identity().as_bytes(), id.as_slice());
     let snapshot = nodes[0].casper.get_snapshot().await.unwrap();
     let block_number_of = |hash: &_| snapshot.dag.block_number(hash);
-    assert!(
-        check_structure::<ConcurrentRecord>(&block, &Limits::default(), &block_number_of).is_ok()
-    );
+    assert!(check_structure::<BlockRecord>(&block, &Limits::default(), &block_number_of).is_ok());
     let ordered_only = Limits {
         ordered_only: true,
         ..Limits::default()
     };
-    assert!(check_structure::<ConcurrentRecord>(&block, &ordered_only, &block_number_of).is_ok());
+    assert!(check_structure::<BlockRecord>(&block, &ordered_only, &block_number_of).is_ok());
 
     for node in nodes.iter_mut() {
         let status = node.process_block(block.clone()).await.unwrap();
@@ -152,6 +153,47 @@ async fn an_offered_deploy_is_admitted_and_lands_as_ordered_on_every_validator()
         let stored = node.block_store.get(&block.block_hash).unwrap().unwrap();
         assert_eq!(stored.body.deploys, block.body.deploys);
     }
+    let mut roots: Vec<_> = Vec::new();
+    for round in 0..240 {
+        roots = nodes
+            .iter()
+            .map(|node| engine(node).executed(&block.block_hash))
+            .collect();
+        if roots.iter().all(Option::is_some) {
+            break;
+        }
+        for node in &nodes {
+            engine(node).wake();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let proposer = (round + 1) % nodes.len();
+        let heartbeat = propose(&nodes[proposer]).await;
+        assert!(heartbeat.body.deploys.is_empty());
+        for node in nodes.iter_mut() {
+            let status = node.process_block(heartbeat.clone()).await.unwrap();
+            assert!(
+                matches!(status, Either::Right(_)),
+                "heartbeat rejected: {:?}",
+                status
+            );
+        }
+    }
+    assert!(
+        roots[0].is_some(),
+        "the block with the offer was not executed"
+    );
+    assert!(roots.iter().all(|root| *root == roots[0]));
+    assert!(nodes[0]
+        .block_store
+        .deploy_sigs(&block.block_hash)
+        .unwrap()
+        .unwrap()
+        .contains(&id));
+    let again = propose(&nodes[0]).await;
+    assert!(
+        again.body.deploys.is_empty(),
+        "an included offer was proposed again"
+    );
 }
 
 #[tokio::test]
@@ -280,4 +322,21 @@ async fn a_legacy_shard_refuses_offered_deploys() {
     )
     .unwrap();
     assert!(node.casper.deploy_envelope(envelope).is_err());
+}
+
+#[tokio::test]
+async fn a_protocol_6_shard_refuses_legacy_deploys() {
+    let genesis = v6_genesis().await;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let node = TestNode::create_v6_network(genesis, 1)
+        .await
+        .unwrap()
+        .remove(0);
+    let legacy = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).unwrap();
+    assert!(node.casper.deploy(legacy.clone()).is_err());
+    let error = BlockAPI::deploy(&node.engine_cell, legacy, &None, false, &shard_id)
+        .await
+        .unwrap_err();
+    assert!(message(error).contains("accepts only offered-funded deploys"));
+    assert!(!node.deploy_storage.lock().non_empty().unwrap());
 }

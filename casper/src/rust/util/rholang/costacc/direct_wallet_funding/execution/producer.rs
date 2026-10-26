@@ -137,6 +137,11 @@ pub struct NativeOfferedPreparedResult {
     pub mergeable: HashMap<Par, MergeType>,
 }
 
+pub(crate) struct SettlementRig {
+    pub(crate) wallet: Vec<CasperEvent>,
+    pub(crate) receipts: Vec<CasperEvent>,
+}
+
 pub struct NativeOfferedCandidateResult {
     pub processed: OfferedProcessedDeploy,
     pub final_root: [u8; 32],
@@ -541,6 +546,7 @@ impl NativeOfferedAttempt<'_, '_> {
         inventory_limits: NativePrepaidInventoryLimits,
         receipt_limits: PrepaidReceiptLimits,
         resumed: Option<bool>,
+        rig: Option<&SettlementRig>,
     ) -> Result<Option<NativeOfferedCandidateResult>, CasperError> {
         let settlement = OfferedSettlementContext::from_block_inputs(&envelope, &self.block_data)?;
         let adopted = self.adopted.clone();
@@ -620,6 +626,7 @@ impl NativeOfferedAttempt<'_, '_> {
                     settlement.initial_rand,
                     production,
                     rolled_back,
+                    rig,
                 )
                 .await
             }
@@ -641,6 +648,7 @@ impl NativeOfferedAttempt<'_, '_> {
         initial_rand: Blake2b512Random,
         production: NativeOfferedProductionLimits,
         rolled_back: bool,
+        rig: Option<&SettlementRig>,
     ) -> Result<Option<NativeOfferedCandidateResult>, CasperError> {
         if rolled_back {
             self.evaluation.authority_stack_births.clear();
@@ -663,6 +671,7 @@ impl NativeOfferedAttempt<'_, '_> {
                 initial_rand,
                 production,
                 rolled_back,
+                rig,
             )
             .await;
         let result = match produced {
@@ -731,6 +740,7 @@ impl NativeOfferedAttempt<'_, '_> {
                 initial_rand.clone(),
                 production,
                 false,
+                None,
             )
             .await;
         let result = match first {
@@ -752,6 +762,7 @@ impl NativeOfferedAttempt<'_, '_> {
                         initial_rand,
                         production,
                         true,
+                        None,
                     )
                     .await
                 {
@@ -812,6 +823,7 @@ impl NativeOfferedAttempt<'_, '_> {
         initial_rand: Blake2b512Random,
         production: NativeOfferedProductionLimits,
         rolled_back: bool,
+        rig: Option<&SettlementRig>,
     ) -> Result<ProducedOutcome, CasperError> {
         let limits = production.family;
         let identity = snapshot
@@ -1357,6 +1369,18 @@ impl NativeOfferedAttempt<'_, '_> {
                 physical_cells: production.physical_cells,
                 physical_bytes: production.physical_bytes,
             };
+            if let Some(rig) = rig {
+                self.runtime
+                    .runtime
+                    .rig(
+                        rig.wallet
+                            .iter()
+                            .map(crate::rust::util::event_converter::to_rspace_event)
+                            .collect(),
+                    )
+                    .await
+                    .map_err(CasperError::InterpreterError)?;
+            }
             let mut settlement = self
                 .runtime
                 .settle_checked_wallet_and_capture_balances(
@@ -1379,6 +1403,18 @@ impl NativeOfferedAttempt<'_, '_> {
                 .as_ref()
                 .try_into()
                 .map_err(|_| invalid("wallet settlement root must be 32 bytes"))?;
+            if let Some(rig) = rig {
+                self.runtime
+                    .runtime
+                    .rig(
+                        rig.receipts
+                            .iter()
+                            .map(crate::rust::util::event_converter::to_rspace_event)
+                            .collect(),
+                    )
+                    .await
+                    .map_err(CasperError::InterpreterError)?;
+            }
             let receipts = self
                 .runtime
                 .apply_prepaid_retained_after_wallet(
@@ -1415,6 +1451,16 @@ impl NativeOfferedAttempt<'_, '_> {
             )?;
             let recording =
                 encode_measured_runtime_recording(&self.evaluation, production.recording)?;
+            let mut receipts = receipts;
+            if let Some(rig) = rig {
+                self.runtime
+                    .runtime
+                    .check_replay_data()
+                    .await
+                    .map_err(CasperError::InterpreterError)?;
+                settlement.settlement_log = rig.wallet.clone();
+                receipts.log = rig.receipts.clone();
+            }
             let final_root: [u8; 32] = self
                 .runtime
                 .runtime
