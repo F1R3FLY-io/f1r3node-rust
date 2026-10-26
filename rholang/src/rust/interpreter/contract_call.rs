@@ -77,7 +77,8 @@ impl ContractCall {
 
                     let is_replay = space.is_replay().await;
 
-                    match produce_result {
+                    let mut restoration_error = None;
+                    let dispatch_result = match produce_result {
                         Some((cont, channels, produce)) => {
                             let (continuation, data_list, peek) =
                                 unpack_tuple_with_peek((cont, channels));
@@ -86,7 +87,7 @@ impl ContractCall {
                                 .map(|(_, matched, _, _)| matched.clone())
                                 .collect();
                             let dispatch = async {
-                                let dispatch_type = dispatcher
+                                dispatcher
                                     .dispatch(
                                         continuation,
                                         matched_data,
@@ -101,21 +102,7 @@ impl ContractCall {
                                             })
                                             .collect::<Result<Vec<_>, _>>()?,
                                     )
-                                    .await?;
-                                match dispatch_type {
-                                    DispatchType::NonDeterministicCall(items) => items
-                                        .iter()
-                                        .map(|p| {
-                                            Par::decode(&p[..]).map_err(|e| {
-                                                InterpreterError::DecodeError(e.to_string())
-                                            })
-                                        })
-                                        .collect::<Result<Vec<_>, _>>(),
-                                    DispatchType::FailedNonDeterministicCall(e) => Err(e),
-                                    DispatchType::DeterministicCall | DispatchType::Skip => {
-                                        Ok(Vec::new())
-                                    }
-                                }
+                                    .await
                             };
                             if peek {
                                 let reducer = dispatcher
@@ -131,24 +118,45 @@ impl ContractCall {
                                     dispatch,
                                     reducer.restore_peeked_data(data_list)
                                 );
-                                match restoration {
-                                    Ok(()) => result,
-                                    Err(error) => {
-                                        let mut errors = Vec::new();
-                                        if let Err(dispatch_error) = result {
-                                            errors.push(dispatch_error);
-                                        }
-                                        errors.push(error);
-                                        reducer
-                                            .aggregate_evaluator_errors(errors)
-                                            .map(|_| Vec::new())
-                                    }
+                                if let Err(error) = restoration {
+                                    restoration_error = Some((reducer, error));
                                 }
+                                result
                             } else {
                                 dispatch.await
                             }
                         }
-                        None => Ok(Vec::new()),
+
+                        None => Ok(DispatchType::Skip),
+                    };
+
+                    let result = match dispatch_result {
+                        Ok(dispatch_type) => match dispatch_type {
+                            DispatchType::NonDeterministicCall(items) => items
+                                .iter()
+                                .map(|p| {
+                                    Par::decode(&p[..])
+                                        .map_err(|e| InterpreterError::DecodeError(e.to_string()))
+                                })
+                                .collect::<Result<Vec<_>, _>>(),
+                            DispatchType::FailedNonDeterministicCall(e) => Err(e),
+                            DispatchType::DeterministicCall => Ok(Vec::new()),
+                            DispatchType::Skip => Ok(Vec::new()),
+                        },
+                        Err(e) => Err(e),
+                    };
+
+                    if let Some((reducer, error)) = restoration_error {
+                        let mut errors = Vec::new();
+                        if let Err(dispatch_error) = result {
+                            errors.push(dispatch_error);
+                        }
+                        errors.push(error);
+                        reducer
+                            .aggregate_evaluator_errors(errors)
+                            .map(|_| Vec::new())
+                    } else {
+                        result
                     }
                 })
                     as Pin<

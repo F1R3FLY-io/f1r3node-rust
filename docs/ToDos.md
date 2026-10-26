@@ -40,6 +40,7 @@ acceptance:
   - "Verify error parity, replay, and existing preservation tests."
   - "Assume a fresh chain and add no activation gate."
   - "Keep reducer lookup inline and remove the optional accessor."
+  - "Preserve the original dispatch_result structure and result mapping."
   - "Obtain an independent Opus review before publication."
 ```
 
