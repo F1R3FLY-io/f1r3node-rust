@@ -105,6 +105,29 @@ pub struct BlockRecord {
 }
 
 impl BlockRecord {
+    #[cfg(test)]
+    pub(crate) fn empty(target: BlockHash, pre_root: StateHash, post_root: StateHash) -> Self {
+        Self::with_mid(target, pre_root.clone(), pre_root, post_root)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_mid(
+        target: BlockHash,
+        pre_root: StateHash,
+        mid_root: StateHash,
+        post_root: StateHash,
+    ) -> Self {
+        Self::new(
+            target,
+            pre_root,
+            mid_root,
+            post_root,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("a record with no entries")
+    }
+
     pub fn new(
         target: BlockHash,
         pre_root: StateHash,

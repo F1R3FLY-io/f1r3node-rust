@@ -124,8 +124,8 @@ mod tests {
     use prost::bytes::Bytes;
 
     use super::*;
+    use crate::rust::v6::block_record::BlockRecord;
     use crate::rust::v6::body::Attestation;
-    use crate::rust::v6::concurrent_record::ConcurrentRecord;
 
     fn h(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
@@ -170,7 +170,7 @@ mod tests {
         }
     }
 
-    fn ext(records: Vec<ConcurrentRecord>) -> V6Body {
+    fn ext(records: Vec<BlockRecord>) -> V6Body {
         V6Body::with_records(
             Attestation {
                 block_hash: h("E"),
@@ -180,13 +180,11 @@ mod tests {
         )
     }
 
-    fn check(b: &BlockMessage, limits: &Limits) -> Result<(V6Body, Vec<ConcurrentRecord>), String> {
-        check_structure::<ConcurrentRecord>(b, limits, &known)
+    fn check(b: &BlockMessage, limits: &Limits) -> Result<(V6Body, Vec<BlockRecord>), String> {
+        check_structure::<BlockRecord>(b, limits, &known)
     }
 
-    fn record(target: &str) -> ConcurrentRecord {
-        ConcurrentRecord::empty(h(target), h("p"), h("q"))
-    }
+    fn record(target: &str) -> BlockRecord { BlockRecord::empty(h(target), h("p"), h("q")) }
 
     #[test]
     fn a_well_formed_block_passes() {

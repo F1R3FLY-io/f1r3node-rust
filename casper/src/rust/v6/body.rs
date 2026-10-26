@@ -87,7 +87,7 @@ impl V6Body {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rust::v6::concurrent_record::ConcurrentRecord;
+    use crate::rust::v6::block_record::BlockRecord;
 
     fn b(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn body_round_trips_with_opaque_records() {
-        let record = ConcurrentRecord::empty(b("t"), b("pre"), b("post"));
+        let record = BlockRecord::empty(b("t"), b("pre"), b("post"));
         let body = V6Body::with_records(
             Attestation {
                 block_hash: b("E"),
@@ -113,7 +113,7 @@ mod tests {
         );
         let decoded = V6Body::decode(&body.encode()).unwrap().unwrap();
         assert_eq!(decoded, body);
-        assert_eq!(decoded.decode_records::<ConcurrentRecord>().unwrap(), vec![
+        assert_eq!(decoded.decode_records::<BlockRecord>().unwrap(), vec![
             record
         ]);
         assert_eq!(decoded.record_bytes(), body.records[0].len());
@@ -127,6 +127,6 @@ mod tests {
         };
         let decoded = V6Body::decode(&body.encode()).unwrap().unwrap();
         assert_eq!(decoded.records, vec![b("not a record")]);
-        assert!(decoded.decode_records::<ConcurrentRecord>().is_err());
+        assert!(decoded.decode_records::<BlockRecord>().is_err());
     }
 }

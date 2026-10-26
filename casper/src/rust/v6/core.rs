@@ -350,19 +350,15 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rust::v6::concurrent_record::ConcurrentRecord;
+    use crate::rust::v6::block_record::BlockRecord;
 
     fn h(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
-    fn rec(target: &str, pre: &str, post: &str) -> ConcurrentRecord {
-        ConcurrentRecord::empty(h(target), h(pre), h(post))
+    fn rec(target: &str, pre: &str, post: &str) -> BlockRecord {
+        BlockRecord::empty(h(target), h(pre), h(post))
     }
 
-    fn block(
-        name: &str,
-        sender: &str,
-        records: Vec<ConcurrentRecord>,
-    ) -> EmittedBlock<ConcurrentRecord> {
+    fn block(name: &str, sender: &str, records: Vec<BlockRecord>) -> EmittedBlock<BlockRecord> {
         EmittedBlock {
             hash: h(name),
             sender: h(sender),
@@ -371,7 +367,7 @@ mod tests {
         }
     }
 
-    fn core() -> ExecutorCore<ConcurrentRecord> {
+    fn core() -> ExecutorCore<BlockRecord> {
         ExecutorCore::new(h("g"), h("r0"), CoreParams {
             max_speculation: 4,
             fallback_distance: 2,
@@ -526,7 +522,7 @@ mod tests {
         let cited: Vec<_> = c
             .records_to_cite(&h("me"), 10)
             .into_iter()
-            .map(|r| r.target)
+            .map(|r| r.target().clone())
             .collect();
         assert_eq!(cited, vec![h("b1")]);
         c.emit(block("b3", "other", vec![]));
@@ -534,7 +530,7 @@ mod tests {
         let cited: Vec<_> = c
             .records_to_cite(&h("me"), 10)
             .into_iter()
-            .map(|r| r.target)
+            .map(|r| r.target().clone())
             .collect();
         assert_eq!(cited, vec![h("b1"), h("b2")]);
         let to_cite = c.records_to_cite(&h("me"), 10);
@@ -594,18 +590,12 @@ mod tests {
     }
 
     #[test]
-    fn an_own_run_with_the_same_root_but_other_verdicts_is_not_adopted() {
+    fn an_own_run_with_the_same_root_but_another_record_is_not_adopted() {
         let mut c = core();
         c.emit(block("b1", "v1", vec![]));
-        let own = ConcurrentRecord {
-            failed: vec![true],
-            ..rec("b1", "r0", "r1")
-        };
+        let own = BlockRecord::with_mid(h("b1"), h("r0"), h("own"), h("r1"));
         c.apply_execute(own.clone());
-        let cited = ConcurrentRecord {
-            failed: vec![false],
-            ..rec("b1", "r0", "r1")
-        };
+        let cited = BlockRecord::with_mid(h("b1"), h("r0"), h("cited"), h("r1"));
         c.emit(block("b2", "v2", vec![cited.clone()]));
         let Action::Replay {
             target,
