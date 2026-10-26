@@ -52,7 +52,7 @@ pub trait ActiveValidatorChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult;
+    ) -> Result<CheckProposeConstraintsResult, CasperError>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -364,7 +364,7 @@ where
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
         match self
             .active_validator_checker
-            .check_active_validator(casper_snapshot, &self.validator)
+            .check_active_validator(casper_snapshot, &self.validator)?
         {
             CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded) => {
                 Ok(CheckProposeConstraintsResult::not_bonded())
@@ -640,7 +640,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
@@ -693,23 +693,11 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult {
-        let in_committee = casper_snapshot
-            .parents
-            .first()
-            .map(|parent| {
-                parent
-                    .body
-                    .state
-                    .bonds
-                    .iter()
-                    .any(|bond| bond.validator == validator_identity.public_key.bytes)
-            })
-            .unwrap_or(false);
-        if in_committee {
-            CheckProposeConstraintsResult::success()
+    ) -> Result<CheckProposeConstraintsResult, CasperError> {
+        if casper_snapshot.is_validator_bonded(&validator_identity.public_key.bytes)? {
+            Ok(CheckProposeConstraintsResult::success())
         } else {
-            CheckProposeConstraintsResult::not_bonded()
+            Ok(CheckProposeConstraintsResult::not_bonded())
         }
     }
 }
@@ -749,7 +737,7 @@ impl HeightChecker for ProductionHeightChecker {
 }
 
 pub struct ProductionBlockCreator {
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
@@ -758,7 +746,7 @@ pub struct ProductionBlockCreator {
 
 impl ProductionBlockCreator {
     pub fn new(
-        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<KeyValueDeployStorage>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,

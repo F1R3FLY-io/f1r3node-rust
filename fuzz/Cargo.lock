@@ -508,6 +508,7 @@ dependencies = [
  "parking_lot",
  "prost",
  "rand 0.9.5",
+ "rayon",
  "regex",
  "rholang",
  "rspace_plus_plus",
@@ -3200,6 +3201,7 @@ dependencies = [
 name = "rho-pure-eval"
 version = "0.1.0"
 dependencies = [
+ "imbl",
  "models",
  "num-bigint",
  "num-rational",

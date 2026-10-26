@@ -15,9 +15,8 @@
 // position.
 //
 // Consequence: fs_read_at's `journal` method DOES journal the
-// read (WAL stub, same deferral as fs_read) but does NOT advance
-// the shadow position.  See
-// [`verify::FdPositionMutator`](crate::rust::interpreter::io::verify::FdPositionMutator)
+// read (LIVE at E2) but does NOT advance the shadow position.
+// See [`verify::FdPositionMutator`](crate::rust::interpreter::io::verify::FdPositionMutator)
 // — pread is deliberately excluded from the enum of
 // position-mutating handlers.  Pin: a regression that added
 // position advance to this handler would silently drift shadow
@@ -32,14 +31,13 @@
 // instead of `libc::read`.  The quota-ordering + fd-lookup +
 // FSERR fan-out are shared with fs_read.
 //
-// # Journal: same WAL stub + offset threaded through
+// # Journal: WAL append live at E2 + offset threaded through
 //
-// Wave 6 target: `journal_read_via_table(handles, fd, bytes,
-// Some(off), ack)` on success paths; `journal_read_divergence_via_table(
-// handles, fd, Some(off), ack)` on VerifyDivergence.  Same
-// deferral as fs_read; the offset is threaded through so the
-// Wave 6 slice can land journaling without touching this
-// handler's dispatch structure.
+// `journal_read_via_table(handles, fd, bytes, Some(off), ack)`
+// on success paths; `journal_read_divergence_via_table(handles,
+// fd, Some(off), ack)` on VerifyDivergence.  Both helpers ported
+// in slice E1; wired here at E2.  Offset is the caller-supplied
+// value directly (pread doesn't advance OS fd position).
 
 use std::future::Future;
 use std::pin::Pin;
@@ -54,7 +52,9 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerFamily, HandlerReply, JournalPath,
     SyscallCtx, FS_HANDLERS,
 };
-use crate::rust::interpreter::io::handlers::helpers::read_impl_via_table;
+use crate::rust::interpreter::io::handlers::helpers::{
+    journal_read_divergence_via_table, journal_read_via_table, read_impl_via_table,
+};
 use crate::rust::interpreter::io::response::extract_ok_bytes;
 use crate::rust::interpreter::io::ConsensusMode;
 use crate::rust::interpreter::rho_type::RhoNumber;
@@ -170,15 +170,17 @@ impl FsHandler for FsReadAtHandler {
     /// would silently drift shadow position from the actual OS
     /// fd state (which pread did NOT change).
     ///
-    /// WAL journaling itself is **stubbed** (Wave 6 scope) — same
-    /// deferral as fs_read.  The offset extraction + guard logic
-    /// stays live so the Wave 6 slice can land the WAL calls
-    /// without touching the structure.  Wave 6 targets:
+    /// WAL journaling is live at E2:
     ///
     ///   - `journal_read_via_table(handles, fd, bytes, Some(off),
-    ///     ack)` on Leader / VerifySuccess / OracularEcho.
+    ///     ack)` on Leader / VerifySuccess / OracularEcho —
+    ///     records the bytes-hash at the caller-supplied offset.
     ///   - `journal_read_divergence_via_table(handles, fd,
-    ///     Some(off), ack)` on VerifyDivergence.
+    ///     Some(off), ack)` on VerifyDivergence — records a
+    ///     `FSERR_CONSENSUS_DIVERGENCE` failure outcome at the
+    ///     same offset.
+    ///
+    /// Both helpers self-guard on Oracular + unknown fd.
     fn journal<'a>(
         ctx: SyscallCtx<'a>,
         raw_args: &'a [Par],
@@ -200,30 +202,25 @@ impl FsHandler for FsReadAtHandler {
             if off_i64 < 0 {
                 return;
             }
-            let _fd_u = fd_i64 as u64;
-            let _off_u = off_i64 as u64;
-            let _state_source = path.state_source_reply();
-            let _bytes_slot = extract_ok_bytes(std::slice::from_ref(_state_source));
-            // Wave 6 WAL journaling target (stubbed):
-            //
-            //   if path.is_divergence() {
-            //       let _ = journal_read_divergence_via_table(
-            //           ctx.handles, _fd_u, Some(_off_u), ctx.ack
-            //       ).await;
-            //   } else if let Some(bytes) = &_bytes_slot {
-            //       let _ = journal_read_via_table(
-            //           ctx.handles, _fd_u, bytes, Some(_off_u), ctx.ack
-            //       ).await;
-            //   }
-            //
-            // Dead reference to keep `path.is_divergence` surfaced
-            // in the dispatch body — Wave 6 slice drops this when
-            // the WAL calls light up above.  Suppress unused
-            // bindings via let _ above.
-            let _was_divergence = path.is_divergence();
-            // Suppress unused ctx — Wave 6 journal calls take
-            // ctx.handles + ctx.ack.
-            let _ = ctx;
+            let fd_u = fd_i64 as u64;
+            let off_u = off_i64 as u64;
+            let bytes_slot = extract_ok_bytes(std::slice::from_ref(path.state_source_reply()));
+
+            // WAL journaling (LIVE at E2 — ports fileio's
+            // handlers_helpers.rs:830 + :871 wiring).  Divergence
+            // path records a `FSERR_CONSENSUS_DIVERGENCE` failure
+            // outcome at the caller-supplied offset; success paths
+            // record the bytes-hash at the same offset.  NO shadow
+            // position advance (pread doesn't move the OS fd
+            // position per POSIX).  Both helpers self-guard on
+            // Oracular + unknown fd.
+            if path.is_divergence() {
+                let _ = journal_read_divergence_via_table(ctx.handles, fd_u, Some(off_u), ctx.ack)
+                    .await;
+            } else if let Some(bytes) = &bytes_slot {
+                let _ =
+                    journal_read_via_table(ctx.handles, fd_u, bytes, Some(off_u), ctx.ack).await;
+            }
         })
     }
 }

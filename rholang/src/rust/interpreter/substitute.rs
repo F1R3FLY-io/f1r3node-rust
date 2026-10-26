@@ -51,43 +51,42 @@ pub struct Substitute {
 impl Substitute {
     pub fn substitute_and_charge<A>(
         &self,
-        term: &A,
+        term: A,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: Clone + prost::Message,
+        A: prost::Message,
     {
-        // scala 'charge' function built in here
-        match self.substitute(term.clone(), depth, env) {
-            Ok(subst_term) => {
-                self.cost.charge(Cost::create(
-                    subst_term.encoded_len() as i64,
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
-                Err(th)
-            }
-        }
+        let term_len = term.encoded_len();
+        let substituted = self.substitute(term, depth, env);
+        self.charge_substitution(substituted, term_len)
     }
 
     pub fn substitute_no_sort_and_charge<A>(
         &self,
-        term: &A,
+        term: A,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: Clone + prost::Message,
+        A: prost::Message,
     {
-        // scala 'charge' function built in here
-        match self.substitute_no_sort(term.clone(), depth, env) {
+        let term_len = term.encoded_len();
+        let substituted = self.substitute_no_sort(term, depth, env);
+        self.charge_substitution(substituted, term_len)
+    }
+
+    /// Charges the size of the substituted term, or of the original term
+    /// (`term_len`) when substitution failed.
+    fn charge_substitution<A: prost::Message>(
+        &self,
+        substituted: Result<A, InterpreterError>,
+        term_len: usize,
+    ) -> Result<A, InterpreterError> {
+        match substituted {
             Ok(subst_term) => {
                 self.cost.charge(Cost::create(
                     subst_term.encoded_len() as i64,
@@ -96,8 +95,7 @@ impl Substitute {
                 Ok(subst_term)
             }
             Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
+                self.cost.charge(Cost::create(term_len as i64, ""))?;
                 Err(th)
             }
         }
@@ -113,8 +111,8 @@ impl Substitute {
         if depth != 0 {
             Ok(Either::Left(term))
         } else {
-            match unwrap_option_safe(term.clone().var_instance)? {
-                VarInstance::BoundVar(index) => match env.get(&index) {
+            match unwrap_option_safe(term.var_instance.as_ref())? {
+                VarInstance::BoundVar(index) => match env.get(index) {
                     Some(p) => Ok(Either::Right(p)),
                     None => Ok(Either::Left(term)),
                 },
@@ -158,38 +156,31 @@ impl Substitute {
 impl SubstituteTrait<Bundle> for Substitute {
     fn substitute(
         &self,
-        term: Bundle,
+        mut term: Bundle,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Bundle, InterpreterError> {
-        let sub_bundle = self.substitute(unwrap_option_safe(term.clone().body)?, depth, env)?;
-
-        match single_bundle(&sub_bundle) {
-            Some(b) => Ok(BundleOps::merge(&term, &b)),
-            None => {
-                let mut term_mut = term.clone();
-                term_mut.body = Some(sub_bundle);
-                Ok(term_mut)
-            }
-        }
+        let body = self.substitute(unwrap_option_safe(term.body.take())?, depth, env)?;
+        Ok(rebundle(term, body))
     }
 
     fn substitute_no_sort(
         &self,
-        term: Bundle,
+        mut term: Bundle,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Bundle, InterpreterError> {
-        let sub_bundle =
-            self.substitute_no_sort(unwrap_option_safe(term.clone().body)?, depth, env)?;
+        let body = self.substitute_no_sort(unwrap_option_safe(term.body.take())?, depth, env)?;
+        Ok(rebundle(term, body))
+    }
+}
 
-        match single_bundle(&sub_bundle) {
-            Some(b) => Ok(BundleOps::merge(&term, &b)),
-            None => {
-                let mut term_mut = term.clone();
-                term_mut.body = Some(sub_bundle);
-                Ok(term_mut)
-            }
+fn rebundle(mut outer: Bundle, body: Par) -> Bundle {
+    match single_bundle(&body) {
+        Some(inner) => BundleOps::merge(&outer, inner),
+        None => {
+            outer.body = Some(body);
+            outer
         }
     }
 }
@@ -202,21 +193,27 @@ impl Substitute {
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
         exprs.into_iter().try_fold(Par::default(), |par, expr| {
-            match unwrap_option_safe(expr.clone().expr_instance)? {
+            match unwrap_option_safe(expr.expr_instance)? {
                 ExprInstance::EVarBody(e) => match self.maybe_substitute_evar(e, depth, env)? {
-                    Either::Left(_e) => Ok(prepend_expr(
+                    Either::Left(e) => Ok(prepend_expr(
                         par,
                         Expr {
-                            expr_instance: Some(ExprInstance::EVarBody(_e)),
+                            expr_instance: Some(ExprInstance::EVarBody(e)),
                         },
                         depth,
                     )),
-                    Either::Right(_par) => Ok(concatenate_pars(_par, par)),
+                    Either::Right(substituted) => Ok(concatenate_pars(substituted, par)),
                 },
-                _ => match self.substitute_no_sort(expr, depth, env) {
-                    Ok(e) => Ok(prepend_expr(par, e, depth)),
-                    Err(e) => Err(e),
-                },
+                instance => {
+                    let substituted = self.substitute_no_sort(
+                        Expr {
+                            expr_instance: Some(instance),
+                        },
+                        depth,
+                        env,
+                    )?;
+                    Ok(prepend_expr(par, substituted, depth))
+                }
             }
         })
     }
@@ -227,101 +224,81 @@ impl Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
+        let prepend = |par, instance| {
+            prepend_connective(
+                par,
+                Connective {
+                    connective_instance: Some(instance),
+                },
+                depth,
+            )
+        };
         conns
             .into_iter()
             .try_fold(Par::default(), |par, conn| match conn.connective_instance {
-                Some(ref conn_instance) => match conn_instance {
-                    ConnectiveInstance::VarRefBody(v) => {
-                        match self.maybe_substitute_var_ref(v.clone(), depth, env)? {
-                            Either::Left(_) => Ok(prepend_connective(par, conn, depth)),
-                            Either::Right(new_par) => Ok(concatenate_pars(new_par, par)),
-                        }
+                Some(ConnectiveInstance::VarRefBody(v)) => {
+                    match self.maybe_substitute_var_ref(v, depth, env)? {
+                        Either::Left(v) => Ok(prepend(par, ConnectiveInstance::VarRefBody(v))),
+                        Either::Right(new_par) => Ok(concatenate_pars(new_par, par)),
                     }
-
-                    ConnectiveInstance::ConnAndBody(ConnectiveBody { ps }) => {
-                        let sub_ps: Vec<Par> = ps
-                            .iter()
-                            .map(|p| self.substitute_no_sort(p.clone(), depth, env))
-                            .collect::<Result<Vec<Par>, InterpreterError>>()?;
-
-                        Ok(prepend_connective(
-                            par,
-                            Connective {
-                                connective_instance: Some(ConnectiveInstance::ConnAndBody(
-                                    ConnectiveBody { ps: sub_ps },
-                                )),
-                            },
-                            depth,
-                        ))
-                    }
-
-                    ConnectiveInstance::ConnOrBody(ConnectiveBody { ps }) => {
-                        let sub_ps: Vec<Par> = ps
-                            .iter()
-                            .map(|p| self.substitute_no_sort(p.clone(), depth, env))
-                            .collect::<Result<Vec<Par>, InterpreterError>>()?;
-
-                        Ok(prepend_connective(
-                            par,
-                            Connective {
-                                connective_instance: Some(ConnectiveInstance::ConnOrBody(
-                                    ConnectiveBody { ps: sub_ps },
-                                )),
-                            },
-                            depth,
-                        ))
-                    }
-
-                    ConnectiveInstance::ConnNotBody(p) => {
-                        self.substitute_no_sort(p.clone(), depth, env).map(|p| {
-                            prepend_connective(
-                                par,
-                                Connective {
-                                    connective_instance: Some(ConnectiveInstance::ConnNotBody(p)),
-                                },
-                                depth,
-                            )
-                        })
-                    }
-
-                    ConnectiveInstance::ConnBool(c) => Ok(prepend_connective(
+                }
+                Some(ConnectiveInstance::ConnAndBody(ConnectiveBody { ps })) => {
+                    let ps = self.substitute_all_no_sort(ps, depth, env)?;
+                    Ok(prepend(
                         par,
-                        Connective {
-                            connective_instance: Some(ConnectiveInstance::ConnBool(*c)),
-                        },
-                        depth,
-                    )),
-                    ConnectiveInstance::ConnInt(c) => Ok(prepend_connective(
+                        ConnectiveInstance::ConnAndBody(ConnectiveBody { ps }),
+                    ))
+                }
+                Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => {
+                    let ps = self.substitute_all_no_sort(ps, depth, env)?;
+                    Ok(prepend(
                         par,
-                        Connective {
-                            connective_instance: Some(ConnectiveInstance::ConnInt(*c)),
-                        },
-                        depth,
-                    )),
-                    ConnectiveInstance::ConnString(c) => Ok(prepend_connective(
-                        par,
-                        Connective {
-                            connective_instance: Some(ConnectiveInstance::ConnString(*c)),
-                        },
-                        depth,
-                    )),
-                    ConnectiveInstance::ConnUri(c) => Ok(prepend_connective(
-                        par,
-                        Connective {
-                            connective_instance: Some(ConnectiveInstance::ConnUri(*c)),
-                        },
-                        depth,
-                    )),
-                    ConnectiveInstance::ConnByteArray(c) => Ok(prepend_connective(
-                        par,
-                        Connective {
-                            connective_instance: Some(ConnectiveInstance::ConnByteArray(*c)),
-                        },
-                        depth,
-                    )),
-                },
+                        ConnectiveInstance::ConnOrBody(ConnectiveBody { ps }),
+                    ))
+                }
+                Some(ConnectiveInstance::ConnNotBody(p)) => {
+                    let p = self.substitute_no_sort(p, depth, env)?;
+                    Ok(prepend(par, ConnectiveInstance::ConnNotBody(p)))
+                }
+                Some(
+                    instance @ (ConnectiveInstance::ConnBool(_)
+                    | ConnectiveInstance::ConnInt(_)
+                    | ConnectiveInstance::ConnString(_)
+                    | ConnectiveInstance::ConnUri(_)
+                    | ConnectiveInstance::ConnByteArray(_)),
+                ) => Ok(prepend(par, instance)),
                 None => Ok(par),
             })
+    }
+
+    fn substitute_all<A>(
+        &self,
+        terms: Vec<A>,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<Vec<A>, InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+    {
+        terms
+            .into_iter()
+            .map(|term| self.substitute(term, depth, env))
+            .collect()
+    }
+
+    fn substitute_all_no_sort<A>(
+        &self,
+        terms: Vec<A>,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<Vec<A>, InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+    {
+        terms
+            .into_iter()
+            .map(|term| self.substitute_no_sort(term, depth, env))
+            .collect()
     }
 }
 
@@ -334,42 +311,12 @@ impl SubstituteTrait<Par> for Substitute {
     ) -> Result<Par, InterpreterError> {
         let exprs = self.sub_exp(term.exprs, depth, env)?;
         let connectives = self.sub_conn(term.connectives, depth, env)?;
-
-        let sends = term
-            .sends
-            .into_iter()
-            .map(|s| self.substitute_no_sort(s, depth, env))
-            .collect::<Result<Vec<Send>, InterpreterError>>()?;
-
-        let bundles = term
-            .bundles
-            .into_iter()
-            .map(|b| self.substitute_no_sort(b, depth, env))
-            .collect::<Result<Vec<Bundle>, InterpreterError>>()?;
-
-        let receives = term
-            .receives
-            .into_iter()
-            .map(|r| self.substitute_no_sort(r, depth, env))
-            .collect::<Result<Vec<Receive>, InterpreterError>>()?;
-
-        let news = term
-            .news
-            .into_iter()
-            .map(|n| self.substitute_no_sort(n, depth, env))
-            .collect::<Result<Vec<New>, InterpreterError>>()?;
-
-        let matches = term
-            .matches
-            .into_iter()
-            .map(|m| self.substitute_no_sort(m, depth, env))
-            .collect::<Result<Vec<Match>, InterpreterError>>()?;
-
-        let conditionals = term
-            .conditionals
-            .iter()
-            .map(|i| self.substitute_no_sort(i.clone(), depth, env))
-            .collect::<Result<Vec<If>, InterpreterError>>()?;
+        let sends = self.substitute_all_no_sort(term.sends, depth, env)?;
+        let bundles = self.substitute_all_no_sort(term.bundles, depth, env)?;
+        let receives = self.substitute_all_no_sort(term.receives, depth, env)?;
+        let news = self.substitute_all_no_sort(term.news, depth, env)?;
+        let matches = self.substitute_all_no_sort(term.matches, depth, env)?;
+        let conditionals = self.substitute_all_no_sort(term.conditionals, depth, env)?;
 
         Ok(concatenate_pars(
             exprs,
@@ -403,21 +350,22 @@ impl SubstituteTrait<Send> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Send, InterpreterError> {
-        let channels_sub =
-            self.substitute_no_sort(unwrap_option_safe(term.clone().chan)?, depth, env)?;
-
-        let pars_sub = term
-            .data
-            .iter()
-            .map(|p| self.substitute_no_sort(p.clone(), depth, env))
-            .collect::<Result<Vec<Par>, InterpreterError>>()?;
+        let Send {
+            chan,
+            data,
+            persistent,
+            locally_free,
+            connective_used,
+        } = term;
+        let chan = self.substitute_no_sort(unwrap_option_safe(chan)?, depth, env)?;
+        let data = self.substitute_all_no_sort(data, depth, env)?;
 
         Ok(Send {
-            chan: Some(channels_sub),
-            data: pars_sub,
-            persistent: term.persistent,
-            locally_free: set_bits_until(term.locally_free, env.shift),
-            connective_used: term.connective_used,
+            chan: Some(chan),
+            data,
+            persistent,
+            locally_free: set_bits_until(locally_free, env.shift),
+            connective_used,
         })
     }
 
@@ -447,10 +395,7 @@ impl SubstituteTrait<Receive> for Substitute {
                  }| {
                     let sub_channel =
                         self.substitute_no_sort(unwrap_option_safe(source)?, depth, env)?;
-                    let sub_patterns = patterns
-                        .iter()
-                        .map(|p| self.substitute_no_sort(p.clone(), depth + 1, env))
-                        .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                    let sub_patterns = self.substitute_all_no_sort(patterns, depth + 1, env)?;
 
                     Ok(ReceiveBind {
                         patterns: sub_patterns,
@@ -536,44 +481,31 @@ impl SubstituteTrait<Match> for Substitute {
 
         let cases_sub = term
             .cases
-            .iter()
-            .filter(|case| case.pattern.is_some() && case.source.is_some())
-            .map(
-                |MatchCase {
-                     pattern,
-                     source,
-                     free_count,
-                     guard,
-                 }| {
-                    let par = self.substitute_no_sort(
-                        unwrap_option_safe(source.clone())?,
-                        depth,
-                        &env.shift(*free_count),
-                    )?;
+            .into_iter()
+            .filter_map(|case| match case {
+                MatchCase {
+                    pattern: Some(pattern),
+                    source: Some(source),
+                    free_count,
+                    guard,
+                } => Some((pattern, source, free_count, guard)),
+                _ => None,
+            })
+            .map(|(pattern, source, free_count, guard)| {
+                let case_env = env.shift(free_count);
+                let source = self.substitute_no_sort(source, depth, &case_env)?;
+                let pattern = self.substitute_no_sort(pattern, depth + 1, env)?;
+                let guard = guard
+                    .map(|g| self.substitute_no_sort(g, depth, &case_env))
+                    .transpose()?;
 
-                    let sub_case = self.substitute_no_sort(
-                        unwrap_option_safe(pattern.clone())?,
-                        depth + 1,
-                        env,
-                    )?;
-
-                    let sub_guard = match guard {
-                        Some(g) => Some(self.substitute_no_sort(
-                            g.clone(),
-                            depth,
-                            &env.shift(*free_count),
-                        )?),
-                        None => None,
-                    };
-
-                    Ok(MatchCase {
-                        pattern: Some(sub_case),
-                        source: Some(par),
-                        free_count: *free_count,
-                        guard: sub_guard,
-                    })
-                },
-            )
+                Ok(MatchCase {
+                    pattern: Some(pattern),
+                    source: Some(source),
+                    free_count,
+                    guard,
+                })
+            })
             .collect::<Result<Vec<MatchCase>, InterpreterError>>()?;
 
         Ok(Match {
@@ -627,7 +559,7 @@ impl SubstituteTrait<If> for Substitute {
 
 impl SubstituteTrait<Expr> for Substitute {
     fn substitute(&self, term: Expr, depth: i32, env: &Env<Par>) -> Result<Expr, InterpreterError> {
-        match unwrap_option_safe(term.expr_instance.clone())? {
+        match unwrap_option_safe(term.expr_instance)? {
             ExprInstance::ENotBody(ENot { p }) => self
                 .substitute(unwrap_option_safe(p)?, depth, env)
                 .map(|p| {
@@ -854,10 +786,7 @@ impl SubstituteTrait<Expr> for Substitute {
                 connective_used,
                 remainder,
             }) => {
-                let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let _ps = self.substitute_all(ps, depth, env)?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
 
@@ -876,10 +805,7 @@ impl SubstituteTrait<Expr> for Substitute {
                 locally_free,
                 connective_used,
             }) => {
-                let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let _ps = self.substitute_all(ps, depth, env)?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
 
@@ -894,12 +820,7 @@ impl SubstituteTrait<Expr> for Substitute {
 
             ExprInstance::ESetBody(eset) => {
                 let par_set = ParSetTypeMapper::eset_to_par_set(eset);
-                let _ps = par_set
-                    .ps
-                    .sorted_pars
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let _ps = self.substitute_all(par_set.ps.sorted_pars, depth, env)?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
@@ -918,10 +839,10 @@ impl SubstituteTrait<Expr> for Substitute {
                 let _ps = par_map
                     .ps
                     .sorted_list
-                    .iter()
-                    .map(|p| {
-                        let p1 = self.substitute(p.0.clone(), depth, env)?;
-                        let p2 = self.substitute(p.1.clone(), depth, env)?;
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let p1 = self.substitute(k, depth, env)?;
+                        let p2 = self.substitute(v, depth, env)?;
                         Ok((p1, p2))
                     })
                     .collect::<Result<Vec<(Par, Par)>, InterpreterError>>()?;
@@ -946,10 +867,7 @@ impl SubstituteTrait<Expr> for Substitute {
                 connective_used,
             }) => {
                 let sub_target = self.substitute(unwrap_option_safe(target)?, depth, env)?;
-                let sub_arguments = arguments
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let sub_arguments = self.substitute_all(arguments, depth, env)?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::EMethodBody(EMethod {
@@ -962,7 +880,9 @@ impl SubstituteTrait<Expr> for Substitute {
                 })
             }
 
-            _ => Ok(term),
+            instance => Ok(Expr {
+                expr_instance: Some(instance),
+            }),
         }
     }
 
@@ -972,7 +892,7 @@ impl SubstituteTrait<Expr> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Expr, InterpreterError> {
-        match unwrap_option_safe(term.expr_instance.clone())? {
+        match unwrap_option_safe(term.expr_instance)? {
             ExprInstance::ENotBody(ENot { p }) => self
                 .substitute_no_sort(unwrap_option_safe(p)?, depth, env)
                 .map(|p| {
@@ -1199,10 +1119,7 @@ impl SubstituteTrait<Expr> for Substitute {
                 connective_used,
                 remainder,
             }) => {
-                let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let _ps = self.substitute_all_no_sort(ps, depth, env)?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
 
@@ -1221,10 +1138,7 @@ impl SubstituteTrait<Expr> for Substitute {
                 locally_free,
                 connective_used,
             }) => {
-                let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let _ps = self.substitute_all_no_sort(ps, depth, env)?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
 
@@ -1239,12 +1153,7 @@ impl SubstituteTrait<Expr> for Substitute {
 
             ExprInstance::ESetBody(eset) => {
                 let par_set = ParSetTypeMapper::eset_to_par_set(eset);
-                let _ps = par_set
-                    .ps
-                    .sorted_pars
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let _ps = self.substitute_all_no_sort(par_set.ps.sorted_pars, depth, env)?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
@@ -1263,10 +1172,10 @@ impl SubstituteTrait<Expr> for Substitute {
                 let _ps = par_map
                     .ps
                     .sorted_list
-                    .iter()
-                    .map(|p| {
-                        let p1 = self.substitute_no_sort(p.0.clone(), depth, env)?;
-                        let p2 = self.substitute_no_sort(p.1.clone(), depth, env)?;
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let p1 = self.substitute_no_sort(k, depth, env)?;
+                        let p2 = self.substitute_no_sort(v, depth, env)?;
                         Ok((p1, p2))
                     })
                     .collect::<Result<Vec<(Par, Par)>, InterpreterError>>()?;
@@ -1292,10 +1201,7 @@ impl SubstituteTrait<Expr> for Substitute {
             }) => {
                 let sub_target =
                     self.substitute_no_sort(unwrap_option_safe(target)?, depth, env)?;
-                let sub_arguments = arguments
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
-                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let sub_arguments = self.substitute_all_no_sort(arguments, depth, env)?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::EMethodBody(EMethod {
@@ -1308,7 +1214,9 @@ impl SubstituteTrait<Expr> for Substitute {
                 })
             }
 
-            _ => Ok(term),
+            instance => Ok(Expr {
+                expr_instance: Some(instance),
+            }),
         }
     }
 }
@@ -1340,10 +1248,7 @@ mod tests {
 
     fn bound(index: i32) -> Par { new_boundvar_par(index, Vec::new(), false) }
 
-    fn env_with(value: Par) -> Env<Par> {
-        let mut env = Env::new();
-        env.put(value)
-    }
+    fn env_with(value: Par) -> Env<Par> { Env::new().put(value) }
 
     type BinOp = fn(Par, Par) -> ExprInstance;
 
@@ -1932,20 +1837,20 @@ mod tests {
         let substitute = substitute_instance();
         let env = env_with(gint(42));
 
-        let charged: Par = substitute
-            .substitute_and_charge(&bound(0), 0, &env)
-            .unwrap();
+        let charged: Par = substitute.substitute_and_charge(bound(0), 0, &env).unwrap();
         assert_eq!(charged, gint(42));
 
         let charged_no_sort: Par = substitute
-            .substitute_no_sort_and_charge(&bound(0), 0, &env)
+            .substitute_no_sort_and_charge(bound(0), 0, &env)
             .unwrap();
         assert_eq!(charged_no_sort, gint(42));
 
         let free = new_freevar_par(0, Vec::new());
-        assert!(substitute.substitute_and_charge(&free, 0, &env).is_err());
         assert!(substitute
-            .substitute_no_sort_and_charge(&free, 0, &env)
+            .substitute_and_charge(free.clone(), 0, &env)
+            .is_err());
+        assert!(substitute
+            .substitute_no_sort_and_charge(free, 0, &env)
             .is_err());
     }
 

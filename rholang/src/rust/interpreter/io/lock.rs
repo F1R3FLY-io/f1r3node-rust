@@ -13,7 +13,7 @@
 //   - `RangeEntry` — one granted range-lock record.
 //
 // This slice adds the state-container surface the acquire/release
-// methods (yet-to-land) manipulate:
+// methods manipulate:
 //   - `FileLockState { ranges, sequential_holder, waiters }` —
 //     per-`(dev, inode)` state.
 //   - `SequentialEntry` — a whole-file sequential lock record.
@@ -62,8 +62,9 @@ pub type DevInode = (u64, u64);
 
 /// Opaque tag identifying which deploy owns this lock, for
 /// `release_all_for_deploy` auto-release at deploy-end.
-/// Concretely, whatever key the (not-yet-landed) `WalDeployScope`
-/// already uses — typically the deploy hash.
+/// Concretely, whatever key `WalDeployScope` uses (not yet ported
+/// to triage; see slice D4 in the fileio-port plan) — typically
+/// the deploy hash.
 ///
 /// # Follow-up: newtype
 ///
@@ -494,8 +495,8 @@ pub struct SequentialEntry {
 /// A state with parked waiters is NOT evicted from the registry
 /// map even if `ranges` and `sequential_holder` are empty — the
 /// waiters need somewhere to live until admit or cancel.  The
-/// yet-to-land release path checks `state_is_empty` AFTER
-/// cancelling / waking before evicting.
+/// release path checks `state_is_empty` AFTER cancelling / waking
+/// before evicting.
 #[derive(Debug, Default)]
 pub struct FileLockState {
     pub ranges: Vec<RangeEntry>,
@@ -570,11 +571,11 @@ pub enum AcquireOutcome {
 /// only visible externally as its `LockId` (used by
 /// `cancel_wait`, a subsequent slice).
 ///
-/// Fields are pre-declared for the yet-to-land acquire/release
-/// slices; `#[allow(dead_code)]` suppresses the dead-field
-/// warning until those slices wire them up.  Preserved via a
-/// module-scope attribute (not per-field) because the acquire
-/// slice will light up every field at once.
+/// Fields are read by the acquire/release/cancel paths; the
+/// module-scope `#[allow(dead_code)]` is retained because a
+/// subset of fields is only consumed by the (pending) D4
+/// `WalDeployScope::drop` auto-release hook.  Can go away once
+/// that slice lands.
 #[allow(dead_code)]
 #[derive(Debug)]
 struct Waiter {
@@ -590,9 +591,9 @@ struct Waiter {
     admit: oneshot::Sender<Result<LockId, LockError>>,
 }
 
-/// What kind of lock a parked waiter is trying to take.
-/// Pre-declared for the yet-to-land acquire slices (same
-/// `allow(dead_code)` rationale as `Waiter`).
+/// What kind of lock a parked waiter is trying to take.  Same
+/// `allow(dead_code)` rationale as `Waiter` (shared module-scope
+/// attribute).
 #[allow(dead_code)]
 #[derive(Debug)]
 enum WaitKind {
@@ -605,15 +606,18 @@ enum WaitKind {
 }
 
 /// Range-lock registry — shared across every runtime spawned
-/// from a single `RuntimeManager` via `share_lock_registry`
-/// (yet-to-land, mirrors the `RootIdentityRegistry` broadcast
-/// pattern).
+/// from a single `RuntimeManager` via
+/// [`SharedLockRegistry`] + `FileHandleTable::share_lock_registry`
+/// (mirrors the `RootIdentityRegistry` broadcast pattern).
+/// Manager-side wiring: `RuntimeManager::shared_lock_registry`
+/// is broadcast to every spawn in `broadcast_fs_slots` next to
+/// the matching `share_root_registry` call.
 ///
 /// # Lock topology
 ///
 /// `std::sync::RwLock<HashMap<DevInode, FileLockState>>` gives
-/// contention-free concurrent reads for the yet-to-land
-/// `is_locked` query on the unlink gate hot path.  Writes
+/// contention-free concurrent reads for the `is_locked` query
+/// on the unlink gate hot path.  Writes
 /// serialize acquire / release / sweep — expected low volume
 /// vs. read path.  Deliberately NOT `tokio::sync::RwLock`: the
 /// critical sections are microsecond-scale state-container
@@ -643,8 +647,8 @@ enum WaitKind {
 pub struct LockRegistry {
     /// Per-`(dev, inode)` state map.  Written by acquire and
     /// release paths under `std::sync::RwLock`'s write guard
-    /// (via `poison_abort`); read-only methods like the
-    /// yet-to-land `is_locked` use the read guard.
+    /// (via `poison_abort`); read-only methods like `is_locked`
+    /// use the read guard.
     inner: Arc<RwLock<HashMap<DevInode, FileLockState>>>,
     next_lock_id: Arc<AtomicU64>,
 }
@@ -708,10 +712,10 @@ impl LockRegistry {
     /// of `(dev_inode)` for `holder`.
     ///
     /// Fail-only variant: on conflict, returns
-    /// [`LockError::Busy`] immediately.  Does NOT park.  A
-    /// yet-to-land `try_acquire_range_wait` sibling will add
-    /// [`WaitPolicy::Wait`] support — park on conflict, admit
-    /// via `wake_waiters` on release.
+    /// [`LockError::Busy`] immediately.  Does NOT park.  See
+    /// [`try_acquire_range_wait`](Self::try_acquire_range_wait)
+    /// for the [`WaitPolicy::Wait`] variant — parks on conflict,
+    /// admits via `wake_waiters` on release.
     ///
     /// # Error ordering
     ///
@@ -1036,12 +1040,12 @@ impl LockRegistry {
     /// # Lifetime posture
     ///
     /// Called when a `FileHandle` drops (File.close).  Pairs
-    /// with a yet-to-land `cancel_all_waiters_for_holder`
-    /// sweep that cancels this holder's PARKED waiters (same
-    /// cap is going away; its parked wait: true acquires
-    /// shouldn't resolve to a dead cap).  Both land on
-    /// opposite sides of the Wait-support slice; this slice
-    /// ships the holder-side held-lock sweep alone.
+    /// with [`cancel_all_waiters_for_holder`](Self::cancel_all_waiters_for_holder)
+    /// which cancels this holder's PARKED waiters (same cap
+    /// is going away; its parked wait: true acquires shouldn't
+    /// resolve to a dead cap).  Both methods compose on the
+    /// handle-drop path; this one sweeps HELD locks, the
+    /// cancel sibling sweeps PARKED waiters.
     ///
     /// # Constant-time holder comparison (X-3 / SEC-Mi-01)
     ///
@@ -1097,8 +1101,10 @@ impl LockRegistry {
 
     /// Release every lock owned by `deploy` across every file
     /// in the registry.  Called from the `WalDeployScope::end`
-    /// auto-release hook (yet-to-land) when a deploy
-    /// completes.  Returns the count released.
+    /// auto-release hook (D4-slice-pending on triage; the
+    /// hook lands with the fileio-port WalDeployScope
+    /// infrastructure) when a deploy completes.  Returns the
+    /// count released.
     ///
     /// # Sentinel guard: `[0; 32]` is reserved
     ///
@@ -1122,7 +1128,8 @@ impl LockRegistry {
     /// OTHER-deploy waiter whose conflict just cleared.  The
     /// X-2 / G-02 defense-in-depth chain pinned by
     /// [`wake_waiters`] routes through here on the deploy-abort
-    /// path: `cancel_all_waiters_for_deploy` (yet-to-land)
+    /// path:
+    /// [`cancel_all_waiters_for_deploy`](Self::cancel_all_waiters_for_deploy)
     /// drains THIS deploy's PARKED waiters first, THEN this
     /// sweep clears THIS deploy's HELD locks, THEN the
     /// `wake_waiters` call admits OTHER deploys that were
@@ -1162,9 +1169,9 @@ impl LockRegistry {
     /// a lock that overlaps `range = (offset, length)`?
     ///
     /// Called from `fs_remove_file` / `fs_remove_dir` under
-    /// consensus mode (yet-to-land); callers surface
-    /// `FSERR_BUSY` on `true` and skip the unlink.  Oracular
-    /// callers skip this check entirely and log-warn instead.
+    /// consensus mode; callers surface `FSERR_BUSY` on `true`
+    /// and skip the unlink.  Oracular callers skip this check
+    /// entirely and log-warn instead.
     ///
     /// # Whole-file query shape
     ///
@@ -1204,9 +1211,8 @@ impl LockRegistry {
     /// # Oracular unlink diagnostic
     ///
     /// Called from the Oracular-mode `fs_remove_file` /
-    /// `fs_remove_dir` paths (yet-to-land) to log how many
-    /// holders would have blocked the unlink under consensus
-    /// mode.  Oracular callers DO NOT gate the unlink on this
+    /// `fs_remove_dir` paths to log how many holders would
+    /// have blocked the unlink under consensus mode.  Oracular callers DO NOT gate the unlink on this
     /// result — they log-warn with the count and proceed —
     /// which is why this method exists alongside [`is_locked`]
     /// (the gating boolean) rather than replacing it: consensus-
@@ -1243,9 +1249,9 @@ impl LockRegistry {
     ///
     /// Fail-only variant: on conflict (any held range OR an
     /// existing sequential_holder) returns [`LockError::Busy`]
-    /// immediately.  Does NOT park.  A yet-to-land
-    /// `try_acquire_sequential_wait` sibling will add
-    /// [`WaitPolicy::Wait`] support.
+    /// immediately.  Does NOT park.  See
+    /// [`try_acquire_sequential_wait`](Self::try_acquire_sequential_wait)
+    /// for the [`WaitPolicy::Wait`] variant.
     ///
     /// # Coexistence rules
     ///
@@ -1458,8 +1464,10 @@ impl LockRegistry {
     ///
     /// # Lifetime posture
     ///
-    /// Pairs with the yet-to-land `cancel_all_waiters_for_holder`
-    /// / `_for_deploy` sweeps: those are the bulk-cancel
+    /// Pairs with
+    /// [`cancel_all_waiters_for_holder`](Self::cancel_all_waiters_for_holder)
+    /// / [`cancel_all_waiters_for_deploy`](Self::cancel_all_waiters_for_deploy):
+    /// those are the bulk-cancel
     /// counterparts to the bulk-release methods PR #530 shipped.
     /// `cancel_wait` is the targeted-by-LockId version a caller
     /// invokes when they want to abandon a specific parked
@@ -1584,10 +1592,11 @@ impl LockRegistry {
     /// path: the release-side sweeps HELD locks for the deploy;
     /// this sweeps PARKED waiters.
     ///
-    /// Called from the yet-to-land `WalDeployScope::drop` hook
-    /// as the FIRST step of the X-2 / G-02 defense-in-depth
-    /// chain (see [`wake_waiters`] docstring).  The ordering is
-    /// consensus-observable:
+    /// Called from the `WalDeployScope::drop` hook (D4-slice-
+    /// pending on triage; the hook lands with the fileio-port
+    /// WalDeployScope infrastructure) as the FIRST step of the
+    /// X-2 / G-02 defense-in-depth chain (see [`wake_waiters`]
+    /// docstring).  The ordering is consensus-observable:
     ///
     ///   1. `cancel_all_waiters_for_deploy(D)` — drains D's
     ///      PARKED waiters so none are promoted mid-abort.
@@ -1651,10 +1660,11 @@ impl LockRegistry {
 }
 
 // Compile-time witness that `LockRegistry: Send + Sync` —
-// required for the yet-to-land handler-dispatch spawn_blocking
-// path and for sharing across runtime clones via
-// `share_lock_registry`.  Hoisted to module scope so every
-// `cargo build` catches a regression.
+// required for sharing across runtime clones via
+// `share_lock_registry` and for a future handler-dispatch
+// `spawn_blocking` path (pending port of fileio's
+// `deterministic_reduction::park_external_during`).  Hoisted to
+// module scope so every `cargo build` catches a regression.
 const _LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<LockRegistry>();
@@ -1861,11 +1871,8 @@ const _SHARED_LOCK_REGISTRY_IS_SEND_SYNC: fn() = || {
 // ===========================================================
 //
 // Pure functions over `FileLockState` and the incoming acquire
-// parameters.  Called from the yet-to-land `try_acquire_range` /
+// parameters.  Called from the `try_acquire_range` /
 // `try_acquire_sequential` / `wake_waiters` methods.
-// `#[allow(dead_code)]` until those methods land; tests in this
-// file DO exercise each predicate, so test builds don't need
-// the allow (cfg-test visibility suffices).
 
 /// Two half-open intervals `[o1, o1+l1)` and `[o2, o2+l2)`
 /// overlap iff `o1 < o2 + l2` AND `o2 < o1 + l1`.
@@ -1982,9 +1989,9 @@ fn state_is_empty(state: &FileLockState) -> bool {
 /// # X-2 / G-02 defense-in-depth chain
 ///
 /// A waiter belonging to deploy D1 can be promoted here while
-/// D1 is simultaneously aborting.  The yet-to-land abort path
-/// (`WalDeployScope::drop`) has two steps in a locked
-/// ordering:
+/// D1 is simultaneously aborting.  The abort path
+/// (`WalDeployScope::drop`, D4-slice-pending on triage) has
+/// two steps in a locked ordering:
 ///
 ///   1. `cancel_all_waiters_for_deploy(D1)` drains D1's
 ///      PARKED waiters — doesn't help if a D1 waiter was
@@ -5099,7 +5106,9 @@ mod tests {
     // --- cancel_wait ----------------------------------------------
     //
     // Targeted-by-LockId cancel of a parked waiter.  Pairs with
-    // the yet-to-land bulk-cancel sweeps.
+    // the bulk-cancel sweeps
+    // ([`cancel_all_waiters_for_holder`] /
+    // [`cancel_all_waiters_for_deploy`]).
 
     /// Happy path: cancel a parked Range waiter → the admit
     /// receiver resolves to `Err(LockError::Cancelled)`, and the
