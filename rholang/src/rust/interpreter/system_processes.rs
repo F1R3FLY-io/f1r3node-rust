@@ -2336,14 +2336,13 @@ impl SystemProcesses {
     /// replay rspace (including the forwarded frames), and the deploy cost must
     /// all match the proposer's block.
     ///
-    /// The interpreter is expected to be deterministic for a valid program:
-    /// network is unshared, `git-import!` is stripped, Python is excluded, and
-    /// the RNG/rounding builtins are bit-exact with CPython so seeded values are
-    /// reproducible. A program that instead depends on a nondeterminism source —
-    /// unseeded RNG through `getrandom`, `time-time`/`time-sleep`, or the
-    /// wall-clock timeout in [`petta_execute_framed`] — can diverge on replay.
-    /// A divergence yields a different post-state hash, so the block is rejected
-    /// as an invalid transaction (this verdict is non-slashable in this node).
+    /// Re-execution is deterministic because [`petta_execute_framed`] closes every
+    /// nondeterminism source: network unshared, `git-import!` stripped, Python excluded;
+    /// the entropy/clock builtins are blocked (`PETTA_CONSENSUS_BLOCKED_PREDS`, a denylist
+    /// — add future ones there), leaving seeded `rand-*` for randomness; and the wall-clock
+    /// timeout is replaced by a deterministic inference budget (`PETTA_MAX_INFERENCES`), so
+    /// an over-budget run fails identically on every node. A deploy that still diverges is
+    /// rejected as an invalid transaction (non-slashable).
     ///
     /// # Error handling
     ///
@@ -2380,14 +2379,9 @@ impl SystemProcesses {
             return Err(illegal_argument_error("petta_execute"));
         };
 
-        // PeTTa is a deterministic system process: every node (proposer and
-        // replaying validators) runs the interpreter and derives the same
-        // output and frames. Determinism is enforced by ordinary replay
-        // validation (post-state hash, COMM matching, cost). A program that
-        // relies on a nondeterminism source (unseeded RNG via `getrandom`,
-        // `time-time`/`time-sleep`, or the wall-clock timeout in
-        // `petta_execute_framed`) diverges on replay and its block is rejected
-        // as an invalid transaction.
+        // Deterministic: `petta_execute_framed` blocks the entropy/clock builtins and
+        // bounds the run with an inference budget, so every node re-executes to the same
+        // output and frames (confirmed by ordinary replay validation).
         let (frames, output_par) = match petta_execute_framed(&metta_code).await {
             Ok((frames, par)) => (frames, par),
             Err(e) => return Err(InterpreterError::SwiplError(e.to_string().into())),

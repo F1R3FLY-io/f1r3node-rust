@@ -206,7 +206,15 @@ if [ "${PETTA_MODE}" = "NODE" ]; then
   # NODE mode: emit NDJSON frames for println!/trace!, final result as {"type":"result","value":[...]}
   # Override println! by making it dynamic, abolishing the old clause, and asserting the new frame-emitting clause.
   NODE_BINDS=""
-  GOAL="${PETTA_BLOCK_GOAL}, ${PLN_LIBRARY_GOAL}assertz(silent(true)), assertz(working_dir('${WORKDIR}')), catch(use_module(library(json)), _, use_module(library(http/json))), dynamic('println!'/2), abolish('println!'/2), asserta(('println!'(Arg,true) :- swrite(Arg,RArg), json_write_dict(current_output, _{channel:'rho:io:stdout',arguments:[RArg]}), nl(current_output))), load_metta_file('${LOAD_PATH}', Results), json_write_dict(current_output, _{type:'result', value:Results}), nl(current_output)."
+  # Deterministic budget: if PETTA_MAX_INFERENCES is set (node sets it; standalone
+  # leaves it unset), wrap the run in call_with_inference_limit/3 and emit an error
+  # frame on exceed instead of a result. Rust maps {"type":"error"} to a SwiplError.
+  if [[ -v PETTA_MAX_INFERENCES && -n "${PETTA_MAX_INFERENCES}" && "${PETTA_MAX_INFERENCES}" != "0" ]]; then
+    NODE_RUN_AND_EMIT="call_with_inference_limit(load_metta_file('${LOAD_PATH}', Results), ${PETTA_MAX_INFERENCES}, PettaInfOutcome), ( PettaInfOutcome == inference_limit_exceeded -> json_write_dict(current_output, _{type:'error', reason:'inference_limit_exceeded'}), nl(current_output) ; json_write_dict(current_output, _{type:'result', value:Results}), nl(current_output) )"
+  else
+    NODE_RUN_AND_EMIT="load_metta_file('${LOAD_PATH}', Results), json_write_dict(current_output, _{type:'result', value:Results}), nl(current_output)"
+  fi
+  GOAL="${PETTA_BLOCK_GOAL}, ${PLN_LIBRARY_GOAL}assertz(silent(true)), assertz(working_dir('${WORKDIR}')), catch(use_module(library(json)), _, use_module(library(http/json))), dynamic('println!'/2), abolish('println!'/2), asserta(('println!'(Arg,true) :- swrite(Arg,RArg), json_write_dict(current_output, _{channel:'rho:io:stdout',arguments:[RArg]}), nl(current_output))), ${NODE_RUN_AND_EMIT}."
 else
   # NORMAL mode (default): emit single {results:[...]} JSON envelope, raw println!/trace! to stdout
   NODE_BINDS=""

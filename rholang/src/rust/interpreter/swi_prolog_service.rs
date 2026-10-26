@@ -15,6 +15,23 @@ use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoList, RhoMap, RhoNil, RhoNumber, RhoString,
 };
 
+/// Consensus blocklist for the `rho:petta:execute` path ([`petta_execute_framed`]):
+/// entropy/clock builtins that would diverge on replay. Blocked via `petta.sh`'s
+/// `PETTA_BLOCKED_PREDS` → `block_predicate` (each becomes inert). Hardcoded, not env,
+/// so every node is identical; seeded `rand-*` stays available for randomness.
+const PETTA_CONSENSUS_BLOCKED_PREDS: &str = "readln! random-int random-float \
+current-time format-time time-time perf-counter now time-sleep";
+
+/// Deterministic execution budget (SWI-Prolog inferences) for the handler path:
+/// `petta.sh` wraps the run in `call_with_inference_limit/3`. The consensus bound
+/// replacing the wall-clock timeout — an inference count is reproducible, so an
+/// over-budget run fails identically on every node. Provisional; tune / couple to phlo.
+const PETTA_MAX_INFERENCES: u64 = 100_000_000;
+
+/// Wall-clock backstop (seconds) — NOT the consensus bound ([`PETTA_MAX_INFERENCES`]
+/// is). Guards only against a hang that burns no inferences; sized never to fire first.
+const PETTA_WALLCLOCK_BACKSTOP_SECS: u64 = 60;
+
 /// A frame emitted by the MeTTa interpreter in NODE mode.
 ///
 /// Each frame corresponds to a `println!`/`trace!` invocation inside the MeTTa program
@@ -297,10 +314,9 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
             .env("PETTA_MODE", "NODE")
             .env("PETTA_DIR", &env.petta_dir)
             .env("CACHE_DIR", &env.cache_dir)
-            .env("SANDBOX_LIB_PATH", &env.sandbox_lib_path);
-        if let Some(ref bp) = env.blocked_preds {
-            cmd.env("PETTA_BLOCKED_PREDS", bp);
-        }
+            .env("SANDBOX_LIB_PATH", &env.sandbox_lib_path)
+            .env("PETTA_BLOCKED_PREDS", PETTA_CONSENSUS_BLOCKED_PREDS)
+            .env("PETTA_MAX_INFERENCES", PETTA_MAX_INFERENCES.to_string());
         let mut child = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -330,7 +346,7 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
             })
         };
 
-        let timeout_secs: u64 = 10;
+        let timeout_secs: u64 = PETTA_WALLCLOCK_BACKSTOP_SECS;
         let framed_result = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
             use tokio::io::AsyncBufReadExt;
             let reader = BufReader::new(child_stdout);
@@ -398,6 +414,17 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
                     Value::Object(ref map) if map.contains_key("results") => {
                         result_par = Some(value_to_par(value)?);
                     }
+                    Value::Object(ref map)
+                        if map.get("type").and_then(|v| v.as_str()) == Some("error") =>
+                    {
+                        let reason = map
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        return Err(InterpreterError::SwiplError(
+                            format!("PeTTa execution error: {}", reason).into(),
+                        ));
+                    }
                     _ => {
                         return Err(InterpreterError::SwiplError(
                             format!("Unknown JSON frame from PeTTa: {}", trimmed).into(),
@@ -409,7 +436,13 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
         })
         .await
         .map_err(|_| {
-            InterpreterError::SwiplError("MeTTa execution timed out after 10 seconds".into())
+            InterpreterError::SwiplError(
+                format!(
+                    "MeTTa execution hit the {}s wall-clock backstop",
+                    PETTA_WALLCLOCK_BACKSTOP_SECS
+                )
+                .into(),
+            )
         })?
         .map_err(|e| e)?;
 

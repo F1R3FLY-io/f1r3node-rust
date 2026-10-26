@@ -338,38 +338,59 @@ async fn test_petta_rholang_error_handling() {
     );
 }
 
+/// The deterministic inference budget (not wall-clock) bounds a runaway program
+/// through the full Rholang runtime. A naive exponential `nfib` far exceeds
+/// `PETTA_MAX_INFERENCES`, so the handler fails with the deterministic
+/// `inference_limit_exceeded` error — identical on every node — rather than a
+/// machine-dependent timeout.
 #[tokio::test]
-async fn test_petta_rholang_timeout_large_computation() {
+async fn test_petta_rholang_inference_budget_enforced() {
     if should_skip_petta_test() {
         return;
     }
 
-    // Test that timeout is enforced through the full Rholang runtime
-    // This fibonacci computation should timeout after 10 seconds
     let term = r#"
         new executePetta(`rho:petta:execute`), retCh in {
-            executePetta!("(= (fib-tr $n $a $b) (if (== $n 0) $a (fib-tr (- $n 1) $b (+ $a $b)))) (= (fib $n) (fib-tr $n 0 1)) !(fib 10000000)", *retCh)
+            executePetta!("(= (nfib $n) (if (< $n 2) $n (+ (nfib (- $n 1)) (nfib (- $n 2))))) !(nfib 1000)", *retCh)
         }
     "#;
 
     let (result, _runtime) = evaluate_petta_term(term).await;
 
-    // Should have errors due to timeout
     assert!(
         !result.errors.is_empty(),
-        "Large fibonacci computation should timeout and produce errors: {:?}",
+        "A runaway computation must produce errors: {:?}",
         result.errors
     );
 
-    // Check that at least one error mentions timeout
-    let has_timeout_error = result.errors.iter().any(|err| {
-        let err_str = format!("{:?}", err);
-        err_str.contains("timed out") || err_str.contains("timeout")
-    });
-
+    let has_budget_error = result
+        .errors
+        .iter()
+        .any(|err| format!("{:?}", err).contains("inference_limit_exceeded"));
     assert!(
-        has_timeout_error,
-        "At least one error should mention timeout, errors: {:?}",
+        has_budget_error,
+        "Expected a deterministic inference_limit_exceeded error, got: {:?}",
         result.errors
     );
+}
+
+/// The entropy/clock builtins are blocked on the consensus handler path, so a
+/// program that calls one yields the SAME output on every run instead of a
+/// fresh value per run. Two independent executions of `random-int` over a large
+/// range would differ (p ≈ 1e-9 of coinciding) if the builtin were live; equal
+/// output demonstrates it is neutralized and the deploy is replay-safe.
+#[tokio::test]
+async fn test_petta_blocked_entropy_builtins_are_deterministic() {
+    if should_skip_petta_test() {
+        return;
+    }
+
+    for program in ["!(random-int 0 1000000000)", "!(current-time)"] {
+        let first = format!("{:?}", petta_execute_framed(program).await);
+        let second = format!("{:?}", petta_execute_framed(program).await);
+        assert_eq!(
+            first, second,
+            "blocked builtin must be deterministic across runs for {program}"
+        );
+    }
 }

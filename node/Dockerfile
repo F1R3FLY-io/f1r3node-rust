@@ -260,7 +260,7 @@ RUN SWI_HOME=$(swipl --home 2>/dev/null || echo "/usr/lib/swi-prolog") && \
 # release build above. +sse2 is x86-only; on aarch64 only +aes is valid. Runs
 # the PLN suite (swipl_petta_ecan_spec) and the metta-moses + metta-attention
 # suites (swipl_petta_workspace_spec); exits non-zero if either suite fails.
-ENTRYPOINT ["bash", "-c", "case \"$(uname -m)\" in aarch64) export RUSTFLAGS='-C target-feature=+aes' ;; *) export RUSTFLAGS='-C target-feature=+aes,+sse2' ;; esac; rc=0; for spec in swipl_petta_ecan_spec swipl_petta_workspace_spec; do echo \"=== running $spec ===\"; cargo test --test \"$spec\" -p rholang -- --nocapture --test-threads=1 || rc=1; done; exit $rc"]
+ENTRYPOINT ["bash", "-c", "case \"$(uname -m)\" in aarch64) export RUSTFLAGS='-C target-feature=+aes' ;; *) export RUSTFLAGS='-C target-feature=+aes,+sse2' ;; esac; rc=0; for spec in swipl_petta_ecan_spec swipl_petta_workspace_spec swipl_petta_integration_spec swipl_petta_replay_spec; do echo \"=== running $spec ===\"; cargo test --test \"$spec\" -p rholang -- --nocapture --test-threads=1 || rc=1; done; exit $rc"]
 
 # ============================================================================
 # Stage 4: Runtime base - Install runtime dependencies (cached independently)

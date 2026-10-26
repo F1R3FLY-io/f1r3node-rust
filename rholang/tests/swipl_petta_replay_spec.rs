@@ -247,13 +247,13 @@ async fn test_petta_replay_error_consistency() {
         .await;
 }
 
-/// A PeTTa program that exceeds the wall-clock timeout fails on play and, being
-/// deterministic in intent, fails again when replay re-runs it. Note: the
-/// timeout is wall-clock, so this failure mode is only reproducible when every
-/// node is slower than the limit — a genuinely divergent case is rejected as an
-/// invalid transaction rather than replayed from a cache.
+/// A PeTTa program that exceeds the deterministic inference budget fails on play
+/// and fails identically when replay re-runs it. The budget is an inference count
+/// (not wall-clock), so the failure point is reproducible on every node: the
+/// error is the same on play and replay, and replay re-executes rather than
+/// short-circuiting (PeTTa is deterministic, not cached).
 #[tokio::test]
-async fn test_petta_replay_timeout_error() {
+async fn test_petta_replay_inference_limit_error() {
     if should_skip_petta_test() {
         return;
     }
@@ -263,26 +263,26 @@ async fn test_petta_replay_timeout_error() {
 
     let (mut runtime, mut replay_runtime, _) = create_runtimes(store, false, &mut Vec::new()).await;
 
-    // Large fibonacci that will timeout (>10 seconds)
+    // Naive exponential fib far exceeds PETTA_MAX_INFERENCES.
     let term = r#"
         new executePetta(`rho:petta:execute`), retCh in {
-            executePetta!("(= (fib-tr $n $a $b) (if (== $n 0) $a (fib-tr (- $n 1) $b (+ $a $b)))) (= (fib $n) (fib-tr $n 0 1)) !(fib 10000000)", *retCh)
+            executePetta!("(= (nfib $n) (if (< $n 2) $n (+ (nfib (- $n 1)) (nfib (- $n 2))))) !(nfib 1000)", *retCh)
         }
     "#;
 
     let rand = Blake2b512Random::create_from_bytes(&[]);
-    let initial_phlo = Cost::create(i64::MAX, "timeout replay test".to_string());
+    let initial_phlo = Cost::create(i64::MAX, "inference limit replay test".to_string());
 
     let play_checkpoint = runtime.create_soft_checkpoint().await;
     let play_result = runtime
         .evaluate(term, initial_phlo.clone(), HashMap::new(), rand.clone())
         .await
-        .expect("Play evaluation completed (with timeout)");
+        .expect("Play evaluation completed (with inference-limit error)");
 
     let play_error_msg = format!("{:?}", play_result.errors);
     assert!(
-        play_error_msg.contains("timed out") || play_error_msg.contains("timeout"),
-        "Play should time out with a large fibonacci, got: {}",
+        play_error_msg.contains("inference_limit_exceeded"),
+        "Play should hit the inference budget, got: {}",
         play_error_msg
     );
 
@@ -290,19 +290,19 @@ async fn test_petta_replay_timeout_error() {
     replay_runtime
         .rig(event_log)
         .await
-        .expect("Rig should work with a timed-out deterministic op");
+        .expect("Rig should work with an inference-limited deterministic op");
 
     let replay_checkpoint = replay_runtime.create_soft_checkpoint().await;
     let replay_result = replay_runtime
         .evaluate(term, initial_phlo.clone(), HashMap::new(), rand)
         .await
-        .expect("Replay evaluation completed (with timeout)");
+        .expect("Replay evaluation completed (with inference-limit error)");
 
-    // Replay re-runs PeTTa and times out again (no cache, no short-circuit).
+    // Replay re-runs PeTTa and hits the same deterministic budget error.
     let replay_error_msg = format!("{:?}", replay_result.errors);
     assert!(
-        replay_error_msg.contains("timed out") || replay_error_msg.contains("timeout"),
-        "Replay should re-run PeTTa and time out again, got: {}",
+        replay_error_msg.contains("inference_limit_exceeded"),
+        "Replay should re-run PeTTa and hit the same inference budget, got: {}",
         replay_error_msg
     );
     assert!(
@@ -314,7 +314,7 @@ async fn test_petta_replay_timeout_error() {
         replay_result.errors
     );
 
-    println!("✓ Timeout reproduced on replay by re-running PeTTa");
+    println!("✓ Inference-limit error reproduced on replay by re-running PeTTa");
 
     runtime.revert_to_soft_checkpoint(play_checkpoint).await;
     replay_runtime
