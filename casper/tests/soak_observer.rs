@@ -1244,7 +1244,7 @@ fn bonded_block(
         .iter()
         .map(|(v, stake)| Bond {
             validator: Bytes::from(vec![*v; 65]),
-            stake: stake.clone().into(),
+            stake: (*stake).into(),
         })
         .collect();
     block

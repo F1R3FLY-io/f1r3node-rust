@@ -15,6 +15,7 @@ use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::rholang::system_deploy_util;
 use models::rhoapi::expr::ExprInstance;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
@@ -99,7 +100,7 @@ async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
             r#"new return, rl(`rho:registry:lookup`), poSCh, deployerId(`rho:system:deployerId`) in {{
   rl!(`rho:system:pos`, *poSCh) |
   for(@(_, PoS) <- poSCh) {{
-    @PoS!("delegate", *deployerId, "{target_hex}".hexToBytes(), {delegation_amount}, *return)
+    @PoS!("delegate", *deployerId, "{target_hex}".hexToBytes(), {delegation_amount}n, *return)
   }}
 }}"#
         ),
@@ -157,7 +158,7 @@ async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
   for(@(_, PoS) <- poSCh) {{
     @PoS!("getDelegations", *delegationsCh) |
     for(@delegations <- delegationsCh) {{
-      return!(delegations.getOrElse("{delegator_hex}".hexToBytes(), {{}}).getOrElse("{target_hex}".hexToBytes(), 0))
+      return!(delegations.getOrElse("{delegator_hex}".hexToBytes(), {{}}).getOrElse("{target_hex}".hexToBytes(), 0n))
     }}
   }}
 }}"#
@@ -172,11 +173,11 @@ async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
         .and_then(|par| par.exprs.first())
         .and_then(|expr| expr.expr_instance.as_ref())
         .and_then(|expr| match expr {
-            ExprInstance::GInt(value) => Some(*value),
+            ExprInstance::GBigInt(value) => Some(BigInt::from_signed_bytes_be(value)),
             _ => None,
         })
-        .expect("Delegation query should return an integer");
-    assert_eq!(amount, delegation_amount);
+        .expect("Delegation query should return a BigInt");
+    assert_eq!(amount, BigInt::from(delegation_amount));
 }
 
 /// SystemVault should be accessible at genesis post-state

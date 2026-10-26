@@ -1693,16 +1693,22 @@ mod router_tests {
 
         let (status, json) = get_response("/validators").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["totalStake"], 10);
+        assert_eq!(json["totalStake"], "10");
+        assert_eq!(json["totalSelfStake"], "7");
+        assert_eq!(json["totalDelegatedStake"], "3");
+        assert_eq!(json["validators"][0]["stake"], "10");
+        assert_eq!(json["validators"][0]["selfStake"], "7");
+        assert_eq!(json["validators"][0]["delegatedStake"], "3");
+        assert_eq!(json["blockNumber"], 5);
 
         let (status, json) = get_response("/delegations").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["delegations"]["delegator"]["validator"], 30);
-        assert_eq!(json["delegatedTotals"]["validator"], 30);
+        assert_eq!(json["delegations"]["delegator"]["validator"], "30");
+        assert_eq!(json["delegatedTotals"]["validator"], "30");
         assert_eq!(json["delegatorRewards"]["delegator"], "9223372036854775808");
         assert_eq!(
             json["pendingUndelegations"]["delegator"]["validator"]["amount"],
-            7
+            "7"
         );
         assert_eq!(
             json["pendingUndelegations"]["delegator"]["validator"]["unlockBlock"],
@@ -1716,16 +1722,17 @@ mod router_tests {
             json["activeDelegations"][0]["validatorPublicKey"],
             "validator"
         );
-        assert_eq!(json["activeDelegations"][0]["amount"], 30);
+        assert_eq!(json["activeDelegations"][0]["amount"], "30");
         assert_eq!(
             json["pendingUndelegations"][0]["validatorPublicKey"],
             "validator"
         );
-        assert_eq!(json["pendingUndelegations"][0]["amount"], 7);
+        assert_eq!(json["pendingUndelegations"][0]["amount"], "7");
         assert_eq!(json["pendingUndelegations"][0]["unlockBlock"], 55);
         assert_eq!(json["claimableRewards"], "9223372036854775808");
-        assert_eq!(json["totalActiveDelegated"], 30);
-        assert_eq!(json["totalPendingUndelegation"], 7);
+        assert_eq!(json["totalActiveDelegated"], "30");
+        assert_eq!(json["totalPendingUndelegation"], "7");
+        assert_eq!(json["blockNumber"], 5);
 
         let (status, json) = get_response("/validator/04aa").await;
         assert_eq!(status, StatusCode::OK);

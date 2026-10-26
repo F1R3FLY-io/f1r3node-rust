@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-23
+last_updated: 2026-10-26
 mr_status:
   ready: false
   target_branch: master
@@ -79,7 +79,7 @@ mr_status:
 epic_id: EPIC-030
 title: "BigInt economic pipeline proposal based on PR #54"
 status: complete
-completed_date: 2026-10-23
+completed_date: 2026-10-26
 priority: p1
 user_story: US-014
 branch: proposal/pr54-bigint-staking-fees
@@ -116,6 +116,26 @@ tasks:
       - "Opus reviews the proposal and confirmed defects are resolved."
       - "Validation and compatibility limits are recorded."
       - "One commit is pushed on the requested new branch without deployment."
+  - id: TASK-030-5
+    title: "Repair PR54 CI after BigInt integration"
+    status: complete
+    claimed_by: codex-session-pr54-ci-20261026
+    claimed_at: 2026-10-26
+    completed_date: 2026-10-26
+    acceptance:
+      - "All three dependency graphs pass the unchanged supply-chain policy."
+      - "Crypto and transport tests pass, including recorded signatures and Schnorr vectors."
+      - "Workspace formatting and Clippy checks pass."
+      - "Verifier setup has a bounded download and fails on Java, network, and checksum errors."
+      - "Merge-accounting fixtures and model controls pass without a node deployment."
+    validation:
+      - "All three dependency graphs pass cargo-deny 0.20.2 without new policy exceptions."
+      - "All 1,629 selected release regressions pass. The separate Schnorr-enabled crypto suite passes 126 tests."
+      - "The merge-accounting check passes seven fixtures and four model controls with the pinned TLC JAR."
+      - "Formal gate tests pass 55 refusal controls, including verification input changes."
+      - "Formatting and workspace Clippy pass with warnings denied, including the node Schnorr feature."
+      - "The first regression run received SIGTERM after 824 passes. The complete repeat run passed."
+      - "Validation did not rebase the branch or deploy a node."
 ```
 
 ---
