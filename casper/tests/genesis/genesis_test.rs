@@ -163,7 +163,7 @@ impl Default for FromInputFilesParams<'_> {
             autogen_shard_size: AUTOGEN_SHARD_SIZE,
             maybe_vaults_path: None,
             minimum_bond: 1.into(),
-            maximum_bond: i64::MAX.into(),
+            maximum_bond: i64::MAX,
             epoch_length: 10000,
             quarantine_length: 50000,
             number_of_active_validators: 100,

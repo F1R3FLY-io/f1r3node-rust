@@ -22,33 +22,38 @@ Delegated stake contributes to validator effective stake for reward weight and s
 
 PoS state now includes:
 
-- `allBonds : Map[ValidatorPk, Int]`
+- `allBonds : Map[ValidatorPk, BigInt]`
   - Validator self-bond only.
-- `delegations : Map[DelegatorPk, Map[ValidatorPk, Int]]`
+- `delegations : Map[DelegatorPk, Map[ValidatorPk, BigInt]]`
   - Ownership ledger of delegated stake.
 - `validatorDelegators : Map[ValidatorPk, Map[DelegatorPk, Nil]]`
   - Reverse index used to bound and localize validator delegation operations.
-- `delegatedTotals : Map[ValidatorPk, Int]`
+- `delegatedTotals : Map[ValidatorPk, BigInt]`
   - Aggregated delegated stake per validator.
 - `delegatorRewards : Map[DelegatorPk, Map[ValidatorPk, BigInt]]`
   - Accrued rewards claimable by delegators, bucketed by validator internally.
   - `getDelegatorRewards` returns the flattened `Map[DelegatorPk, BigInt]` view.
-- `pendingUndelegations : Map[DelegatorPk, Map[ValidatorPk, (Int, Int)]]`
+- `pendingUndelegations : Map[DelegatorPk, Map[ValidatorPk, (BigInt, Int)]]`
   - Pending undelegation principal by delegator/validator as `(amount, unlockBlock)`.
   - Unlocking principal is excluded from future effective stake, but remains slashable escrow until `completeUndelegate`.
 
 Effective stake is computed as:
 
-- `effectiveBonds[validator] = allBonds[validator] + delegatedTotals.getOrElse(validator, 0)`
+- `effectiveBonds[validator] = allBonds[validator] + delegatedTotals.getOrElse(validator, 0n)`
 
 Slashing deletes the validator from `allBonds`, so slashed validators do not leave permanent zero-bond entries. `computeEffectiveBonds` also ignores stale `delegatedTotals` entries for validators missing from positive `allBonds`.
 
 ## Public Contract API
 
-Stake amounts remain `Int`. The `bond`, `delegate`, and `undelegate` methods reject other numeric types.
-Vault balances and accrued rewards use `BigInt`.
-The REST endpoints `/api/delegations` and `/api/delegations/{pubkey}` return `delegatorRewards` values and `claimableRewards` as decimal strings.
-This format preserves reward amounts above the signed 64-bit range.
+Stake amounts, vault balances, and accrued rewards use `BigInt` in native base units.
+The `bond`, `delegate`, and `undelegate` methods require BigInt amounts, such as `40n`, and reject `Int` amounts.
+The validator and delegation REST endpoints return monetary values as decimal strings.
+Block heights, including `unlockBlock`, remain JSON numbers.
+Clients must preserve monetary precision and must not convert these strings to JavaScript `number` values.
+
+This proposal changes execution, consensus encoding, and metadata storage without changing the protocol version.
+Existing or mixed-version networks require a coordinated activation and state migration before deployment.
+See the [economic pipeline design](../designs/pr54-bigint-economic-pipeline.md) for compatibility limits.
 
 ### Existing method with changed semantics
 
@@ -74,7 +79,7 @@ This format preserves reward amounts above the signed 64-bit range.
     - validator self-bond is `> 0`
     - validator is not in `pendingWithdrawers`
     - validator effective stake cap is respected:
-      - `allBonds[validatorPk] + delegatedTotals.getOrElse(validatorPk, 0) + amount <= maximumBond`
+      - `allBonds[validatorPk] + delegatedTotals.getOrElse(validatorPk, 0n) + amount <= maximumBond`
   - Effects:
     - transfers `amount` from delegator vault to PoS vault
     - increments `delegations[delegatorPk][validatorPk]`
@@ -132,26 +137,26 @@ This section shows one practical integration pattern for a wallet SDK that can:
 ### 1) Build deploy payloads (delegate/undelegate/claim)
 
 ```ts
-export function buildDelegateRho(validatorPkHex: string, amount: number): string {
+export function buildDelegateRho(validatorPkHex: string, amount: bigint): string {
   return `
 new retCh, PoSCh, rl(\`rho:registry:lookup\`) in {
   rl!(\`rho:system:pos\`, *PoSCh) |
   for(@(_, PoS) <- PoSCh) {
     new deployerId(\`rho:system:deployerId\`) in {
-      @PoS!("delegate", *deployerId, "${validatorPkHex}".hexToBytes(), ${amount}, *retCh)
+      @PoS!("delegate", *deployerId, "${validatorPkHex}".hexToBytes(), ${amount}n, *retCh)
     }
   }
 }
 `;
 }
 
-export function buildUndelegateRho(validatorPkHex: string, amount: number): string {
+export function buildUndelegateRho(validatorPkHex: string, amount: bigint): string {
   return `
 new retCh, PoSCh, rl(\`rho:registry:lookup\`) in {
   rl!(\`rho:system:pos\`, *PoSCh) |
   for(@(_, PoS) <- PoSCh) {
     new deployerId(\`rho:system:deployerId\`) in {
-      @PoS!("undelegate", *deployerId, "${validatorPkHex}".hexToBytes(), ${amount}, *retCh)
+      @PoS!("undelegate", *deployerId, "${validatorPkHex}".hexToBytes(), ${amount}n, *retCh)
     }
   }
 }
@@ -199,7 +204,7 @@ interface WalletSdk {
 export async function delegateStake(
   sdk: WalletSdk,
   validatorPkHex: string,
-  amount: number
+  amount: bigint
 ): Promise<string> {
   const rho = buildDelegateRho(validatorPkHex, amount);
   const { deployId } = await sdk.deploy(rho, { phloLimit: 500_000, phloPrice: 1 });
@@ -210,7 +215,7 @@ export async function delegateStake(
 export async function undelegateWithCooldown(
   sdk: WalletSdk,
   validatorPkHex: string,
-  amount: number
+  amount: bigint
 ): Promise<{ requestDeployId: string; completeDeployId: string }> {
   const requestRho = buildUndelegateRho(validatorPkHex, amount);
   const request = await sdk.deploy(requestRho, { phloLimit: 500_000, phloPrice: 1 });
@@ -246,10 +251,10 @@ new ret, PoSCh, rl(\`rho:registry:lookup\`), bondsCh, effBondsCh, delCh, totalsC
     @PoS!("getPendingUndelegations", *pendingCh) |
     for (@b <- bondsCh & @e <- effBondsCh & @d <- delCh & @t <- totalsCh & @r <- rewardsCh & @p <- pendingCh) {
       ret!((
-        b.getOrElse("${validatorPkHex}".hexToBytes(), 0),
-        e.getOrElse("${validatorPkHex}".hexToBytes(), 0),
-        d.getOrElse("${delegatorPkHex}".hexToBytes(), {}).getOrElse("${validatorPkHex}".hexToBytes(), 0),
-        t.getOrElse("${validatorPkHex}".hexToBytes(), 0),
+        b.getOrElse("${validatorPkHex}".hexToBytes(), 0n),
+        e.getOrElse("${validatorPkHex}".hexToBytes(), 0n),
+        d.getOrElse("${delegatorPkHex}".hexToBytes(), {}).getOrElse("${validatorPkHex}".hexToBytes(), 0n),
+        t.getOrElse("${validatorPkHex}".hexToBytes(), 0n),
         r.getOrElse("${delegatorPkHex}".hexToBytes(), 0n),
         p.getOrElse("${delegatorPkHex}".hexToBytes(), {}).getOrElse("${validatorPkHex}".hexToBytes(), Nil)
       ))
@@ -274,14 +279,14 @@ Interpretation in wallet UI:
 Map these contract errors to stable SDK/user-facing codes:
 
 - `Delegation amount must be positive.`
-- `Delegation amount must be an Int.`
+- `Delegation amount must be a BigInt.`
 - `Delegation is less than minimum.`
 - `Validator is not bonded.`
 - `Validator has no active bond.`
 - `Validator is pending withdrawal.`
 - `Delegated total mismatch.`
 - `Undelegation amount must be positive.`
-- `Undelegation amount must be an Int.`
+- `Undelegation amount must be a BigInt.`
 - `Undelegation amount exceeds delegated stake.`
 - `Pending undelegation already exists for validator.`
 - `No pending undelegation for validator.`
@@ -343,7 +348,7 @@ Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus st
 
 Expected invariants for valid state transitions:
 
-1. `delegatedTotals[v] == sum(delegations[d].getOrElse(v, 0) for all d)`
+1. `delegatedTotals[v] == sum(delegations[d].getOrElse(v, 0n) for all d)`
 2. Delegation can only target validators with active self-bond (`allBonds[v] > 0`).
 3. Delegation amount is at least `minimumBond`. A validator can admit at most `numberOfActiveValidators * 16` distinct delegators at a time; an existing delegator can add stake without consuming another slot.
 4. Validator withdrawal converts positive delegated totals into pending undelegations instead of permanently blocking validator exit.
@@ -373,8 +378,7 @@ Expected invariants for valid state transitions:
 new return, rl(`rho:registry:lookup`), posCh in {
   rl!(`rho:system:pos`, *posCh) |
   for (@(_, PoS) <- posCh) {
-    // Delegate 40 tokens to validatorPk.
-    @PoS!("delegate", delegatorDeployerId, validatorPk, 40, *return)
+    @PoS!("delegate", delegatorDeployerId, validatorPk, 40n, *return)
   }
 }
 ```
@@ -383,8 +387,7 @@ new return, rl(`rho:registry:lookup`), posCh in {
 new return, rl(`rho:registry:lookup`), posCh in {
   rl!(`rho:system:pos`, *posCh) |
   for (@(_, PoS) <- posCh) {
-    // Request undelegation of 25 tokens (starts cooldown).
-    @PoS!("undelegate", delegatorDeployerId, validatorPk, 25, *return)
+    @PoS!("undelegate", delegatorDeployerId, validatorPk, 25n, *return)
   }
 }
 ```

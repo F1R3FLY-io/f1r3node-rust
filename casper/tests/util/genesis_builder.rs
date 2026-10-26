@@ -110,7 +110,7 @@ impl GenesisBuilder {
             .into_iter()
             .map(|(public_key, stake)| Bond {
                 validator: public_key.bytes.clone(),
-                stake: stake.into(),
+                stake,
             })
             .collect();
 
