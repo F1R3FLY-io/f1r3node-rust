@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use models::rhoapi::{ListParWithRandom, Par};
 use prost::Message;
-use rspace_plus_plus::rspace::util::unpack_option_with_peek;
+use rspace_plus_plus::rspace::util::unpack_tuple_with_peek;
 
 use super::dispatch::{DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
@@ -77,63 +77,70 @@ impl ContractCall {
 
                     let is_replay = space.is_replay().await;
 
-                    let dispatch_result = match produce_result {
-                        Some((cont, channels, produce)) if cont.peek => {
-                            let reducer = dispatcher
-                                .reducer
-                                .get()
-                                .and_then(|weak| weak.upgrade())
-                                .ok_or_else(|| {
-                                    InterpreterError::BugFoundError(
-                                        "Reducer not initialized".to_string(),
-                                    )
-                                })?;
-                            reducer
-                                .continue_produce_process(
-                                    unpack_option_with_peek(Some((cont, channels))),
-                                    None,
-                                    is_replay,
-                                    produce.output_value,
-                                    produce.failed,
-                                )
-                                .await
-                        }
+                    match produce_result {
                         Some((cont, channels, produce)) => {
-                            dispatcher
-                                .dispatch(
-                                    cont.continuation,
-                                    channels.iter().map(|c| c.matched_datum.clone()).collect(),
-                                    is_replay,
-                                    produce
-                                        .output_value
+                            let (continuation, data_list, peek) =
+                                unpack_tuple_with_peek((cont, channels));
+                            let matched_data = data_list
+                                .iter()
+                                .map(|(_, matched, _, _)| matched.clone())
+                                .collect();
+                            let dispatch = async {
+                                let dispatch_type = dispatcher
+                                    .dispatch(
+                                        continuation,
+                                        matched_data,
+                                        is_replay,
+                                        produce
+                                            .output_value
+                                            .iter()
+                                            .map(|p| {
+                                                Par::decode(&p[..]).map_err(|e| {
+                                                    InterpreterError::DecodeError(e.to_string())
+                                                })
+                                            })
+                                            .collect::<Result<Vec<_>, _>>()?,
+                                    )
+                                    .await?;
+                                match dispatch_type {
+                                    DispatchType::NonDeterministicCall(items) => items
                                         .iter()
                                         .map(|p| {
                                             Par::decode(&p[..]).map_err(|e| {
                                                 InterpreterError::DecodeError(e.to_string())
                                             })
                                         })
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                )
-                                .await
+                                        .collect::<Result<Vec<_>, _>>(),
+                                    DispatchType::FailedNonDeterministicCall(e) => Err(e),
+                                    DispatchType::DeterministicCall | DispatchType::Skip => {
+                                        Ok(Vec::new())
+                                    }
+                                }
+                            };
+                            if peek {
+                                let reducer = dispatcher.reducer()?;
+                                let (result, restoration) = futures::join!(
+                                    dispatch,
+                                    reducer.restore_peeked_data(data_list)
+                                );
+                                match restoration {
+                                    Ok(()) => result,
+                                    Err(error) => {
+                                        let mut errors = Vec::new();
+                                        if let Err(dispatch_error) = result {
+                                            errors.push(dispatch_error);
+                                        }
+                                        errors.push(error);
+                                        reducer
+                                            .aggregate_evaluator_errors(errors)
+                                            .map(|_| Vec::new())
+                                    }
+                                }
+                            } else {
+                                dispatch.await
+                            }
                         }
-
-                        None => Ok(DispatchType::Skip),
-                    };
-
-                    match dispatch_result {
-                        Ok(dispatch_type) => match dispatch_type {
-                            DispatchType::NonDeterministicCall(items) => items
-                                .iter()
-                                .map(|p| {
-                                    Par::decode(&p[..])
-                                        .map_err(|e| InterpreterError::DecodeError(e.to_string()))
-                                })
-                                .collect::<Result<Vec<_>, _>>(),
-                            DispatchType::FailedNonDeterministicCall(e) => Err(e),
-                            DispatchType::DeterministicCall => Ok(Vec::new()),
-                            DispatchType::Skip => Ok(Vec::new()),
-                        },
-                        Err(e) => Err(e),
+                        None => Ok(Vec::new()),
                     }
                 })
                     as Pin<

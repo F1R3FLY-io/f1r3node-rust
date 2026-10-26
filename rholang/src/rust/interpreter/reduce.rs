@@ -670,7 +670,7 @@ impl DebruijnInterpreter {
 
     /// `retry` holds the channel and data of a persistent produce, which is
     /// issued again after its COMM fires; it is `None` for a linear produce.
-    pub(super) async fn continue_produce_process(
+    async fn continue_produce_process(
         &self,
         res: Application,
         retry: Option<(Par, ListParWithRandom)>,
@@ -1008,6 +1008,27 @@ impl DebruijnInterpreter {
             .await
     }
 
+    pub(super) async fn restore_peeked_data(
+        &self,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+    ) -> Result<(), InterpreterError> {
+        let handles: Vec<_> = self
+            .produce_peeks(data_list)
+            .await
+            .into_iter()
+            .map(spawn_in_dispatch_scope)
+            .collect();
+        let mut errors = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok(Err(error)) => errors.push(error),
+                Err(error) => errors.push(join_error(error)),
+                Ok(Ok(_)) => {}
+            }
+        }
+        self.aggregate_evaluator_errors(errors).map(|_| ())
+    }
+
     async fn produce_peeks(
         &self,
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
@@ -1113,7 +1134,7 @@ impl DebruijnInterpreter {
         result
     }
 
-    fn aggregate_evaluator_errors(
+    pub(super) fn aggregate_evaluator_errors(
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
