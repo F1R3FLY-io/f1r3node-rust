@@ -601,6 +601,44 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
+        // File I/O: every fs_* syscall reply must be replay-cached so a
+        // follower's Oracular-echo path (dispatch_via_trait step 4) sees
+        // byte-identical `previous_output` and produces a matching
+        // ack-channel Produce hash.  Without this, the leader's recorded
+        // Produce events carry output_value=[] (mark_as_non_deterministic
+        // never runs), the follower echoes empty data on ack, the hash
+        // diverges from the recorded one, the downstream Rholang
+        // for-binding never fires, and check_replay_data trips with
+        // UnusedCommEvent.  See fileio_replay_spec.rs for the
+        // regression harness.
+        BodyRefs::FS_OPEN,
+        BodyRefs::FS_CLOSE,
+        BodyRefs::FS_READ,
+        BodyRefs::FS_READ_AT,
+        BodyRefs::FS_WRITE,
+        BodyRefs::FS_WRITE_AT,
+        BodyRefs::FS_SEEK,
+        BodyRefs::FS_TELL,
+        BodyRefs::FS_SIZE,
+        BodyRefs::FS_TRUNCATE,
+        BodyRefs::FS_FLUSH,
+        BodyRefs::FS_STAT,
+        BodyRefs::FS_EXISTS,
+        BodyRefs::FS_ENTRIES,
+        BodyRefs::FS_RENAME,
+        BodyRefs::FS_COPY_FILE,
+        BodyRefs::FS_REMOVE_FILE,
+        BodyRefs::FS_REMOVE_DIR,
+        BodyRefs::FS_CHMOD,
+        BodyRefs::FS_CHOWN,
+        BodyRefs::FS_QUARANTINE,
+        BodyRefs::FS_LOCK_RANGE,
+        BodyRefs::FS_LOCK_SEQUENTIAL,
+        BodyRefs::FS_RELEASE_LOCK,
+        BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+        BodyRefs::FS_ENTRIES_STREAM_OPEN,
+        BodyRefs::FS_ENTRIES_STREAM_NEXT,
+        BodyRefs::FS_ENTRIES_STREAM_CLOSE,
     ])
 }
 

@@ -207,6 +207,7 @@ pub async fn equivocate_block(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -346,6 +347,7 @@ pub async fn propose_with_explicit_justifications(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -526,6 +528,7 @@ pub async fn propose_with_block_mutation(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -674,6 +677,7 @@ pub async fn propose_neglecting_block(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;

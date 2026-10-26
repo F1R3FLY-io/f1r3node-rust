@@ -1,17 +1,17 @@
 //! De Bruijn lookup environment.
 //!
-//! `Env<A>` is a HashMap-backed stack of bindings keyed by absolute
-//! position. `put` extends to the right (level+1); `get` resolves a de
-//! Bruijn index `k` via `(level + shift) - k - 1` so that the most
-//! recently pushed binding is `k=0`. `shift` lets a sub-evaluator see
-//! all prior bindings without rebinding indices.
+//! `Env<A>` is a persistent stack of bindings indexed by absolute position.
+//! `put` pushes at the next level; `get` resolves a de Bruijn index `k` to
+//! position `(level + shift) - k - 1`, so the most recently pushed binding is
+//! `k = 0`. `shift` lets a sub-evaluator see all prior bindings without
+//! rebinding indices. Clones share structure, so handing an environment to a
+//! sub-evaluation does not copy its bindings.
 
-use std::collections::HashMap;
+use imbl::Vector;
 
 #[derive(Clone, Debug)]
 pub struct Env<A: Clone> {
-    pub env_map: HashMap<i32, A>,
-    pub level: i32,
+    bindings: Vector<A>,
     pub shift: i32,
 }
 
@@ -22,33 +22,33 @@ impl<A: Clone> Default for Env<A> {
 impl<A: Clone> Env<A> {
     pub fn new() -> Env<A> {
         Env {
-            env_map: HashMap::new(),
-            level: 0,
+            bindings: Vector::new(),
             shift: 0,
         }
     }
 
-    pub fn put(&mut self, a: A) -> Env<A> {
-        Env {
-            env_map: {
-                self.env_map.insert(self.level, a);
-                self.env_map.clone()
-            },
-            level: self.level + 1,
-            shift: self.shift,
-        }
+    /// The number of bindings pushed so far.
+    pub fn level(&self) -> i32 {
+        i32::try_from(self.bindings.len()).expect("environment depth fits in i32")
+    }
+
+    pub fn put(mut self, a: A) -> Env<A> {
+        self.bindings.push_back(a);
+        self
     }
 
     pub fn get(&self, k: &i32) -> Option<A> {
-        self.env_map
-            .get(&((self.level + self.shift) - k - 1))
+        let position = self.level() + self.shift - k - 1;
+        usize::try_from(position)
+            .ok()
+            .and_then(|position| self.bindings.get(position))
             .cloned()
     }
 
     pub fn shift(&self, j: i32) -> Env<A> {
         Env {
+            bindings: self.bindings.clone(),
             shift: self.shift + j,
-            ..(*self).clone()
         }
     }
 }

@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-src-campaign-control-models-rs.md

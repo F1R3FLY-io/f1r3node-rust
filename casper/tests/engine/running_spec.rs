@@ -78,6 +78,8 @@ mod tests {
 
         fn get_validator(&self) -> Option<ValidatorIdentity> { Some(self.validator_id.clone()) }
 
+        fn is_local_validator_bonded(&self) -> bool { self.inner.is_local_validator_bonded() }
+
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
             self.inner.get_history_exporter().await
         }

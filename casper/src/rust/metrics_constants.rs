@@ -331,10 +331,6 @@ pub const BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC: &str = "block-creator.empty-bl
 // timestamp to the block creation time, in seconds.
 pub const DEPLOY_SELECTION_AGE_TIME_METRIC: &str = "deploy.selection.age.time";
 // Issue #24 Track A metrics (CLAIM-CASPER-STAGE-METRICS-001, TASK-021-17).
-// Histograms, seconds: the wait for the deploy-pool lock and its hold time in
-// one proposal preparation.
-pub const DEPLOY_POOL_LOCK_WAIT_TIME_METRIC: &str = "deploy-pool.lock-wait.time";
-pub const DEPLOY_POOL_LOCK_HOLD_TIME_METRIC: &str = "deploy-pool.lock-hold.time";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
     "block-creator.deploy-admission.fresh-local";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
@@ -463,19 +459,12 @@ pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detec
 pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 // Counter: cycles that returned an error.
 pub const FINALIZER_RUN_FAILURES_METRIC: &str = "finalizer.run.failures";
-// Counter: cycles abandoned by the backstop timeout of run_queued_finalizer.
+// Counter: cycles abandoned by the finalizer's backstop compute timeout.
 pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
-// Counter: extra cycles a run made because a trigger arrived during it.
+// Counter: cycles that ended with a trigger pending, so another cycle follows.
 pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
 // Counter: triggers that arrived while a finalizer run was in progress.
 pub const FINALIZER_RUN_QUEUED_METRIC: &str = "finalizer.run.queued";
-// Counter: LFB computations requested through the API (bond_status,
-// exploratory_deploy), which bypass the single-flight finalizer guard.
-pub const FINALIZER_API_LFB_CALLS_METRIC: &str = "finalizer.api-lfb.calls";
-// Histogram: duration of each API-requested LFB computation.
-pub const FINALIZER_API_LFB_TIME_METRIC: &str = "finalizer.api-lfb.time";
-// Counter: API-requested LFB computations that started during a finalizer run.
-pub const FINALIZER_API_LFB_OVERLAPS_METRIC: &str = "finalizer.api-lfb.overlaps";
 /// A shipped genesis refused during LFS restore (claimed hash or content
 /// re-hash failed against the learned register) — peer equivocation on the
 /// restore channel, visible on dashboards.
@@ -524,7 +513,14 @@ pub const PROPOSER_CONSTRAINTS_TIME_METRIC: &str = "proposer.constraints.time";
 pub const PROPOSER_CREATE_TIME_METRIC: &str = "proposer.create.time";
 pub const PROPOSER_VALIDATE_TIME_METRIC: &str = "proposer.validate.time";
 pub const PROPOSER_EFFECT_TIME_METRIC: &str = "proposer.effect.time";
-// Histograms in seconds: one deploy-lifecycle observe, and the carrier prune
-// inside it when the adopted floor advances.
-pub const DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC: &str = "deploy-lifecycle.observe.time";
+// Histograms in seconds: one deploy-lifecycle settle per finalizer cycle, and
+// the carrier prune, which runs only on a cycle that advanced the LFB.
+pub const DEPLOY_LIFECYCLE_SETTLE_TIME_METRIC: &str = "deploy-lifecycle.settle.time";
 pub const DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC: &str = "deploy-lifecycle.carrier-prune.time";
+// Counter: pool copies of terminal deploys whose removal failed; each is
+// retried on the next finalizer cycle.
+pub const DEPLOY_LIFECYCLE_RELEASE_FAILURES_METRIC: &str = "deploy-lifecycle.release.failures";
+// Counter: open lifecycle rows a settle could not decide because of an error;
+// each is retried by the next settle.
+pub const DEPLOY_LIFECYCLE_SETTLE_ROW_FAILURES_METRIC: &str =
+    "deploy-lifecycle.settle.row-failures";

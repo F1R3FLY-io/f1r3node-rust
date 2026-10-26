@@ -28,6 +28,12 @@ use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
+use crate::rust::engine::snapshot_chunk_wire::{
+    handle_get_snapshot_chunk_request, handle_has_snapshot_request,
+};
+use crate::rust::engine::wal_payload_wire::{
+    handle_get_wal_payload_request, handle_has_wal_payload_request,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
@@ -440,6 +446,110 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 }
                 self.handle_mergeable_entry_request(peer, req.block_hash)
                     .await
+            }
+            // Phase 7b-1 snapshot chunk-fetch dispatch.  Only routed
+            // if a `SnapshotChunkContext` has been installed (via
+            // `install_snapshot_chunk_context`); otherwise falls
+            // through as a silent no-op — observers and transitional
+            // engines without an fs_snapshot_writer still see these
+            // messages but never need to serve or consume them.
+            CasperMessage::GetSnapshotChunkRequest(req) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    // Per-request O(1) lookup instead of cloning the
+                    // whole map — anchor is `Copy` so the closure
+                    // returns the value, no borrow held across await.
+                    let anchor: Option<([u8; 32], [u8; 32])> = ctx
+                        .snapshot_merkle_roots
+                        .read()
+                        .await
+                        .get(req.block_hash.as_ref())
+                        .copied();
+                    handle_get_snapshot_chunk_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &ctx.snapshot_dir,
+                        |_| anchor,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasSnapshotRequest(req) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    let anchor: Option<([u8; 32], [u8; 32])> = ctx
+                        .snapshot_merkle_roots
+                        .read()
+                        .await
+                        .get(req.block_hash.as_ref())
+                        .copied();
+                    handle_has_snapshot_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &ctx.snapshot_dir,
+                        |_| anchor,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::SnapshotChunkResponse(resp) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    ctx.sync_driver.on_chunk_response(peer, &resp).await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasSnapshot(hs) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    ctx.sync_driver.on_has_snapshot(peer, &hs).await;
+                }
+                Ok(())
+            }
+            // Phase 7b-2 WAL payload-fetch dispatch.  Same
+            // installed-or-silent-no-op posture as the snapshot
+            // chunk arms above — nodes without a payload backing
+            // store (observers, test harnesses) leave the context
+            // unset and these messages fall through.
+            CasperMessage::GetWalPayloadRequest(req) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    handle_get_wal_payload_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &*ctx.payload_lookup,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasWalPayloadRequest(req) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    handle_has_wal_payload_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &*ctx.payload_lookup,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::WalPayloadResponse(resp) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    ctx.sync_driver.on_payload_response(peer, &resp).await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasWalPayload(hs) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    ctx.sync_driver.on_has_wal_payload(peer, &hs).await;
+                }
+                Ok(())
             }
             _ => Ok(()),
         }
