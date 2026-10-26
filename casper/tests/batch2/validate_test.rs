@@ -34,6 +34,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{
@@ -1906,6 +1907,52 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
 // ============================================================================
 // Parent validation tests - Testing validator progress check (InvalidParents)
 // ============================================================================
+
+#[tokio::test]
+async fn sender_validation_preserves_trusted_parent_authority_with_bigint_stakes() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let validator = generate_validator(Some("Validator"));
+        let impostor = generate_validator(Some("Impostor"));
+        let stake = num_bigint::BigInt::from(i64::MAX) + num_bigint::BigInt::from(1);
+        let genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![Bond {
+            validator: validator.clone(),
+            stake: stake.clone(),
+        }]);
+        let valid = with_sender(&block_dag_storage.lookup_by_id_unsafe(1), &validator);
+        assert_eq!(
+            proto_util::weight_from_sender(&block_store, &valid).unwrap(),
+            stake
+        );
+        assert!(Validate::block_sender_has_weight(&valid, &genesis, &block_store).unwrap());
+
+        let mut forged = with_sender(&valid, &impostor);
+        forged.body.state.bonds.push(Bond {
+            validator: impostor,
+            stake,
+        });
+        assert!(!Validate::block_sender_has_weight(&forged, &genesis, &block_store).unwrap());
+
+        forged.header.parents_hash_list.clear();
+        assert_eq!(
+            proto_util::weight_from_sender(&block_store, &forged).unwrap(),
+            0.into()
+        );
+        assert!(!Validate::block_sender_has_weight(&forged, &genesis, &block_store).unwrap());
+
+        let mut parentless_bonded = valid;
+        parentless_bonded.header.parents_hash_list.clear();
+        assert!(
+            Validate::block_sender_has_weight(&parentless_bonded, &genesis, &block_store).unwrap()
+        );
+
+        forged.header.parents_hash_list = vec![Bytes::from(vec![0xff; 32])];
+        assert!(matches!(
+            Validate::block_sender_has_weight(&forged, &genesis, &block_store),
+            Err(KvStoreError::MissingBlock { .. })
+        ));
+    })
+    .await
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_allow_first_block_from_new_validator() {

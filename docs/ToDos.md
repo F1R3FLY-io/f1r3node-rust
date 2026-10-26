@@ -194,14 +194,14 @@ tasks:
 
 ---
 
-### EPIC-030: BigInt economic pipeline proposal based on PR #54
+### EPIC-031: BigInt economic pipeline proposal based on PR #54
 
 ```yaml
-epic_id: EPIC-030
+epic_id: EPIC-031
 title: "BigInt economic pipeline proposal based on PR #54"
 status: in_progress
 priority: p1
-user_story: US-014
+user_story: US-015
 branch: proposal/pr54-bigint-staking-fees
 base_commit: 604e1ea82b3b28ba4a12915c92fd2d85c1747a55
 base_pull_request: 54
@@ -209,26 +209,26 @@ validation_report: docs/specs/pr54-bigint-validation.md
 authorization: "Create a proposal branch from PR #54, add the proposed changes, commit once, and push."
 protocol_decision: "Keep version 1. Activation, versioning, historical replay, and migration remain team decisions before deployment."
 tasks:
-  - id: TASK-030-1
+  - id: TASK-031-1
     title: "Propose the strict BigInt type predicate"
     status: complete
     claimed_by: codex-session-01a16578
     acceptance:
       - "Predicate tests cover evaluated values, arity, and gas accounting."
-  - id: TASK-030-2
+  - id: TASK-031-2
     title: "Propose checked fee arithmetic and replay safeguards"
     status: complete
     claimed_by: codex-session-01a16578
     acceptance:
       - "Fee boundaries, direct/API admission, proposal selection, and forged replay metadata tests pass."
-  - id: TASK-030-3
+  - id: TASK-031-3
     title: "Propose exact staking through consensus and APIs"
     status: complete
     claimed_by: codex-session-01a16578
     acceptance:
       - "100 ASI staking and peer replay preserve amounts."
       - "Canonical encoding, schema protection, and API regressions pass."
-  - id: TASK-030-4
+  - id: TASK-031-4
     title: "Review, validate, commit, and publish the proposal branch"
     status: complete
     claimed_by: codex-session-01a16578
@@ -236,7 +236,7 @@ tasks:
       - "Opus reviews the proposal and confirmed defects are resolved."
       - "Validation and compatibility limits are recorded."
       - "One commit is pushed on the requested new branch without deployment."
-  - id: TASK-030-5
+  - id: TASK-031-5
     title: "Repair PR54 CI after BigInt integration"
     status: complete
     claimed_by: codex-session-pr54-ci-20261026
@@ -256,7 +256,7 @@ tasks:
       - "Formatting and workspace Clippy pass with warnings denied, including the node Schnorr feature."
       - "The first regression run received SIGTERM after 824 passes. The complete repeat run passed."
       - "Validation did not rebase the branch or deploy a node."
-  - id: TASK-030-6
+  - id: TASK-031-6
     title: "Rebase PR54 and validate BigInt integration against current dev"
     status: blocked
     claimed_by: codex-session-pr54-rebase-20261026
@@ -288,6 +288,60 @@ tasks:
       - "The existing proposal commit was replayed during the rebase. Its old ancestry does not need a second merge."
       - "The fuzz and soak-chart dependency graphs pass. No dependency policy exceptions were added."
       - "Keep the cluster stopped. Hosted CI requires publishing the rewritten branch separately."
+  - id: TASK-031-7
+    title: "Resolve CI failures after publishing the PR54 rebase"
+    status: blocked
+    claimed_by: codex-session-pr54-rebase-20261026
+    claimed_at: 2026-10-26
+    branch: feature/validator-stake-delegation
+    base_commit: ea523b9d2
+    acceptance:
+      - "Reproduce and correct the authority/finality profile failure without weakening its checks."
+      - "Compile all six fuzz targets and pass their 10,000-input smoke budgets."
+      - "Identify a supported dependency update for the Zstd advisories without new audit exceptions."
+      - "Run regression tests for each correction and report remaining hosted CI failures."
+    validation:
+      - "The authority/finality wrapper failed after its Rust tests passed because it expected 12 integration tests instead of 13."
+      - "The corrected wrapper passes all 14 Rust tests and four pinned TLC model controls, including the three negative controls."
+      - "All four claim-audit regressions pass. Formatting and the shell syntax check pass."
+      - "The separate fuzz workspace failed on the old i64 stake map and Copy assumptions. All six corrected targets compile."
+      - "Fuzz workspace Clippy passes with warnings denied after correcting the shared fixture helper."
+      - "All six fuzz targets pass 10,000 runs each with AddressSanitizer and the CI input-size limits."
+      - "All 20 release-mode slash authorization regressions pass."
+      - "Hosted static checks, script tests, theorem tests, formal verification, and most crate tests pass on ea523b9d2."
+      - "Hosted Casper tests and three coverage jobs were still in progress when local verification completed. The follow-up fixes require a new CI run."
+    blocked_by:
+      - "Ten Zstd advisories remain in the optional rust-bert dependency chain. No patched zstd-safe 5.x release exists."
+      - "The embedding backend migration requires a scope decision. No audit exceptions or backend changes were made."
+    notes:
+      - "Commit ea523b9d2 is pushed to the PR54 fork branch. The user requested committing and pushing these follow-up fixes on 2026-10-26."
+      - "Keep the cluster stopped and preserve the existing embedding behavior."
+      - "Authority profile evidence is in target/pr54-authority-finality-20261026-r2. The r1 evidence records the reproduced wrapper failure."
+      - "Local logs are /tmp/pr54-fuzz-*-20261026.log, /tmp/pr54-slash-auth-retest-20261026.log, and /tmp/pr54-ci-claims-after-profile-20261026.log."
+  - id: TASK-031-8
+    title: "Rebase PR54 onto the October 30 dev branch"
+    status: complete
+    claimed_by: codex-session-pr54-rebase-20261030
+    claimed_at: 2026-10-30
+    completed_date: 2026-10-30
+    branch: feature/validator-stake-delegation
+    base_commit: 1a19f112767c429c833704adfa40008d8a74bf56
+    acceptance:
+      - "Preserve all 23 feature commits and the latest dev sender-authorization checks."
+      - "Compile all workspace targets and run delegation and admission regressions."
+      - "Leave the cluster and unrelated main-checkout changes untouched. Do not push."
+    validation:
+      - "Workspace Clippy passes for all targets with warnings denied. Formatting and diff whitespace checks pass."
+      - "All three dependency graphs pass the unchanged upstream policy. No new audit exceptions were added during this rebase."
+      - "The delegation contract, REST implementation, and existing delegation contract tests are unchanged from the pre-rebase head."
+      - "All 167 selected release regressions pass, including the full legacy PoS suite, delegation review and scalability, authorization, and large-stake replay."
+      - "The new BigInt authorization regression covers trusted parent bonds, parentless self-bond forgery, and missing-parent deferral."
+      - "Hosted CI, the full workspace test suite, and live-shard tests have not been run for this rebase."
+    notes:
+      - "The pre-rebase head is b9eeb64ba on backup/pr54-before-rebase-20261030-b9eeb64ba."
+      - "Renumber the proposal records because dev now uses EPIC-030 and US-014 for soak cleanup."
+      - "Dev updates zstd-sys and accepts nine temporary optional zstd-safe advisory exceptions. This is not an embedding backend migration."
+      - "Validation logs are /tmp/pr54-rebase-{clippy,regressions,supply-chain}-20261030.log."
 ```
 
 ---

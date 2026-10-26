@@ -229,11 +229,11 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 
 ---
 
-#### US-014: Review exact staking amounts and fee safeguards
+#### US-015: Review exact staking amounts and fee safeguards
 
 > As a **node team reviewer**, I want **a concrete BigInt economic pipeline proposal** so that **the team can decide protocol and migration requirements**.
 
-**Implemented in:** EPIC-030
+**Implemented in:** EPIC-031
 
 **Value Stream:** Ecosystem Integration
 
