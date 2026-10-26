@@ -549,11 +549,7 @@ async fn fee_overflow_is_rejected_before_deploy_storage() {
             node.casper.deploy(deploy.clone()).unwrap(),
             Either::Left(DeployError::InvalidCost(message)) if message == expected
         ));
-        assert!(!node
-            .deploy_storage
-            .lock()
-            .contains_sig(&deploy.sig)
-            .unwrap());
+        assert!(!node.deploy_storage.contains_sig(&deploy.sig).unwrap());
         let api_error = BlockAPI::deploy(
             &node.engine_cell,
             deploy,
