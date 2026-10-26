@@ -146,7 +146,7 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
             e.iter()
                 .map(|(v, stake)| Bond {
                     validator: validator_of[v].clone(),
-                    stake: stake.clone().into(),
+                    stake: (*stake).into(),
                 })
                 .collect()
         })

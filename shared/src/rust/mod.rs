@@ -182,7 +182,7 @@ mod tests {
     struct VecBytesWrapper(#[serde(with = "super::serde_vec_bytes")] Vec<Bytes>);
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct MapWrapper(#[serde(with = "super::serde_btreemap_bytes_i64")] BTreeMap<Bytes, i64>);
+    struct MapWrapper(#[serde(with = "super::serde_btreemap_bytes")] BTreeMap<Bytes, i64>);
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct HexBytesWrapper(#[serde(with = "super::serde_hex_bytes")] Bytes);
