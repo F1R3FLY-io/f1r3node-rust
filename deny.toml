@@ -24,6 +24,15 @@ ignore = [
   { id = "RUSTSEC-2026-0368", reason = "zip extract creates symbolic links that point outside the destination (GHSA-4v9h-p7m9-rh26). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
   { id = "RUSTSEC-2026-0369", reason = "zip extract applies permissions through symbolic links (GHSA-4684-h2q9-2vcp). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
   { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 has secret-dependent branches in operations meant to be constant-time. It comes through elliptic-curve 0.13 for k256 and p256 0.13 (crypto, rholang, comm). The fix is only in 0.7.6, which needs k256 and p256 0.14. Bump the RustCrypto curves to 0.14." },
+  { id = "RUSTSEC-2026-0395", reason = "zstd-safe 5.0.2 has a use-after-free with CParameter::StableInBuffer. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0397", reason = "zstd-safe 5.0.2 OutBuffer::around_pos exposes uninitialized memory. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0399", reason = "zstd-safe 5.0.2 has a use-after-free through init_using_cdict and init_using_ddict. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0400", reason = "zstd-safe 5.0.2 has a use-after-free of a dictionary after a one-shot call on a context with an open stream. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0401", reason = "zstd-safe 5.0.2 train_from_buffer reads out of bounds when sample sizes overflow. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0402", reason = "zstd-safe 5.0.2 CCtx::try_clone overflows the heap on a multithreaded context. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0403", reason = "zstd-safe 5.0.2 exposes uninitialized memory when streaming decompression of a legacy frame fails. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0404", reason = "zstd-safe 5.0.2 DCtx::try_clone frees twice. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
+  { id = "RUSTSEC-2026-0406", reason = "zstd-safe 5.0.2 has a use-after-free when a multithreaded context with an unfinished frame changes. It comes through zstd 0.11 and zip 0.6.6 for the optional rust-bert feature (cached-path, tch and torch-sys). The fix needs zstd-safe 8.2, which zip 0.6 cannot take. Replace or upgrade rust-bert." },
   { crate = "zip@3.0.0", reason = "zip yanked 99 of 100 versions after GHSA-4v9h-p7m9-rh26, GHSA-vv5m-jxxh-4627 and GHSA-4684-h2q9-2vcp (extract). The utoipa-swagger-ui 9 build script reads its own vendored archive, and casper-soak reads one member without extract. Bump to zip 9." },
   { crate = "zip@0.6.6", reason = "zip yanked 99 of 100 versions after the October 2026 extract advisories. The optional rust-bert feature uses zip 0.6.6 through tch, torch-sys and cached-path. Replace when rust-bert moves to zip 9." },
 ]
@@ -114,7 +123,7 @@ allow-build-scripts = [
   "windows_x86_64_gnullvm@0.48.5", "windows_x86_64_gnullvm@0.52.6",
   "windows_x86_64_msvc@0.48.5", "windows_x86_64_msvc@0.52.6",
   "wit-bindgen@0.57.1", "zerocopy@0.8.55", "zerocopy@0.8.56", "zerocopy@0.8.59", "zmij@1.0.23",
-  "zstd-safe@5.0.2+zstd.1.5.2", "zstd-sys@2.0.16+zstd.1.5.7",
+  "zstd-safe@5.0.2+zstd.1.5.2", "zstd-sys@2.1.2+zstd.1.5.7",
 ]
 executables = "deny"
 interpreted = "warn"
