@@ -167,6 +167,36 @@ tasks:
       - "The existing proposal commit was replayed during the rebase. Its old ancestry does not need a second merge."
       - "The fuzz and soak-chart dependency graphs pass. No dependency policy exceptions were added."
       - "Keep the cluster stopped. Hosted CI requires publishing the rewritten branch separately."
+  - id: TASK-030-7
+    title: "Resolve CI failures after publishing the PR54 rebase"
+    status: blocked
+    claimed_by: codex-session-pr54-rebase-20261026
+    claimed_at: 2026-10-26
+    branch: feature/validator-stake-delegation
+    base_commit: ea523b9d2
+    acceptance:
+      - "Reproduce and correct the authority/finality profile failure without weakening its checks."
+      - "Compile all six fuzz targets and pass their 10,000-input smoke budgets."
+      - "Identify a supported dependency update for the Zstd advisories without new audit exceptions."
+      - "Run regression tests for each correction and report remaining hosted CI failures."
+    validation:
+      - "The authority/finality wrapper failed after its Rust tests passed because it expected 12 integration tests instead of 13."
+      - "The corrected wrapper passes all 14 Rust tests and four pinned TLC model controls, including the three negative controls."
+      - "All four claim-audit regressions pass. Formatting and the shell syntax check pass."
+      - "The separate fuzz workspace failed on the old i64 stake map and Copy assumptions. All six corrected targets compile."
+      - "Fuzz workspace Clippy passes with warnings denied after correcting the shared fixture helper."
+      - "All six fuzz targets pass 10,000 runs each with AddressSanitizer and the CI input-size limits."
+      - "All 20 release-mode slash authorization regressions pass."
+      - "Hosted static checks, script tests, theorem tests, formal verification, and most crate tests pass on ea523b9d2."
+      - "Hosted Casper tests and three coverage jobs were still in progress when local verification completed. The follow-up fixes require a new CI run."
+    blocked_by:
+      - "Ten Zstd advisories remain in the optional rust-bert dependency chain. No patched zstd-safe 5.x release exists."
+      - "The embedding backend migration requires a scope decision. No audit exceptions or backend changes were made."
+    notes:
+      - "Commit ea523b9d2 is pushed to the PR54 fork branch. The user requested committing and pushing these follow-up fixes on 2026-10-26."
+      - "Keep the cluster stopped and preserve the existing embedding behavior."
+      - "Authority profile evidence is in target/pr54-authority-finality-20261026-r2. The r1 evidence records the reproduced wrapper failure."
+      - "Local logs are /tmp/pr54-fuzz-*-20261026.log, /tmp/pr54-slash-auth-retest-20261026.log, and /tmp/pr54-ci-claims-after-profile-20261026.log."
 ```
 
 ---
