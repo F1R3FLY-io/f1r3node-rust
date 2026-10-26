@@ -1461,11 +1461,11 @@ async fn invalid_fee_metadata_in_storage_does_not_block_valid_proposals() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -1487,10 +1487,7 @@ async fn invalid_fee_metadata_in_storage_does_not_block_valid_proposals() {
     invalid_data.phlo_limit = i64::MAX;
     invalid_data.phlo_price = 2;
     let invalid = Signed::create(invalid_data, Box::new(Secp256k1), validator_sk.clone()).unwrap();
-    deploy_storage
-        .lock()
-        .add(vec![invalid, valid.clone()])
-        .unwrap();
+    deploy_storage.add(vec![invalid, valid.clone()]).unwrap();
 
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,

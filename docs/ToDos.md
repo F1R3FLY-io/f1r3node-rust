@@ -199,8 +199,7 @@ tasks:
 ```yaml
 epic_id: EPIC-030
 title: "BigInt economic pipeline proposal based on PR #54"
-status: complete
-completed_date: 2026-10-26
+status: in_progress
 priority: p1
 user_story: US-014
 branch: proposal/pr54-bigint-staking-fees
@@ -257,6 +256,38 @@ tasks:
       - "Formatting and workspace Clippy pass with warnings denied, including the node Schnorr feature."
       - "The first regression run received SIGTERM after 824 passes. The complete repeat run passed."
       - "Validation did not rebase the branch or deploy a node."
+  - id: TASK-030-6
+    title: "Rebase PR54 and validate BigInt integration against current dev"
+    status: blocked
+    claimed_by: codex-session-pr54-rebase-20261026
+    claimed_at: 2026-10-26
+    branch: feature/validator-stake-delegation
+    base_commit: 9bdef3226
+    acceptance:
+      - "The rebased branch includes current dev and preserves the BigInt proposal and delegation fixes."
+      - "Workspace formatting and Clippy pass, including the Schnorr feature."
+      - "Delegation, BigInt, replay, consensus, API, and crypto regression tests pass."
+      - "Verifier setup regressions, merge-accounting checks, and dependency policy checks pass."
+    validation:
+      - "The baseline workspace run executed 6,606 tests: 6,555 passed and 51 failed."
+      - "Snapshot decoding, BigInt display expectations, and stale workflow provenance caused 43 failures. Their retests pass."
+      - "All 327 rebuilt storage, observer, cache, and large-stake regressions pass, including five new regression tests across this task."
+      - "The full legacy PoS suite, delegation review suite, scalability suite, and three-writer convergence test pass."
+      - "All 126 Schnorr-enabled crypto tests pass. Workspace doctests pass with three executed and one ignored."
+      - "Formatting and workspace Clippy pass with warnings denied, both with and without the node Schnorr feature."
+      - "Four claim-audit tests pass. Strict mode still refuses the pending merge-accounting binding."
+      - "Formal gate tests pass 56 refusal controls. TLA routing tests pass 96 negative controls."
+      - "The pinned TLC verifier passes seven merge-accounting fixtures and four model controls without node execution."
+      - "Four filesystem permission cases fail on this Linux 5.4/glibc 2.31 host. Their source is unchanged from dev."
+      - "Four process-control cases refused host execution. Remaining process-control cases were excluded because they require an isolated container."
+    blocked_by:
+      - "The workspace dependency audit reports ten Zstd advisories through the optional chromadb/rust-bert dependency chain inherited from dev."
+      - "zstd-safe 5.x has no compatible patched release. The optional ML dependency migration needs a separate scope decision."
+      - "The changed merge-accounting workflow needs renewed maintainer acceptance. Its binding is pending, and historical evidence remains unchanged."
+    notes:
+      - "The existing proposal commit was replayed during the rebase. Its old ancestry does not need a second merge."
+      - "The fuzz and soak-chart dependency graphs pass. No dependency policy exceptions were added."
+      - "Keep the cluster stopped. Hosted CI requires publishing the rewritten branch separately."
 ```
 
 ---

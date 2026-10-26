@@ -243,7 +243,9 @@ fn preflight_metadata(
     }
     for _ in 0..wire.count("metadata validators", limits.max_validators)? {
         wire.bytes()?;
-        wire.take(8)?;
+        wire.take(1)?;
+        let digits = wire.count("metadata stake digits", wire.0.len() / 4)?;
+        wire.take(digits * 4)?;
     }
     wire.take(19)?;
     wire.bytes()?;

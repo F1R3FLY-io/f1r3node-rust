@@ -31,6 +31,7 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use shared::rust::dag::observation_work::{sort_by_metered, NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::MissingBlockContext;
@@ -1227,7 +1228,7 @@ pub async fn floor_of_block_metered<W: WorkMeter>(
 #[derive(Default)]
 pub(crate) struct WitnessMemo {
     verdicts: HashMap<BlockHash, bool>,
-    committees: HashMap<BlockHash, HashMap<Validator, i64>>,
+    committees: HashMap<BlockHash, HashMap<Validator, BigInt>>,
     evaluations: u64,
 }
 
@@ -1263,7 +1264,7 @@ impl WitnessMemo {
         meter: &W,
         dag: &KeyValueDagRepresentation,
         block: &BlockHash,
-    ) -> Result<HashMap<Validator, i64>, CasperError> {
+    ) -> Result<HashMap<Validator, BigInt>, CasperError> {
         if let Some(committee) = self.committees.get(block) {
             return Ok(committee.clone());
         }
@@ -2855,6 +2856,68 @@ mod frontier_determinism_tests {
             "a record-free absorbing merge captures the floor's content \
              (applied from scope) and soundly becomes the next floor"
         );
+    }
+
+    #[tokio::test]
+    async fn witness_memo_preserves_large_committee_weights_on_cache_hits() {
+        let v = val();
+        let (g, b1) = (h(0), h(1));
+        let stake = (BigInt::from(1) << 100usize) + BigInt::from(7);
+        let changed_stake = &stake + (BigInt::from(1) << 64usize);
+        let mut genesis = md(g.clone(), vec![], 0, &v);
+        genesis.weight_map.insert(v.clone(), stake.clone());
+        let mut child = md(b1.clone(), vec![g.clone()], 1, &v);
+        child.weight_map.insert(v.clone(), changed_stake.clone());
+        let dag = build_dag(vec![genesis, child]);
+        let mut memo = WitnessMemo::default();
+
+        for _ in 0..2 {
+            assert_eq!(
+                memo.committee(&NoopWork, &dag, &g).await.unwrap(),
+                HashMap::from([(v.clone(), stake.clone())])
+            );
+            assert_eq!(
+                memo.committee(&NoopWork, &dag, &b1).await.unwrap(),
+                HashMap::from([(v.clone(), changed_stake.clone())])
+            );
+        }
+        assert_eq!(memo.committees.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn large_stake_frontier_cache_preserves_committee_change_guard() {
+        for changed in [false, true] {
+            let v = val();
+            let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
+            let stake = (BigInt::from(1) << 100usize) + BigInt::from(7);
+            let mut blocks = vec![
+                md(g.clone(), vec![], 0, &v),
+                md(b1.clone(), vec![g.clone()], 1, &v),
+                md(b2.clone(), vec![b1.clone()], 2, &v),
+                md(b3.clone(), vec![b2.clone()], 3, &v),
+            ];
+            for block in &mut blocks {
+                let weight = if changed && block.block_number >= 2 {
+                    &stake + (BigInt::from(1) << 64usize)
+                } else {
+                    stake.clone()
+                };
+                block.weight_map.insert(v.clone(), weight);
+            }
+            let dag = build_dag(blocks);
+            let j = BTreeMap::from([(v, b2.clone())]);
+            let thr = FtThreshold::from_f32_lossy(0.1);
+            let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
+            let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+            assert_eq!(cold.hash, b2);
+            if changed {
+                assert_eq!(warm, None);
+            } else {
+                assert_eq!(warm, Some(cold.clone()));
+            }
+            dag.put_cached_frontier(b3.clone(), b1).unwrap();
+            assert_eq!(parent_frontier(&dag, &b3, &j, thr).await.unwrap(), cold);
+        }
     }
 
     /// Guard-trip: a committee CHANGE inside the band (a bonding / re-stake between

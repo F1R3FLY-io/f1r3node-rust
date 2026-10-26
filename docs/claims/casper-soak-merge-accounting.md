@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-005
-status: discharged
+status: pending
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript
@@ -25,11 +25,15 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
 ## Scope
+
+PR #54 changes the verifier download step after the recorded acceptance.
+The current workflow binding is pending. The previous acceptance report applies only to its recorded source hashes.
+The rebased branch passes seven profile fixtures and four model controls. These results do not renew maintainer acceptance.
 
 This claim verifies the profile generator, fault scheduling, collector, and verdict classifier. The Rust node is the system under test, not a proof artifact.
 
