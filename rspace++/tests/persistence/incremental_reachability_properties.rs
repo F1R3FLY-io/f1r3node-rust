@@ -2460,3 +2460,1025 @@ fn trial_mutants_violate_atomicity_or_cold_oracle() {
     assert!(partial_detections.get() > 0, "no generated refusal exposed partial commit");
     assert!(contribution_detections.get() > 0, "no generated trial transferred a contribution");
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Domain {
+    Current,
+    Retained,
+    Metadata,
+}
+
+const DOMAINS: [Domain; 3] = [Domain::Current, Domain::Retained, Domain::Metadata];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompositionVariant {
+    Faithful,
+    CurrentDeltaOnRetained,
+    DeduplicatedRetainedRoots,
+    PinsAsRetainedRoots,
+}
+
+const COMPOSITION_VARIANTS: [CompositionVariant; 4] = [
+    CompositionVariant::Faithful,
+    CompositionVariant::CurrentDeltaOnRetained,
+    CompositionVariant::DeduplicatedRetainedRoots,
+    CompositionVariant::PinsAsRetainedRoots,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RetentionEntry {
+    generation: usize,
+    manifest: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RetentionEntries {
+    current: RetentionEntry,
+    historical: Vec<RetentionEntry>,
+}
+
+impl RetentionEntries {
+    fn manifests(&self) -> Vec<usize> {
+        self.historical
+            .iter()
+            .chain([&self.current])
+            .map(|entry| entry.manifest)
+            .collect()
+    }
+
+    fn current_roots(&self, vertex_count: usize) -> Vec<usize> {
+        root_counts(vertex_count, &[self.current.manifest])
+    }
+
+    fn retained_roots(&self, vertex_count: usize) -> Vec<usize> {
+        root_counts(vertex_count, &self.manifests())
+    }
+
+    fn commit(&self, next: RetentionEntry) -> Self {
+        let mut historical = Vec::with_capacity(self.historical.len() + 1);
+        historical.extend_from_slice(&self.historical);
+        historical.push(self.current);
+        Self {
+            current: next,
+            historical,
+        }
+    }
+
+    fn evict(&self, victim: RetentionEntry) -> Self {
+        let mut historical = self.historical.clone();
+        if let Some(position) = historical.iter().position(|entry| *entry == victim) {
+            historical.remove(position);
+        }
+        Self {
+            current: self.current,
+            historical,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryStep {
+    Commit {
+        next: RetentionEntry,
+        metadata_root: usize,
+    },
+    Evict {
+        victim: RetentionEntry,
+        metadata_root: usize,
+    },
+    Pin(usize),
+    Unpin(usize),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RootDelta {
+    added: Vec<usize>,
+    removed: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ComposedDelta {
+    current: RootDelta,
+    retained: RootDelta,
+    metadata: RootDelta,
+    pins: RootDelta,
+}
+
+impl ComposedDelta {
+    fn with_pins(&self, pins: RootDelta) -> Self {
+        Self {
+            pins,
+            ..self.clone()
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryState {
+    entries: RetentionEntries,
+    metadata_root: usize,
+    pins: Vec<usize>,
+}
+
+impl HistoryState {
+    fn first(manifest: usize, metadata_root: usize) -> Self {
+        Self {
+            entries: RetentionEntries {
+                current: RetentionEntry {
+                    generation: 0,
+                    manifest,
+                },
+                historical: Vec::new(),
+            },
+            metadata_root,
+            pins: Vec::new(),
+        }
+    }
+
+    fn apply(&self, step: HistoryStep) -> Self {
+        let mut next = self.clone();
+        match step {
+            HistoryStep::Commit {
+                next: entry,
+                metadata_root,
+            } => {
+                next.entries = self.entries.commit(entry);
+                next.metadata_root = metadata_root;
+            }
+            HistoryStep::Evict {
+                victim,
+                metadata_root,
+            } => {
+                next.entries = self.entries.evict(victim);
+                next.metadata_root = metadata_root;
+            }
+            HistoryStep::Pin(vertex) => next.pins.push(vertex),
+            HistoryStep::Unpin(vertex) => {
+                let position = next
+                    .pins
+                    .iter()
+                    .position(|&pinned| pinned == vertex)
+                    .expect("an unpinned vertex holds a pin");
+                next.pins.swap_remove(position);
+            }
+        }
+        next
+    }
+
+    fn canonical_delta(&self, step: HistoryStep) -> ComposedDelta {
+        let replace_metadata = |metadata_root| RootDelta {
+            added: vec![metadata_root],
+            removed: vec![self.metadata_root],
+        };
+        match step {
+            HistoryStep::Commit {
+                next,
+                metadata_root,
+            } => ComposedDelta {
+                current: RootDelta {
+                    added: vec![next.manifest],
+                    removed: vec![self.entries.current.manifest],
+                },
+                retained: RootDelta {
+                    added: vec![next.manifest],
+                    removed: Vec::new(),
+                },
+                metadata: replace_metadata(metadata_root),
+                pins: RootDelta::default(),
+            },
+            HistoryStep::Evict {
+                victim,
+                metadata_root,
+            } => ComposedDelta {
+                current: RootDelta::default(),
+                retained: RootDelta {
+                    added: Vec::new(),
+                    removed: vec![victim.manifest],
+                },
+                metadata: replace_metadata(metadata_root),
+                pins: RootDelta::default(),
+            },
+            HistoryStep::Pin(vertex) => ComposedDelta {
+                pins: RootDelta {
+                    added: vec![vertex],
+                    removed: Vec::new(),
+                },
+                ..ComposedDelta::default()
+            },
+            HistoryStep::Unpin(vertex) => ComposedDelta {
+                pins: RootDelta {
+                    added: Vec::new(),
+                    removed: vec![vertex],
+                },
+                ..ComposedDelta::default()
+            },
+        }
+    }
+}
+
+fn apply_delta(roots: &[usize], change: &RootDelta) -> Option<Vec<usize>> {
+    let mut applied = roots.to_vec();
+    for &vertex in &change.added {
+        applied[vertex] += 1;
+    }
+    if !authorized(&applied, &change.removed) {
+        return None;
+    }
+    for &vertex in &change.removed {
+        applied[vertex] -= 1;
+    }
+    Some(applied)
+}
+
+fn set_insertions(roots: &[usize], added: &[usize]) -> Vec<usize> {
+    let mut present = roots.iter().map(|count| *count > 0).collect::<Vec<_>>();
+    let mut inserted = Vec::with_capacity(added.len());
+    for &vertex in added {
+        if !present[vertex] {
+            present[vertex] = true;
+            inserted.push(vertex);
+        }
+    }
+    inserted
+}
+
+#[derive(Clone, Debug)]
+struct ComposedEnvironment {
+    semantic: TrialEnvironment,
+    metadata: TrialEnvironment,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ComposedPredecessor {
+    current: Predecessor,
+    retained: Predecessor,
+    metadata: Predecessor,
+}
+
+impl ComposedPredecessor {
+    fn domain(&self, domain: Domain) -> &Predecessor {
+        match domain {
+            Domain::Current => &self.current,
+            Domain::Retained => &self.retained,
+            Domain::Metadata => &self.metadata,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ComposedLimits([TrialLimits; 3]);
+
+impl ComposedLimits {
+    const UNBOUNDED: Self = Self([TrialLimits::UNBOUNDED; 3]);
+
+    fn get(&self, domain: Domain) -> &TrialLimits { &self.0[domain as usize] }
+
+    fn with(mut self, domain: Domain, axis: BudgetAxis, value: u64) -> Self {
+        self.0[domain as usize] = self.0[domain as usize].with(axis, value);
+        self
+    }
+
+    fn exact(evidence: &ComposedEvidence) -> Self {
+        Self(DOMAINS.map(|domain| TrialLimits::exact(evidence.domain(domain))))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ComposedEvidence {
+    current: PreparedEvidence,
+    retained: PreparedEvidence,
+    metadata: PreparedEvidence,
+}
+
+impl ComposedEvidence {
+    fn domain(&self, domain: Domain) -> &PreparedEvidence {
+        match domain {
+            Domain::Current => &self.current,
+            Domain::Retained => &self.retained,
+            Domain::Metadata => &self.metadata,
+        }
+    }
+
+    fn successor_base(&self) -> ComposedPredecessor {
+        ComposedPredecessor {
+            current: as_predecessor(&self.current),
+            retained: as_predecessor(&self.retained),
+            metadata: as_predecessor(&self.metadata),
+        }
+    }
+}
+
+fn as_predecessor(evidence: &PreparedEvidence) -> Predecessor {
+    Predecessor {
+        ledger: evidence.ledger.clone(),
+        roots: evidence.roots.clone(),
+        objects: evidence.objects,
+        bytes: evidence.bytes,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ComposedOutcome {
+    Prepared(ComposedEvidence),
+    Refused(Domain, TrialRefusal),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ComposedResult {
+    kept: ComposedPredecessor,
+    outcome: ComposedOutcome,
+}
+
+fn composed_outcome_spec(outcomes: [TrialOutcome; 3]) -> ComposedOutcome {
+    match outcomes {
+        [TrialOutcome::Refused(why), _, _] => ComposedOutcome::Refused(Domain::Current, why),
+        [_, TrialOutcome::Refused(why), _] => ComposedOutcome::Refused(Domain::Retained, why),
+        [_, _, TrialOutcome::Refused(why)] => ComposedOutcome::Refused(Domain::Metadata, why),
+        [
+            TrialOutcome::Prepared(current),
+            TrialOutcome::Prepared(retained),
+            TrialOutcome::Prepared(metadata),
+        ] => ComposedOutcome::Prepared(ComposedEvidence {
+            current,
+            retained,
+            metadata,
+        }),
+    }
+}
+
+fn retained_delta_of(
+    variant: CompositionVariant,
+    base: &ComposedPredecessor,
+    delta: &ComposedDelta,
+) -> RootDelta {
+    match variant {
+        CompositionVariant::Faithful => delta.retained.clone(),
+        CompositionVariant::CurrentDeltaOnRetained => delta.current.clone(),
+        CompositionVariant::DeduplicatedRetainedRoots => RootDelta {
+            added: set_insertions(&base.retained.roots, &delta.retained.added),
+            removed: delta.retained.removed.clone(),
+        },
+        CompositionVariant::PinsAsRetainedRoots => RootDelta {
+            added: [delta.retained.added.as_slice(), &delta.pins.added].concat(),
+            removed: [delta.retained.removed.as_slice(), &delta.pins.removed].concat(),
+        },
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ComposedCase {
+    env: ComposedEnvironment,
+    base: ComposedPredecessor,
+    delta: ComposedDelta,
+    schedule: Vec<bool>,
+}
+
+impl ComposedCase {
+    fn domain_trial(
+        &self,
+        variant: CompositionVariant,
+        limits: &ComposedLimits,
+        domain: Domain,
+    ) -> TrialResult {
+        let (env, change) = match domain {
+            Domain::Current => (&self.env.semantic, self.delta.current.clone()),
+            Domain::Retained => {
+                (&self.env.semantic, retained_delta_of(variant, &self.base, &self.delta))
+            }
+            Domain::Metadata => (&self.env.metadata, self.delta.metadata.clone()),
+        };
+        TrialCase {
+            env: env.clone(),
+            base: self.base.domain(domain).clone(),
+            added: change.added,
+            removed: change.removed,
+            schedule: self.schedule.clone(),
+        }
+        .run(TrialVariant::Faithful, limits.get(domain))
+    }
+
+    fn run(&self, variant: CompositionVariant, limits: &ComposedLimits) -> ComposedResult {
+        let refused = |domain, why| ComposedResult {
+            kept: self.base.clone(),
+            outcome: ComposedOutcome::Refused(domain, why),
+        };
+        let current = match self.domain_trial(variant, limits, Domain::Current).outcome {
+            TrialOutcome::Prepared(evidence) => evidence,
+            TrialOutcome::Refused(why) => return refused(Domain::Current, why),
+        };
+        let retained = match self.domain_trial(variant, limits, Domain::Retained).outcome {
+            TrialOutcome::Prepared(evidence) => evidence,
+            TrialOutcome::Refused(why) => return refused(Domain::Retained, why),
+        };
+        let metadata = match self.domain_trial(variant, limits, Domain::Metadata).outcome {
+            TrialOutcome::Prepared(evidence) => evidence,
+            TrialOutcome::Refused(why) => return refused(Domain::Metadata, why),
+        };
+        ComposedResult {
+            kept: self.base.clone(),
+            outcome: ComposedOutcome::Prepared(ComposedEvidence {
+                current,
+                retained,
+                metadata,
+            }),
+        }
+    }
+}
+
+fn composed_base(env: &ComposedEnvironment, state: &HistoryState) -> ComposedPredecessor {
+    ComposedPredecessor {
+        current: cold_predecessor(&env.semantic, &[state.entries.current.manifest]),
+        retained: cold_predecessor(&env.semantic, &state.entries.manifests()),
+        metadata: cold_predecessor(&env.metadata, &[state.metadata_root]),
+    }
+}
+
+fn physically_protected(
+    retained: &Ledger,
+    metadata: &Ledger,
+    pins: &[usize],
+    vertex: usize,
+) -> bool {
+    match vertex.checked_sub(retained.active.len()) {
+        None => retained.active[vertex] || pins[vertex] > 0,
+        Some(offset) => metadata.active[offset],
+    }
+}
+
+fn joint_data_environment(env: &ComposedEnvironment) -> TrialEnvironment {
+    let offset = env.semantic.graph.len();
+    let joined = |semantic: &[u64], metadata: &[u64]| [semantic, metadata].concat();
+    TrialEnvironment {
+        graph: env
+            .semantic
+            .graph
+            .iter()
+            .cloned()
+            .chain(
+                env.metadata
+                    .graph
+                    .iter()
+                    .map(|children| children.iter().map(|child| child + offset).collect()),
+            )
+            .collect(),
+        object_bytes: joined(&env.semantic.object_bytes, &env.metadata.object_bytes),
+        quoted_read: joined(&env.semantic.quoted_read, &env.metadata.quoted_read),
+        consumed_read: joined(&env.semantic.consumed_read, &env.metadata.consumed_read),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HistoryChoice {
+    Commit,
+    CommitReuse,
+    Evict,
+    Pin,
+    Unpin,
+}
+
+#[derive(Clone, Debug)]
+struct ComposedHistory {
+    env: ComposedEnvironment,
+    initial: HistoryState,
+    choices: Vec<(HistoryChoice, u8, u8)>,
+    schedule: Vec<bool>,
+}
+
+impl ComposedHistory {
+    fn steps(&self) -> Vec<HistoryStep> {
+        let semantic_count = self.env.semantic.graph.len();
+        let metadata_count = self.env.metadata.graph.len();
+        let mut state = self.initial.clone();
+        let mut steps = Vec::with_capacity(self.choices.len());
+        for (generation, &(choice, seed, metadata_seed)) in (1..).zip(&self.choices) {
+            let seed = usize::from(seed);
+            let metadata_root = usize::from(metadata_seed) % metadata_count;
+            let step = match (choice, state.entries.historical.as_slice(), state.pins.as_slice()) {
+                (HistoryChoice::Commit, _, _) => Some(HistoryStep::Commit {
+                    next: RetentionEntry {
+                        generation,
+                        manifest: seed % semantic_count,
+                    },
+                    metadata_root,
+                }),
+                (HistoryChoice::CommitReuse, _, _) => {
+                    let manifests = state.entries.manifests();
+                    Some(HistoryStep::Commit {
+                        next: RetentionEntry {
+                            generation,
+                            manifest: manifests[seed % manifests.len()],
+                        },
+                        metadata_root,
+                    })
+                }
+                (HistoryChoice::Evict, [], _) | (HistoryChoice::Unpin, _, []) => None,
+                (HistoryChoice::Evict, historical, _) => Some(HistoryStep::Evict {
+                    victim: historical[seed % historical.len()],
+                    metadata_root,
+                }),
+                (HistoryChoice::Pin, _, _) => Some(HistoryStep::Pin(seed % semantic_count)),
+                (HistoryChoice::Unpin, _, pins) => {
+                    Some(HistoryStep::Unpin(pins[seed % pins.len()]))
+                }
+            };
+            if let Some(step) = step {
+                state = state.apply(step);
+                steps.push(step);
+            }
+        }
+        steps
+    }
+}
+
+fn history_environment(raw_graph: Vec<Vec<u8>>, object_bytes: Vec<u64>) -> TrialEnvironment {
+    let vertex_count = raw_graph.len();
+    TrialEnvironment {
+        graph: raw_graph
+            .into_iter()
+            .enumerate()
+            .map(|(parent, raw_children)| match parent {
+                0 => Vec::new(),
+                _ => raw_children
+                    .into_iter()
+                    .map(|child| usize::from(child) % parent)
+                    .collect(),
+            })
+            .collect(),
+        object_bytes,
+        quoted_read: vec![0; vertex_count],
+        consumed_read: vec![0; vertex_count],
+    }
+}
+
+fn composed_histories() -> impl Strategy<Value = ComposedHistory> {
+    (1usize..9, 1usize..5).prop_flat_map(|(semantic_count, metadata_count)| {
+        (
+            prop::collection::vec(prop::collection::vec(any::<u8>(), 0..4), semantic_count),
+            prop::collection::vec(0u64..5, semantic_count),
+            prop::collection::vec(prop::collection::vec(any::<u8>(), 0..3), metadata_count),
+            prop::collection::vec(1u64..5, metadata_count),
+            (0..semantic_count, 0..metadata_count),
+            prop::collection::vec(
+                (
+                    prop_oneof![
+                        3 => Just(HistoryChoice::Commit),
+                        2 => Just(HistoryChoice::CommitReuse),
+                        2 => Just(HistoryChoice::Evict),
+                        1 => Just(HistoryChoice::Pin),
+                        1 => Just(HistoryChoice::Unpin),
+                    ],
+                    any::<u8>(),
+                    any::<u8>(),
+                ),
+                1..4,
+            ),
+            prop::collection::vec(any::<bool>(), 1..9),
+        )
+            .prop_map(
+                |(
+                    raw_semantic,
+                    semantic_bytes,
+                    raw_metadata,
+                    metadata_bytes,
+                    (manifest, metadata_root),
+                    choices,
+                    schedule,
+                )| ComposedHistory {
+                    env: ComposedEnvironment {
+                        semantic: history_environment(raw_semantic, semantic_bytes),
+                        metadata: history_environment(raw_metadata, metadata_bytes),
+                    },
+                    initial: HistoryState::first(manifest, metadata_root),
+                    choices,
+                    schedule,
+                },
+            )
+    })
+}
+
+fn run_history(
+    variant: CompositionVariant,
+    env: &ComposedEnvironment,
+    schedule: &[bool],
+    initial: &HistoryState,
+    steps: &[HistoryStep],
+) -> Vec<(HistoryState, ComposedResult)> {
+    let mut state = initial.clone();
+    let mut base = composed_base(env, initial);
+    let mut results = Vec::with_capacity(steps.len());
+    for &step in steps {
+        let result = ComposedCase {
+            env: env.clone(),
+            base: base.clone(),
+            delta: state.canonical_delta(step),
+            schedule: schedule.to_vec(),
+        }
+        .run(variant, &ComposedLimits::UNBOUNDED);
+        state = state.apply(step);
+        let successor = match &result.outcome {
+            ComposedOutcome::Prepared(evidence) => Some(evidence.successor_base()),
+            ComposedOutcome::Refused(..) => None,
+        };
+        results.push((state.clone(), result));
+        match successor {
+            Some(successor) => base = successor,
+            None => break,
+        }
+    }
+    results
+}
+
+fn retained_union_diverges(
+    env: &ComposedEnvironment,
+    state: &HistoryState,
+    result: &ComposedResult,
+) -> bool {
+    match &result.outcome {
+        ComposedOutcome::Prepared(evidence) => {
+            let cold = cold_predecessor(&env.semantic, &state.entries.manifests());
+            evidence.retained.ledger.active != cold.ledger.active ||
+                (evidence.retained.objects, evidence.retained.bytes) !=
+                    (cold.objects, cold.bytes)
+        }
+        ComposedOutcome::Refused(..) => true,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct HistoryCoverage {
+    commits: usize,
+    alias_commits: usize,
+    evictions: usize,
+    alias_evictions: usize,
+    strict_unions: usize,
+    pins_outside_support: usize,
+}
+
+#[test]
+fn composed_domain_histories_match_independent_cold_oracles() {
+    let coverage = std::cell::Cell::new(HistoryCoverage::default());
+    trial_runner()
+        .run(&composed_histories(), |history| {
+            let env = &history.env;
+            let semantic_count = env.semantic.graph.len();
+            let joint = joint_data_environment(env);
+            let mut seen = coverage.get();
+            let mut state = history.initial.clone();
+            let mut base = composed_base(env, &state);
+            for step in history.steps() {
+                let next = state.apply(step);
+                let case = ComposedCase {
+                    env: env.clone(),
+                    base: base.clone(),
+                    delta: state.canonical_delta(step),
+                    schedule: history.schedule.clone(),
+                };
+                prop_assert_eq!(
+                    apply_delta(&state.entries.current_roots(semantic_count), &case.delta.current),
+                    Some(next.entries.current_roots(semantic_count))
+                );
+                prop_assert_eq!(
+                    apply_delta(
+                        &state.entries.retained_roots(semantic_count),
+                        &case.delta.retained
+                    ),
+                    Some(next.entries.retained_roots(semantic_count))
+                );
+                let result = case.run(CompositionVariant::Faithful, &ComposedLimits::UNBOUNDED);
+                prop_assert_eq!(&result.kept, &base);
+                let ComposedOutcome::Prepared(evidence) = &result.outcome else {
+                    return Err(TestCaseError::fail(format!(
+                        "a canonical composed step was refused without limits: {result:?}"
+                    )));
+                };
+                let successor = evidence.successor_base();
+                prop_assert_eq!(&successor, &composed_base(env, &next));
+                let alternate = ComposedCase {
+                    schedule: case.schedule.iter().map(|choice| !choice).collect(),
+                    ..case.clone()
+                };
+                match alternate
+                    .run(CompositionVariant::Faithful, &ComposedLimits::UNBOUNDED)
+                    .outcome
+                {
+                    ComposedOutcome::Prepared(other) => {
+                        prop_assert_eq!(other.successor_base(), successor.clone())
+                    }
+                    refused => {
+                        return Err(TestCaseError::fail(format!(
+                            "the complementary schedule refused a canonical step: {refused:?}"
+                        )));
+                    }
+                }
+
+                let (current, retained, metadata) =
+                    (&successor.current, &successor.retained, &successor.metadata);
+                prop_assert!(
+                    current
+                        .ledger
+                        .active
+                        .iter()
+                        .zip(&retained.ledger.active)
+                        .all(|(in_current, in_retained)| !in_current || *in_retained)
+                );
+                let (extra_objects, extra_bytes) = (0..semantic_count)
+                    .filter(|&vertex| {
+                        retained.ledger.active[vertex] && !current.ledger.active[vertex]
+                    })
+                    .fold((0, 0), |(objects, bytes), vertex| {
+                        (objects + 1, bytes + env.semantic.object_bytes[vertex])
+                    });
+                prop_assert_eq!(
+                    (retained.objects, retained.bytes),
+                    (current.objects + extra_objects, current.bytes + extra_bytes)
+                );
+                seen.strict_unions += usize::from(extra_objects > 0);
+
+                match step {
+                    HistoryStep::Commit { next: entry, .. } => {
+                        seen.commits += 1;
+                        seen.alias_commits +=
+                            usize::from(state.entries.manifests().contains(&entry.manifest));
+                    }
+                    HistoryStep::Evict { victim, .. } => {
+                        seen.evictions += 1;
+                        prop_assert_eq!(current, &base.current);
+                        if next.entries.manifests().contains(&victim.manifest) {
+                            seen.alias_evictions += 1;
+                            prop_assert_eq!(&retained.ledger.active, &base.retained.ledger.active);
+                            prop_assert_eq!(
+                                (retained.objects, retained.bytes),
+                                (base.retained.objects, base.retained.bytes)
+                            );
+                        }
+                    }
+                    HistoryStep::Pin(_) | HistoryStep::Unpin(_) => {
+                        prop_assert_eq!(&successor, &base)
+                    }
+                }
+
+                let joint_roots = [
+                    next.entries.retained_roots(semantic_count),
+                    root_counts(env.metadata.graph.len(), &[next.metadata_root]),
+                ]
+                .concat();
+                let joint_ledger = cold_graph_oracle(&joint.graph, &joint_roots);
+                prop_assert_eq!(
+                    &joint_ledger.counts[..semantic_count],
+                    retained.ledger.counts.as_slice()
+                );
+                prop_assert_eq!(
+                    &joint_ledger.active[..semantic_count],
+                    retained.ledger.active.as_slice()
+                );
+                prop_assert_eq!(
+                    &joint_ledger.counts[semantic_count..],
+                    metadata.ledger.counts.as_slice()
+                );
+                prop_assert_eq!(
+                    &joint_ledger.active[semantic_count..],
+                    metadata.ledger.active.as_slice()
+                );
+                prop_assert_eq!(
+                    joint.inventory(&joint_ledger),
+                    (retained.objects + metadata.objects, retained.bytes + metadata.bytes)
+                );
+
+                let other_pins = ComposedCase {
+                    delta: case.delta.with_pins(RootDelta {
+                        added: next.pins.clone(),
+                        removed: state.pins.clone(),
+                    }),
+                    ..case.clone()
+                };
+                prop_assert_eq!(
+                    other_pins.run(CompositionVariant::Faithful, &ComposedLimits::UNBOUNDED),
+                    result.clone()
+                );
+                let pins = root_counts(semantic_count, &next.pins);
+                for (vertex, &active) in joint_ledger.active.iter().enumerate() {
+                    let pinned = pins.get(vertex).is_some_and(|count| *count > 0);
+                    prop_assert_eq!(
+                        physically_protected(&retained.ledger, &metadata.ledger, &pins, vertex),
+                        active || pinned
+                    );
+                }
+                seen.pins_outside_support += usize::from(
+                    pins.iter()
+                        .zip(&retained.ledger.active)
+                        .any(|(count, active)| *count > 0 && !active),
+                );
+
+                state = next;
+                base = successor;
+            }
+            coverage.set(seen);
+            Ok(())
+        })
+        .expect("generated retention histories keep every domain equal to its cold oracle");
+    let seen = coverage.get();
+    for (event, count) in [
+        ("commit", seen.commits),
+        ("root-alias commit", seen.alias_commits),
+        ("eviction", seen.evictions),
+        ("root-alias eviction", seen.alias_evictions),
+        ("strict retained union", seen.strict_unions),
+        ("pin outside the retained support", seen.pins_outside_support),
+    ] {
+        assert!(count > 0, "no generated history exercised a {event}: {seen:?}");
+    }
+}
+
+#[test]
+fn composed_domain_budgets_are_separate_and_atomic() {
+    trial_runner()
+        .run(&composed_histories(), |history| {
+            let mut state = history.initial.clone();
+            let mut base = composed_base(&history.env, &state);
+            for step in history.steps() {
+                let case = ComposedCase {
+                    env: history.env.clone(),
+                    base: base.clone(),
+                    delta: state.canonical_delta(step),
+                    schedule: history.schedule.clone(),
+                };
+                for variant in COMPOSITION_VARIANTS {
+                    let trials = DOMAINS.map(|domain| {
+                        case.domain_trial(variant, &ComposedLimits::UNBOUNDED, domain)
+                    });
+                    for (domain, trial) in DOMAINS.into_iter().zip(&trials) {
+                        prop_assert_eq!(&trial.retained, case.base.domain(domain));
+                    }
+                    let composed = case.run(variant, &ComposedLimits::UNBOUNDED);
+                    prop_assert_eq!(&composed.kept, &case.base);
+                    prop_assert_eq!(
+                        composed.outcome,
+                        composed_outcome_spec(trials.map(|trial| trial.outcome))
+                    );
+                }
+
+                let unbounded = case.run(CompositionVariant::Faithful, &ComposedLimits::UNBOUNDED);
+                let ComposedOutcome::Prepared(evidence) = &unbounded.outcome else {
+                    return Err(TestCaseError::fail(format!(
+                        "a canonical composed step was refused without limits: {unbounded:?}"
+                    )));
+                };
+                let exact = ComposedLimits::exact(evidence);
+                prop_assert_eq!(&case.run(CompositionVariant::Faithful, &exact), &unbounded);
+                for domain in DOMAINS {
+                    for axis in BUDGET_AXES {
+                        let measured = evidence.domain(domain).measured(axis);
+                        if measured == 0 {
+                            continue;
+                        }
+                        prop_assert_eq!(
+                            case.run(
+                                CompositionVariant::Faithful,
+                                &exact.with(domain, axis, measured - 1)
+                            ),
+                            ComposedResult {
+                                kept: case.base.clone(),
+                                outcome: ComposedOutcome::Refused(
+                                    domain,
+                                    TrialRefusal::Budget(axis)
+                                ),
+                            }
+                        );
+                    }
+                }
+                let first_positive = DOMAINS
+                    .into_iter()
+                    .filter_map(|domain| {
+                        let prepared = evidence.domain(domain);
+                        BUDGET_AXES
+                            .into_iter()
+                            .find(|axis| prepared.measured(*axis) > 0)
+                            .map(|axis| (domain, axis, prepared.measured(axis) - 1))
+                    })
+                    .collect::<Vec<_>>();
+                for (index, &(earlier, earlier_axis, earlier_limit)) in
+                    first_positive.iter().enumerate()
+                {
+                    for &(later, later_axis, later_limit) in &first_positive[index + 1..] {
+                        let both = exact.with(earlier, earlier_axis, earlier_limit).with(
+                            later,
+                            later_axis,
+                            later_limit,
+                        );
+                        prop_assert_eq!(
+                            case.run(CompositionVariant::Faithful, &both).outcome,
+                            ComposedOutcome::Refused(earlier, TrialRefusal::Budget(earlier_axis))
+                        );
+                    }
+                }
+
+                base = evidence.successor_base();
+                state = state.apply(step);
+            }
+            Ok(())
+        })
+        .expect("generated composed trials keep per-domain budgets separate and failure-atomic");
+}
+
+#[test]
+fn domain_mutants_violate_the_cold_retained_union() {
+    let fixture = ComposedEnvironment {
+        semantic: fixture_case(vec![vec![], vec![0], vec![], vec![]], 0, &[], &[], &[]).env,
+        metadata: fixture_case(vec![vec![]], 0, &[], &[], &[]).env,
+    };
+    let union_objects = |variant, initial: &HistoryState, steps: &[HistoryStep]| {
+        run_history(variant, &fixture, &[true], initial, steps)
+            .pop()
+            .and_then(|(_, result)| match result.outcome {
+                ComposedOutcome::Prepared(evidence) => Some(evidence.retained.objects),
+                ComposedOutcome::Refused(..) => None,
+            })
+    };
+    let first_one = HistoryState::first(1, 0);
+    let sign = [HistoryStep::Commit {
+        next: RetentionEntry {
+            generation: 1,
+            manifest: 2,
+        },
+        metadata_root: 0,
+    }];
+    assert_eq!(union_objects(CompositionVariant::Faithful, &first_one, &sign), Some(3));
+    assert_eq!(
+        union_objects(CompositionVariant::CurrentDeltaOnRetained, &first_one, &sign),
+        Some(1)
+    );
+    assert_eq!(first_one.apply(sign[0]).entries.retained_roots(4)[1], 1);
+    let alias = [
+        HistoryStep::Commit {
+            next: RetentionEntry {
+                generation: 1,
+                manifest: 1,
+            },
+            metadata_root: 0,
+        },
+        HistoryStep::Evict {
+            victim: RetentionEntry {
+                generation: 0,
+                manifest: 1,
+            },
+            metadata_root: 0,
+        },
+    ];
+    assert_eq!(union_objects(CompositionVariant::Faithful, &first_one, &alias), Some(2));
+    assert_eq!(
+        union_objects(CompositionVariant::DeduplicatedRetainedRoots, &first_one, &alias),
+        Some(0)
+    );
+    assert_eq!(
+        first_one
+            .apply(alias[0])
+            .apply(alias[1])
+            .entries
+            .retained_roots(4)[1],
+        1
+    );
+    let first_two = HistoryState::first(2, 0);
+    let pin = [HistoryStep::Pin(3)];
+    let (_, pinned) =
+        run_history(CompositionVariant::Faithful, &fixture, &[true], &first_two, &pin)
+            .pop()
+            .expect("the pin fixture runs its one step");
+    let ComposedOutcome::Prepared(evidence) = &pinned.outcome else {
+        panic!("the faithful composition prepares the pin fixture");
+    };
+    assert_eq!(evidence.retained.objects, 1);
+    assert!(!evidence.retained.ledger.active[3]);
+    assert!(physically_protected(
+        &evidence.retained.ledger,
+        &evidence.metadata.ledger,
+        &root_counts(4, &[3]),
+        3
+    ));
+    assert_eq!(union_objects(CompositionVariant::PinsAsRetainedRoots, &first_two, &pin), Some(2));
+
+    let mutants = &COMPOSITION_VARIANTS[1..];
+    let detections = std::cell::Cell::new([0usize; 3]);
+    trial_runner()
+        .run(&composed_histories(), |history| {
+            let steps = history.steps();
+            let diverges = |variant| {
+                run_history(variant, &history.env, &history.schedule, &history.initial, &steps)
+                    .iter()
+                    .any(|(state, result)| retained_union_diverges(&history.env, state, result))
+            };
+            prop_assert!(
+                !diverges(CompositionVariant::Faithful),
+                "the faithful composition diverged from the cold retained union"
+            );
+            let mut seen = detections.get();
+            for (count, &mutant) in seen.iter_mut().zip(mutants) {
+                *count += usize::from(diverges(mutant));
+            }
+            detections.set(seen);
+            Ok(())
+        })
+        .expect("generated histories expose every composition mutant against the cold union");
+    for (count, mutant) in detections.get().into_iter().zip(mutants) {
+        assert!(count > 0, "no generated history exposed the {mutant:?} composition mutant");
+    }
+}

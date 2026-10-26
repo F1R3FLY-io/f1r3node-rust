@@ -846,6 +846,12 @@ rocq_compile_with_closed_count theories/IncrementalLedgerTrial.v 20 \
   "failure-atomic bounded private ledger trials"
 rocq_check_modules "failure-atomic bounded private ledger trials" \
   StackSafePDA.GenerationCheckpointPublication StackSafePDA.IncrementalLedgerTrial
+rocq_reject_placeholders theories/IncrementalDomainComposition.v
+rocq_compile_with_closed_count theories/IncrementalDomainComposition.v 11 \
+  "current, retained and metadata inventory composition"
+rocq_check_modules "current, retained and metadata inventory composition" \
+  StackSafePDA.GenerationCheckpointPublication StackSafePDA.IncrementalLedgerTrial \
+  StackSafePDA.IncrementalDomainComposition
 streaming_codec_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/StreamingCodecPDA.v 2>&1

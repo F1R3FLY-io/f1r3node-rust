@@ -576,8 +576,10 @@ The executable suite must contain at least one real trace for each outcome class
 Task 7755 extends `GenerationCheckpointPublication.v` with `IncrementalReachability`.
 This is a formal-first, single-domain graph model and a test-only executable specification.
 It is not the production successor constructor, a proof of Rust memory safety, or a
-replacement for cold object/semantic admission. The same model will require separately
-bound current-state, retained-semantic and metadata instances.
+replacement for cold object/semantic admission. Its current-state, retained-semantic and
+metadata instances are composed in
+[Current, retained and metadata inventory composition](#current-retained-and-metadata-inventory-composition-2026-10-25)
+(task 7922).
 
 Let $`R(v)`$ be explicit root multiplicity, $`C(v)`$ the derived incoming count,
 $`A(v)`$ the active bit, and $`I(A,v)`$ the sum of outgoing edge occurrences
@@ -946,6 +948,226 @@ The trial evidence in the verification record was taken at these sources:
 | `rspace++/tests/persistence/property_support.rs` | `5a3d0c00ce1c4afb1c547bf7164198a0e7533e08b49f754bdd6cd4eb95bcd7c3` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `7b6f0504278b474155ab53f86ef8c4f4677c4a33d9489d0f099a5cd0f99733fb` |
 
+### Current, retained and metadata inventory composition (2026-10-25)
+
+Task 7922 composes the single-domain trial of the previous section into the
+three inventory domains that a durable successor keeps:
+
+- the *current* domain roots the closure of the current retention entry's
+  manifest;
+- the *retained* domain roots the union of the closures of every retention
+  entry, historical and current;
+- the *metadata* domain roots the separately authenticated retention metadata,
+  over its own object graph.
+
+Two artifacts implement the composition:
+
+- the Rocq theory
+  `formal/rocq/stack_safe_pda/theories/IncrementalDomainComposition.v` (module
+  `CheckedDomainComposition`, built on `CheckedLedgerTrial`);
+- the executable test model in
+  `rspace++/tests/persistence/incremental_reachability_properties.rs`.
+
+The composition adds no arithmetic and no concurrency: every domain runs the
+unchanged trial, whose counters the Verus model of the previous section already
+covers, so it needs no new Verus or TLA+ model. Neither artifact is the
+production successor. Task 7924 replaces the production ledger's per-object
+union bit with per-domain counts, and task 7927 builds the trusted successor.
+
+![A composed trial: a retention step derives one signed root delta per domain; the current, retained and metadata trials run in order; the first refusal keeps all three predecessors; pins reach only physical protection](figures/domain-composition.svg)
+
+**Retention entries and root counters.** A retention entry $`e = (g, m)`$
+pairs a generation number $`g`$ with a manifest root $`m`$, written $`m(e)`$.
+The entries $`E = (e_c, H)`$ are the current entry $`e_c`$ and the list $`H`$
+of historical entries. For a list $`\ell`$ of vertices,
+$`\mathrm{occ}(\ell)(v)`$ counts the occurrences of $`v`$ in $`\ell`$, and
+$`m(H)`$ is the list of the manifests of $`H`$. The entries determine two root
+counters on the semantic graph:
+
+```math
+R_L(E) = \mathrm{occ}\bigl([\,m(e_c)\,]\bigr), \qquad
+R_U(E) = \mathrm{occ}\bigl(m(H) \mathbin{+\!\!+} [\,m(e_c)\,]\bigr),
+```
+
+where $`\mathbin{+\!\!+}`$ concatenates lists. Two entries with the same
+manifest are *root aliases*: they contribute two occurrences to $`R_U`$, not
+one. The metadata domain has its own root counter $`R_M`$ over the metadata
+graph. Pins form a fourth counter $`P`$ over semantic objects, but not a fourth
+ledger: no trial ever reads it.
+
+**Signed root deltas.** A root delta $`\delta = (\alpha, \rho)`$ lists added
+and removed root occurrences, the inputs of one trial. Applying it to a root
+counter $`R`$ gives $`R + \mathrm{occ}(\alpha) - \mathrm{occ}(\rho)`$. It is
+*authorized* when $`\mathrm{occ}(\rho)(v) \le R(v) + \mathrm{occ}(\alpha)(v)`$
+for every $`v`$, which is the trial's own first check. A retention step derives
+one delta per domain:
+
+| Step | Precondition | Current $`\delta_L`$ | Retained $`\delta_U`$ | Metadata $`\delta_M`$ | Pins $`\delta_P`$ |
+|---|---|---|---|---|---|
+| Commit $`t`$ | none | add $`m(t)`$, remove $`m(e_c)`$ | add $`m(t)`$ | an authorized change | none |
+| Evict $`v`$ | $`v`$ is in $`H`$ | none | remove $`m(v)`$ | an authorized change | none |
+| Pin $`p`$ | none | none | none | none | add $`p`$ |
+| Unpin $`p`$ | $`P(p) > 0`$ | none | none | none | remove $`p`$ |
+
+A commit makes $`t`$ current and appends $`e_c`$ to $`H`$. An eviction removes
+the first entry of $`H`$ equal to $`v`$. The current delta removes the old
+current manifest, but the retained delta does not, because the old entry stays
+retained. The test model's metadata change replaces the single metadata root on
+every commit and eviction.
+
+Production today only commits. `bind_durable_transaction` appends the previous
+current state to the historical list and makes the target current
+(`rspace++/src/rspace/persistence/durable/admission.rs:1479-1483`), so retention
+is keep-all. Eviction is modeled anyway, because removal is the only operation
+under which counting root aliases matters: with commits alone the retained roots
+only grow, and a set of roots then has the same support as a multiset.
+
+**The composed trial, in literate form.** Write $`\pi_L`$, $`\pi_U`$ and
+$`\pi_M`$ for the three domain predecessors, each a predecessor
+$`(\Lambda, R, O, B)`$ of the previous section, and $`L_L`$, $`L_U`$ and
+$`L_M`$ for three separate limit vectors. Every refusal in parts 1–3 returns the
+composed predecessor $`(\pi_L, \pi_U, \pi_M)`$ unchanged, together with the
+refusing domain and its reason $`w`$; no later domain runs.
+
+1. ⟨Current trial⟩. Run the trial over the semantic graph from $`\pi_L`$ with
+   $`\delta_L`$ under $`L_L`$, or return
+   $`\mathrm{Refused}(\mathrm{Current}, w)`$.
+2. ⟨Retained trial⟩. Run the trial over the semantic graph from $`\pi_U`$ with
+   $`\delta_U`$ under $`L_U`$, or return
+   $`\mathrm{Refused}(\mathrm{Retained}, w)`$.
+3. ⟨Metadata trial⟩. Run the trial over the metadata graph from $`\pi_M`$ with
+   $`\delta_M`$ under $`L_M`$, or return
+   $`\mathrm{Refused}(\mathrm{Metadata}, w)`$.
+4. ⟨Prepare⟩. Return the three prepared evidences. The successor base is the
+   triple of the predecessors they carry.
+
+The pin delta is an input to no part. An object is *physically protected* when
+it is active in the retained or the metadata ledger, or pinned:
+
+```math
+\mathrm{protected}(v) \iff A_U(v) \lor A_M(v) \lor P(v) > 0 ,
+```
+
+where $`A_U`$ and $`A_M`$ are the active bits of the retained and metadata
+ledgers.
+
+**Premises.** A composed base is *valid* for entries $`E`$ and metadata roots
+$`R_M`$ when each domain's ledger is coherent, its roots equal $`R_L(E)`$,
+$`R_U(E)`$ or $`R_M`$ respectively, it is quiescent for those roots, and its
+inventories are exact. The theorems that compare prepared ledgers with cold
+ledgers assume, as the single-domain theorems do, that each graph is ranked:
+every edge descends a rank, so the quiescent ledger for given roots is unique.
+The data-inventory theorem also assumes that both graphs are closed over their
+universes, that each domain's roots lie in its own universe, and that the
+semantic universe $`S`$ and the metadata universe $`M`$ are disjoint lists
+without repeats, written $`\mathrm{NoDup}(S \mathbin{+\!\!+} M)`$. Production
+enforces the disjointness where the two inventories meet:
+`try_visit_checkpoint_references` refuses with `DuplicateInventoryDigest` when
+the retention manifest's digest is also in the retained union
+(`rspace++/src/rspace/persistence/checkpoint.rs:306-340`), and
+`existing_digest_is_rejected` proves that the ordered inventory rejects any
+digest it already holds.
+
+**Theorems.** The module proves eleven capstones. Each has a
+`Print Assumptions` line, every one reports a closed context, and the compiled
+module passes independent kernel checking.
+
+| # | Theorem (`CheckedDomainComposition.`…) | Statement |
+|---|---|---|
+| 1 | `composed_trial_is_the_conjunction_of_domain_trials` | For every variant, the composed trial keeps the composed predecessor; its outcome is the first-refusal combination of the three domain outcomes; and it prepares $`e`$ exactly when each domain trial prepares its component of $`e`$ from its own predecessor. |
+| 2 | `composed_trial_agrees_with_cold_domains` | On ranked graphs, with valid trial inputs, each prepared domain equals any coherent quiescent ledger for that domain's applied roots, with exact roots and inventories. |
+| 3 | `canonical_retention_deltas_realize_entry_roots` | For every admissible step from $`E`$ to $`E'`$, the canonical current and retained deltas are authorized, and applying them to $`R_L(E)`$ and $`R_U(E)`$ gives exactly $`R_L(E')`$ and $`R_U(E')`$. |
+| 4 | `current_closure_is_within_retained_union` | On a ranked graph, the cold ledgers for $`R_L(E)`$ and $`R_U(E)`$ satisfy $`A_L \subseteq A_U`$, and for every weight the retained inventory is the current inventory plus the weight of the retained-only objects. |
+| 5 | `evicting_one_root_alias_keeps_retained_support` | If the evicted entry's manifest is still the manifest of a remaining entry, the cold retained ledgers before and after the eviction have the same active set and the same inventory for every weight. |
+| 6 | `data_inventory_is_disjoint_retained_plus_metadata` | Under the premises above, no object is active in both the retained and the metadata ledger, and the data inventory over $`S \mathbin{+\!\!+} M`$ equals the retained inventory plus the metadata inventory. |
+| 7 | `pins_protect_physically_without_changing_semantic_evidence` | Replacing the pin delta never changes the faithful composed result, and $`\mathrm{protected}(v)`$ holds exactly when $`A_U(v)`$, $`A_M(v)`$ or $`P(v) > 0`$ holds. |
+| 8 | `canonical_composed_step_preserves_entry_domains` | From a base valid for $`E`$ and $`R_M`$, a prepared canonical step yields a successor base valid for $`E'`$ and the applied metadata roots, whose current and retained ledgers satisfy theorem 4. Whole histories follow by induction on the steps, since theorem 1 keeps the base of a refused step. |
+| 9 | `retained_sign_mutant_drops_the_predecessor_closure` | Negative control (sign): giving the retained domain the current delta drops the old manifest's closure. |
+| 10 | `deduplicated_alias_mutant_drops_a_shared_closure` | Negative control (alias): adding a retained root only when it is absent loses a shared closure once one alias is evicted. |
+| 11 | `pinned_root_mutant_inflates_the_retained_union` | Negative control (pin): treating pins as retained roots adds the pinned object to the retained union, while the faithful result protects it without retaining it. |
+
+Theorems 9–11 are closed computations on one fixture: a semantic graph of four
+objects, numbered 0 to 3, with the single edge from 1 to 0 and unit weights, and
+a metadata graph of one object. Each variant changes only the retained delta:
+
+| Variant | Retained delta it uses | Fixture history | Retained objects, faithful | Retained objects, mutant |
+|---|---|---|---|---|
+| `CurrentDeltaOnRetained` | the current delta | entry $`(0, 1)`$ current; commit $`(1, 2)`$ | 3 | 1 |
+| `DeduplicatedRetainedRoots` | additions only for manifests not yet rooted | entry $`(0, 1)`$ current; commit $`(1, 1)`$; evict $`(0, 1)`$ | 2 | 0 |
+| `PinsAsRetainedRoots` | the retained delta plus the pin delta | entry $`(0, 2)`$ current; pin 3 | 1 | 2 |
+
+**Executable bindings.** The Rust test model mirrors the Rocq definitions one
+for one: `RetentionEntries`, `HistoryState::canonical_delta`,
+`retained_delta_of` for the variants, `ComposedCase::run` (the nested
+first-refusal composition), `composed_outcome_spec` and `physically_protected`.
+Each domain trial is the `TrialCase` of the previous section. The oracles are
+independent of the trial: `composed_base` computes each domain's cold ledger by
+traversal from the entry-derived roots, and `joint_data_environment` builds one
+data graph with the metadata objects numbered after the semantic ones, so the
+two universes are disjoint by construction. Each generated history has:
+
+- a semantic DAG of one to eight objects, each with up to three children of
+  lower index, duplicates kept, and byte weights from 0 to 4;
+- a metadata DAG of one to four objects, each with up to two children of lower
+  index, and byte weights from 1 to 4;
+- zero read quotes, since quote soundness is the trial's concern (LT-08);
+- an initial entry and metadata root, then one to three steps drawn with weights
+  3 for a commit, 2 for a commit that reuses an existing manifest, 2 for an
+  eviction, 1 for a pin and 1 for an unpin; an eviction or unpin with nothing to
+  remove is skipped;
+- a schedule of one to eight bits.
+
+A history therefore holds at most four retention entries, within the generator
+discipline below. Each property runs 256 cases. The history property counts
+commits, alias commits, evictions, alias evictions, strict retained unions and
+pins outside the retained support, and fails unless every count is positive.
+
+| ID | Required property and negative-control boundary | Test |
+|---|---|---|
+| DC-01 | A composed trial keeps the composed predecessor, and for every variant its outcome is the first-refusal combination of the three domain outcomes, each domain trial keeping its own predecessor. Each domain has its own limits: exact measured limits accept with identical evidence, one below a positive axis of one domain refuses as that domain on that axis, and when two domains are tightened the earlier one refuses. | `composed_domain_budgets_are_separate_and_atomic` |
+| DC-02 | Every canonical step of a generated history prepares without limits, and its successor base equals, domain by domain, the cold ledger, roots and inventories for the successor entries' roots and metadata root. The complementary schedule prepares the same successor base. | `composed_domain_histories_match_independent_cold_oracles` |
+| DC-03 | The canonical current and retained deltas of every generated step are authorized and realize exactly the successor entries' root counters. | `composed_domain_histories_match_independent_cold_oracles` |
+| DC-04 | The current support lies within the retained support, and the retained inventory is the current inventory plus the objects and bytes of the retained-only objects; some generated step has a strict difference. | `composed_domain_histories_match_independent_cold_oracles` |
+| DC-05 | An eviction leaves the current domain bit-identical. Evicting one of several entries that share a manifest keeps the retained active set and inventory, although the alias's root count falls. | `composed_domain_histories_match_independent_cold_oracles` |
+| DC-06 | On the joint data graph, the cold ledger for the retained and metadata roots, restricted to each part, equals that domain's counts and active set, and the joint inventory is the retained inventory plus the metadata inventory, so no object is counted twice. | `composed_domain_histories_match_independent_cold_oracles` |
+| DC-07 | Replacing a step's pin delta leaves the faithful composed result identical, pin and unpin steps leave all three domains unchanged, and an object is physically protected exactly when the joint cold ledger has it active or it is pinned; some generated pin protects an object outside the retained support. | `composed_domain_histories_match_independent_cold_oracles` |
+| DC-08 | Fixtures reproduce theorems 9–11 value for value. On generated histories, with each variant continuing from its own successor bases, the faithful composition never diverges from the cold retained union, and each mutant diverges on some history, by refusing or by a different retained active set or inventory. | `domain_mutants_violate_the_cold_retained_union` |
+
+`model_property_manifest_is_unique_and_exhaustive` checks these eight bindings.
+It reads `IncrementalDomainComposition.v` as part of its Rocq source, requires
+each of the theory's eleven `Print Assumptions` capstones to be cited by a DC
+row of the derivation matrix, and requires the integrated runner to compile the
+theory.
+
+**Boundary.** These results hold for the abstract composition and its test
+model. They do not show that the production successor maintains these domains.
+The production closure ledger, `StructuralClosureLedgerV1`, keeps one
+`retained_union_member` bit per digest
+(`rspace++/src/rspace/persistence/closure.rs:182-194`). A bit records membership
+in the union, but it cannot be decremented: when one of two entries that share
+an object is removed, the bit alone cannot tell whether another entry still
+reaches the object, which is exactly the alias mutant's failure. Task 7924
+replaces the bit with per-domain checked counts, which must refine this model.
+Path and namespace rewrite provenance, which admits an inherited object only
+when the provenance set names its namespace, kind, path and reference
+(`closure.rs:676-693`), and full-byte collision checks belong to object
+admission: the model's vertices are already authenticated digests. The model's
+pin protects the pinned object itself; which closure a production pin protects,
+and how leases and the WAL frontier interact with it, is the garbage
+collector's contract (tasks 7943 to 7945). Reset to an older root alias is task
+7756. Exact rooted support still requires an acyclic graph.
+
+The composition evidence in the verification record was taken at these sources:
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/IncrementalDomainComposition.v` | `5f9701702c1d9e400119c50b8859d9a1d721f792608f8a7e15b3823fbc733d9a` |
+| `formal/rocq/stack_safe_pda/_CoqProject` | `c928e89709719aed7e9e2b917571bad39442d7c3b1b9739bc868b700a378b88e` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `44f8ef6185f33ac7a481c31872ee2c0bd56f342cf658845d3a085b331ac4f0d2` |
+| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `fa8288d65ea8032e0e9413e132aef9d2df2f4cbccde5b32e1e317ef238c8f0df` |
+| `rspace++/tests/persistence/property_support.rs` | `1c72135f5fb4d2071fe31f1e76f18ad98725c2eae895fe6546bc7087551f41e2` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `7d1cf5076d3b54a2523682a4ee664c8beb445ef8cc8cda19d06607bd231c2254` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -981,13 +1203,21 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | LT-02 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_step_is_failure_atomic`, `CheckedLedgerTrial.accepted_event_reservations_are_checked_arithmetic` | P | The natural-number reservations are refined by the test model's `u64` usage with `u128` candidates and by the Verus counters; production counters remain open. |
 | LT-03 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.checked_step_is_failure_atomic` | P | Retained predecessors are compared by value in the test model; production copy-on-write nonmutation remains open (task 7924). |
 | LT-04 | `EXEC_ONLY` | `CheckedLedgerTrial.prepared_trial_agrees_with_cold_ledger`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.every_valid_authorized_trial_prepares_without_limits` | P | The cold oracle is an independent traversal of the test-only vector graph; production ledgers and object authentication remain open. |
-| LT-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Union and final inventories are separate abstract axes; the production inventory domains are task 7922. |
+| LT-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Union and final inventories are separate abstract axes; the current, retained and metadata domains compose in DC-01 to DC-08, and the production domains remain open (task 7924). |
 | LT-06 | `EXEC_ONLY` | `CheckedLedgerTrial.live_scratch_is_bounded_by_its_reserved_peak`, `CheckedLedgerTrial.uncharged_phase_initialization_mutant_overruns_scratch` | P | Scratch counts pending events and suspended frames; byte-level scratch accounting remains open. |
 | LT-07 | `EXEC_ONLY` | `CheckedLedgerTrial.live_scratch_is_bounded_by_its_reserved_peak`, `CheckedLedgerTrial.scratch_allocation_conflation_mutant_refuses_admissible_trial` | P | The peak-versus-allocation distinction is checked on abstract scratch; production allocation accounting remains open. |
 | LT-08 | `EXEC_ONLY` | `CheckedLedgerTrial.sound_quotes_bound_consumed_read_bytes`, `CheckedLedgerTrial.unsound_quote_admits_unbounded_consumption` | P | Quote soundness is a premise, and the unsound-quote witness shows it cannot be dropped; production read quotes remain open. |
 | LT-09 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis` | P | Exact boundaries are checked per axis on generated trials; production limit configuration remains open. |
 | LT-10 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_trial_is_the_guarded_unbounded_trial`, `CheckedLedgerTrial.refused_trial_retries_from_identical_predecessor` | P | Retry equivalence is checked under generated limits near the measured evidence; the production retry policy remains open. |
 | LT-11 | `EXEC_ONLY` | `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedLedgerTrial.skipped_cursor_contribution_mutant_is_not_quiescent`, `CheckedLedgerTrial.duplicated_cursor_contribution_mutant_is_not_quiescent` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must both be positive. |
+| DC-01 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | First-refusal composition and per-domain limits are checked for all four variants on generated histories; the production domain order and limit configuration remain open (task 7927). |
+| DC-02 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains` | P | Successor bases are compared with independent cold traversals after every generated step; production per-domain counts remain open (task 7924). |
+| DC-03 | `EXEC_ONLY` | `CheckedDomainComposition.canonical_retention_deltas_realize_entry_roots` | P | Signed deltas are derived from test-model entries; production retention entries are only appended today (`admission.rs:1479-1483`). |
+| DC-04 | `EXEC_ONLY` | `CheckedDomainComposition.current_closure_is_within_retained_union` | P | Inclusion and the exact difference are checked on cold ledgers; the production current and union inventories remain open (task 7924). |
+| DC-05 | `EXEC_ONLY` | `CheckedDomainComposition.evicting_one_root_alias_keeps_retained_support` | P | Alias evictions are generated in the test model; production has no eviction today. |
+| DC-06 | `EXEC_ONLY` | `CheckedDomainComposition.data_inventory_is_disjoint_retained_plus_metadata`, `existing_digest_is_rejected` | P | Disjoint universes are a premise; production refuses a shared digest with `DuplicateInventoryDigest` where the retained union meets the retention manifest. |
+| DC-07 | `EXEC_ONLY` | `CheckedDomainComposition.pins_protect_physically_without_changing_semantic_evidence` | P | A model pin protects the pinned object itself; the closure a production pin protects is the garbage collector's contract (tasks 7943 to 7945). |
+| DC-08 | `EXEC_ONLY` | `CheckedDomainComposition.retained_sign_mutant_drops_the_predecessor_closure`, `CheckedDomainComposition.deduplicated_alias_mutant_drops_a_shared_closure`, `CheckedDomainComposition.pinned_root_mutant_inflates_the_retained_union` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must all be positive. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -1133,6 +1363,18 @@ test and the streaming-catalog test passed **25/25** single-threaded in debug
 (0.39 s) and release (0.05 s). These results cover the abstract trial and its test
 model only. See engineering journal J-244
 for caps, evidence hashes and the remaining production obligations.
+
+The 2026-10-25 composition extension adds `DC-01` through `DC-08`. The
+catalog/derivation/binding registry now contains **141** IDs: the 133 above and
+the eight composition rows. On an isolated export of the candidate tree,
+`IncrementalDomainComposition.v` compiled with all **11** capstones closed under
+the global context, its trial dependency again closed all **20**, and both
+passed independent kernel checking. The three composition properties, the
+twenty-three earlier reachability properties, this registry test and the
+streaming-catalog test passed **28/28** single-threaded in debug (0.59 s) and
+release (0.09 s). These results cover the abstract composition and its test
+model only. See engineering journal J-245 for caps, evidence hashes and the
+remaining production obligations.
 
 ## Caller-authority contract (2026-09-06)
 

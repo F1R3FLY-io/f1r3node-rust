@@ -18806,6 +18806,148 @@ domains compose (task 7922), that object bytes are authenticated, or that quoted
 read sizes are sound. These are agent-run results; independent review and the
 approved pgmcp verification recipe remain required.
 
+### J-245 — 2026-10-25: current, retained and metadata inventory composition (task 7922)
+
+**DERIVED.** This entry follows J-244. Task 7922 composes the single-domain
+trial of J-244 into the three inventory domains that a durable successor keeps:
+
+- the *current* domain, rooted at the manifest of the current retention entry;
+- the *retained* domain, rooted at the manifests of every retention entry,
+  historical and current, counted with multiplicity;
+- the *metadata* domain, rooted at the separately authenticated retention
+  metadata, over its own object graph.
+
+The new theory `formal/rocq/stack_safe_pda/theories/IncrementalDomainComposition.v`
+(module `CheckedDomainComposition`, built on `CheckedLedgerTrial`) proves eleven
+capstones, all closed under the global context. These design decisions are what
+a reconstruction must preserve:
+
+1. Each domain runs the unchanged J-244 trial under its own limit vector, in the
+   fixed order current, retained, metadata. The first refusal returns all three
+   predecessors unchanged, with the refusing domain and its reason, and no later
+   domain runs. A budget of one domain can never be spent by another
+   (theorem 1, `DC-01`).
+2. Root aliases are counted, not deduplicated. Two retention entries $`e`$ and
+   $`e'`$ with $`m(e) = m(e')`$ contribute two occurrences to the retained root
+   counter $`R_U`$. Evicting one of them lowers the count and keeps the support
+   (theorem 5). The alias control `DeduplicatedRetainedRoots`, which adds a
+   retained root only when it is absent, loses a shared closure once one alias
+   is evicted (theorem 10).
+3. A commit's current and retained deltas differ on the old current manifest
+   $`m(e_c)`$: the current delta removes it and the retained delta does not,
+   because the old entry stays retained. The sign control
+   `CurrentDeltaOnRetained` gives the retained domain the current delta and drops
+   the predecessor's closure (theorem 9).
+4. Pins form a fourth counter $`P`$ but not a fourth ledger. The pin delta is
+   the input of no trial, so replacing it never changes the composed evidence,
+   and an object is physically protected exactly when it is active in the
+   retained or metadata ledger or pinned (theorem 7). The pin control
+   `PinsAsRetainedRoots` adds the pin delta to the retained delta and inflates
+   the retained union (theorem 11).
+5. The data inventory equals the retained inventory plus the metadata inventory
+   only when the semantic and metadata universes are disjoint lists without
+   repeats (theorem 6). Production enforces that premise where the two
+   inventories meet, with `DuplicateInventoryDigest`
+   (`rspace++/src/rspace/persistence/checkpoint.rs:306-340`).
+6. Eviction is modeled although production retention is keep-all
+   (`rspace++/src/rspace/persistence/durable/admission.rs:1479-1483`). With
+   commits alone the retained roots only grow, a set of roots has the same
+   support as a multiset, and the alias control cannot be observed.
+
+The task's requirements map onto the model as follows:
+
+| Requirement | Where it is met |
+|---|---|
+| current closure, retained union and retention metadata compose | theorems 1, 2 and 8; `DC-01`, `DC-02` |
+| root aliases | theorems 5 and 10; `DC-05`, `DC-08` |
+| repeated child and content edges | the generator keeps duplicate children; every edge occurrence is a reference count, compared with the cold ledger in `DC-02` and `DC-06` |
+| bytes once per digest | each active object's bytes count once in its domain (theorem 4) and once across domains (theorem 6); `DC-04`, `DC-06` |
+| removed and replaced inherited objects | a commit replaces the current manifest and an eviction removes a retained one (theorem 3); the replaced closure leaves the current domain and stays retained (theorem 4); `DC-03` to `DC-05` |
+| finite-DAG authentication | the ranked-graph premise of theorems 2, 4, 5, 6 and 8; exact rooted support still requires an acyclic graph |
+| pins reclaim physically, never reach semantics | theorem 7; `DC-07` |
+| independent cold-oracle histories and sign, alias and pin mutants before implementation | `DC-02` to `DC-07` against `composed_base`; theorems 9–11 and `DC-08` |
+| path and namespace rewrite provenance; full-byte collision checks | object admission, outside this model: its vertices are already authenticated digests (`rspace++/src/rspace/persistence/closure.rs:676-693`) |
+
+The signed-delta table, the literate composed trial, the theorem list, the
+fixture table and the `DC-01`–`DC-08` bindings are in the
+[generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#current-retained-and-metadata-inventory-composition-2026-10-25),
+together with a state figure (`figures/domain-composition.svg`).
+
+**DEPARTURES FROM THE DESIGN.** Three choices differ from the design written
+before the theory:
+
+1. The theory has eleven capstones, not ten. The added
+   `canonical_composed_step_preserves_entry_domains` states the per-step history
+   invariant: a prepared canonical step from a base valid for entries $`E`$
+   yields a base valid for $`E'`$. The generated history test checks exactly
+   that invariant at every step, and whole histories follow by induction.
+2. The alias fixture runs two steps and continues each variant from its own
+   successor base: entry $`(0, 1)`$, a commit of $`(1, 1)`$, then the eviction of
+   $`(0, 1)`$, leaving 2 retained objects against the control's 0. The design
+   evicted from a base built for entries that already held both aliases (3
+   objects against 1). Such a base already counts both alias occurrences, and
+   the deduplicating control changes only additions, so its eviction removes one
+   of two occurrences exactly as the faithful composition does. The control
+   diverges only when it has built its own roots through the aliasing commit.
+3. A generated history draws one to three steps after its initial entry, so it
+   holds at most four retention entries, as rule 6 of the catalog's generator
+   discipline requires. The design drew one to six steps and turned a commit at
+   four entries into an eviction of the oldest. The test model caps the step
+   count instead, so it never rewrites a drawn choice.
+
+**EXECUTABLE REFINEMENT.** The Rust test model in
+`rspace++/tests/persistence/incremental_reachability_properties.rs` mirrors the
+Rocq definitions one for one: `RetentionEntries`,
+`HistoryState::canonical_delta`, `retained_delta_of`, `ComposedCase::run`,
+`composed_outcome_spec` and `physically_protected`. Each domain trial is the
+J-244 `TrialCase`. Two oracles are independent of the trial:
+
+- `composed_base` computes each domain's cold ledger by traversal from the
+  entry-derived roots;
+- `joint_data_environment` builds one data graph that numbers the metadata
+  objects after the semantic ones, so the two universes are disjoint by
+  construction.
+
+Three properties, at 256 generated cases each, bind `DC-01` to `DC-08`. The
+history property also counts commits, alias commits, evictions, alias evictions,
+strict retained unions and pins outside the retained support, and fails unless
+every count is positive. The registry wiring changes in three ways:
+
+- `generation_checkpoint_properties.rs` adds the `DC` family;
+- it reads `IncrementalDomainComposition.v` as part of its Rocq source, so every
+  composition capstone must be cited by a DC derivation row;
+- it requires the integrated gate to compile the theory.
+
+The registry now holds 141 IDs, up from 133. The gate compiles the theory with
+`rocq_compile_with_closed_count … 11` and kernel-checks the publication, trial
+and composition modules. The composition adds no arithmetic and no concurrency,
+so no Verus or TLA+ model changes.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `15deae91` exported to
+`target/scratch/idx`. That tree is HEAD `621dfa1f` plus this change, before this
+journal entry and the catalog's verification-record paragraph were written. It
+ran one heavy job at a time, each in a headless user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| Rocq dependency closure (publication, trial, composition), closed capstones, `coqchk` | 8 GiB | trial 20 of 20 and composition 11 of 11 closed; kernel check passed | `target/perf/logs/phase0/7922-evidence-rocq-20261026T030359Z.log` | `30cd510b674b1967a04dc51f6abfd859ffe51ed1dc035187a6780c274a28e7b0` |
+| 26 reachability properties, registry test, streaming-catalog test, debug | 32 GiB, one test thread | 28 of 28 passed in 0.59 s | `target/perf/logs/phase4/7922-properties-debug-20261026T030449Z.log` | `67f275171f012b6fa3ae7a540e8466bf6fcd489d166e525fb5c2dc1066769f39` |
+| the same, release | as above | 28 of 28 passed in 0.09 s | `target/perf/logs/phase4/7922-properties-release-20261026T030449Z.log` | `6b92072009b28a0ae3bdc1f3aff76c2077ff5f37cff4063118bb70fca7a4f9a9` |
+
+The commit's full export gate (`cargo check`, clippy, the release nextest suites
+for `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the doc tests)
+is recorded in the pgmcp progress note for task 7922. These results hold for the
+abstract composition and its test model. They do not show that the production
+successor maintains these domains: the production closure ledger keeps one
+`retained_union_member` bit per digest
+(`rspace++/src/rspace/persistence/closure.rs:182-194`), which cannot be
+decremented and so fails exactly as the alias control does. Task 7924 replaces it
+with per-domain checked counts that must refine this model, and task 7927 builds
+the trusted successor. Which closure a production pin protects is the garbage
+collector's contract (tasks 7943 to 7945), and reset to an older root alias is
+task 7756. These are agent-run results; independent review and the approved
+pgmcp verification recipe remain required.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

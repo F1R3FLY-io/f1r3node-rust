@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT",
+        "IR", "CR", "LT", "DC",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -471,6 +471,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             "../../../formal/rocq/stack_safe_pda/theories/GenerationCheckpointPublication.v"
         ),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalLedgerTrial.v"),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalDomainComposition.v"),
     ]
     .concat();
     let mut cited_tla = BTreeSet::new();
@@ -552,6 +553,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     assert!(
         formal_gate.contains("theories/IncrementalLedgerTrial.v"),
         "the integrated formal gate does not compile the ledger-trial theory cited by LT rows",
+    );
+    assert!(
+        formal_gate.contains("theories/IncrementalDomainComposition.v"),
+        "the integrated formal gate does not compile the composition theory cited by DC rows",
     );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols

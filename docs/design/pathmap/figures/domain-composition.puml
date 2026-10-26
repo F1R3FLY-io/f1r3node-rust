@@ -1,0 +1,62 @@
+@startuml domain-composition
+' ============================================================================
+' Current, retained and metadata inventory composition (task 7922): the control
+' flow of run_composed in IncrementalDomainComposition.v and of
+' ComposedCase::run in the Rust test model
+' rspace++/tests/persistence/incremental_reachability_properties.rs.
+'   GREY   #616161  the composed predecessor: read, never written
+'   BLUE   #1565C0  the retention step and the signed root deltas it derives
+'   GREEN  #2E7D32  domain trials that prepare, and the prepared evidence
+'   AMBER  #EF6C00  pins and physical protection, outside every trial
+'   RED    #C62828  refusals: each one returns the composed predecessor
+'   PURPLE #6A1B9A  the three negative-control variants
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam StateBorderColor #455A64
+skinparam StateFontSize 13
+skinparam NoteBorderColor #455A64
+
+title <b>A composed trial over the current, retained and metadata domains</b>\neach domain runs its own bounded trial; the first refusal keeps all three predecessors
+
+state "Composed predecessor" as Base #E0E0E0 : <latex>(\pi_L, \pi_U, \pi_M)</latex>: current, retained and\nmetadata ledgers, roots and inventories
+state "Retention step" as Step #BBDEFB : Commit t, Evict v, Pin p or Unpin p\nderives <latex>(\delta_L, \delta_U, \delta_M, \delta_P)</latex>
+state "Current trial" as Current #C8E6C9 : bounded trial on <latex>\pi_L</latex> with <latex>\delta_L</latex>\nover the semantic graph, current limits
+state "Retained trial" as Retained #C8E6C9 : bounded trial on <latex>\pi_U</latex> with <latex>\delta_U</latex>\nover the semantic graph, retained limits
+state "Metadata trial" as Metadata #C8E6C9 : bounded trial on <latex>\pi_M</latex> with <latex>\delta_M</latex>\nover the metadata graph, metadata limits
+state "Prepared" as Prepared #A5D6A7 : three prepared evidences; the successor\nbase is the triple of their predecessors
+state "Refused(domain, why)" as Refused #FFCDD2 : kept = <latex>(\pi_L, \pi_U, \pi_M)</latex>, unchanged;\nno later domain runs
+state "Physical protection" as Protect #FFE0B2 : <latex>A_U(v) \lor A_M(v) \lor P(v) > 0</latex>\nnever an input to a trial
+state "Negative controls" as Mutants #E1BEE7 : CurrentDeltaOnRetained (sign)\nDeduplicatedRetainedRoots (alias)\nPinsAsRetainedRoots (pin)
+
+[*] --> Base
+Base --> Step
+Step -[#1565C0]-> Current : <latex>\delta_L, \delta_U, \delta_M</latex>
+Current -[#C62828]-> Refused : Current
+Current -[#2E7D32]-> Retained : prepared
+Retained -[#C62828]-> Refused : Retained
+Retained -[#2E7D32]-> Metadata : prepared
+Metadata -[#C62828]-> Refused : Metadata
+Metadata -[#2E7D32]-> Prepared : prepared
+Step -[#EF6C00,dashed]-> Protect : <latex>\delta_P</latex> only
+Prepared -[#EF6C00,dashed]-> Protect : retained and metadata supports
+Mutants -[#6A1B9A,dashed]-> Retained : replaces <latex>\delta_U</latex>
+Prepared --> [*]
+Refused --> [*]
+
+note right of Step #E3F2FD
+  Commit t: <latex>\delta_L = +[m(t)] - [m(e_c)]</latex>, <latex>\delta_U = +[m(t)]</latex>
+  Evict v (historical): <latex>\delta_L = \varnothing</latex>, <latex>\delta_U = -[m(v)]</latex>
+  Pin p: <latex>\delta_P = +[p]</latex>; Unpin p: <latex>\delta_P = -[p]</latex>
+  <latex>\delta_M</latex> replaces the metadata root on Commit and Evict
+end note
+
+note left of Prepared #F1F8E9
+  On ranked graphs the successor equals, domain by domain,
+  the cold ledger for the successor entries' roots:
+  <latex>R_L = \mathrm{occ}[m(e_c)]</latex>, <latex>R_U = \mathrm{occ}(m(H) \mathbin{+\!\!+} [m(e_c)])</latex>,
+  and <latex>A_L \subseteq A_U</latex> with the retained-only objects as the difference.
+end note
+@enduml
