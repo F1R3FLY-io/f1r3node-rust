@@ -433,10 +433,10 @@ async fn multi_parent_casper_should_reject_a_parentless_non_genesis_block_that_b
     block.seq_num = 0;
     block.body.state.bonds.push(Bond {
         validator: forger.public_key.bytes.clone(),
-        stake: 1_000,
+        stake: 1_000.into(),
     });
     let forged = forger.sign_block(&block);
-    assert!(proto_util::weight_map(&forged)[&forged.sender] > 0);
+    assert!(proto_util::weight_map(&forged)[&forged.sender] > 0.into());
 
     let status = node.process_block(forged.clone()).await.unwrap();
 

@@ -453,7 +453,7 @@ impl CasperSnapshot {
         Ok(metadata
             .weight_map
             .get(validator)
-            .is_some_and(|stake| *stake > 0))
+            .is_some_and(|stake| stake > &0.into()))
     }
 
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
