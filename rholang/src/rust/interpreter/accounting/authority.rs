@@ -4893,6 +4893,52 @@ mod tests {
         ));
     }
 
+    fn nodes_needed(search: impl Fn(usize) -> Result<bool, AuthorityError>) -> usize {
+        let within = |cap: usize| {
+            !matches!(
+                search(cap),
+                Err(AuthorityError::CapExceeded(
+                    ProtocolCap::AuthoritySearchNodes
+                ))
+            )
+        };
+        let mut high = 1;
+        while !within(high) {
+            high *= 2;
+        }
+        let mut low = high / 2;
+        while low + 1 < high {
+            let middle = low + (high - low) / 2;
+            if within(middle) {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        high
+    }
+
+    #[test]
+    #[ignore = "a measurement for choosing the authority search node cap"]
+    fn authority_search_nodes_and_time_by_size() {
+        for events in [4_usize, 8, 16, 32, 64, 128, 256] {
+            let (options, available) = lane_options(events);
+            let search = |cap: usize| {
+                allocate_event_options(&options, &available, &mut BTreeSet::new(), cap)
+                    .map(|found| found.is_some())
+            };
+            let nodes = nodes_needed(search);
+            let started = std::time::Instant::now();
+            assert_eq!(search(nodes), Ok(false));
+            let seconds = started.elapsed().as_secs_f64();
+            println!(
+                "CAP authority events={events} nodes={nodes} seconds={seconds:.6} \
+                 nanoseconds_per_node={:.2}",
+                seconds * 1e9 / nodes as f64
+            );
+        }
+    }
+
     /// Added by G3 (DR-135): every canonicalization keeps the price and the
     /// caller of a region (SA2): the canonical authority, the merge of
     /// participants, the instantiation and the rekey of persistent regions. A
