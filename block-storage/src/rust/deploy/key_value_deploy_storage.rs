@@ -85,7 +85,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         Ok(storage)
     }
 
-    pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
+    pub fn add(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
         self.store.put(
             deploys
                 .into_iter()
@@ -95,7 +95,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 
     /// Atomically insert a deploy by signature, returning false when it already exists.
-    pub fn add_if_absent(&mut self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
+    pub fn add_if_absent(&self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
         let key: ByteString = deploy.sig.to_vec();
         self.store.put_one_if_absent(key, deploy)
     }
@@ -110,24 +110,29 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .unwrap_or(false))
     }
 
-    pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
+    /// The signature of every stored deploy, read from the keys without
+    /// decoding a deploy.
+    pub fn sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
+        let mut sigs = Vec::new();
+        self.store.raw_store().iterate_while(&mut |key, _| {
+            sigs.push(self.store.decode_key(&key)?);
+            Ok(true)
+        })?;
+        Ok(sigs)
+    }
+
+    pub fn remove(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
         self.store
             .delete(deploys.into_iter().map(|d| d.sig.clone().into()).collect())
     }
 
-    pub fn remove_by_sig(&mut self, sig: &[u8]) -> Result<bool, KvStoreError> {
+    pub fn remove_by_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         let key: ByteString = sig.to_vec();
-        let exists = self
+        Ok(self
             .store
-            .contains(vec![key.clone()])?
-            .into_iter()
-            .next()
-            .unwrap_or(false);
-        if !exists {
-            return Ok(false);
-        }
-        self.store.delete(vec![key])?;
-        Ok(true)
+            .raw_store()
+            .delete(vec![self.store.encode_key(&key)?])?
+            > 0)
     }
 
     pub fn any<F>(&self, predicate: F) -> Result<bool, KvStoreError>
@@ -192,7 +197,7 @@ mod tests {
     #[tokio::test]
     async fn storage_round_trips_add_contains_read_and_remove() {
         let mut kvm = InMemoryStoreManager::new();
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
         assert!(!storage.non_empty().unwrap());
 
         let (d1, d2) = (deploy(1), deploy(2));
@@ -224,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_read_all_and_non_empty() {
-        let mut buffer = buffer().await;
+        let buffer = buffer().await;
         assert!(!buffer.non_empty().unwrap());
 
         let (d1, d2) = (deploy(1), deploy(2));
@@ -236,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_deletes_listed_deploys() {
-        let mut buffer = buffer().await;
+        let buffer = buffer().await;
         let (d1, d2) = (deploy(1), deploy(2));
         buffer.add(vec![d1.clone(), d2.clone()]).unwrap();
 
@@ -246,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_by_sig_reports_presence() {
-        let mut buffer = buffer().await;
+        let buffer = buffer().await;
         let d1 = deploy(1);
         buffer.add(vec![d1.clone()]).unwrap();
 
@@ -256,11 +261,42 @@ mod tests {
         assert!(!buffer.non_empty().unwrap());
     }
 
+    #[test]
+    fn concurrent_signature_removals_report_one_actual_delete() {
+        let storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        let valid = deploy(1);
+        storage.add(vec![valid.clone()]).unwrap();
+        let barrier = Arc::new(Barrier::new(16));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let storage = storage.clone();
+                let sig = valid.sig.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    storage.remove_by_sig(&sig).unwrap()
+                })
+            })
+            .collect();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|handle| usize::from(handle.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
+        assert!(!storage.contains_sig(&valid.sig).unwrap());
+    }
+
     #[tokio::test]
     async fn read_all_reports_the_size_of_each_store() {
         let mut kvm = InMemoryStoreManager::new();
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
         storage.add(vec![deploy(1), deploy(2)]).unwrap();
         buffer.add(vec![deploy(3)]).unwrap();
 
@@ -297,8 +333,8 @@ mod tests {
     #[tokio::test]
     async fn read_all_counts_each_decoded_deploy_of_each_store() {
         let mut kvm = InMemoryStoreManager::new();
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
         storage.add(vec![deploy(1), deploy(2)]).unwrap();
         buffer.add(vec![deploy(3)]).unwrap();
 
@@ -336,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn add_if_absent_reports_the_duplicate() {
         let mut kvm = InMemoryStoreManager::new();
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
         let d1 = deploy(1);
         assert!(storage.add_if_absent(d1.clone()).unwrap());
         assert!(!storage.add_if_absent(d1).unwrap());
@@ -346,7 +382,7 @@ mod tests {
     #[tokio::test]
     async fn the_two_stores_open_separate_lmdb_stores() {
         let mut kvm = InMemoryStoreManager::new();
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
         let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
         storage.add(vec![deploy(1)]).unwrap();
         assert!(storage.non_empty().unwrap());
@@ -378,7 +414,7 @@ mod tests {
 
         let handles = (0..32)
             .map(|_| {
-                let mut storage = storage.clone();
+                let storage = storage.clone();
                 let deploy = deploy.clone();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {

@@ -217,13 +217,10 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
-        super::finalization_runner::observe_api_lfb(
-            &self.finalizer_task_in_progress,
-            super::finalization_runner::compute_last_finalized_block(
-                super::finalization_runner::build_finalization_context(self),
-            ),
+        super::finalization_runner::read_last_finalized_block(
+            &self.block_dag_storage,
+            &self.block_store,
         )
-        .await
     }
 
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError> {
@@ -232,12 +229,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .map_err(Into::into)
     }
 
-    fn is_local_validator_bonded(
-        &self,
-        dag: &KeyValueDagRepresentation,
-    ) -> Result<bool, CasperError> {
-        self.finalized_bond_cache.is_bonded(dag)
-    }
+    fn is_local_validator_bonded(&self) -> bool { self.finalized_bond_cache.is_bonded() }
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 

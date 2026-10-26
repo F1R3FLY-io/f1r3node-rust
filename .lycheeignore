@@ -7,3 +7,9 @@ https://f1r3fly-io.github.io/f1r3node-rust/
 # limiting), even though the DOIs resolve fine in a browser.
 https://doi.org/10.1017/CBO9780511809088
 https://doi.org/10.1017/S0960129598002527
+
+# The root .gitattributes was removed in EPIC-026 (owner files replaced it).
+# docs/claims/casper-soak-slashing.md still links to it, but that file is the
+# specification of the discharged CLAIM-CASPER-SOAK-006 and its digest is
+# pinned by the claim ledgers, so it must not change.
+^file://.*/f1r3node-rust/\.gitattributes$

@@ -605,6 +605,24 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
+        // Per-deploy filesystem RAII guard.  Brackets WAL + lock-
+        // registry + handle-table state for this deploy; Drop sweeps
+        // on either the happy path (after `commit()`) or any error-
+        // return path (uncommitted → WAL truncates + locks/fds swept).
+        // The constructor derives a per-execution unique scope from
+        // the deploy sig + an internal 128-bit nonce, so concurrent
+        // play+replay of the same signature against a manager-shared
+        // `SharedLockRegistry` never share scopes.  Caller holds the
+        // guard for the full `process_deploy` body.
+        let mut wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &deploy.sig,
+                deploy.sig.to_vec(),
+                self.runtime.fs_handles.clone(),
+            );
+
         // Keep a soft checkpoint before user deploy execution so failed deploy rollback
         // preserves pre-charge side effects required by refundDeploy.
         let fallback = self.runtime.create_soft_checkpoint().await;
@@ -630,9 +648,16 @@ impl RuntimeOps {
             system_deploy_error: None,
         };
 
-        if !eval_succeeded {
+        if eval_succeeded {
+            // Preserve this deploy's WAL contributions for the block
+            // snapshot.  Lock + handle sweeps still fire on Drop.
+            wal_scope.commit();
+        } else {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
             interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
+            // Guard stays uncommitted — Drop at function return
+            // truncates WAL, cancels + releases locks under this
+            // scope, and spawns the fd/dir-stream sweep.
         }
 
         Ok((deploy_result, eval_result.mergeable))
@@ -813,6 +838,30 @@ impl RuntimeOps {
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
             .await?;
+
+        // Per-system-deploy filesystem RAII guard.  System deploys
+        // (slash, closeBlock) have no primary-signer sig, so the
+        // scope seed combines a system-deploy marker + the input
+        // `state_hash`.  The constructor mixes in a 128-bit nonce so
+        // concurrent executions still derive distinct scopes.
+        // Guard is bound and never committed: system deploys don't
+        // contribute to the block-level WAL (handlers are expected
+        // not to touch fs-native URNs today), so Drop truncates any
+        // leaked entries, cancels + releases any locks taken, and
+        // spawns the fd/dir-stream sweep.
+        let scope_seed = [b"system-deploy:" as &[u8], state_hash].concat();
+        let _wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &scope_seed,
+                // System deploys have no signer sig; empty vector
+                // signals journal_write to skip its payload-source
+                // record step while still letting payload_hash land
+                // in the WAL.
+                Vec::new(),
+                self.runtime.fs_handles.clone(),
+            );
 
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
