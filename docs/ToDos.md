@@ -39,6 +39,7 @@ acceptance:
   - "Preserve dispatch results and aggregate restoration errors."
   - "Verify error parity, replay, and existing preservation tests."
   - "Assume a fresh chain and add no activation gate."
+  - "Keep reducer lookup inline and remove the optional accessor."
   - "Obtain an independent Opus review before publication."
 ```
 

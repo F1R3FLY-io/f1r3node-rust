@@ -118,7 +118,15 @@ impl ContractCall {
                                 }
                             };
                             if peek {
-                                let reducer = dispatcher.reducer()?;
+                                let reducer = dispatcher
+                                    .reducer
+                                    .get()
+                                    .and_then(|weak| weak.upgrade())
+                                    .ok_or_else(|| {
+                                        InterpreterError::BugFoundError(
+                                            "Reducer not initialized".to_string(),
+                                        )
+                                    })?;
                                 let (result, restoration) = futures::join!(
                                     dispatch,
                                     reducer.restore_peeked_data(data_list)
